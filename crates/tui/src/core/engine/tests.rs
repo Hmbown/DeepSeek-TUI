@@ -702,13 +702,9 @@ fn working_set_reaches_model_as_turn_metadata() {
         .session
         .working_set
         .observe_user_message("please inspect src/lib.rs", tmp.path());
-    engine.session.add_message(Message {
-        role: "user".to_string(),
-        content: vec![ContentBlock::Text {
-            text: "please inspect src/lib.rs".to_string(),
-            cache_control: None,
-        }],
-    });
+    let user_msg =
+        engine.user_text_message_with_turn_metadata("please inspect src/lib.rs".to_string());
+    engine.session.add_message(user_msg);
 
     let messages = engine.messages_with_turn_metadata();
     let first_block = messages
@@ -731,13 +727,8 @@ fn turn_metadata_includes_current_local_date_without_working_set() {
         ..Default::default()
     };
     let (mut engine, _handle) = Engine::new(config, &Config::default());
-    engine.session.add_message(Message {
-        role: "user".to_string(),
-        content: vec![ContentBlock::Text {
-            text: "what is today's date?".to_string(),
-            cache_control: None,
-        }],
-    });
+    let user_msg = engine.user_text_message_with_turn_metadata("what is today's date?".to_string());
+    engine.session.add_message(user_msg);
 
     let messages = engine.messages_with_turn_metadata();
     let first_block = messages
@@ -753,14 +744,50 @@ fn turn_metadata_includes_current_local_date_without_working_set() {
     assert!(text.contains(&format!("Current local date: {today}")));
 }
 
+#[test]
+fn messages_with_turn_metadata_preserves_stored_messages_for_prefix_cache() {
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine
+        .session
+        .working_set
+        .observe_user_message("inspect src/lib.rs", tmp.path());
+
+    let first_user = engine.user_text_message_with_turn_metadata("inspect src/lib.rs".to_string());
+    engine.session.add_message(first_user.clone());
+    let first_request = engine.messages_with_turn_metadata();
+    assert_eq!(first_request, engine.session.messages);
+
+    engine.session.add_message(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "I inspected it.".to_string(),
+            cache_control: None,
+        }],
+    });
+    engine
+        .session
+        .working_set
+        .observe_user_message("now summarize it", tmp.path());
+    let second_user = engine.user_text_message_with_turn_metadata("now summarize it".to_string());
+    engine.session.add_message(second_user);
+
+    let second_request = engine.messages_with_turn_metadata();
+    assert_eq!(second_request, engine.session.messages);
+    assert_eq!(second_request.first(), Some(&first_user));
+}
+
 /// v0.8.11 regression: tool-result messages serialize to role="tool" on
-/// the wire but are stored as role="user" internally. Prepending
-/// `<turn_meta>` text onto a tool-result message broke the
-/// assistant→tool_result invariant and caused HTTP 400 from DeepSeek's
-/// API ("insufficient tool messages following tool_calls"). The fix:
-/// inject only into messages that have a Text content block and no
-/// ToolResult blocks; mid-turn (tool-result is the trailing user
-/// message) the injection skips.
+/// the wire but are stored as role="user" internally. `<turn_meta>` must
+/// be stored only on actual user-text messages, not retroactively added
+/// to tool-result messages at request time.
 #[test]
 fn turn_metadata_skips_tool_result_messages() {
     let tmp = tempdir().expect("tempdir");
@@ -778,13 +805,8 @@ fn turn_metadata_skips_tool_result_messages() {
         .observe_user_message("inspect src/lib.rs", tmp.path());
 
     // Real user message — should be eligible for injection.
-    engine.session.add_message(Message {
-        role: "user".to_string(),
-        content: vec![ContentBlock::Text {
-            text: "inspect src/lib.rs".to_string(),
-            cache_control: None,
-        }],
-    });
+    let user_msg = engine.user_text_message_with_turn_metadata("inspect src/lib.rs".to_string());
+    engine.session.add_message(user_msg);
     // Assistant tool-call.
     engine.session.add_message(Message {
         role: "assistant".to_string(),
@@ -818,7 +840,7 @@ fn turn_metadata_skips_tool_result_messages() {
         Some(ContentBlock::ToolResult { .. })
     ));
 
-    // The earlier real user message receives the turn_meta prefix.
+    // The earlier real user message already carries the turn_meta prefix.
     let real_user = messages.first().expect("first user message");
     assert_eq!(real_user.role, "user");
     let ContentBlock::Text { text, .. } = real_user.content.first().expect("user text content")
@@ -830,10 +852,8 @@ fn turn_metadata_skips_tool_result_messages() {
 }
 
 /// When the turn is mid-execution and the trailing user message is a
-/// tool result, no turn_meta is injected at all (rather than landing on
-/// some earlier user message and confusing the API's tool-call
-/// continuity check). The working_set surfaces again on the next
-/// genuine user prompt.
+/// tool result, no turn_meta is injected at request time. The working_set
+/// surfaces again on the next stored user-text message.
 #[test]
 fn turn_metadata_skips_when_only_tool_results_trail() {
     let tmp = tempdir().expect("tempdir");
@@ -1840,12 +1860,24 @@ async fn post_edit_hook_injects_diagnostics_message_before_next_request() {
 
     let last = engine.session.messages.last().expect("message appended");
     assert_eq!(last.role, "user");
-    let text = match &last.content[0] {
+    let meta = match &last.content[0] {
         crate::models::ContentBlock::Text { text, .. } => text.clone(),
         other => panic!("expected text block, got {other:?}"),
     };
-    assert!(text.contains("<diagnostics file=\""));
-    assert!(text.contains("ERROR [1:14] expected i32, found &str"));
+    assert!(meta.starts_with("<turn_meta>\n"));
+    let diagnostic_text = last
+        .content
+        .iter()
+        .find_map(|block| match block {
+            crate::models::ContentBlock::Text { text, .. }
+                if text.contains("<diagnostics file=\"") =>
+            {
+                Some(text)
+            }
+            _ => None,
+        })
+        .expect("diagnostics text block");
+    assert!(diagnostic_text.contains("ERROR [1:14] expected i32, found &str"));
 }
 
 #[tokio::test]

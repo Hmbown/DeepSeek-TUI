@@ -55,14 +55,8 @@ impl Engine {
                 self.session
                     .working_set
                     .observe_user_message(&steer, &self.session.workspace);
-                self.add_session_message(Message {
-                    role: "user".to_string(),
-                    content: vec![ContentBlock::Text {
-                        text: steer.clone(),
-                        cache_control: None,
-                    }],
-                })
-                .await;
+                self.add_session_message(self.user_text_message_with_turn_metadata(steer.clone()))
+                    .await;
                 let _ = self
                     .tx_event
                     .send(Event::status(format!(
@@ -821,14 +815,8 @@ impl Engine {
                         self.session
                             .working_set
                             .observe_user_message(&steer, &self.session.workspace);
-                        self.add_session_message(Message {
-                            role: "user".to_string(),
-                            content: vec![ContentBlock::Text {
-                                text: steer,
-                                cache_control: None,
-                            }],
-                        })
-                        .await;
+                        self.add_session_message(self.user_text_message_with_turn_metadata(steer))
+                            .await;
                     }
                     turn.next_step();
                     continue;
@@ -881,13 +869,9 @@ impl Engine {
                                     self.session
                                         .working_set
                                         .observe_user_message(&trimmed, &self.session.workspace);
-                                    self.add_session_message(Message {
-                                        role: "user".to_string(),
-                                        content: vec![ContentBlock::Text {
-                                            text: trimmed.clone(),
-                                            cache_control: None,
-                                        }],
-                                    })
+                                    self.add_session_message(
+                                        self.user_text_message_with_turn_metadata(trimmed.clone()),
+                                    )
                                     .await;
                                     let _ = self
                                         .tx_event
@@ -968,13 +952,9 @@ impl Engine {
                                 } else {
                                     format!("[REPL round {round_num} output]\n{}", round.stdout)
                                 };
-                                self.add_session_message(Message {
-                                    role: "user".to_string(),
-                                    content: vec![ContentBlock::Text {
-                                        text: feedback,
-                                        cache_control: None,
-                                    }],
-                                })
+                                self.add_session_message(
+                                    self.user_text_message_with_turn_metadata(feedback),
+                                )
                                 .await;
                             }
                             Err(e) => {
@@ -984,15 +964,11 @@ impl Engine {
                                         "REPL round {round_num} failed: {e}"
                                     )))
                                     .await;
-                                self.add_session_message(Message {
-                                    role: "user".to_string(),
-                                    content: vec![ContentBlock::Text {
-                                        text: format!(
-                                            "[REPL round {round_num} execution failed]\n{e}"
-                                        ),
-                                        cache_control: None,
-                                    }],
-                                })
+                                self.add_session_message(
+                                    self.user_text_message_with_turn_metadata(format!(
+                                        "[REPL round {round_num} execution failed]\n{e}"
+                                    )),
+                                )
                                 .await;
                             }
                         }
@@ -1756,14 +1732,8 @@ impl Engine {
                     self.session
                         .working_set
                         .observe_user_message(&steer, &self.session.workspace);
-                    self.add_session_message(Message {
-                        role: "user".to_string(),
-                        content: vec![ContentBlock::Text {
-                            text: steer,
-                            cache_control: None,
-                        }],
-                    })
-                    .await;
+                    self.add_session_message(self.user_text_message_with_turn_metadata(steer))
+                        .await;
                 }
             }
 
@@ -1800,54 +1770,11 @@ impl Engine {
     }
 
     pub(super) fn messages_with_turn_metadata(&self) -> Vec<Message> {
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let working_set_summary = self
-            .session
-            .working_set
-            .summary_block(&self.config.workspace)
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-
-        let summary = if let Some(working_set_summary) = working_set_summary {
-            format!("Current local date: {today}\n{working_set_summary}")
-        } else {
-            format!("Current local date: {today}")
-        };
-
-        let mut messages = self.session.messages.clone();
-        // v0.8.11 hotfix: tool-result messages are stored as role="user" in
-        // our internal representation but serialize to role="tool" on the
-        // wire. Prepending a Text block onto a tool-result message breaks
-        // the assistant→tool_result invariant — the API rejects the request
-        // with `"insufficient tool messages following tool_calls"`. Inject
-        // only into actual user-typed messages, recognizable by having at
-        // least one Text content block (and no ToolResult blocks).
-        let Some(last_user) = messages.iter_mut().rev().find(|message| {
-            message.role == "user"
-                && message
-                    .content
-                    .iter()
-                    .all(|block| !matches!(block, ContentBlock::ToolResult { .. }))
-                && message
-                    .content
-                    .iter()
-                    .any(|block| matches!(block, ContentBlock::Text { .. }))
-        }) else {
-            // No real user message in the trailing slice (e.g. mid-turn
-            // after a tool call). Skip injection — the working_set will
-            // surface again on the next genuine user prompt.
-            return messages;
-        };
-
-        let turn_meta = format!("<turn_meta>\n{summary}\n</turn_meta>");
-        last_user.content.insert(
-            0,
-            ContentBlock::Text {
-                text: turn_meta,
-                cache_control: None,
-            },
-        );
-        messages
+        // `<turn_meta>` is stored on user-text messages when the message is
+        // appended. Do not rewrite historical messages at request time: doing
+        // so makes the API prefix differ from the bytes sent in earlier turns
+        // and destroys DeepSeek's KV prefix cache reuse.
+        self.session.messages.clone()
     }
 }
 
@@ -1887,7 +1814,11 @@ fn resolve_auto_effort(reasoning_effort: Option<&str>, messages: &[Message]) -> 
                         .iter()
                         .filter_map(|block| {
                             if let ContentBlock::Text { text, .. } = block {
-                                Some(text.as_str())
+                                if is_turn_metadata_text(text) {
+                                    None
+                                } else {
+                                    Some(text.as_str())
+                                }
                             } else {
                                 None
                             }
@@ -1915,6 +1846,10 @@ fn resolve_auto_effort(reasoning_effort: Option<&str>, messages: &[Message]) -> 
     }
 }
 
+fn is_turn_metadata_text(text: &str) -> bool {
+    text.trim_start().starts_with("<turn_meta>")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1934,5 +1869,28 @@ mod tests {
         assert!(text.contains("Do not tell the user they pasted sentinels"));
         assert!(text.contains("<deepseek:subagent.done>"));
         assert!(text.contains("Build passed"));
+    }
+
+    #[test]
+    fn resolve_auto_effort_ignores_stored_turn_metadata() {
+        let messages = vec![Message {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "<turn_meta>\nRecent errors: src/failing.rs\n</turn_meta>".to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::Text {
+                    text: "hello".to_string(),
+                    cache_control: None,
+                },
+            ],
+        }];
+
+        assert_eq!(
+            resolve_auto_effort(Some("auto"), &messages),
+            Some("high".to_string()),
+            "auto thinking should classify the user request, not stored metadata"
+        );
     }
 }

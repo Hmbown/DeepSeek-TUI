@@ -829,6 +829,40 @@ impl Engine {
         self.emit_session_updated().await;
     }
 
+    fn turn_metadata_block(&self) -> ContentBlock {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let working_set_summary = self
+            .session
+            .working_set
+            .summary_block(&self.config.workspace)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let summary = if let Some(working_set_summary) = working_set_summary {
+            format!("Current local date: {today}\n{working_set_summary}")
+        } else {
+            format!("Current local date: {today}")
+        };
+
+        ContentBlock::Text {
+            text: format!("<turn_meta>\n{summary}\n</turn_meta>"),
+            cache_control: None,
+        }
+    }
+
+    fn user_text_message_with_turn_metadata(&self, text: String) -> Message {
+        Message {
+            role: "user".to_string(),
+            content: vec![
+                self.turn_metadata_block(),
+                ContentBlock::Text {
+                    text,
+                    cache_control: None,
+                },
+            ],
+        }
+    }
+
     /// Handle a send message operation
     #[allow(clippy::too_many_arguments)]
     async fn handle_send_message(
@@ -908,13 +942,7 @@ impl Engine {
         let force_update_plan_first = should_force_update_plan_first(mode, &content);
 
         // Add user message to session
-        let user_msg = Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::Text {
-                text: content,
-                cache_control: None,
-            }],
-        };
+        let user_msg = self.user_text_message_with_turn_metadata(content);
         self.session.add_message(user_msg);
 
         self.session.model = model;
