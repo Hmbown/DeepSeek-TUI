@@ -1247,10 +1247,20 @@ fn serialize_http_headers(headers: &BTreeMap<String, String>) -> Option<String> 
 }
 
 fn redact_secret(secret: &str) -> String {
-    if secret.len() <= 16 {
+    let chars: Vec<char> = secret.chars().collect();
+    if chars.len() <= 8 {
         return "********".to_string();
     }
-    format!("{}***{}", &secret[..4], &secret[secret.len() - 4..])
+    let prefix: String = chars.iter().take(4).collect();
+    let suffix: String = chars
+        .iter()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{prefix}***{suffix}")
 }
 
 #[derive(Debug, Clone, Default)]
