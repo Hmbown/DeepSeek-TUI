@@ -214,7 +214,7 @@ impl Engine {
 
             // Build the request
             let force_update_plan_this_step = force_update_plan_first && turn.tool_calls.is_empty();
-            let active_tools = if tool_catalog.is_empty() {
+            let mut active_tools = if tool_catalog.is_empty() {
                 None
             } else {
                 Some(active_tools_for_step(
@@ -223,6 +223,11 @@ impl Engine {
                     force_update_plan_this_step,
                 ))
             };
+            if self.config.strict_tool_mode
+                && let Some(tools) = active_tools.as_mut()
+            {
+                crate::tools::schema_sanitize::prepare_tools_for_strict_mode(tools);
+            }
 
             // Resolve `auto` reasoning_effort to a concrete tier (#663).
             let effective_reasoning_effort = resolve_auto_effort(

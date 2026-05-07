@@ -967,6 +967,7 @@ mod tests {
     use crate::client::chat::{
         build_chat_messages, build_chat_messages_for_request, count_reasoning_replay_chars,
         parse_chat_message, parse_sse_chunk, sanitize_thinking_mode_messages, tool_to_chat,
+        tool_to_chat_for_base_url,
     };
     use crate::models::{
         ContentBlock, ContentBlockStart, Delta, Message, MessageRequest, StreamEvent, Tool,
@@ -1363,6 +1364,59 @@ mod tests {
             Some(true)
         );
         assert!(encoded.get("strict").is_none());
+    }
+
+    #[test]
+    fn deepseek_non_beta_base_url_strips_strict_tool_flag() {
+        let tool = Tool {
+            tool_type: Some("function".to_string()),
+            name: "emit_json".to_string(),
+            description: "Emit JSON".to_string(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: Some(true),
+            cache_control: None,
+        };
+
+        let encoded = tool_to_chat_for_base_url(&tool, "https://api.deepseek.com/v1");
+
+        assert!(
+            encoded
+                .get("function")
+                .and_then(|function| function.get("strict"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn deepseek_beta_and_custom_base_urls_keep_strict_tool_flag() {
+        let tool = Tool {
+            tool_type: Some("function".to_string()),
+            name: "emit_json".to_string(),
+            description: "Emit JSON".to_string(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: Some(true),
+            cache_control: None,
+        };
+
+        for base_url in [
+            "https://api.deepseek.com/beta",
+            "https://example.com/openai/v1",
+        ] {
+            let encoded = tool_to_chat_for_base_url(&tool, base_url);
+            assert_eq!(
+                encoded
+                    .get("function")
+                    .and_then(|function| function.get("strict"))
+                    .and_then(Value::as_bool),
+                Some(true)
+            );
+        }
     }
 
     #[test]

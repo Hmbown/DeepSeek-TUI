@@ -4297,6 +4297,7 @@ mod tests {
     #[test]
     fn recoverable_clear_stashes_nonempty_draft() {
         let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.clear();
         app.input = "recover this".to_string();
         app.cursor_position = app.input.chars().count();
 

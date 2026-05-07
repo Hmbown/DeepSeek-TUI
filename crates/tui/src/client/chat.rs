@@ -88,7 +88,12 @@ impl DeepSeekClient {
             body["top_p"] = json!(top_p);
         }
         if let Some(tools) = request.tools.as_ref() {
-            body["tools"] = json!(tools.iter().map(tool_to_chat).collect::<Vec<_>>());
+            body["tools"] = json!(
+                tools
+                    .iter()
+                    .map(|tool| tool_to_chat_for_base_url(tool, &self.base_url))
+                    .collect::<Vec<_>>()
+            );
         }
         if let Some(choice) = request.tool_choice.as_ref()
             && let Some(mapped) = map_tool_choice_for_chat(choice)
@@ -157,7 +162,12 @@ impl DeepSeekClient {
             body["top_p"] = json!(top_p);
         }
         if let Some(tools) = request.tools.as_ref() {
-            body["tools"] = json!(tools.iter().map(tool_to_chat).collect::<Vec<_>>());
+            body["tools"] = json!(
+                tools
+                    .iter()
+                    .map(|tool| tool_to_chat_for_base_url(tool, &self.base_url))
+                    .collect::<Vec<_>>()
+            );
         }
         if let Some(choice) = request.tool_choice.as_ref()
             && let Some(mapped) = map_tool_choice_for_chat(choice)
@@ -710,6 +720,28 @@ pub(super) fn tool_to_chat(tool: &Tool) -> Value {
         function["strict"] = json!(strict);
     }
     value
+}
+
+pub(super) fn tool_to_chat_for_base_url(tool: &Tool, base_url: &str) -> Value {
+    let mut value = tool_to_chat(tool);
+    if !deepseek_base_url_supports_strict_tools(base_url)
+        && let Some(function) = value.get_mut("function")
+        && let Some(obj) = function.as_object_mut()
+    {
+        obj.remove("strict");
+    }
+    value
+}
+
+fn deepseek_base_url_supports_strict_tools(base_url: &str) -> bool {
+    let trimmed = base_url.trim_end_matches('/').to_ascii_lowercase();
+    let is_deepseek = trimmed == "https://api.deepseek.com"
+        || trimmed == "https://api.deepseek.com/v1"
+        || trimmed == "https://api.deepseek.com/beta"
+        || trimmed == "https://api.deepseeki.com"
+        || trimmed == "https://api.deepseeki.com/v1"
+        || trimmed == "https://api.deepseeki.com/beta";
+    !is_deepseek || trimmed.ends_with("/beta")
 }
 
 fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {

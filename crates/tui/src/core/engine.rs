@@ -148,8 +148,8 @@ pub struct EngineConfig {
     /// caller resolves this from `Settings` once at engine
     /// construction; the engine never touches disk for it.
     pub locale_tag: String,
-    /// When true, force `tool_choice: "required"` so the model always calls
-    /// a tool on every turn step (V4 strict tool-following mode).
+    /// When true, force `tool_choice: "required"` and opt compatible function
+    /// schemas into DeepSeek beta strict mode.
     pub strict_tool_mode: bool,
     /// Workshop / large-tool-output routing (#548). `None` disables routing.
     pub workshop: Option<crate::tools::large_output_router::WorkshopConfig>,
