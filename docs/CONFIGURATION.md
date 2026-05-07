@@ -55,6 +55,12 @@ the legacy `deepseek login --api-key ...` alias) saves the key to
 `~/.deepseek/config.toml`, and `deepseek --model deepseek-v4-flash` is forwarded
 to the TUI as `DEEPSEEK_MODEL`.
 
+Credential lookup uses `config -> keyring -> env` after any explicit CLI
+`--api-key`. Run `deepseek auth status` to inspect the active provider's config
+file, OS keyring backend, environment variable, winning source, and last-four
+label without printing the key itself. The command only probes the active
+provider's keyring entry.
+
 For hosted or self-hosted providers, set `provider = "nvidia-nim"`,
 `"fireworks"`, `"sglang"`, `"vllm"`, or `"ollama"` or pass `deepseek --provider <name>`. The facade
 saves provider credentials to the shared user config and forwards the resolved
@@ -131,7 +137,8 @@ If a profile is selected but missing, DeepSeek TUI exits with an error listing a
 
 ## Environment Variables
 
-These override config values:
+Most runtime environment variables override config values. API-key variables are
+fallbacks after saved config and keyring credentials:
 
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_BASE_URL`

@@ -95,6 +95,7 @@ You can also set it ahead of time:
 
 ```bash
 deepseek auth set --provider deepseek   # saves to ~/.deepseek/config.toml
+deepseek auth status                    # shows the active credential source
 
 export DEEPSEEK_API_KEY="YOUR_KEY"      # env var alternative; use ~/.zshenv for non-interactive shells
 deepseek
@@ -103,9 +104,10 @@ deepseek doctor                         # verify setup
 ```
 
 If `deepseek doctor` says the rejected key came from `DEEPSEEK_API_KEY`, remove
-the stale export from your shell startup file, open a fresh shell, then run
-`deepseek auth set --provider deepseek`. Saved config keys take precedence over
-the environment and are easier to rotate.
+the stale export from your shell startup file, open a fresh shell, or run
+`deepseek auth set --provider deepseek`. Use `deepseek auth status` to see the
+config, keyring, and env-var source state without printing the key. Saved config
+keys take precedence over the keyring and environment and are easier to rotate.
 
 > To rotate or remove a saved key: `deepseek auth clear --provider deepseek`.
 

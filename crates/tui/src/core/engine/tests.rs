@@ -93,6 +93,7 @@ fn env_only_auth_error_gets_recovery_hint() {
 
     assert!(message.contains("DEEPSEEK_API_KEY"));
     assert!(message.contains("no saved config key is present"));
+    assert!(message.contains("deepseek auth status"));
     assert!(message.contains("deepseek auth set --provider deepseek"));
 }
 
