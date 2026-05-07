@@ -1526,13 +1526,13 @@ mod tests {
             ..ConfigToml::default()
         };
         config.providers.deepseek.api_key = Some("provider-key".to_string());
-        config.providers.deepseek.base_url = Some("https://api.deepseeki.com".to_string());
+        config.providers.deepseek.base_url = Some("https://gateway.example/v1".to_string());
         config.providers.deepseek.model = Some("deepseek-v4-flash".to_string());
 
         let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
 
         assert_eq!(resolved.api_key.as_deref(), Some("provider-key"));
-        assert_eq!(resolved.base_url, "https://api.deepseeki.com");
+        assert_eq!(resolved.base_url, "https://gateway.example/v1");
         assert_eq!(resolved.model, "deepseek-v4-flash");
     }
 
@@ -1547,7 +1547,7 @@ mod tests {
             ..ConfigToml::default()
         };
         config.providers.deepseek.api_key = Some("provider-key".to_string());
-        config.providers.deepseek.base_url = Some("https://api.deepseeki.com".to_string());
+        config.providers.deepseek.base_url = Some("https://gateway.example/v1".to_string());
         config.providers.deepseek.model = Some("deepseek-v4-flash".to_string());
         config
             .http_headers
@@ -1566,7 +1566,7 @@ mod tests {
         let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
 
         assert_eq!(resolved.api_key.as_deref(), Some("provider-key"));
-        assert_eq!(resolved.base_url, "https://api.deepseeki.com");
+        assert_eq!(resolved.base_url, "https://gateway.example/v1");
         assert_eq!(resolved.model, "deepseek-v4-flash");
         assert_eq!(
             resolved

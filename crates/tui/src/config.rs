@@ -42,7 +42,9 @@ pub const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 pub const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
 pub const DEFAULT_OLLAMA_MODEL: &str = "deepseek-coder:1.3b";
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
-pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = "https://api.deepseeki.com";
+/// Official DeepSeek API host per https://api-docs.deepseek.com/ (`deepseek-cn` preset defaults here).
+/// Legacy typo hostname `api.deepseeki.com` remains recognized in URL heuristics for backward compatibility.
+pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = "https://api.deepseek.com";
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
     "deepseek-v4-pro",

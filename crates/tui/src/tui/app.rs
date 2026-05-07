@@ -1119,7 +1119,7 @@ impl App {
         } = options;
 
         // If no provider is explicitly configured AND the system locale
-        // indicates Chinese (zh-*), suggest DeepseekCN (api.deepseeki.com)
+        // indicates Chinese (zh-*), suggest DeepseekCN (official api.deepseek.com preset)
         // as the appropriate default.
         let provider = if config.provider.is_none() && is_chinese_system_locale() {
             let cn_base_url = crate::config::DEFAULT_DEEPSEEKCN_BASE_URL.to_string();

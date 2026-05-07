@@ -2438,16 +2438,8 @@ fn known_deepseek_base_url_kind(base_url: &str) -> Option<DeepSeekBaseUrlKind> {
     }
 }
 
-fn recommended_strict_base_url(config: &Config, base_url: &str) -> &'static str {
-    if matches!(
-        config.api_provider(),
-        crate::config::ApiProvider::DeepseekCN
-    ) || base_url.to_ascii_lowercase().contains("api.deepseeki.com")
-    {
-        "https://api.deepseeki.com/beta"
-    } else {
-        crate::config::DEFAULT_DEEPSEEK_BASE_URL
-    }
+fn recommended_strict_base_url(_config: &Config, _base_url: &str) -> &'static str {
+    crate::config::DEFAULT_DEEPSEEK_BASE_URL
 }
 
 fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
@@ -2463,7 +2455,7 @@ fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
                 && !target.base_url.contains("api.deepseeki.com") =>
         {
             lines.push(
-                "If you are in mainland China, set `provider = \"deepseek-cn\"` or `base_url = \"https://api.deepseeki.com\"` in ~/.deepseek/config.toml, then rerun `deepseek doctor`."
+                "If you are in mainland China, set `provider = \"deepseek-cn\"` or `base_url = \"https://api.deepseek.com\"` in ~/.deepseek/config.toml, then rerun `deepseek doctor`."
                     .to_string(),
             );
         }
@@ -4456,7 +4448,7 @@ mod doctor_endpoint_tests {
         assert!(!status.function_strict_sent);
         assert_eq!(
             status.recommended_base_url.as_deref(),
-            Some("https://api.deepseeki.com/beta")
+            Some(crate::config::DEFAULT_DEEPSEEK_BASE_URL)
         );
     }
 
@@ -4516,7 +4508,7 @@ mod doctor_endpoint_tests {
 
         let text = doctor_timeout_recovery_lines(&config).join("\n");
 
-        assert!(text.contains("api.deepseeki.com"));
+        assert!(text.contains("api.deepseek.com"));
         assert!(text.contains("provider = \"deepseek-cn\""));
         assert!(text.contains("deepseek doctor --json"));
     }
