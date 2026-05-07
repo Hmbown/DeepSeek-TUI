@@ -32,6 +32,9 @@ pub enum Op {
         approval_mode: ApprovalMode,
     },
 
+    /// Ask the pixel whale pet using the configured API client, outside the main chat context.
+    WhalePet { prompt: String },
+
     /// Cancel the current request
     #[allow(dead_code)]
     CancelRequest,

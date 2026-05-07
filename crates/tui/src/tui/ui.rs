@@ -1055,6 +1055,19 @@ async fn run_event_loop(
                     EngineEvent::Status { message } => {
                         app.status_message = Some(message);
                     }
+                    EngineEvent::WhalePetResponse {
+                        profile,
+                        inner,
+                        content,
+                        model,
+                    } => {
+                        app.add_message(HistoryCell::System {
+                            content: crate::whale_pet::render_message(
+                                &profile, &inner, &content, &model,
+                            ),
+                        });
+                        app.status_message = Some("Whale pet surfaced".to_string());
+                    }
                     EngineEvent::SessionUpdated {
                         messages,
                         system_prompt,
@@ -4350,6 +4363,11 @@ async fn apply_command_result(
             AppAction::SendMessage(content) => {
                 let queued = build_queued_message(app, content);
                 submit_or_steer_message(app, config, engine_handle, queued).await?;
+            }
+            AppAction::WhalePet { prompt } => {
+                app.status_message =
+                    Some("Whale pet is using Flash with thinking off...".to_string());
+                let _ = engine_handle.send(Op::WhalePet { prompt }).await;
             }
             AppAction::Rlm {
                 prompt,

@@ -3751,6 +3751,10 @@ pub enum AppAction {
     OpenStatusPicker,
     /// Send a message to the AI (normal chat mode).
     SendMessage(String),
+    /// Ask the pixel whale pet without adding the prompt to the main session context.
+    WhalePet {
+        prompt: String,
+    },
     /// Run a Recursive Language Model (RLM) turn — Algorithm 1 from
     /// Zhang et al. (arXiv:2512.24601). The prompt is stored in the REPL;
     /// the root LLM only sees metadata.

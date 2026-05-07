@@ -28,6 +28,7 @@ mod skills;
 mod stash;
 mod task;
 mod user_commands;
+mod whale;
 
 use crate::localization::{Locale, MessageId, tr};
 use crate::tui::app::{App, AppAction};
@@ -206,6 +207,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         aliases: &["dashboard", "api"],
         usage: "/links",
         description_id: MessageId::CmdLinksDescription,
+    },
+    CommandInfo {
+        name: "whale",
+        aliases: &["pet"],
+        usage: "/whale <message>",
+        description_id: MessageId::CmdWhaleDescription,
     },
     CommandInfo {
         name: "home",
@@ -508,6 +515,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "hooks" | "hook" => hooks::hooks(app, arg),
         "subagents" | "agents" => core::subagents(app),
         "links" | "dashboard" | "api" => core::deepseek_links(app),
+        "whale" | "pet" => whale::whale(app, arg),
         "home" | "stats" | "overview" => core::home_dashboard(app),
         "note" => note::note(app, arg),
         "memory" => memory::memory(app, arg),

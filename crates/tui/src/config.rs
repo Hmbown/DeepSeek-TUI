@@ -2276,6 +2276,23 @@ fn model_for_provider(provider: ApiProvider, normalized: String) -> String {
     }
 }
 
+/// Resolve the shortest-cost DeepSeek model identity this provider understands.
+///
+/// OpenAI-compatible and Ollama backends pass model names through directly, so
+/// keep their configured model unless it already looks like a DeepSeek model.
+#[must_use]
+pub fn flash_model_for_provider(provider: ApiProvider, configured_model: &str) -> String {
+    if provider_passes_model_through(provider) {
+        let configured = configured_model.trim();
+        if configured.to_ascii_lowercase().contains("deepseek") {
+            return "deepseek-v4-flash".to_string();
+        }
+        return configured.to_string();
+    }
+
+    model_for_provider(provider, "deepseek-v4-flash".to_string())
+}
+
 fn normalize_base_url(base: &str) -> String {
     let trimmed = base.trim_end_matches('/');
     let deepseek_domains = ["api.deepseek.com", "api.deepseeki.com"];
