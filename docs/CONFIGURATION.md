@@ -157,6 +157,7 @@ fallbacks after saved config and keyring credentials:
 - `DEEPSEEK_HTTP_HEADERS` (custom model request headers, comma-separated `name=value` pairs)
 - `DEEPSEEK_PROVIDER` (`deepseek|deepseek-cn|nvidia-nim|openai|openrouter|novita|fireworks|sglang|vllm|ollama`)
 - `DEEPSEEK_MODEL` or `DEEPSEEK_DEFAULT_TEXT_MODEL`
+- `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` (stream idle timeout in seconds; default `300`, clamped to `1..=3600`)
 - `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (preferred when provider is `nvidia-nim`; falls back to `DEEPSEEK_API_KEY`)
 - `NVIDIA_NIM_BASE_URL`, `NIM_BASE_URL`, or `NVIDIA_BASE_URL`
 - `NVIDIA_NIM_MODEL`
