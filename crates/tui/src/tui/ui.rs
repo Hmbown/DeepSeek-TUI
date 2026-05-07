@@ -245,6 +245,15 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let config = &mut config;
     let mut app = App::new(options.clone(), config);
 
+    // Apply --theme CLI flag if provided
+    if let Some(theme_arg) = options.theme.as_ref() {
+        let theme = match theme_arg {
+            crate::deepseek_theme::ThemeArg::Dark => crate::deepseek_theme::Theme::dark(),
+            crate::deepseek_theme::ThemeArg::Light => crate::deepseek_theme::Theme::light(),
+        };
+        crate::deepseek_theme::set_active_theme(theme);
+    }
+
     // Load existing session if resuming.
     if let Some(ref session_id) = options.resume_session_id
         && let Ok(manager) = SessionManager::default_location()

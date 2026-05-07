@@ -146,6 +146,7 @@ mod tests {
             yolo: false,
             resume_session_id: None,
             initial_input: None,
+            theme: None,
         };
         let mut app = App::new(options, &Config::default());
         app.use_paste_burst_detection = true;

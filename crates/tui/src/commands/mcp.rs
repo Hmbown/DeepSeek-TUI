@@ -95,6 +95,7 @@ mod tests {
                 yolo: false,
                 resume_session_id: None,
                 initial_input: None,
+                theme: None,
             },
             &Config::default(),
         )

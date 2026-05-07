@@ -139,6 +139,22 @@ pub const UI_THEME: UiTheme = UiTheme {
     text_muted: TEXT_MUTED,
 };
 
+pub const UI_THEME_LIGHT: UiTheme = UiTheme {
+    name: "whale-light",
+    composer_bg: Color::Rgb(230, 238, 250),   // #E6EEFA light blue-white
+    selection_bg: Color::Rgb(200, 220, 245),  // #C8DCF5
+    header_bg: Color::Rgb(240, 245, 255),     // #F0F5FF
+    mode_agent: Color::Rgb(53, 120, 229),     // DEEPSEEK_BLUE
+    mode_yolo: Color::Rgb(200, 60, 60),       // soft red
+    mode_plan: Color::Rgb(255, 150, 50),     // amber
+    status_ready: Color::Rgb(80, 90, 110),   // muted
+    status_working: Color::Rgb(53, 120, 229), // blue
+    status_warning: Color::Rgb(255, 150, 50), // amber
+    text_dim: Color::Rgb(120, 130, 150),
+    text_hint: Color::Rgb(150, 160, 180),
+    text_muted: Color::Rgb(100, 110, 130),
+};
+
 // === Color depth + brightness helpers (v0.6.6 UI redesign) ===
 
 /// Terminal color depth, used to gate truecolor surfaces (e.g. reasoning bg

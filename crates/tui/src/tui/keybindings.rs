@@ -213,7 +213,7 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
     KeybindingEntry {
         chord: "Ctrl+T",
         description_id: crate::localization::MessageId::KbLiveTranscript,
-        section: KeybindingSection::Submission,
+        section: KeybindingSection::Modes,
     },
     KeybindingEntry {
         chord: "Esc Esc",
