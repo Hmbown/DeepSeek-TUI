@@ -21,6 +21,11 @@ pub(crate) struct ColorCompatBackend<W: Write> {
     inner: CrosstermBackend<W>,
     depth: ColorDepth,
     palette_mode: PaletteMode,
+    /// During a resize event the terminal emulator may report stale dimensions
+    /// for a brief window (observed on macOS Terminal.app and Windows ConHost).
+    /// Forcing the expected size prevents ratatui's internal `autoresize` from
+    /// shrinking the viewport back to the stale dimension inside `draw()`.
+    forced_size: Option<Size>,
 }
 
 impl<W: Write> ColorCompatBackend<W> {
@@ -29,7 +34,16 @@ impl<W: Write> ColorCompatBackend<W> {
             inner: CrosstermBackend::new(writer),
             depth,
             palette_mode,
+            forced_size: None,
         }
+    }
+
+    pub(crate) fn force_size(&mut self, size: Size) {
+        self.forced_size = Some(size);
+    }
+
+    pub(crate) fn clear_forced_size(&mut self) {
+        self.forced_size = None;
     }
 }
 
@@ -88,7 +102,10 @@ impl<W: Write> Backend for ColorCompatBackend<W> {
     }
 
     fn size(&self) -> io::Result<Size> {
-        self.inner.size()
+        match self.forced_size {
+            Some(size) => Ok(size),
+            None => self.inner.size(),
+        }
     }
 
     fn window_size(&mut self) -> io::Result<WindowSize> {
