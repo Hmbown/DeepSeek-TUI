@@ -1029,6 +1029,36 @@ async fn run_event_loop(
                         }
                         persistence_actor::persist(PersistRequest::ClearCheckpoint);
 
+                        // #538: auto-extract memory note from the turn's output
+                        // when the feature is enabled and the turn completed
+                        // (not interrupted / failed).
+                        if config.auto_extract_memory()
+                            && status == crate::core::events::TurnOutcomeStatus::Completed
+                        {
+                            let notes_path = config.notes_path();
+                            if let Some(note) =
+                                crate::memory_loop::extract_memory_from_response(&app.api_messages)
+                            {
+                                match crate::memory_loop::append_notes_entry(&notes_path, &note) {
+                                    Ok(()) => {
+                                        tracing::debug!(
+                                            target: "memory_loop",
+                                            path = %notes_path.display(),
+                                            "auto-extracted memory note"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            target: "memory_loop",
+                                            path = %notes_path.display(),
+                                            error = %e,
+                                            "failed to write auto-extracted memory note"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
                         if app.mode == AppMode::Plan
                             && app.plan_tool_used_in_turn
                             && !app.plan_prompt_pending

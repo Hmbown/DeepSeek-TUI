@@ -774,6 +774,14 @@ pub struct Config {
     #[serde(default)]
     pub lsp: Option<LspConfigToml>,
 
+    /// Automatically extract memory notes from notable assistant output.
+    /// When true, after each turn the system scans the assistant response for
+    /// decision/fact-worthy sentences (containing "I will", "decided",
+    /// "implemented") and appends the first matching sentence to the notes
+    /// file at `notes_path`. Default: false.
+    #[serde(default)]
+    pub auto_extract_memory: Option<bool>,
+
     /// Append-only layered context management with Flash seam manager (#159).
     #[serde(default)]
     pub context: ContextConfig,
@@ -1403,6 +1411,12 @@ impl Config {
             .as_ref()
             .and_then(|m| m.enabled)
             .unwrap_or(false)
+    }
+
+    /// Whether auto-extract-memory is enabled. Default: false.
+    #[must_use]
+    pub fn auto_extract_memory(&self) -> bool {
+        self.auto_extract_memory.unwrap_or(false)
     }
 
     /// Return whether shell execution is allowed.
@@ -2271,6 +2285,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         hooks: override_cfg.hooks.or(base.hooks),
         providers: merge_providers(base.providers, override_cfg.providers),
         features: merge_features(base.features, override_cfg.features),
+        auto_extract_memory: override_cfg.auto_extract_memory.or(base.auto_extract_memory),
         notifications: override_cfg.notifications.or(base.notifications),
         network: override_cfg.network.or(base.network),
         skills: override_cfg.skills.or(base.skills),
