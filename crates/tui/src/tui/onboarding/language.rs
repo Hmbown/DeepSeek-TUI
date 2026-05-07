@@ -12,7 +12,7 @@ use crate::palette;
 use crate::tui::app::App;
 
 /// Locale options shown in the picker. Order matches the keyboard hotkeys
-/// (1-5). Each entry is `(hotkey, settings_tag, native_name, english_label)`.
+/// (1-6). Each entry is `(hotkey, settings_tag, native_name, english_label)`.
 /// `settings_tag` is what `Settings::set("locale", …)` accepts and what
 /// `localization::Locale` resolves on next read.
 pub const LANGUAGE_OPTIONS: &[(char, &str, &str, &str)] = &[
@@ -20,7 +20,8 @@ pub const LANGUAGE_OPTIONS: &[(char, &str, &str, &str)] = &[
     ('2', "en", "English", ""),
     ('3', "ja", "日本語", "(Japanese)"),
     ('4', "zh-Hans", "简体中文", "(Simplified Chinese)"),
-    ('5', "pt-BR", "Português (Brasil)", "(Brazilian Portuguese)"),
+    ('5', "zh-Hant", "繁體中文", "(Traditional Chinese)"),
+    ('6', "pt-BR", "Português (Brasil)", "(Brazilian Portuguese)"),
 ];
 
 pub fn lines(app: &App) -> Vec<Line<'static>> {
@@ -76,7 +77,7 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
     out.push(Line::from(vec![
         Span::styled("Press ", Style::default().fg(palette::TEXT_MUTED)),
         Span::styled(
-            "1-5",
+            "1-6",
             Style::default()
                 .fg(palette::TEXT_PRIMARY)
                 .add_modifier(Modifier::BOLD),

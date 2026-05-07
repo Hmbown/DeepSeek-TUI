@@ -152,6 +152,9 @@ pub enum UiLocale {
     #[serde(rename = "zh-Hans")]
     #[schemars(rename = "zh-Hans")]
     ZhHans,
+    #[serde(rename = "zh-Hant")]
+    #[schemars(rename = "zh-Hant")]
+    ZhHant,
     #[serde(rename = "pt-BR")]
     #[schemars(rename = "pt-BR")]
     PtBr,
@@ -617,6 +620,7 @@ impl UiLocale {
             Self::En => "en",
             Self::Ja => "ja",
             Self::ZhHans => "zh-Hans",
+            Self::ZhHant => "zh-Hant",
             Self::PtBr => "pt-BR",
         }
     }
@@ -627,6 +631,7 @@ impl UiLocale {
             Some("en") => Ok(Self::En),
             Some("ja") => Ok(Self::Ja),
             Some("zh-Hans") => Ok(Self::ZhHans),
+            Some("zh-Hant") => Ok(Self::ZhHant),
             Some("pt-BR") => Ok(Self::PtBr),
             Some(other) => bail!("unsupported locale '{other}'"),
             None => bail!("invalid locale '{value}'"),
@@ -870,7 +875,7 @@ mod tests {
         let locale = &schema["$defs"]["UiLocale"]["enum"];
         assert_eq!(
             locale,
-            &serde_json::json!(["auto", "en", "ja", "zh-Hans", "pt-BR"])
+            &serde_json::json!(["auto", "en", "ja", "zh-Hans", "zh-Hant", "pt-BR"])
         );
     }
 
