@@ -109,6 +109,16 @@ export RUSTUP_UPDATE_ROOT=https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 ```
 
+If TUNA is slow from your network, `rsproxy.cn` is also known to work on
+Linux/macOS:
+
+```bash
+export RUSTUP_DIST_SERVER=https://rsproxy.cn
+export RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
+
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+```
+
 The `RUSTUP_DIST_SERVER` and `RUSTUP_UPDATE_ROOT` environment variables must
 be set **before** running rustup-init; the toolchain download otherwise hits
 the same TLS handshake problem as the installer.
@@ -345,6 +355,36 @@ cargo install deepseek-tui-cli --locked
 Set `DEEPSEEK_TUI_RELEASE_BASE_URL` to a mirrored release-asset directory
 (rsproxy, TUNA, Tencent COS, Aliyun OSS), or skip npm entirely and use the
 Cargo mirror setup in [Section 3](#3-install-via-cargo-any-tier-1-rust-target).
+
+### Debian/Ubuntu: `feature edition2024 is required` from `cargo install`
+
+Ubuntu/Debian distro packages can ship an older Cargo (for example Cargo
+1.75.0 on Ubuntu 24.04). That Cargo cannot parse crates using the Rust 2024
+edition and fails before the package can be built:
+
+```text
+feature `edition2024` is required
+The package requires the Cargo feature called `edition2024`, but that feature
+is not stabilized in this version of Cargo
+```
+
+Install a current stable Rust toolchain with rustup, then re-run the install.
+For mainland China networks, this rsproxy-based sequence has been verified to
+work:
+
+```bash
+export RUSTUP_DIST_SERVER=https://rsproxy.cn
+export RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
+
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+rustup default stable
+cargo install deepseek-tui-cli --locked
+cargo install deepseek-tui     --locked
+```
+
+Afterward, `which cargo` should point to `~/.cargo/bin/cargo`, not
+`/usr/bin/cargo`.
 
 ### Debian/Ubuntu: `error: linker 'cc' not found` while building
 
