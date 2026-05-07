@@ -70,6 +70,9 @@ build-from-source guide.
 - Default binary version comes from `deepseekBinaryVersion` in `package.json`.
 - Set `DEEPSEEK_TUI_VERSION` or `DEEPSEEK_VERSION` to override the release version.
 - Set `DEEPSEEK_TUI_GITHUB_REPO` or `DEEPSEEK_GITHUB_REPO` to override the source repo (defaults to `Hmbown/DeepSeek-TUI`).
+- Set `DEEPSEEK_TUI_RELEASE_BASE_URL` to use an internal or mirrored
+  release-asset directory when GitHub Releases is unavailable. The directory
+  must contain `deepseek-artifacts-sha256.txt` and the platform binaries.
 - Set `DEEPSEEK_TUI_FORCE_DOWNLOAD=1` to force download even when the cached binary is already present.
 - Set `DEEPSEEK_TUI_DISABLE_INSTALL=1` to skip install-time download.
 - Set `DEEPSEEK_TUI_OPTIONAL_INSTALL=1` to make the `postinstall` step warn and exit `0` on download/extract errors instead of failing `npm install` (useful in CI matrices).
@@ -80,5 +83,3 @@ build-from-source guide.
   exist for the target GitHub release before publishing.
 - Install-time downloads are verified against the release checksum manifest before
   the wrapper marks them executable.
-- Set `DEEPSEEK_TUI_RELEASE_BASE_URL` to point the installer at a local or
-  staged release-asset directory for smoke tests.
