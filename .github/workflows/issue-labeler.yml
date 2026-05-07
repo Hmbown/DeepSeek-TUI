@@ -1,0 +1,56 @@
+name: Issue Auto-Labeler
+
+on:
+  issues:
+    types: [opened, edited]
+  pull_request:
+    types: [opened, edited]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/issue-labeler.yml
+          sync-labels: false
+
+  auto-close-spam:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'issues' && github.event.action == 'opened'
+    steps:
+      - name: Close obvious spam
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || '';
+            const title = context.payload.issue.title || '';
+            const combined = (title + ' ' + body).toLowerCase();
+
+            // Spam signals: pure promotional links, no code/log content
+            const spamPatterns = [
+              /\b(buy|sell|cheap|discount|offer|promo|click here|visit now)\b/i,
+              /https?:\/\/[^\s]+\.(xyz|top|click|bid|loan|win)\b/i,
+            ];
+
+            const isSpam = spamPatterns.some(p => p.test(combined));
+            if (isSpam) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: 'This issue appears to be spam and has been automatically closed. If this is a mistake, please reopen with a proper bug report or feature request.'
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                state: 'closed',
+                labels: ['invalid']
+              });
+            }
