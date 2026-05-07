@@ -932,6 +932,7 @@ impl Engine {
                 source_message_ids
             },
             replay_info,
+            workspace: self.session.workspace.to_string_lossy().to_string(),
         }
     }
 
@@ -973,8 +974,12 @@ impl Engine {
             }
         }
 
-        // Fallback: scan across all sessions for the newest record
-        if let Some((session_id, last)) = find_latest_cross_session() {
+        // Cross-session recovery: opt-in only, workspace-scoped
+        if !self.capacity_controller.cross_session_enabled() {
+            return;
+        }
+        let workspace = self.session.workspace.to_string_lossy().to_string();
+        if let Some((session_id, last)) = find_latest_cross_session(&workspace) {
             let pointer = format!("memory://{}/{}", session_id, last.id);
             let prompt = self.canonical_prompt(
                 &last.canonical_state,
