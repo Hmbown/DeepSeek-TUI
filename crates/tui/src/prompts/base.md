@@ -154,7 +154,6 @@ Don't reach for `apply_patch` when:
 - You're creating a brand-new file — use `write_file`.
 - The change is a single search/replace in one location — `edit_file` is simpler and less error-prone.
 - You haven't read the target file yet. Patches written blind almost always fail to apply.
-- The file is short enough to rewrite whole — `write_file` with full content avoids fuzz matching entirely.
 
 ### `edit_file`
 Don't reach for `edit_file` when:

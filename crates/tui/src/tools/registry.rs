@@ -643,6 +643,45 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(RememberTool))
     }
 
+    /// Include LSP code intelligence tools (Phase 2): goto-definition,
+    /// find-references, hover, document-symbols, workspace-symbols.
+    /// These tools require an LspManager in the ToolContext to function.
+    #[must_use]
+    pub fn with_lsp_tools(self) -> Self {
+        use super::lsp::{
+            LspDocumentSymbolsTool, LspFindReferencesTool, LspGotoDefinitionTool,
+            LspHoverTool, LspWorkspaceSymbolsTool,
+        };
+        self.with_tool(Arc::new(LspGotoDefinitionTool))
+            .with_tool(Arc::new(LspFindReferencesTool))
+            .with_tool(Arc::new(LspHoverTool))
+            .with_tool(Arc::new(LspDocumentSymbolsTool))
+            .with_tool(Arc::new(LspWorkspaceSymbolsTool))
+    }
+
+    /// Include structured memory tools: `memory_search`, `memory_save`,
+    /// `memory_list`, `memory_forget`. These give the model access to the
+    /// TOML-backed persistent memory store. Only register when the user
+    /// has opted in to the memory feature.
+    #[must_use]
+    pub fn with_memory_tools(self) -> Self {
+        use super::memory_tools::{
+            MemoryForgetTool, MemoryListTool, MemorySaveTool, MemorySearchTool,
+        };
+        self.with_tool(Arc::new(MemorySearchTool))
+            .with_tool(Arc::new(MemorySaveTool))
+            .with_tool(Arc::new(MemoryListTool))
+            .with_tool(Arc::new(MemoryForgetTool))
+    }
+
+    /// Include the screenshot analysis tool (Phase 7): sends an image
+    /// file to DeepSeek V4's vision endpoint for visual analysis.
+    #[must_use]
+    pub fn with_screenshot_analyze_tool(self) -> Self {
+        use super::screenshot_analyze::ScreenshotAnalyzeTool;
+        self.with_tool(Arc::new(ScreenshotAnalyzeTool::new()))
+    }
+
     /// Include MCP tools from a connected pool as first-class registry
     /// citizens. Each MCP tool is wrapped in a lightweight adapter that
     /// implements `ToolSpec`, so the unified `ToolRegistryBuilder` flow
@@ -690,7 +729,9 @@ impl ToolRegistryBuilder {
             .with_test_runner_tool()
             .with_validation_tools()
             .with_runtime_task_tools()
-            .with_revert_turn_tool();
+            .with_revert_turn_tool()
+            .with_lsp_tools()
+            .with_screenshot_analyze_tool();
 
         if allow_shell {
             builder.with_shell_tools()

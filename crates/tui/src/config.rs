@@ -404,7 +404,7 @@ impl Default for SnapshotsConfig {
     }
 }
 
-/// User-level memory configuration (#489).
+/// User-level memory configuration (#489, #518).
 ///
 /// Default is opt-in: when this table is absent or `enabled = false`, the
 /// memory file is neither read nor written, and `# foo` quick-adds in the
@@ -416,6 +416,14 @@ pub struct MemoryConfig {
     /// `# foo` typed in the composer to append to that file. Default `false`.
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// When `true`, automatically extract memories from conversation at
+    /// session end via the /memory extract flow. Default `false`.
+    #[serde(default)]
+    pub auto_extract: Option<bool>,
+    /// Maximum number of memories to keep per file (project or global).
+    /// Oldest memories are pruned first. Default 50.
+    #[serde(default)]
+    pub max_memories: Option<usize>,
 }
 
 impl SnapshotsConfig {
@@ -1403,6 +1411,25 @@ impl Config {
             .as_ref()
             .and_then(|m| m.enabled)
             .unwrap_or(false)
+    }
+
+    /// Whether automatic memory extraction is enabled (#518).
+    /// Defaults to `false`.
+    #[must_use]
+    pub fn memory_auto_extract(&self) -> bool {
+        self.memory
+            .as_ref()
+            .and_then(|m| m.auto_extract)
+            .unwrap_or(false)
+    }
+
+    /// Maximum memories per file before pruning (#518). Defaults to 50.
+    #[must_use]
+    pub fn memory_max_memories(&self) -> usize {
+        self.memory
+            .as_ref()
+            .and_then(|m| m.max_memories)
+            .unwrap_or(50)
     }
 
     /// Return whether shell execution is allowed.

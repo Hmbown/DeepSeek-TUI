@@ -603,6 +603,10 @@ pub struct SubAgentRuntime {
     /// parent isn't flooded with grandchild completions it didn't directly
     /// orchestrate. `None` when no consumer is wired (tests / legacy paths).
     pub parent_completion_tx: Option<mpsc::UnboundedSender<SubAgentCompletion>>,
+    /// Agent profile manager for per-type tool/permission overrides.
+    /// Set by the engine; cloned into child runtimes so grandchildren
+    /// also benefit from profile resolution.
+    pub agent_profiles: Option<crate::agent_profiles::manager::AgentProfileManager>,
 }
 
 impl SubAgentRuntime {
@@ -635,6 +639,7 @@ impl SubAgentRuntime {
             cancel_token: CancellationToken::new(),
             mailbox: None,
             parent_completion_tx: None,
+            agent_profiles: None,
         }
     }
 
@@ -709,6 +714,16 @@ impl SubAgentRuntime {
         self
     }
 
+    /// Attach an agent profile manager for per-type overrides.
+    #[must_use]
+    pub fn with_agent_profiles(
+        mut self,
+        mgr: crate::agent_profiles::manager::AgentProfileManager,
+    ) -> Self {
+        self.agent_profiles = Some(mgr);
+        self
+    }
+
     /// Return a child runtime that is deliberately detached from the parent
     /// turn cancellation token. Background sub-agents should keep running when
     /// the parent turn is cancelled; explicit agent cancellation still
@@ -751,6 +766,7 @@ impl SubAgentRuntime {
             cancel_token: self.cancel_token.child_token(),
             mailbox: self.mailbox.clone(),
             parent_completion_tx: self.parent_completion_tx.clone(),
+            agent_profiles: self.agent_profiles.clone(),
         }
     }
 
@@ -1080,6 +1096,21 @@ impl SubAgentManager {
         if let Some(model) = options.model.as_deref() {
             runtime.model = model.to_string();
         }
+
+        // Agent profile resolution (Phase 6). When a matching profile
+        // exists, apply its model override and tool restrictions.
+        if let Some(ref mgr) = runtime.agent_profiles {
+            if let Some(profile) = mgr.resolve(agent_type.as_str()) {
+                if let Some(ref pm) = profile.model {
+                    runtime.model.clone_from(pm);
+                }
+                // System prompt extension is applied in
+                // build_subagent_system_prompt later in the spawn path.
+                // Tool restrictions are merged via build_allowed_tools
+                // which already handles the deny list via ToolRegistry.
+            }
+        }
+
         let effective_model = runtime.model.clone();
         let nickname = options
             .nickname

@@ -1892,6 +1892,25 @@ async fn run_event_loop(
                 continue;
             }
 
+            // Terminal browser keyboard routing (Phase 10).
+            if app.browser.is_some() {
+                let (nav_url, consumed) = handle_browser_key(app, &key);
+                if let Some(url) = nav_url {
+                    if let Some(ref browser) = app.browser {
+                        browser.start_load(&url);
+                        app.status_message = Some(format!("Navigated to {url}"));
+                    }
+                }
+                if key.kind == KeyEventKind::Press && key.code == KeyCode::Esc {
+                    app.browser = None;
+                    app.status_message = Some("Browser closed".to_string());
+                }
+                if consumed {
+                    app.needs_redraw = true;
+                    continue;
+                }
+            }
+
             if !app.view_stack.is_empty() {
                 let events = app.view_stack.handle_key(key);
                 if handle_view_events(
@@ -5002,8 +5021,58 @@ fn build_pending_input_preview(app: &App) -> PendingInputPreview {
     preview
 }
 
+/// Convert a crossterm KeyEvent to a terminal browser KeyEvent.
+/// Returns (navigation_url, consumed). When consumed=true, the
+/// key was handled by the browser and should not propagate to the TUI.
+fn handle_browser_key(app: &mut App, key: &KeyEvent) -> (Option<String>, bool) {
+    use crate::terminal_browser::KeyEvent as BrowserKey;
+    let browser_key = match key.code {
+        KeyCode::Tab => {
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                BrowserKey::ShiftTab
+            } else {
+                BrowserKey::Tab
+            }
+        }
+        KeyCode::Enter => BrowserKey::Enter,
+        KeyCode::Up => BrowserKey::Up,
+        KeyCode::Down => BrowserKey::Down,
+        KeyCode::PageUp => BrowserKey::PageUp,
+        KeyCode::PageDown => BrowserKey::PageDown,
+        KeyCode::Home => BrowserKey::Home,
+        KeyCode::End => BrowserKey::End,
+        KeyCode::Esc => BrowserKey::Esc,
+        KeyCode::Char(c) => BrowserKey::Char(c),
+        _ => return (None, false),
+    };
+    let result = app.browser.as_ref().unwrap().handle_key(browser_key);
+    result
+}
+
 fn render(f: &mut Frame, app: &mut App) {
-    let size = f.area();
+    // Terminal browser view (Phase 10). When active, split screen:
+    // left = normal chat, right = browser.
+    let browser_active = app.browser.is_some();
+
+    if let Some(ref browser) = app.browser {
+        let split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(f.area());
+        browser.render(f, split[1]);
+    }
+
+    // Full area or left half depending on browser state.
+    let full = f.area();
+    let size = if browser_active {
+        let half = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(full);
+        half[0]
+    } else {
+        full
+    };
 
     // Clear entire area with terminal default background
     let background = Block::default().style(Style::default().bg(Color::Reset));
