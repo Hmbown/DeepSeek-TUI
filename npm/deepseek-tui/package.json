@@ -28,7 +28,7 @@
   },
   "scripts": {
     "release:check": "node scripts/verify-release-assets.js",
-    "postinstall": "node scripts/install.js",
+    "postinstall": "node scripts/install.js --optional",
     "prepublishOnly": "node scripts/verify-release-assets.js",
     "prepack": "node scripts/install.js",
     "test": "node --test test/*.test.js"
