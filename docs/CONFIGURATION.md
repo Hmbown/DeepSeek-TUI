@@ -287,8 +287,12 @@ Common settings keys:
 - `show_tool_details` (on/off)
 - `locale` (`auto`, `en`, `ja`, `zh-Hans`, `pt-BR`; default `auto`): UI chrome
   locale. `auto` checks `LC_ALL`, `LC_MESSAGES`, then `LANG`; unsupported or
-  missing locales fall back to English. This does not force model output
-  language.
+  missing locales fall back to English. The runtime also exposes the resolved
+  locale in the system prompt so V4 models use it as the default natural
+  language for reasoning and replies.
+- `background_color` (`#RRGGBB`, `RRGGBB`, or `default`): optional main TUI
+  background color applied to the root, header, transcript, and footer
+  surfaces while preserving panel contrast.
 - `cost_currency` (`usd`, `cny`; default `usd`): currency used by the footer,
   context panel, `/cost`, `/tokens`, and long-turn notification summaries. The
   aliases `rmb` and `yuan` normalize to `cny`.

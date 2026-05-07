@@ -20,7 +20,7 @@ use ratatui::{
     Frame, Terminal,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::Widget,
-    style::{Color, Style},
+    style::Style,
     text::Span,
     widgets::Block,
 };
@@ -5107,8 +5107,8 @@ fn build_pending_input_preview(app: &App) -> PendingInputPreview {
 fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
-    // Clear entire area with terminal default background
-    let background = Block::default().style(Style::default().bg(Color::Reset));
+    // Clear entire area with the configured app background.
+    let background = Block::default().style(Style::default().bg(app.ui_theme.surface_bg));
     f.render_widget(background, size);
 
     // Show onboarding screen if needed
@@ -5213,7 +5213,9 @@ fn render(f: &mut Frame, app: &mut App) {
         // background before any sub-widgets render, so cells that end up
         // uncovered by layout splits (e.g. after file-tree toggle or
         // resize) don't retain stale content from a previous frame.
-        Block::default().render(chunks[1], f.buffer_mut());
+        Block::default()
+            .style(Style::default().bg(app.ui_theme.surface_bg))
+            .render(chunks[1], f.buffer_mut());
 
         let mut sidebar_area = None;
 

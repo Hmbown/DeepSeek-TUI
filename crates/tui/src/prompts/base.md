@@ -163,7 +163,7 @@ Use `edit_file` for one clear replacement in one file. Use `apply_patch` when th
 Use `exec_shell` for shell-native diagnostics, pipelines, and bounded commands. Use structured tools for structured operations when they map directly (`grep_files`, `git_diff`, `read_file`). For long commands, servers, full test suites, or release computations, start background work with `task_shell_start` or `exec_shell` using `background: true`, then poll with `task_shell_wait` or `exec_shell_wait`.
 
 ### `agent_spawn`
-Use `agent_spawn` for independent investigations or implementation slices that can run while you continue coordinating. Use `agent_wait` when you need one or more completions. Use `agent_result` when the sentinel summary is too thin or you need the full structured output. Keep tiny single-read/search tasks local so the transcript stays compact.
+Use `agent_spawn` for independent investigations or implementation slices that can run while you continue coordinating. Use `fork_context: true` when the child must inherit the current transcript, plan/todo state, and byte-identical parent system/message prefix for DeepSeek prefix-cache reuse. Use `agent_wait` when you need one or more completions. Use `agent_result` when the sentinel summary is too thin or you need the full structured output. Keep tiny single-read/search tasks local so the transcript stays compact.
 
 ### `rlm`
 Use `rlm` for long-context semantic work, bulk classification/extraction, and decomposition where a Python REPL plus child LLM helpers is useful. Use deterministic Python inside RLM for exact counts and structured aggregation; use `grep_files` or `exec_shell` directly when that is the clearest deterministic check.
