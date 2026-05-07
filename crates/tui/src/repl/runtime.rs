@@ -377,8 +377,8 @@ impl PythonRuntime {
                     ));
                 }
             }
-        } else if let Err(e) = read_loop.await {
-            return Err(e);
+        } else {
+            read_loop.await?;
         }
 
         let stderr = self.drain_stderr().await;
