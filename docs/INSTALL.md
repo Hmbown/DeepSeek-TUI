@@ -129,7 +129,62 @@ is fastest from your network.
 
 ---
 
-## 4. Manual download from GitHub Releases
+## 4. Install via Nix
+
+**Try it**
+
+If you already have Nix setup with flake support, you can try out `deepseek-tui` with the nix run command:
+
+```sh
+nix run github:Hmbown/DeepSeek-TUI
+```
+
+Nix will build `deepseek-tui` and run it.
+
+If you want to pass arguments this way, use e.g. `nix run github:Hmbown/DeepSeek-TUI -- --help`.
+
+### Flake
+
+Add inputs to `flake.nix`
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+    deepseek-tui.url = "github:Hmbown/DeepSeek-TUI";
+    deepseek-tui.inputs.nixpkgs.follows = "nixpkgs";
+  };
+}
+```
+
+Install into a NixOS Module
+
+```nix
+{
+  outputs = { self, nixpkgs, deepseek-tui }:
+  let
+    # replace system "x86_64-linux" with your system
+    system = "x86_64-linux";
+  in
+  {
+    # change `yourhostname` to your actual hostname
+    nixosConfigurations.yourhostname = nixpkgs.lib.nixosSystem {
+      inherit system;
+      modules = [
+        # ...
+        {
+          environment.systemPackages = [ deepseek-tui.packages.${system}.default ];
+        }
+      ];
+    };
+  };
+}
+```
+
+---
+
+## 5. Manual download from GitHub Releases
 
 Grab the matching pair of binaries for your platform from the
 [Releases page](https://github.com/Hmbown/DeepSeek-TUI/releases) and drop them
@@ -172,7 +227,7 @@ when you need the newest version immediately.
 
 ---
 
-## 5. Build from source
+## 6. Build from source
 
 This is the catch-all for any platform we don't ship — including musl, riscv64,
 LoongArch, FreeBSD, and pre-2024 ARM64 distros.
@@ -309,7 +364,7 @@ Both binaries appear in `target\release\deepseek.exe` and
 
 ---
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 ### `Unsupported architecture: arm64 on platform linux`
 
@@ -418,7 +473,7 @@ target/debug/build/libsqlite3-sys-*/build-script-build
 
 ---
 
-## 7. Verifying your install
+## 8. Verifying your install
 
 ```bash
 deepseek --version
