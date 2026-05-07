@@ -12,6 +12,7 @@ use crate::tui::app::App;
 use crate::tui::approval::{ElevationOption, ReviewDecision};
 
 pub mod status_picker;
+pub mod theme_picker;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalKind {
@@ -30,6 +31,7 @@ pub enum ModalKind {
     ProviderPicker,
     FilePicker,
     StatusPicker,
+    ThemePicker,
     ContextMenu,
     ShellControl,
 }
@@ -154,6 +156,10 @@ pub enum ViewEvent {
     /// so the footer animates without a write per keystroke.
     StatusItemsUpdated {
         items: Vec<crate::config::StatusItem>,
+        final_save: bool,
+    },
+    ThemeUpdated {
+        theme: String,
         final_save: bool,
     },
     /// Emitted by the live-transcript overlay while in backtrack preview

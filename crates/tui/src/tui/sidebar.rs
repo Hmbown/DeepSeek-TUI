@@ -15,7 +15,6 @@ use ratatui::{
     widgets::{Block, Paragraph, Wrap},
 };
 
-use crate::deepseek_theme::active_theme;
 use crate::palette;
 use crate::tools::plan::StepStatus;
 use crate::tools::subagent::SubAgentStatus;
@@ -144,7 +143,7 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let theme = active_theme();
+    let theme = app.chrome_theme;
     let content_width = area.width.saturating_sub(4) as usize;
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(usize::from(area.height).max(4));
 
@@ -274,7 +273,7 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    render_sidebar_section(f, area, "Plan", lines);
+    render_sidebar_section(f, area, "Plan", lines, app.chrome_theme);
 }
 
 /// One-line hint shown when the Plan section has nothing to display
@@ -354,7 +353,7 @@ fn render_sidebar_todos(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    render_sidebar_section(f, area, "Todos", lines);
+    render_sidebar_section(f, area, "Todos", lines, app.chrome_theme);
 }
 
 fn render_sidebar_tasks(f: &mut Frame, area: Rect, app: &App) {
@@ -448,7 +447,7 @@ fn render_sidebar_tasks(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    render_sidebar_section(f, area, "Tasks", lines);
+    render_sidebar_section(f, area, "Tasks", lines, app.chrome_theme);
 }
 
 fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &App) {
@@ -501,7 +500,7 @@ fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &App) {
     };
     let lines = subagent_navigator_lines(&summary, content_width);
 
-    render_sidebar_section(f, area, "Agents", lines);
+    render_sidebar_section(f, area, "Agents", lines, app.chrome_theme);
 }
 
 /// Minimal projection of the data the sub-agent sidebar needs. Lifted out
@@ -737,17 +736,22 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
         )));
     }
 
-    render_sidebar_section(f, area, "Session", lines);
+    render_sidebar_section(f, area, "Session", lines, app.chrome_theme);
 }
 
-fn render_sidebar_section(f: &mut Frame, area: Rect, title: &str, lines: Vec<Line<'static>>) {
+fn render_sidebar_section(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    lines: Vec<Line<'static>>,
+    theme: crate::deepseek_theme::Theme,
+) {
     if area.width < 4 || area.height < 3 {
         // Clear stale cells before bailing out (#400).
         Block::default().render(area, f.buffer_mut());
         return;
     }
 
-    let theme = active_theme();
     // Truncate the panel title so it always fits within the section width
     // even after a resize. The title occupies up to 4 chars of border chrome
     // (two spaces + one space on each side), so the max title length is

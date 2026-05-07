@@ -107,6 +107,7 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
                 Some(app.model.clone())
             }
         }
+        "theme" => Some(app.theme_setting.clone()),
         "approval_mode" | "approval" => Some(app.approval_mode.label().to_string()),
         "locale" | "language" => Some(locale_display(app.ui_locale).to_string()),
         "auto_compact" | "compact" => {
@@ -157,6 +158,11 @@ pub fn show_settings(app: &mut App) -> CommandResult {
 /// Open the `/statusline` multi-select picker for configuring footer items.
 pub fn status_line(_app: &mut App) -> CommandResult {
     CommandResult::action(AppAction::OpenStatusPicker)
+}
+
+/// Open the `/theme` picker for configuring UI theme with live preview.
+pub fn theme_picker(_app: &mut App) -> CommandResult {
+    CommandResult::action(AppAction::OpenThemePicker)
 }
 
 /// Persist `tui.status_items` to `~/.deepseek/config.toml` without disturbing
@@ -413,6 +419,9 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 action = Some(AppAction::UpdateCompaction(app.compaction_config()));
             }
         }
+        "theme" => {
+            app.apply_theme_setting(&settings.theme);
+        }
         "sidebar_width" | "sidebar" => {
             app.sidebar_width_percent = settings.sidebar_width_percent;
             app.mark_history_updated();
@@ -426,6 +435,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
     let display_value = match key.as_str() {
         "default_mode" | "mode" => settings.default_mode.clone(),
         "cost_currency" | "currency" => settings.cost_currency.clone(),
+        "theme" => settings.theme.clone(),
         _ => value.to_string(),
     };
 

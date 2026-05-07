@@ -8,7 +8,6 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::deepseek_theme::active_theme;
 use crate::models::{ContentBlock, Message};
 use crate::palette;
 use crate::tools::review::ReviewOutput;
@@ -2855,19 +2854,19 @@ fn render_card_detail_line_single(
 }
 
 fn tool_title_style() -> Style {
-    active_theme().tool_title_style()
+    crate::deepseek_theme::active_theme().tool_title_style()
 }
 
 fn tool_status_style(status: ToolStatus) -> Style {
-    active_theme().tool_status_style(status)
+    crate::deepseek_theme::active_theme().tool_status_style(status)
 }
 
 fn tool_detail_label_style() -> Style {
-    active_theme().tool_label_style()
+    crate::deepseek_theme::active_theme().tool_label_style()
 }
 
 fn tool_state_color(status: ToolStatus) -> Color {
-    active_theme().tool_status_color(status)
+    crate::deepseek_theme::active_theme().tool_status_color(status)
 }
 
 fn tool_status_label(status: ToolStatus) -> &'static str {
@@ -2879,7 +2878,7 @@ fn tool_status_label(status: ToolStatus) -> &'static str {
 }
 
 fn tool_value_style() -> Style {
-    active_theme().tool_value_style()
+    crate::deepseek_theme::active_theme().tool_value_style()
 }
 
 fn thinking_visual_state(streaming: bool, duration_secs: Option<f32>) -> ThinkingVisualState {
@@ -3845,15 +3844,11 @@ mod tests {
     }
 
     // === Theme parity tests ===
-    //
-    // These lock the visible color/style choices for one plan cell and one
-    // tool cell against `deepseek_theme::Theme::dark()`. The render path is
-    // unchanged in shape; the assertions just guarantee a future skin swap
-    // (or accidental drift) is caught here instead of at runtime.
 
     #[test]
     fn plan_update_cell_renders_with_dark_theme_tokens() {
         let theme = Theme::dark();
+        crate::deepseek_theme::set_active_theme(theme);
         let cell = PlanUpdateCell {
             explanation: None,
             steps: vec![
@@ -3946,6 +3941,7 @@ mod tests {
     #[test]
     fn exec_cell_failed_status_renders_with_dark_theme_tokens() {
         let theme = Theme::dark();
+        crate::deepseek_theme::set_active_theme(theme);
         let cell = ExecCell {
             command: "false".to_string(),
             status: ToolStatus::Failed,

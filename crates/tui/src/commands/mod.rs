@@ -419,6 +419,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/statusline",
         description_id: MessageId::CmdStatuslineDescription,
     },
+    CommandInfo {
+        name: "theme",
+        aliases: &[],
+        usage: "/theme",
+        description_id: MessageId::CmdSettingsDescription,
+    },
     // Skills commands
     CommandInfo {
         name: "skills",
@@ -524,6 +530,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "config" => config::config_command(app, arg),
         "settings" => config::show_settings(app),
         "statusline" | "status" => config::status_line(app),
+        "theme" => config::theme_picker(app),
         "yolo" => config::yolo(app),
         "agent" => config::agent_mode(app),
         "plan" => config::plan_mode(app),

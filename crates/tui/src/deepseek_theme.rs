@@ -1,15 +1,9 @@
-//! Whale/DeepSeek terminal theme tokens.
+//! Theme tokens for sidebar, plan, and tool chrome.
 //!
-//! A small, deliberately flat module that names the color, border, and
-//! padding choices the TUI is already making. All values match the dark
-//! palette previously hard-coded against [`crate::palette`]; a single
-//! source-of-truth change here can swap the skin later. Visible output
-//! is not changed by introducing this module.
-//!
-//! The only consumers today are the plan and tool cell renderers in
-//! [`crate::tui::history`] and the sidebar section chrome in
-//! [`crate::tui::ui`]. All other call sites continue to use [`crate::palette`]
-//! directly until they are migrated in a later slice.
+//! This module keeps chrome-specific colors separate from the broader palette
+//! while sharing the same normalized theme names.
+
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{BorderType, Borders, Padding};
@@ -20,7 +14,9 @@ use crate::tui::history::ToolStatus;
 /// Visual variant exposed by the theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
+    Whale,
     Dark,
+    Light,
 }
 
 /// Centralized visual tokens for sidebar, plan, and tool rendering.
@@ -54,21 +50,16 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// The current dark theme. Visible output today uses these values.
+    /// The current whale theme. Visible output today uses these values.
     #[must_use]
-    pub const fn dark() -> Self {
+    pub const fn whale() -> Self {
         Self {
-            variant: Variant::Dark,
+            variant: Variant::Whale,
             section_borders: Borders::ALL,
             section_border_type: BorderType::Plain,
             section_border_color: palette::BORDER_COLOR,
             section_bg: Color::Reset,
             section_title_color: palette::DEEPSEEK_BLUE,
-            // Horizontal padding only. `Padding::uniform(1)` ate two rows of
-            // each sidebar panel — for compact terminals where Plan/Todos/Tasks
-            // get ~3 rows total via the 25% layout split, that left zero rows
-            // for content (#63 follow-up: panels rendered as empty boxes even
-            // when "No todos" / "No active plan" should have shown).
             section_padding: Padding::horizontal(1),
             tool_title_color: palette::TEXT_SOFT,
             tool_value_color: palette::TEXT_MUTED,
@@ -82,6 +73,66 @@ impl Theme {
             plan_pending_color: palette::TEXT_MUTED,
             plan_in_progress_color: palette::STATUS_WARNING,
             plan_completed_color: palette::STATUS_SUCCESS,
+        }
+    }
+
+    #[must_use]
+    pub const fn dark() -> Self {
+        Self {
+            variant: Variant::Dark,
+            section_borders: Borders::ALL,
+            section_border_type: BorderType::Plain,
+            section_border_color: Color::Rgb(68, 85, 126),
+            section_bg: Color::Rgb(15, 17, 21),
+            section_title_color: Color::Rgb(148, 163, 184),
+            section_padding: Padding::horizontal(1),
+            tool_title_color: Color::Rgb(226, 232, 240),
+            tool_value_color: Color::Rgb(148, 163, 184),
+            tool_label_color: Color::Rgb(100, 116, 139),
+            tool_running_accent: Color::Rgb(96, 165, 250),
+            tool_success_accent: Color::Rgb(148, 163, 184),
+            tool_failed_accent: Color::Rgb(248, 113, 113),
+            plan_progress_color: Color::Rgb(96, 165, 250),
+            plan_summary_color: Color::Rgb(203, 213, 225),
+            plan_explanation_color: Color::Rgb(148, 163, 184),
+            plan_pending_color: Color::Rgb(148, 163, 184),
+            plan_in_progress_color: Color::Rgb(251, 191, 36),
+            plan_completed_color: Color::Rgb(34, 197, 94),
+        }
+    }
+
+    #[must_use]
+    pub const fn light() -> Self {
+        Self {
+            variant: Variant::Light,
+            section_borders: Borders::ALL,
+            section_border_type: BorderType::Plain,
+            section_border_color: Color::Rgb(148, 163, 184),
+            section_bg: Color::Rgb(250, 250, 250),
+            section_title_color: Color::Rgb(30, 41, 59),
+            section_padding: Padding::horizontal(1),
+            tool_title_color: Color::Rgb(15, 23, 42),
+            tool_value_color: Color::Rgb(51, 65, 85),
+            tool_label_color: Color::Rgb(100, 116, 139),
+            tool_running_accent: Color::Rgb(37, 99, 235),
+            tool_success_accent: Color::Rgb(71, 85, 105),
+            tool_failed_accent: Color::Rgb(220, 38, 38),
+            plan_progress_color: Color::Rgb(37, 99, 235),
+            plan_summary_color: Color::Rgb(51, 65, 85),
+            plan_explanation_color: Color::Rgb(100, 116, 139),
+            plan_pending_color: Color::Rgb(100, 116, 139),
+            plan_in_progress_color: Color::Rgb(180, 83, 9),
+            plan_completed_color: Color::Rgb(22, 163, 74),
+        }
+    }
+
+    #[must_use]
+    pub fn for_name(name: &str) -> Self {
+        match crate::palette::normalized_theme_or_default(name) {
+            "dark" | "system" => Self::dark(),
+            "light" => Self::light(),
+            "default" | "whale" => Self::whale(),
+            _ => Self::whale(),
         }
     }
 
@@ -122,13 +173,30 @@ impl Theme {
     }
 }
 
+static ACTIVE_THEME: AtomicU8 = AtomicU8::new(0);
+
+const THEME_WHALE: u8 = 0;
+const THEME_DARK: u8 = 1;
+const THEME_LIGHT: u8 = 2;
+
+/// Set the globally active theme. Called by `App` when the theme changes.
+pub fn set_active_theme(theme: Theme) {
+    let val = match theme.variant {
+        Variant::Whale => THEME_WHALE,
+        Variant::Dark => THEME_DARK,
+        Variant::Light => THEME_LIGHT,
+    };
+    ACTIVE_THEME.store(val, Ordering::Relaxed);
+}
+
 /// Returns the active theme used by the TUI today.
-///
-/// Today this is always `Theme::dark()`. A future PR can wire this to an
-/// `App` field or a config setting in five lines.
 #[must_use]
-pub const fn active_theme() -> Theme {
-    Theme::dark()
+pub fn active_theme() -> Theme {
+    match ACTIVE_THEME.load(Ordering::Relaxed) {
+        THEME_DARK => Theme::dark(),
+        THEME_LIGHT => Theme::light(),
+        _ => Theme::whale(),
+    }
 }
 
 #[cfg(test)]
@@ -138,14 +206,14 @@ mod tests {
     use crate::tui::history::ToolStatus;
 
     #[test]
-    fn active_theme_returns_dark() {
-        assert_eq!(active_theme(), Theme::dark());
+    fn active_theme_returns_whale() {
+        assert_eq!(active_theme(), Theme::whale());
     }
 
     #[test]
-    fn dark_theme_matches_existing_palette_choices() {
-        let theme = Theme::dark();
-        assert_eq!(theme.variant, Variant::Dark);
+    fn whale_theme_matches_existing_palette_choices() {
+        let theme = Theme::whale();
+        assert_eq!(theme.variant, Variant::Whale);
         assert_eq!(theme.section_border_color, palette::BORDER_COLOR);
         assert_eq!(theme.section_bg, ratatui::style::Color::Reset);
         assert_eq!(theme.section_title_color, palette::DEEPSEEK_BLUE);
@@ -158,8 +226,14 @@ mod tests {
     }
 
     #[test]
+    fn dark_and_light_theme_have_distinct_variants() {
+        assert_eq!(Theme::dark().variant, Variant::Dark);
+        assert_eq!(Theme::light().variant, Variant::Light);
+    }
+
+    #[test]
     fn tool_status_color_maps_each_status() {
-        let theme = Theme::dark();
+        let theme = Theme::whale();
         assert_eq!(
             theme.tool_status_color(ToolStatus::Running),
             theme.tool_running_accent

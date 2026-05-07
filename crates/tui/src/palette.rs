@@ -123,7 +123,11 @@ pub struct UiTheme {
     pub text_muted: Color,
 }
 
-pub const UI_THEME: UiTheme = UiTheme {
+pub const THEME_CHOICES: &[&str] = &["default", "whale", "dark", "light", "system"];
+
+pub const THEME_CHOICES_DISPLAY: &str = "default, whale, dark, light, system";
+
+pub const WHALE_THEME: UiTheme = UiTheme {
     name: "whale",
     composer_bg: DEEPSEEK_SLATE,
     selection_bg: SELECTION_BG,
@@ -138,6 +142,67 @@ pub const UI_THEME: UiTheme = UiTheme {
     text_hint: TEXT_HINT,
     text_muted: TEXT_MUTED,
 };
+
+pub const DARK_THEME: UiTheme = UiTheme {
+    name: "dark",
+    composer_bg: Color::Rgb(24, 24, 27),
+    selection_bg: Color::Rgb(63, 63, 70),
+    header_bg: Color::Rgb(9, 9, 11),
+    mode_agent: Color::Rgb(129, 140, 248),
+    mode_yolo: Color::Rgb(248, 113, 113),
+    mode_plan: Color::Rgb(251, 191, 36),
+    status_ready: Color::Rgb(161, 161, 170),
+    status_working: Color::Rgb(196, 181, 253),
+    status_warning: STATUS_WARNING,
+    text_dim: Color::Rgb(113, 113, 122),
+    text_hint: Color::Rgb(161, 161, 170),
+    text_muted: Color::Rgb(212, 212, 216),
+};
+
+pub const LIGHT_THEME: UiTheme = UiTheme {
+    name: "light",
+    composer_bg: Color::Rgb(244, 244, 245),
+    selection_bg: Color::Rgb(221, 214, 254),
+    header_bg: Color::Rgb(250, 250, 250),
+    mode_agent: Color::Rgb(79, 70, 229),
+    mode_yolo: Color::Rgb(220, 38, 38),
+    mode_plan: Color::Rgb(180, 83, 9),
+    status_ready: Color::Rgb(82, 82, 91),
+    status_working: Color::Rgb(109, 40, 217),
+    status_warning: Color::Rgb(180, 83, 9),
+    text_dim: Color::Rgb(113, 113, 122),
+    text_hint: Color::Rgb(82, 82, 91),
+    text_muted: Color::Rgb(39, 39, 42),
+};
+
+pub const UI_THEME: UiTheme = WHALE_THEME;
+
+#[must_use]
+pub fn normalize_theme_name(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "default" => Some("default"),
+        "whale" | "deepseek" => Some("whale"),
+        "dark" => Some("dark"),
+        "light" => Some("light"),
+        "system" | "auto" => Some("system"),
+        _ => None,
+    }
+}
+
+#[must_use]
+pub fn ui_theme_for_name(name: &str) -> UiTheme {
+    match normalize_theme_name(name).unwrap_or("default") {
+        "dark" | "system" => DARK_THEME,
+        "light" => LIGHT_THEME,
+        "default" | "whale" => WHALE_THEME,
+        _ => WHALE_THEME,
+    }
+}
+
+#[must_use]
+pub fn normalized_theme_or_default(name: &str) -> &'static str {
+    normalize_theme_name(name).unwrap_or("default")
+}
 
 // === Color depth + brightness helpers (v0.6.6 UI redesign) ===
 

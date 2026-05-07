@@ -731,7 +731,9 @@ pub struct App {
     pub pending_subagent_dispatch: Option<String>,
     /// Animation anchor for status-strip active sub-agent spinner.
     pub agent_activity_started_at: Option<Instant>,
+    pub theme_setting: String,
     pub ui_theme: UiTheme,
+    pub chrome_theme: crate::deepseek_theme::Theme,
     // Onboarding
     pub onboarding: OnboardingState,
     pub onboarding_needs_api_key: bool,
@@ -1118,7 +1120,10 @@ impl App {
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
         let max_input_history = settings.max_input_history;
         let use_paste_burst_detection = settings.paste_burst_detection;
-        let ui_theme = palette::UI_THEME;
+        let theme_setting = palette::normalized_theme_or_default(&settings.theme).to_string();
+        let ui_theme = palette::ui_theme_for_name(&theme_setting);
+        let chrome_theme = crate::deepseek_theme::Theme::for_name(&theme_setting);
+        crate::deepseek_theme::set_active_theme(chrome_theme);
         let model = settings.default_model.clone().unwrap_or(model);
         let auto_model = model.trim().eq_ignore_ascii_case("auto");
         let threshold_model = if auto_model {
@@ -1279,7 +1284,9 @@ impl App {
             last_fanout_card_index: None,
             pending_subagent_dispatch: None,
             agent_activity_started_at: None,
+            theme_setting,
             ui_theme,
+            chrome_theme,
             onboarding: if needs_onboarding {
                 if was_onboarded && needs_api_key {
                     OnboardingState::ApiKey
@@ -1786,6 +1793,26 @@ impl App {
         // cell's content must call `bump_history_cell(idx)` instead.
         self.resync_history_revisions();
         self.needs_redraw = true;
+    }
+
+    pub fn apply_theme_setting(&mut self, theme: &str) -> bool {
+        let normalized = palette::normalized_theme_or_default(theme);
+        let ui_theme = palette::ui_theme_for_name(normalized);
+        let chrome_theme = crate::deepseek_theme::Theme::for_name(normalized);
+        let changed = self.theme_setting != normalized
+            || self.ui_theme != ui_theme
+            || self.chrome_theme != chrome_theme;
+
+        self.theme_setting = normalized.to_string();
+        self.ui_theme = ui_theme;
+        self.chrome_theme = chrome_theme;
+        crate::deepseek_theme::set_active_theme(self.chrome_theme);
+
+        if changed {
+            self.viewport.transcript_cache = TranscriptViewCache::new();
+            self.needs_redraw = true;
+        }
+        changed
     }
 
     /// Issue a fresh, monotonically increasing revision counter for a new
@@ -3694,6 +3721,8 @@ pub enum AppAction {
     OpenProviderPicker,
     /// Open the `/statusline` multi-select picker for footer items.
     OpenStatusPicker,
+    /// Open the `/theme` picker for live preview + save.
+    OpenThemePicker,
     /// Send a message to the AI (normal chat mode).
     SendMessage(String),
     /// Run a Recursive Language Model (RLM) turn — Algorithm 1 from

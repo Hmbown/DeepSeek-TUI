@@ -2,8 +2,8 @@
 //!
 //! Settings are stored at ~/.config/deepseek/settings.toml
 //!
-//! TUI-specific preferences (theme, keybinds, font_size) that survive project
-//! switches are stored separately at ~/.deepseek/tui.toml. See [`TuiPrefs`].
+//! Legacy TUI-specific preferences (keybinds, font_size) are represented by
+//! [`TuiPrefs`], but live settings currently read from this settings file.
 
 use std::path::PathBuf;
 
@@ -27,7 +27,7 @@ use crate::localization::normalize_configured_locale;
 /// # Example `~/.deepseek/tui.toml`
 ///
 /// ```toml
-/// theme    = "dark"        # "dark" | "light" | "system"
+/// theme    = "default"     # "default" | "whale" | "dark" | "light" | "system"
 /// font_size = 14
 ///
 /// [keybinds]
@@ -42,7 +42,7 @@ use crate::localization::normalize_configured_locale;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TuiPrefs {
-    /// UI colour theme: `"dark"` | `"light"` | `"system"`. Default `"dark"`.
+    /// UI colour theme: `"default"` | `"whale"` | `"dark"` | `"light"` | `"system"`.
     pub theme: String,
     /// Terminal font size hint forwarded to supporting front-ends (e.g. the
     /// Tauri shell). `0` means "use terminal default". Default `0`.
@@ -55,7 +55,7 @@ pub struct TuiPrefs {
 impl Default for TuiPrefs {
     fn default() -> Self {
         Self {
-            theme: "dark".to_string(),
+            theme: "default".to_string(),
             font_size: 0,
             keybinds: KeybindPrefs::default(),
         }
@@ -147,15 +147,14 @@ impl TuiPrefs {
     /// Returns `Err` if an unrecognised `theme` value is found so callers can
     /// surface a helpful message rather than silently ignoring a typo.
     pub fn validate(&mut self) -> Result<()> {
-        let theme = self.theme.trim().to_ascii_lowercase();
-        match theme.as_str() {
-            "dark" | "light" | "system" => {
-                self.theme = theme;
-            }
-            other => {
-                anyhow::bail!("Invalid tui.toml theme '{other}': expected dark, light, or system.");
-            }
-        }
+        let Some(theme) = crate::palette::normalize_theme_name(&self.theme) else {
+            anyhow::bail!(
+                "Invalid tui.toml theme '{}': expected {}.",
+                self.theme.trim(),
+                crate::palette::THEME_CHOICES_DISPLAY
+            );
+        };
+        self.theme = theme.to_string();
         Ok(())
     }
 }
@@ -210,6 +209,8 @@ pub struct Settings {
     pub max_input_history: usize,
     /// Default model to use
     pub default_model: Option<String>,
+    /// UI colour theme: default, whale, dark, light, system.
+    pub theme: String,
 }
 
 impl Default for Settings {
@@ -244,6 +245,7 @@ impl Default for Settings {
             cost_currency: "usd".to_string(),
             max_input_history: 100,
             default_model: None,
+            theme: "default".to_string(),
         }
     }
 }
@@ -288,7 +290,9 @@ impl Settings {
                 .unwrap_or("en")
                 .to_string();
             s.default_model = s.default_model.as_deref().and_then(normalize_default_model);
-            s
+            s.theme = crate::palette::normalize_theme_name(&s.theme)
+                .unwrap_or("default")
+                .to_string();
         };
         settings.apply_env_overrides();
         Ok(settings)
@@ -466,6 +470,15 @@ impl Settings {
                 };
                 self.default_model = Some(model);
             }
+            "theme" => {
+                let Some(theme) = crate::palette::normalize_theme_name(value) else {
+                    anyhow::bail!(
+                        "Failed to update setting: invalid theme '{value}'. Expected: {}.",
+                        crate::palette::THEME_CHOICES_DISPLAY
+                    );
+                };
+                self.theme = theme.to_string();
+            }
             _ => {
                 anyhow::bail!("Failed to update setting: unknown setting '{key}'.");
             }
@@ -507,6 +520,7 @@ impl Settings {
             "  default_model:      {}",
             self.default_model.as_deref().unwrap_or("(default)")
         ));
+        lines.push(format!("  theme:              {}", self.theme));
         lines.push(String::new());
         lines.push(format!(
             "{} {}",
@@ -568,6 +582,7 @@ impl Settings {
                 "default_model",
                 "Default model: auto or any DeepSeek model ID (e.g. deepseek-v4-pro)",
             ),
+            ("theme", "UI theme: default, whale, dark, light, system"),
         ]
     }
 }
@@ -843,7 +858,7 @@ mod tests {
 
     #[test]
     fn tui_prefs_validate_accepts_known_themes() {
-        for theme in ["dark", "light", "system"] {
+        for theme in ["default", "whale", "dark", "light", "system"] {
             let mut prefs = TuiPrefs {
                 theme: theme.to_string(),
                 ..TuiPrefs::default()
@@ -874,7 +889,10 @@ mod tests {
         let err = prefs
             .validate()
             .expect_err("solarized is not a valid theme");
-        assert!(err.to_string().contains("Invalid tui.toml theme"));
+        assert!(
+            err.to_string()
+                .contains(crate::palette::THEME_CHOICES_DISPLAY)
+        );
     }
 
     #[test]

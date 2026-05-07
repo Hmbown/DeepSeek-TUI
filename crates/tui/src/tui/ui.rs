@@ -4198,6 +4198,14 @@ async fn apply_command_result(
                         ));
                 }
             }
+            AppAction::OpenThemePicker => {
+                if app.view_stack.top_kind() != Some(ModalKind::ThemePicker) {
+                    app.view_stack
+                        .push(crate::tui::views::theme_picker::ThemePickerView::new(
+                            &app.theme_setting,
+                        ));
+                }
+            }
             AppAction::OpenContextInspector => {
                 open_context_inspector(app);
             }
@@ -4942,7 +4950,7 @@ fn render(f: &mut Frame, app: &mut App) {
 
                 // Render the file-tree pane.
                 if let Some(ref mut state) = app.file_tree {
-                    super::file_tree::render_file_tree(f, tree_area, state);
+                    super::file_tree::render_file_tree(f, tree_area, state, app.chrome_theme);
                 }
 
                 remaining
@@ -5286,6 +5294,37 @@ async fn handle_view_events(
                         Err(err) => {
                             app.add_message(HistoryCell::System {
                                 content: format!("Failed to save status line: {err}"),
+                            });
+                        }
+                    }
+                }
+            }
+            ViewEvent::ThemeUpdated { theme, final_save } => {
+                let resolved_name = crate::palette::normalized_theme_or_default(&theme);
+                app.apply_theme_setting(resolved_name);
+                if final_save {
+                    match crate::settings::Settings::load() {
+                        Ok(mut settings) => {
+                            let _ = settings.set("theme", resolved_name);
+                            match settings.save() {
+                                Ok(()) => {
+                                    app.status_message =
+                                        Some(format!("Theme saved: {resolved_name}"));
+                                }
+                                Err(err) => {
+                                    app.add_message(HistoryCell::System {
+                                        content: format!(
+                                            "Failed to save theme: {err} (session only)"
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            app.add_message(HistoryCell::System {
+                                content: format!(
+                                    "Failed to load settings for theme save: {err} (session only)"
+                                ),
                             });
                         }
                     }
