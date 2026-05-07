@@ -468,7 +468,7 @@ fn parse_publish_diagnostics(value: &Value) -> Option<(PathBuf, Vec<Diagnostic>)
 /// support Windows drive letters perfectly, but the LSP servers in our
 /// registry accept percent-encoded paths well enough for the post-edit
 /// diagnostics use case.
-fn uri_from_path(path: &Path) -> String {
+pub fn uri_from_path(path: &Path) -> String {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let s = canonical.to_string_lossy();
     if s.starts_with('/') {

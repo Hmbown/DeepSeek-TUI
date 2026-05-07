@@ -285,7 +285,7 @@ impl LspManager {
         column: u32,
     ) -> Option<Vec<LspLocation>> {
         let transport = self.transport_for_file(file).await?;
-        let uri = uri_from_path_internal(file);
+        let uri = client::uri_from_path(file);
         let params = json!({
             "textDocument": { "uri": uri },
             "position": { "line": line.saturating_sub(1), "character": column.saturating_sub(1) }
@@ -306,7 +306,7 @@ impl LspManager {
         column: u32,
     ) -> Option<Vec<LspLocation>> {
         let transport = self.transport_for_file(file).await?;
-        let uri = uri_from_path_internal(file);
+        let uri = client::uri_from_path(file);
         let params = json!({
             "textDocument": { "uri": uri },
             "position": { "line": line.saturating_sub(1), "character": column.saturating_sub(1) },
@@ -323,7 +323,7 @@ impl LspManager {
     /// Returns `None` when no hover info is available.
     pub async fn hover(&self, file: &Path, line: u32, column: u32) -> Option<String> {
         let transport = self.transport_for_file(file).await?;
-        let uri = uri_from_path_internal(file);
+        let uri = client::uri_from_path(file);
         let params = json!({
             "textDocument": { "uri": uri },
             "position": { "line": line.saturating_sub(1), "character": column.saturating_sub(1) }
@@ -339,7 +339,7 @@ impl LspManager {
     /// Returns `None` when the LSP server is unavailable.
     pub async fn document_symbols(&self, file: &Path) -> Option<Vec<LspSymbol>> {
         let transport = self.transport_for_file(file).await?;
-        let uri = uri_from_path_internal(file);
+        let uri = client::uri_from_path(file);
         let params = json!({
             "textDocument": { "uri": uri }
         });
@@ -351,17 +351,28 @@ impl LspManager {
     }
 
     /// Search for symbols across the entire workspace by name.
-    /// Returns `None` when the LSP server is unavailable.
+    /// Queries all active language transports and merges results.
+    /// Returns `None` when no transport is available.
     pub async fn workspace_symbols(&self, query: &str) -> Option<Vec<LspSymbol>> {
-        // Reuse any existing transport for workspace-wide queries.
-        let lang = registry::Language::Rust; // default to most common; the query is server-agnostic
-        let transport = self.transport_for(lang).await?;
+        let transports: Vec<Arc<dyn LspTransport>> =
+            self.transports.lock().await.values().cloned().collect();
+        if transports.is_empty() {
+            return None;
+        }
         let params = json!({ "query": query });
-        let result = transport
-            .send_request("workspace/symbol", params)
-            .await
-            .ok()?;
-        parse_symbols(&result, None)
+        let mut all_symbols = Vec::new();
+        for transport in &transports {
+            if let Ok(result) = transport.send_request("workspace/symbol", params.clone()).await {
+                if let Some(syms) = parse_symbols(&result, None) {
+                    all_symbols.extend(syms);
+                }
+            }
+        }
+        if all_symbols.is_empty() {
+            None
+        } else {
+            Some(all_symbols)
+        }
     }
 
     /// Resolve a transport for a file — uses language detection from the
@@ -418,34 +429,42 @@ impl LspManager {
 
 // ── LSP response parsing helpers ──────────────────────────────────────
 
-/// Build a file:// URI from a path (internal helper, mirrors client.rs).
-fn uri_from_path_internal(path: &Path) -> String {
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let s = canonical.to_string_lossy();
-    if s.starts_with('/') {
-        format!("file://{s}")
-    } else {
-        format!("file:///{}", s.trim_start_matches('/'))
-    }
-}
-
 /// Parse `textDocument/definition` or `textDocument/references` response
-/// into `Vec<LspLocation>`. Handles both single Location and Location[].
+/// into `Vec<LspLocation>`. Handles:
+/// - Single `Location` (`uri` + `range`)
+/// - `Location[]`
+/// - `LocationLink` (`targetUri` + `targetRange`) — newer servers
 fn parse_locations(result: &serde_json::Value) -> Option<Vec<LspLocation>> {
+    // Single Location: { uri, range }
     if let Some(uri) = result.get("uri").and_then(|v| v.as_str()) {
         let (line, col) = parse_range_start(result.get("range")?);
+        let file = uri_to_relative(uri);
+        return Some(vec![LspLocation { file, line, column: col }]);
+    }
+    // Single LocationLink: { targetUri, targetRange }
+    if let Some(uri) = result.get("targetUri").and_then(|v| v.as_str()) {
+        let (line, col) = parse_range_start(result.get("targetRange").or(result.get("targetSelectionRange"))?);
         let file = uri_to_relative(uri);
         return Some(vec![LspLocation { file, line, column: col }]);
     }
     if let Some(arr) = result.as_array() {
         let mut locs = Vec::new();
         for item in arr {
-            let uri = item.get("uri").and_then(|v| v.as_str())?;
-            let (line, col) = parse_range_start(item.get("range")?);
-            let file = uri_to_relative(uri);
-            locs.push(LspLocation { file, line, column: col });
+            // Try LocationLink first (targetUri/targetRange), then Location (uri/range).
+            if let Some(uri) = item.get("targetUri").and_then(|v| v.as_str()) {
+                let (line, col) = parse_range_start(
+                    item.get("targetRange")
+                        .or(item.get("targetSelectionRange"))?,
+                );
+                let file = uri_to_relative(uri);
+                locs.push(LspLocation { file, line, column: col });
+            } else if let Some(uri) = item.get("uri").and_then(|v| v.as_str()) {
+                let (line, col) = parse_range_start(item.get("range")?);
+                let file = uri_to_relative(uri);
+                locs.push(LspLocation { file, line, column: col });
+            }
         }
-        return Some(locs);
+        return if locs.is_empty() { None } else { Some(locs) };
     }
     None
 }
@@ -476,7 +495,7 @@ fn parse_hover(result: &serde_json::Value) -> Option<String> {
             return Some(parts.join("\n---\n"));
         }
     }
-    Some(result.to_string())
+    None
 }
 
 /// Parse `textDocument/documentSymbol` or `workspace/symbol` response
@@ -503,7 +522,7 @@ fn flatten_symbol(
     context_file: Option<&Path>,
     depth: u32,
 ) -> Vec<LspSymbol> {
-    const MAX_DEPTH: u32 = 4;
+    const MAX_DEPTH: u32 = 16;
     if depth > MAX_DEPTH {
         return Vec::new();
     }
@@ -571,9 +590,35 @@ fn parse_range_start(range: &serde_json::Value) -> (u32, u32) {
     (line, col)
 }
 
+/// Convert a `file://` URI to a workspace-relative or absolute path.
+/// Handles percent-decoding for URIs containing special characters.
 fn uri_to_relative(uri: &str) -> String {
-    let stripped = uri.strip_prefix("file://").unwrap_or(uri);
-    stripped.trim_start_matches('/').to_string()
+    let path = uri.strip_prefix("file://").unwrap_or(uri);
+    // Preserve the leading '/' for Unix absolute paths.
+    let decoded = percent_decode(path);
+    decoded.to_string()
+}
+
+/// Decode percent-encoded characters in a URI path segment (%20 → space, etc.).
+fn percent_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let hi = chars.next().and_then(|c| c.to_digit(16));
+            let lo = chars.next().and_then(|c| c.to_digit(16));
+            if let (Some(h), Some(l)) = (hi, lo) {
+                if let Some(decoded) = char::from_u32(h * 16 + l) {
+                    out.push(decoded);
+                    continue;
+                }
+            }
+            out.push('%');
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
