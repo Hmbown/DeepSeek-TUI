@@ -148,33 +148,39 @@ impl ToolSpec for ScreenshotAnalyzeTool {
 
 /// Send a vision request to the DeepSeek API.
 ///
-/// Uses the engine's HTTP client when available (through ToolContext),
-/// or falls back to a direct reqwest call. In test/dry-run contexts
-/// where no API key is configured, returns an error message.
+/// Respects the engine's `network_policy` — if the policy denies
+/// `api.deepseek.com`, the call is rejected without touching the wire.
 async fn send_vision_request(
-    _ctx: &ToolContext,
+    ctx: &ToolContext,
     body: &Value,
 ) -> Result<String, String> {
-    // Try environment-configured API access.
+    // Honour the engine's network policy.
+    if let Some(ref policy) = ctx.network_policy {
+        if !policy.policy().evaluate("api.deepseek.com", "screenshot_analyze") {
+            return Err(
+                "network policy blocks api.deepseek.com for screenshot_analyze".into(),
+            );
+        }
+    }
+
     let api_key = match std::env::var("DEEPSEEK_API_KEY").ok() {
         Some(k) => k,
         None => {
-            // Try config file path
             let config_path = dirs::home_dir()
                 .map(|h| h.join(".deepseek").join("config.toml"));
             if let Some(path) = config_path {
-                if let Ok(contents) = std::fs::read_to_string(&path) {
-                    if let Ok(config) = toml::from_str::<serde_json::Value>(&contents) {
-                        if let Some(key) = config.get("api_key").and_then(|v| v.as_str()) {
-                            key.to_string()
-                        } else {
-                            return Err("no API key configured (set DEEPSEEK_API_KEY or run `deepseek auth set`)".into());
+                match tokio::fs::read_to_string(&path).await {
+                    Ok(contents) => match toml::from_str::<serde_json::Value>(&contents) {
+                        Ok(config) => {
+                            if let Some(key) = config.get("api_key").and_then(|v| v.as_str()) {
+                                key.to_string()
+                            } else {
+                                return Err("no API key configured (set DEEPSEEK_API_KEY or run `deepseek auth set`)".into());
+                            }
                         }
-                    } else {
-                        return Err("no API key configured".into());
-                    }
-                } else {
-                    return Err("no API key configured".into());
+                        Err(_) => return Err("failed to parse config.toml".into()),
+                    },
+                    Err(_) => return Err("no API key configured".into()),
                 }
             } else {
                 return Err("no API key configured".into());
@@ -185,8 +191,7 @@ async fn send_vision_request(
     let base_url = std::env::var("DEEPSEEK_BASE_URL")
         .unwrap_or_else(|_| "https://api.deepseek.com".to_string());
 
-    let client = reqwest::Client::new();
-    let response = client
+    let response = http_client()
         .post(format!("{base_url}/v1/chat/completions"))
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Content-Type", "application/json")
@@ -218,6 +223,13 @@ async fn send_vision_request(
         .and_then(|c| c.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| "no content in API response".to_string())
+}
+
+/// Shared HTTP client — reused across calls for connection pooling.
+fn http_client() -> &'static reqwest::Client {
+    use std::sync::OnceLock;
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
 }
 
 fn mime_from_path(path: &std::path::Path) -> Option<&'static str> {
