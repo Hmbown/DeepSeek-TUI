@@ -270,6 +270,23 @@ mcp = true
 exec_policy = true
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Search Provider (#431)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Choose which search backend the `web_search` tool uses:
+#
+#   "default" — DuckDuckGo HTML results (with Bing fallback when DuckDuckGo
+#               returns no results or a bot challenge).
+#   "exa"     — Exa API (`api.exa.ai/search`). Requires the `EXA_API_KEY`
+#               environment variable to be set. When both the env var and
+#               `search_provider = "exa"` are configured, Exa is preferred.
+#
+# When `EXA_API_KEY` is set but this key is absent or `"default"`, Exa is
+# still used (the env var alone is enough to activate the Exa backend).
+# This setting exists for explicit opt-in documentation and forward
+# compatibility.
+# search_provider = "default"
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Retry Configuration
 # ─────────────────────────────────────────────────────────────────────────────────
 [retry]
