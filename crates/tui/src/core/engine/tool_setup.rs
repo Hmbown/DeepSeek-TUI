@@ -56,6 +56,11 @@ impl Engine {
             builder = builder.with_remember_tool();
         }
 
+        // Register structured memory tools (#518) when memory is enabled.
+        if self.config.memory_enabled {
+            builder = builder.with_memory_tools();
+        }
+
         builder
     }
 }
