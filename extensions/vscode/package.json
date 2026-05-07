@@ -1,0 +1,78 @@
+{
+  "name": "deepseek-tui",
+  "displayName": "DeepSeek TUI",
+  "description": "DeepSeek TUI companion — open chat, explain selection, apply edits, run tests",
+  "version": "0.1.0",
+  "publisher": "Hmbown",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "deepseek.openChat",
+        "title": "DeepSeek: Open Chat"
+      },
+      {
+        "command": "deepseek.askAboutSelection",
+        "title": "DeepSeek: Ask About Selection"
+      },
+      {
+        "command": "deepseek.applyToSelection",
+        "title": "DeepSeek: Apply to Selection"
+      },
+      {
+        "command": "deepseek.runTest",
+        "title": "DeepSeek: Run Tests"
+      },
+      {
+        "command": "deepseek.pickModeAndModel",
+        "title": "DeepSeek: Pick Mode and Model"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "deepseek.openChat",
+        "key": "ctrl+shift+d",
+        "mac": "cmd+shift+d",
+        "when": "editorFocus"
+      },
+      {
+        "command": "deepseek.askAboutSelection",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "deepseek.applyToSelection",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "deepseek.runTest",
+        "key": "ctrl+shift+t",
+        "mac": "cmd+shift+t",
+        "when": "editorFocus"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./tsconfig.json",
+    "watch": "tsc -watch -p ./tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
