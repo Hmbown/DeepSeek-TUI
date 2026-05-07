@@ -519,6 +519,69 @@ fn create_test_app() -> App {
     App::new(options, &Config::default())
 }
 
+fn text_message(role: &str, text: &str) -> Message {
+    Message {
+        role: role.to_string(),
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+        }],
+    }
+}
+
+fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
+    SavedSession {
+        schema_version: 1,
+        metadata: crate::session_manager::SessionMetadata {
+            id: "resume-recovery-session".to_string(),
+            title: "resume recovery".to_string(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            message_count: messages.len(),
+            total_tokens: 0,
+            model: "deepseek-v4-pro".to_string(),
+            workspace: PathBuf::from("/tmp/resume-recovery"),
+            mode: Some("yolo".to_string()),
+        },
+        messages,
+        system_prompt: None,
+        context_references: Vec::new(),
+    }
+}
+
+#[test]
+fn apply_loaded_session_restores_dangling_user_tail_as_retry_draft() {
+    let mut app = create_test_app();
+    let session = saved_session_with_messages(vec![text_message(
+        "user",
+        "finish the Qthresh proof bundle",
+    )]);
+
+    let recovered = apply_loaded_session(&mut app, &session);
+
+    assert!(recovered);
+    assert!(app.api_messages.is_empty());
+    assert_eq!(app.input, "finish the Qthresh proof bundle");
+    assert_eq!(
+        app.queued_draft
+            .as_ref()
+            .map(|draft| draft.display.as_str()),
+        Some("finish the Qthresh proof bundle")
+    );
+    assert!(
+        app.history
+            .iter()
+            .all(|cell| !matches!(cell, HistoryCell::User { .. }))
+    );
+    assert!(
+        app.status_message
+            .as_deref()
+            .is_some_and(|msg| msg.contains("Recovered interrupted prompt")),
+        "status was {:?}",
+        app.status_message
+    );
+}
+
 #[tokio::test]
 async fn drain_web_config_events_applies_draft_without_closing_session() {
     let mut app = create_test_app();
