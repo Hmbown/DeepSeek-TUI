@@ -609,6 +609,15 @@ mod tests {
     }
 
     #[test]
+    fn package_version_is_current_hotfix_release() {
+        assert_eq!(
+            env!("CARGO_PKG_VERSION"),
+            "0.8.16",
+            "0.8.16 hotfix branch must report the release version before publishing"
+        );
+    }
+
+    #[test]
     fn compose_prompt_deterministic_order() {
         let prompt = compose_prompt(AppMode::Yolo, Personality::Calm);
         let base_pos = prompt.find("You are DeepSeek TUI").unwrap();
@@ -721,14 +730,18 @@ mod tests {
     }
 
     #[test]
-    fn when_not_to_use_sections_present() {
+    fn tool_selection_guide_avoids_defensive_tool_suppression() {
         let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
-        assert!(prompt.contains("When NOT to use certain tools"));
-        assert!(prompt.contains("### `apply_patch`"));
-        assert!(prompt.contains("### `edit_file`"));
-        assert!(prompt.contains("### `exec_shell`"));
-        assert!(prompt.contains("### `agent_spawn`"));
-        assert!(prompt.contains("### `rlm`"));
+        assert!(prompt.contains("Tool Selection Guide"));
+        assert!(prompt.contains("Use `agent_result`"));
+        assert!(
+            !prompt.contains("When NOT to use certain tools"),
+            "the system prompt should steer tool choice without training the model to avoid available tools"
+        );
+        assert!(
+            !prompt.contains("Don't reach for"),
+            "avoid defensive anti-tool wording in the base prompt"
+        );
     }
 
     /// #588: language-mirroring directive must ship in every mode so
@@ -766,7 +779,7 @@ mod tests {
     fn rlm_specialty_tool_guidance_present() {
         let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
         // Structural: the RLM heading must exist as a section anchor.
-        assert!(prompt.contains("RLM — When to Use It"));
+        assert!(prompt.contains("RLM — How to Use It"));
         // Structural: the word "rlm" must appear multiple times (tool
         // name, section heading, toolbox reference). Just verify the
         // lowercase form — exact wording is NOT a test concern.
@@ -775,14 +788,20 @@ mod tests {
             rlm_count >= 5,
             "RLM guidance present: expected >= 5 mentions of 'rlm', got {rlm_count}"
         );
+        assert!(
+            !prompt.contains("When NOT to use RLM"),
+            "RLM guidance should explain fit and verification without telling the model to avoid the tool"
+        );
     }
 
     #[test]
     fn subagent_done_sentinel_section_present() {
         let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
-        assert!(prompt.contains("Sub-agent completion sentinel"));
+        assert!(prompt.contains("Internal Sub-agent Completion Events"));
         assert!(prompt.contains("<deepseek:subagent.done>"));
+        assert!(prompt.contains("not user input"));
         assert!(prompt.contains("Integration protocol"));
+        assert!(prompt.contains("Do not tell the user they pasted sentinels"));
     }
 
     #[test]
