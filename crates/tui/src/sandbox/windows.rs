@@ -1,12 +1,14 @@
-//! Windows sandbox implementation (best-effort placeholder).
+//! Windows sandbox helper contract.
 //!
-//! Windows sandboxing can be implemented using:
-//! - Windows Sandbox (full isolation)
-//! - AppContainer (process isolation)
-//! - Restricted tokens (reduced privileges)
+//! Current status: DeepSeek TUI does not advertise an in-process Windows
+//! sandbox. Future Windows support must run commands through a dedicated
+//! helper that provides process-tree containment with a Job Object and
+//! `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
 //!
-//! This module selects a preferred approach and exposes helpers used by the
-//! sandbox manager. Full enforcement should be implemented in a helper binary.
+//! The first Windows helper slice is process containment only. It must not
+//! claim read-only filesystem isolation, workspace-write enforcement, network
+//! blocking, registry isolation, or AppContainer-level isolation until those
+//! guarantees are implemented and tested separately.
 
 use std::path::Path;
 
@@ -14,33 +16,23 @@ use super::SandboxPolicy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowsSandboxKind {
-    WindowsSandbox,
-    AppContainer,
-    RestrictedToken,
+    ProcessContainment,
 }
 
 impl std::fmt::Display for WindowsSandboxKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            WindowsSandboxKind::WindowsSandbox => write!(f, "sandbox"),
-            WindowsSandboxKind::AppContainer => write!(f, "appcontainer"),
-            WindowsSandboxKind::RestrictedToken => write!(f, "restricted-token"),
+            WindowsSandboxKind::ProcessContainment => write!(f, "process-containment"),
         }
     }
 }
 
 pub fn is_available() -> bool {
-    windows_sandbox_available() || appcontainer_available() || restricted_token_available()
+    false
 }
 
 pub fn select_best_kind(_policy: &SandboxPolicy, _cwd: &Path) -> WindowsSandboxKind {
-    if windows_sandbox_available() {
-        WindowsSandboxKind::WindowsSandbox
-    } else if appcontainer_available() {
-        WindowsSandboxKind::AppContainer
-    } else {
-        WindowsSandboxKind::RestrictedToken
-    }
+    WindowsSandboxKind::ProcessContainment
 }
 
 pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
@@ -59,21 +51,16 @@ pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
 
     patterns.iter().any(|p| stderr.contains(p))
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn windows_sandbox_available() -> bool {
-    let Ok(system_root) = std::env::var("SystemRoot") else {
-        return false;
-    };
-    Path::new(&system_root)
-        .join("System32")
-        .join("WindowsSandbox.exe")
-        .exists()
-}
-
-fn appcontainer_available() -> bool {
-    true
-}
-
-fn restricted_token_available() -> bool {
-    true
+    #[test]
+    fn windows_sandbox_is_not_advertised_until_helper_exists() {
+        assert!(!is_available());
+        assert_eq!(
+            select_best_kind(&SandboxPolicy::default(), Path::new(".")),
+            WindowsSandboxKind::ProcessContainment
+        );
+    }
 }
