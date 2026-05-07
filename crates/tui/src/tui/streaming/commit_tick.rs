@@ -1,10 +1,9 @@
 //! Commit-tick scheduler that drains a stream chunker according to policy.
 //!
 //! Bridges [`AdaptiveChunkingPolicy`] with a concrete [`StreamChunker`] queue.
-//! Callers feed raw text deltas via [`StreamChunker::push_delta`] (only
-//! newline-terminated text becomes queued lines), then call
-//! [`run_commit_tick`] on every commit beat to obtain the text safe to flush
-//! to the transcript on this beat.
+//! Callers feed raw text deltas via [`StreamChunker::push_delta`], then call
+//! [`run_commit_tick`] on every commit beat to obtain the next small text
+//! slice to flush to the transcript on this beat.
 //!
 //! The chunker is the unit of streaming — one per active block (assistant /
 //! thinking). Tool output is unbuffered and bypasses this path.
@@ -13,27 +12,29 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use std::time::Instant;
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use super::chunking::AdaptiveChunkingPolicy;
 use super::chunking::ChunkingDecision;
 use super::chunking::DrainPlan;
 use super::chunking::QueueSnapshot;
 
-/// Buffers raw stream deltas and emits committed text in line units.
-///
-/// Only the substring up to the *last* `\n` is committed; trailing partial
-/// content stays in the buffer. This is what protects partial code fences
-/// (` ``` `) and other line-sensitive markdown from rendering mid-state.
+const GRAPHEMES_PER_MICRO_CHUNK: usize = 1;
+const CATCH_UP_MAX_MICRO_CHUNKS: usize = 12;
+
+/// Buffers raw stream deltas and emits committed text in small display chunks.
 #[derive(Debug, Default)]
 pub struct StreamChunker {
-    /// Bytes received but not yet split into a complete line.
+    /// Bytes received but not yet split into display chunks. Normally empty;
+    /// retained so `drain_remaining` has a lossless place to pull from if we
+    /// ever decide to hold a tail for a future markdown-sensitive mode.
     pending: String,
-    /// Complete lines waiting to be flushed to the transcript.
-    /// Each entry preserves its trailing `\n` so reassembly is lossless.
-    queue: VecDeque<QueuedLine>,
+    /// Small grapheme-aligned chunks waiting to be flushed to the transcript.
+    queue: VecDeque<QueuedChunk>,
 }
 
 #[derive(Debug, Clone)]
-struct QueuedLine {
+struct QueuedChunk {
     text: String,
     enqueued_at: Instant,
 }
@@ -43,28 +44,21 @@ impl StreamChunker {
         Self::default()
     }
 
-    /// Append a raw model delta. Returns whether at least one new line was queued.
+    /// Append a raw model delta. Returns whether at least one new display chunk was queued.
     pub fn push_delta(&mut self, delta: &str) -> bool {
         if delta.is_empty() {
             return false;
         }
         self.pending.push_str(delta);
 
-        let Some(last_nl) = self.pending.rfind('\n') else {
-            return false;
-        };
-
-        // Drain everything up to and including the last newline into queued lines.
-        // Splitting by line keeps the chunker source-agnostic and lets the policy
-        // count "lines waiting" without peeking at text content.
         let now = Instant::now();
-        let committed: String = self.pending.drain(..=last_nl).collect();
+        let committed = std::mem::take(&mut self.pending);
         let mut produced = false;
-        for chunk in split_lines_keep_terminator(&committed) {
+        for chunk in split_into_micro_chunks(&committed) {
             if chunk.is_empty() {
                 continue;
             }
-            self.queue.push_back(QueuedLine {
+            self.queue.push_back(QueuedChunk {
                 text: chunk,
                 enqueued_at: now,
             });
@@ -73,12 +67,12 @@ impl StreamChunker {
         produced
     }
 
-    /// Number of complete lines currently queued for commit.
+    /// Number of display chunks currently queued for commit.
     pub fn queued_lines(&self) -> usize {
         self.queue.len()
     }
 
-    /// Age of the oldest queued line, if any.
+    /// Age of the oldest queued chunk, if any.
     pub fn oldest_queued_age(&self, now: Instant) -> Option<Duration> {
         self.queue
             .front()
@@ -98,7 +92,7 @@ impl StreamChunker {
         }
     }
 
-    /// Drain `max_lines` complete lines and return them as concatenated text.
+    /// Drain `max_lines` queued chunks and return them as concatenated text.
     pub fn drain_lines(&mut self, max_lines: usize) -> String {
         let n = max_lines.min(self.queue.len());
         let mut out = String::new();
@@ -159,7 +153,7 @@ pub fn run_commit_tick(
 
     let max = match decision.drain_plan {
         DrainPlan::Single => 1,
-        DrainPlan::Batch(n) => n,
+        DrainPlan::Batch(n) => n.min(CATCH_UP_MAX_MICRO_CHUNKS),
     };
 
     // Drain through the chunker; an empty queue under Smooth produces "".
@@ -172,24 +166,28 @@ pub fn run_commit_tick(
     }
 }
 
-/// Split text into chunks, preserving each terminator. The final chunk is
-/// included only if it ends with `\n` (this is enforced upstream in
-/// `push_delta`, which only drains up through the last newline).
-fn split_lines_keep_terminator(text: &str) -> Vec<String> {
+/// Split text into grapheme-aligned chunks. Newlines force a boundary so
+/// markdown layout still settles quickly, but prose no longer waits for a full
+/// line before becoming visible.
+fn split_into_micro_chunks(text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let mut start = 0;
-    let bytes = text.as_bytes();
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b'\n' {
-            out.push(text[start..=i].to_string());
-            start = i + 1;
+    let mut current = String::new();
+    let mut graphemes = 0usize;
+
+    for grapheme in UnicodeSegmentation::graphemes(text, true) {
+        current.push_str(grapheme);
+        graphemes += 1;
+
+        if grapheme == "\n" || graphemes >= GRAPHEMES_PER_MICRO_CHUNK {
+            out.push(std::mem::take(&mut current));
+            graphemes = 0;
         }
     }
-    if start < text.len() {
-        // This branch is unreachable for inputs produced by `push_delta`,
-        // but stays defensive for direct callers.
-        out.push(text[start..].to_string());
+
+    if !current.is_empty() {
+        out.push(current);
     }
+
     out
 }
 
@@ -199,59 +197,69 @@ mod tests {
     use crate::tui::streaming::chunking::ChunkingMode;
 
     #[test]
-    fn partial_code_fence_is_held_until_newline() {
-        // Without the chunker, a stray ``` arriving mid-stream could render as
-        // an opened fence. The chunker must not commit anything until the
-        // line is terminated by `\n`.
+    fn prose_streams_before_newline() {
         let mut chunker = StreamChunker::new();
         let mut policy = AdaptiveChunkingPolicy::new();
         let now = Instant::now();
 
-        // Partial fence + content; no newline → nothing committed yet.
-        chunker.push_delta("Here is code:\n");
-        chunker.push_delta("```");
+        chunker.push_delta("hello world");
         let out = run_commit_tick(&mut policy, &mut chunker, now);
-        assert_eq!(out.committed_text, "Here is code:\n");
-        assert!(!chunker.is_idle(), "partial fence still buffered");
+        assert_eq!(out.committed_text, "h");
+        assert!(!chunker.is_idle(), "remaining prose should keep dripping");
 
-        // Close the fence line.
-        chunker.push_delta("rust\n");
         let out = run_commit_tick(&mut policy, &mut chunker, now + Duration::from_millis(5));
-        assert_eq!(out.committed_text, "```rust\n");
+        assert_eq!(out.committed_text, "e");
     }
 
     #[test]
-    fn smooth_burst_emits_one_line_per_tick() {
+    fn smooth_burst_emits_one_micro_chunk_per_tick() {
         let mut chunker = StreamChunker::new();
         let mut policy = AdaptiveChunkingPolicy::new();
         let t0 = Instant::now();
 
-        chunker.push_delta("a\nb\nc\n");
-        // Each tick under Smooth pulls exactly one line.
+        chunker.push_delta("abc");
+        // Each tick under Smooth pulls exactly one grapheme.
         let out1 = run_commit_tick(&mut policy, &mut chunker, t0);
         assert_eq!(out1.decision.mode, ChunkingMode::Smooth);
-        assert_eq!(out1.committed_text, "a\n");
+        assert_eq!(out1.committed_text, "a");
         let out2 = run_commit_tick(&mut policy, &mut chunker, t0 + Duration::from_millis(20));
-        assert_eq!(out2.committed_text, "b\n");
+        assert_eq!(out2.committed_text, "b");
         let out3 = run_commit_tick(&mut policy, &mut chunker, t0 + Duration::from_millis(40));
-        assert_eq!(out3.committed_text, "c\n");
+        assert_eq!(out3.committed_text, "c");
         assert!(out3.is_idle);
     }
 
     #[test]
-    fn large_burst_drains_in_catch_up() {
-        // Eight lines arriving "at once" must trigger CatchUp on the first
-        // commit tick and drain the full backlog in one go.
+    fn smooth_stream_keeps_combining_marks_with_base_letter() {
+        let mut chunker = StreamChunker::new();
+        let mut policy = AdaptiveChunkingPolicy::new();
+        let t0 = Instant::now();
+
+        chunker.push_delta("e\u{301}x");
+        let out1 = run_commit_tick(&mut policy, &mut chunker, t0);
+        assert_eq!(out1.committed_text, "e\u{301}");
+        let out2 = run_commit_tick(&mut policy, &mut chunker, t0 + Duration::from_millis(20));
+        assert_eq!(out2.committed_text, "x");
+    }
+
+    #[test]
+    fn large_burst_drains_in_catch_up_without_full_jump() {
+        // A large text burst arriving "at once" must trigger CatchUp on the first
+        // commit tick without dumping the full backlog in one jump.
         let mut chunker = StreamChunker::new();
         let mut policy = AdaptiveChunkingPolicy::new();
         let now = Instant::now();
 
-        let burst = "1\n2\n3\n4\n5\n6\n7\n8\n";
-        chunker.push_delta(burst);
+        let burst = "abcdefghijklmnopqrstuvwxyz".repeat(8);
+        let expected_prefix: String = burst
+            .chars()
+            .take(CATCH_UP_MAX_MICRO_CHUNKS * GRAPHEMES_PER_MICRO_CHUNK)
+            .collect();
+        chunker.push_delta(&burst);
         let out = run_commit_tick(&mut policy, &mut chunker, now);
         assert_eq!(out.decision.mode, ChunkingMode::CatchUp);
-        assert_eq!(out.committed_text, burst);
-        assert!(out.is_idle);
+        assert_eq!(out.committed_text, expected_prefix);
+        assert!(!out.is_idle);
     }
 
     #[test]

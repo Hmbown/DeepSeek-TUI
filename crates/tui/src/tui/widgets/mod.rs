@@ -2587,6 +2587,74 @@ mod tests {
         );
     }
 
+    /// Regression for issue #582: a resize event arriving while the
+    /// engine is in `CoherenceState::RefreshingContext` (i.e. running
+    /// a compaction summary call) must NOT leave the chat widget with
+    /// an empty viewport. The user-reported symptom on Windows
+    /// PowerShell is that the screen turns black on the maximize→
+    /// windowed transition during a long task; the post-resize render
+    /// must produce a populated frame regardless of the active
+    /// coherence intervention. Pins the invariant from the renderer
+    /// side; the actual ConHost size-stale fix lives in
+    /// `tui::ui::run_tui` (the `Event::Resize` handler now forwards
+    /// the event-reported dimensions to ratatui's viewport before the
+    /// redraw).
+    #[test]
+    fn chat_widget_renders_cleanly_after_resize_during_refreshing_context() {
+        use crate::core::coherence::CoherenceState;
+
+        let mut app = create_test_app();
+        for i in 0..30 {
+            app.add_message(HistoryCell::User {
+                content: format!("user message {i} during a long-running task"),
+            });
+        }
+
+        // Pretend the engine is mid-compaction when the resize arrives.
+        app.coherence_state = CoherenceState::RefreshingContext;
+
+        // Drive the same shrink-then-grow cycle that maximize→windowed
+        // transitions produce on Windows.
+        for (width, height) in [(140u16, 40u16), (90, 28), (60, 20), (140, 40)] {
+            app.handle_resize(width, height);
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            };
+            let mut buf = Buffer::empty(area);
+            let widget = ChatWidget::new(&mut app, area);
+            widget.render(area, &mut buf);
+
+            let mut non_empty = 0usize;
+            for y in 0..height {
+                for x in 0..width {
+                    let sym = buf[(x, y)].symbol();
+                    if sym != " " && !sym.is_empty() {
+                        non_empty += 1;
+                    }
+                }
+            }
+            assert!(
+                non_empty > 0,
+                "resize-during-RefreshingContext at {width}x{height} produced an empty buffer; \
+                 render path must not gate on coherence state (#582)"
+            );
+        }
+
+        // The engine's coherence_state must survive a resize — it is
+        // the engine's runtime decision, not a render-loop concern.
+        // A future regression that bounced the state to `Healthy` on
+        // resize would silently drop the "refreshing context" footer
+        // chip while compaction is still in flight.
+        assert_eq!(
+            app.coherence_state,
+            CoherenceState::RefreshingContext,
+            "resize must not mutate engine-owned coherence_state"
+        );
+    }
+
     /// Regression for issue #65: after `App::handle_resize`, the chat widget
     /// must produce a clean render at the new width — no stale wrapping,
     /// no panic, no content exceeding the requested width. Cycling through

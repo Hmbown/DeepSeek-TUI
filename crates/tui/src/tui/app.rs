@@ -56,6 +56,34 @@ pub enum OnboardingState {
     None,
 }
 
+fn initial_onboarding_state(
+    skip_onboarding: bool,
+    was_onboarded: bool,
+    needs_api_key: bool,
+    needs_workspace_trust: bool,
+) -> OnboardingState {
+    if skip_onboarding || (was_onboarded && !needs_api_key && !needs_workspace_trust) {
+        return OnboardingState::None;
+    }
+
+    if was_onboarded && needs_api_key {
+        OnboardingState::ApiKey
+    } else if was_onboarded && needs_workspace_trust {
+        OnboardingState::TrustDirectory
+    } else {
+        OnboardingState::Welcome
+    }
+}
+
+fn onboarding_is_workspace_trust_gate(
+    skip_onboarding: bool,
+    was_onboarded: bool,
+    needs_api_key: bool,
+    needs_workspace_trust: bool,
+) -> bool {
+    !skip_onboarding && was_onboarded && !needs_api_key && needs_workspace_trust
+}
+
 /// Supported application modes for the TUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppMode {
@@ -735,6 +763,7 @@ pub struct App {
     // Onboarding
     pub onboarding: OnboardingState,
     pub onboarding_needs_api_key: bool,
+    pub onboarding_workspace_trust_gate: bool,
     pub api_key_env_only: bool,
     pub api_key_input: String,
     pub api_key_cursor: usize,
@@ -1096,7 +1125,6 @@ impl App {
         let needs_api_key = !has_api_key(config);
         let api_key_env_only = crate::config::active_provider_uses_env_only_api_key(config);
         let was_onboarded = crate::tui::onboarding::is_onboarded();
-        let needs_onboarding = !skip_onboarding && (!was_onboarded || needs_api_key);
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
         let auto_compact = settings.auto_compact;
         let calm_mode = settings.calm_mode;
@@ -1147,6 +1175,20 @@ impl App {
         } else {
             preferred_mode
         };
+        let needs_workspace_trust =
+            initial_mode != AppMode::Yolo && crate::tui::onboarding::needs_trust(&workspace);
+        let onboarding = initial_onboarding_state(
+            skip_onboarding,
+            was_onboarded,
+            needs_api_key,
+            needs_workspace_trust,
+        );
+        let onboarding_workspace_trust_gate = onboarding_is_workspace_trust_gate(
+            skip_onboarding,
+            was_onboarded,
+            needs_api_key,
+            needs_workspace_trust,
+        );
 
         let yolo_restore = if initial_mode == AppMode::Yolo {
             Some(YoloRestoreState {
@@ -1280,16 +1322,9 @@ impl App {
             pending_subagent_dispatch: None,
             agent_activity_started_at: None,
             ui_theme,
-            onboarding: if needs_onboarding {
-                if was_onboarded && needs_api_key {
-                    OnboardingState::ApiKey
-                } else {
-                    OnboardingState::Welcome
-                }
-            } else {
-                OnboardingState::None
-            },
+            onboarding,
             onboarding_needs_api_key: needs_api_key,
+            onboarding_workspace_trust_gate,
             api_key_env_only,
             api_key_input: String::new(),
             api_key_cursor: 0,
@@ -3830,6 +3865,14 @@ mod tests {
     fn test_trust_mode_follows_yolo_on_startup() {
         let app = App::new(test_options(true), &Config::default());
         assert!(app.trust_mode);
+    }
+
+    #[test]
+    fn onboarded_user_still_gets_workspace_trust_prompt_when_needed() {
+        assert_eq!(
+            initial_onboarding_state(false, true, false, true),
+            OnboardingState::TrustDirectory
+        );
     }
 
     #[test]

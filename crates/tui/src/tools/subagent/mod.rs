@@ -548,6 +548,22 @@ impl Default for PersistedSubAgentState {
 /// `[runtime] max_spawn_depth = N` in `~/.deepseek/config.toml`.
 pub const DEFAULT_MAX_SPAWN_DEPTH: u32 = 3;
 
+/// Terminal-state notification emitted to the engine's parent turn loop
+/// when one of its direct children finishes (issue #756). Carries the
+/// already-rendered `<deepseek:subagent.done>` sentinel that the model
+/// expects in the transcript per `prompts/base.md`.
+#[derive(Debug, Clone)]
+pub struct SubAgentCompletion {
+    /// The completing child's agent id. Held for routing/logging — the
+    /// engine's turn loop does not currently key on it (it just injects
+    /// the payload), but downstream tooling and tests need the field.
+    #[allow(dead_code)]
+    pub agent_id: String,
+    /// Human summary on line 1, sentinel on line 2. Same payload shape as
+    /// `Event::AgentComplete::result`.
+    pub payload: String,
+}
+
 /// Runtime configuration for spawning sub-agents.
 ///
 /// Carries everything a child needs to (a) build its own tool registry —
@@ -581,6 +597,12 @@ pub struct SubAgentRuntime {
     /// whole spawn tree publishes into one ordered, fan-out-able mailbox.
     /// `None` only when no consumer is wired (legacy entry points / tests).
     pub mailbox: Option<Mailbox>,
+    /// Wakeup channel for the engine's parent turn loop (issue #756). Only
+    /// the engine's direct children fire on this — propagated to descendants
+    /// via clone but gated to `spawn_depth == 1` at the send site so the
+    /// parent isn't flooded with grandchild completions it didn't directly
+    /// orchestrate. `None` when no consumer is wired (tests / legacy paths).
+    pub parent_completion_tx: Option<mpsc::UnboundedSender<SubAgentCompletion>>,
 }
 
 impl SubAgentRuntime {
@@ -612,7 +634,21 @@ impl SubAgentRuntime {
             max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
             cancel_token: CancellationToken::new(),
             mailbox: None,
+            parent_completion_tx: None,
         }
+    }
+
+    /// Attach the wakeup channel so the engine's parent turn loop can resume
+    /// when this runtime's direct children finish (issue #756). The channel
+    /// is propagated to descendants via clone, but only `spawn_depth == 1`
+    /// agents fire on it — see `run_subagent_task`.
+    #[must_use]
+    pub fn with_parent_completion_tx(
+        mut self,
+        tx: mpsc::UnboundedSender<SubAgentCompletion>,
+    ) -> Self {
+        self.parent_completion_tx = Some(tx);
+        self
     }
 
     /// Attach a `Mailbox` so this runtime (and every descendant — children
@@ -714,6 +750,7 @@ impl SubAgentRuntime {
             max_spawn_depth: self.max_spawn_depth,
             cancel_token: self.cancel_token.child_token(),
             mailbox: self.mailbox.clone(),
+            parent_completion_tx: self.parent_completion_tx.clone(),
         }
     }
 
@@ -2629,13 +2666,44 @@ async fn run_subagent_task(task: SubAgentTask) {
         let _ = mb.send(envelope);
     }
 
+    let payload = format!("{summary}\n{sentinel}");
+
+    // Wake the engine's parent turn loop if this is one of its direct
+    // children (issue #756). Gating by `spawn_depth == 1` means the parent
+    // only sees completions for agents it directly orchestrated, not for
+    // grandchildren spawned recursively inside its children.
+    emit_parent_completion(&task.runtime, &task.agent_id, &payload);
+
     if let Some(event_tx) = task.runtime.event_tx {
-        let payload = format!("{summary}\n{sentinel}");
         let _ = event_tx.try_send(Event::AgentComplete {
             id: task.agent_id,
             result: payload,
         });
     }
+}
+
+/// Notify the engine's parent turn loop that a direct child finished
+/// (issue #756). Returns `true` if a send was attempted, `false` if the
+/// notification was skipped because this isn't a direct child or no channel
+/// is wired. Skips silently when the channel sender has no receiver — the
+/// engine outlives the runtime, so a dropped receiver means we're shutting
+/// down anyway.
+pub(crate) fn emit_parent_completion(
+    runtime: &SubAgentRuntime,
+    agent_id: &str,
+    payload: &str,
+) -> bool {
+    if runtime.spawn_depth != 1 {
+        return false;
+    }
+    let Some(tx) = runtime.parent_completion_tx.as_ref() else {
+        return false;
+    };
+    let _ = tx.send(SubAgentCompletion {
+        agent_id: agent_id.to_string(),
+        payload: payload.to_string(),
+    });
+    true
 }
 
 /// Build a `<deepseek:subagent.done>` JSON sentinel for a successful child.

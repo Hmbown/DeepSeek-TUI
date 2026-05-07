@@ -363,9 +363,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.16.1"
+version = "1.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94bffc006df10ac2a68c83692d734a465f8ee6c5b384d8545a636f81d858f4bf"
+checksum = "0ec6fb3fe69024a75fa7e1bfb48aa6cf59706a101658ea01bfd33b2b248a038f"
 dependencies = [
  "aws-lc-sys",
  "zeroize",
@@ -373,9 +373,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.38.0"
+version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4321e568ed89bb5a7d291a7f37997c2c0df89809d7b6d12062c81ddb54aa782e"
+checksum = "f50037ee5e1e41e7b8f9d161680a725bd1626cb6f8c7e901f91f942850852fe7"
 dependencies = [
  "cc",
  "cmake",
@@ -577,9 +577,9 @@ checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
 
 [[package]]
 name = "bytes"
-version = "1.11.0"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b35204fbdc0b3f4446b89fc1ac2cf84a8a68971995d0bf2e925ec7cd960f9cb3"
+checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cassowary"
@@ -1080,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-agent"
-version = "0.8.14"
+version = "0.8.15"
 dependencies = [
  "deepseek-config",
  "serde",
@@ -1088,7 +1088,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-app-server"
-version = "0.8.14"
+version = "0.8.15"
 dependencies = [
  "anyhow",
  "axum",
@@ -1110,7 +1110,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-config"
-version = "0.8.14"
+version = "0.8.15"
 dependencies = [
  "anyhow",
  "deepseek-secrets",
@@ -1122,7 +1122,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-core"
-version = "0.8.14"
+version = "0.8.15"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1140,7 +1140,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-execpolicy"
-version = "0.8.14"
+version = "0.8.15"
 dependencies = [
  "anyhow",
  "deepseek-protocol",
@@ -1149,7 +1149,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-hooks"
-version = "0.8.14"
+version = "0.8.15"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1163,7 +1163,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-mcp"
-version = "0.8.14"
+version = "0.8.15"
 dependencies = [
  "anyhow",
  "serde",
@@ -1172,7 +1172,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-protocol"
-version = "0.8.14"
+version = "0.8.15"
 dependencies = [
  "serde",
  "serde_json",
@@ -1180,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-secrets"
-version = "0.8.14"
+version = "0.8.15"
 dependencies = [
  "dirs",
  "keyring",
@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-state"
-version = "0.8.14"
+version = "0.8.15"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1205,7 +1205,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-tools"
-version = "0.8.14"
+version = "0.8.15"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1218,7 +1218,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-tui"
-version = "0.8.14"
+version = "0.8.15"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1278,7 +1278,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-tui-cli"
-version = "0.8.14"
+version = "0.8.15"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1302,7 +1302,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-tui-core"
-version = "0.8.14"
+version = "0.8.15"
 
 [[package]]
 name = "deranged"
@@ -4841,9 +4841,9 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.46"
+version = "0.3.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9da98b7d9b7dad93488a84b8248efc35352b0b2657397d4167e7ad67e5d535e5"
+checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
 dependencies = [
  "deranged",
  "itoa",
@@ -4864,9 +4864,9 @@ checksum = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca"
 
 [[package]]
 name = "time-macros"
-version = "0.2.26"
+version = "0.2.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78cc610bac2dcee56805c99642447d4c5dbde4d01f752ffea0199aee1f601dc4"
+checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
 dependencies = [
  "num-conv",
  "time-core",

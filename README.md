@@ -102,6 +102,11 @@ deepseek
 deepseek doctor                         # verify setup
 ```
 
+If `deepseek doctor` says the rejected key came from `DEEPSEEK_API_KEY`, remove
+the stale export from your shell startup file, open a fresh shell, then run
+`deepseek auth set --provider deepseek`. Saved config keys take precedence over
+the environment and are easier to rotate.
+
 > To rotate or remove a saved key: `deepseek auth clear --provider deepseek`.
 
 ### Auto Mode
@@ -192,19 +197,26 @@ SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model d
 
 # Self-hosted vLLM
 VLLM_BASE_URL="http://localhost:8000/v1" deepseek --provider vllm --model deepseek-v4-flash
+
+# Self-hosted Ollama
+ollama pull deepseek-coder:1.3b
+deepseek --provider ollama --model deepseek-coder:1.3b
 ```
 
 ---
 
-## What's New In v0.8.14
+## What's New In v0.8.15
 
-A stabilization release focused on first-run setup, auto model + thinking routing, cost accounting, and provider support. [Full changelog](CHANGELOG.md).
+A community-driven stabilization release focused on auth recovery, Windows
+terminals, Zed/ACP compatibility, setup friction, and clearer cost display.
+[Full changelog](CHANGELOG.md).
 
-- **Auto mode restored** — `--model auto`, `/model auto`, config `default_model = "auto"`, one-shot prompts, and sub-agents resolve to concrete model + thinking routes before calling the API
-- **Per-turn cost accounting fix** — V4 reasoning tokens are counted as billable output when providers report them separately from completion tokens
-- **First-run setup repair** — missing config files now lead users through API key setup and create `~/.deepseek/config.toml`
-- **Settings navigation fix** — arrow-key selection and click highlighting in the config UI work reliably on Windows terminals
-- **vLLM provider support** — self-hosted vLLM endpoints can be used with `--provider vllm` and `VLLM_BASE_URL`
+- **Friendlier auth recovery** — runtime API-key failures now explain when the active key came only from `DEEPSEEK_API_KEY` and no saved config key is present
+- **Zed / ACP adapter** — `deepseek serve --acp` exposes a local stdio Agent Client Protocol server for Zed and other compatible editors
+- **Windows terminal fixes** — UTF-8 console setup, dispatcher resume handling, clipboard fallback, Ctrl+E composer behavior, and safer Windows mouse defaults
+- **Yuan cost display** — set `cost_currency = "cny"` (or `yuan` / `rmb`) to show footer, `/cost`, `/tokens`, and notification summaries in CNY
+- **Setup and skill polish** — workspace trust persists globally, plain Markdown `SKILL.md` files load correctly, global Agents/Cursor skill paths are discovered, and the TUI shows skills in slash autocomplete
+- **Reliability fixes** — workspace-scoped `resume --last`, capped API `max_tokens`, endpoint diagnostics in `deepseek doctor`, npm `--version` fallback, and current-date turn metadata
 
 ---
 
@@ -232,6 +244,7 @@ deepseek pr <N>                                  # fetch PR and pre-seed review 
 deepseek mcp list                                # list configured MCP servers
 deepseek mcp validate                            # validate MCP config/connectivity
 deepseek mcp-server                              # run dispatcher MCP stdio server
+deepseek update                                  # check for and apply binary updates
 ```
 
 ### Zed / ACP
@@ -295,13 +308,16 @@ Key environment variables:
 |---|---|
 | `DEEPSEEK_API_KEY` | API key |
 | `DEEPSEEK_BASE_URL` | API base URL |
+| `DEEPSEEK_HTTP_HEADERS` | Optional custom model request headers, e.g. `X-Model-Provider-Id=your-model-provider` |
 | `DEEPSEEK_MODEL` | Default model |
-| `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `fireworks`, `sglang`, `vllm` |
+| `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `fireworks`, `sglang`, `vllm`, `ollama` |
 | `DEEPSEEK_PROFILE` | Config profile name |
 | `DEEPSEEK_MEMORY` | Set to `on` to enable user memory |
-| `NVIDIA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` | Provider auth |
+| `NVIDIA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
 | `SGLANG_BASE_URL` | Self-hosted SGLang endpoint |
 | `VLLM_BASE_URL` | Self-hosted vLLM endpoint |
+| `OLLAMA_BASE_URL` | Self-hosted Ollama endpoint |
+| `OLLAMA_MODEL` | Self-hosted Ollama model tag |
 | `NO_ANIMATIONS=1` | Force accessibility mode at startup |
 | `SSL_CERT_FILE` | Custom CA bundle for corporate proxies |
 
@@ -327,7 +343,7 @@ Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash`.
 
 ## Publishing Your Own Skill
 
-DeepSeek TUI discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills`) and global directories (`~/.agents/skills` → `~/.deepseek/skills`). Each skill is a directory with a `SKILL.md` file:
+DeepSeek TUI discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills`) and global directories (`~/.agents/skills` → `~/.claude/skills` → `~/.deepseek/skills`). Each skill is a directory with a `SKILL.md` file:
 
 ```text
 ~/.agents/skills/my-skill/
@@ -391,7 +407,10 @@ This project ships with help from a growing community of contributors:
 - **[wangfeng](mailto:wangfengcsu@qq.com)** — Pricing/discount info update (#692)
 - **[zichen0116](https://github.com/zichen0116)** — CODE_OF_CONDUCT.md (#686)
 - **[dfwqdyl-ui](https://github.com/dfwqdyl-ui)** — model ID case-sensitivity compatibility report (#729)
-- **[Oliver-ZPLiu](https://github.com/Oliver-ZPLiu)** — stale `working...` state bug report with detailed reproduction and fix (#738)
+- **[Oliver-ZPLiu](https://github.com/Oliver-ZPLiu)** — stale `working...` state bug report and Windows clipboard fallback (#738, #850)
+- **[reidliu41](https://github.com/reidliu41)** — resume hint and workspace trust persistence fixes (#863, #870)
+- **[xieshutao](https://github.com/xieshutao)** — plain Markdown skill fallback (#869)
+- **[GK012](https://github.com/GK012)** — npm wrapper `--version` fallback (#885)
 - **Hafeez Pizofreude** — SSRF protection in `fetch_url` and Star History chart
 - **Unic (YuniqueUnic)** — Schema-driven config UI (TUI + web)
 - **Jason** — SSRF security hardening

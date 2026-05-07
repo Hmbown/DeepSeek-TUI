@@ -48,6 +48,73 @@ pub struct SnapshotRepo {
     work_tree: PathBuf,
 }
 
+const BUILTIN_EXCLUDES: &str = "\
+# DeepSeek TUI built-in snapshot exclusions
+node_modules/
+target/
+dist/
+build/
+.build/
+.next/
+.nuxt/
+.svelte-kit/
+.turbo/
+.parcel-cache/
+vendor/
+.cargo/
+.rustup/
+.npm/
+.bun/
+.yarn/
+.pnpm-store/
+.cache/
+.venv/
+venv/
+.tox/
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.gradle/
+.m2/
+.local/
+.DS_Store
+
+# Binary and generated artifacts. Snapshots are source rollback checkpoints,
+# not a full binary backup; keeping these out avoids side-repo bloat.
+*.exe
+*.dll
+*.so
+*.dylib
+*.wasm
+*.o
+*.obj
+*.class
+*.pdb
+*.dSYM
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.tar.xz
+*.7z
+*.rar
+*.iso
+*.dmg
+*.bin
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+*.mp3
+*.wav
+*.flac
+*.aac
+";
+
 impl SnapshotRepo {
     /// Open or initialize the snapshot repo for `workspace`.
     ///
@@ -117,6 +184,7 @@ impl SnapshotRepo {
             let _ = run_git(&git_dir, &work_tree, &["config", "core.autocrlf", "false"]);
         }
 
+        write_builtin_excludes(&git_dir)?;
         Ok(Self { git_dir, work_tree })
     }
 
@@ -402,6 +470,12 @@ impl SnapshotRepo {
     pub fn work_tree(&self) -> &Path {
         &self.work_tree
     }
+}
+
+fn write_builtin_excludes(git_dir: &Path) -> io::Result<()> {
+    let info_dir = git_dir.join("info");
+    std::fs::create_dir_all(&info_dir)?;
+    std::fs::write(info_dir.join("exclude"), BUILTIN_EXCLUDES)
 }
 
 fn run_git(git_dir: &Path, work_tree: &Path, args: &[&str]) -> io::Result<Output> {
@@ -747,6 +821,53 @@ mod tests {
         assert_eq!(
             unsafe_workspace_snapshot_reason(&workspace, Some(home)),
             None
+        );
+    }
+
+    #[test]
+    fn snapshot_respects_builtin_excludes() {
+        let tmp = tempdir().unwrap();
+        let (repo, _home) = make_repo(tmp.path());
+        std::fs::create_dir_all(repo.work_tree().join("node_modules/pkg")).unwrap();
+        std::fs::create_dir_all(repo.work_tree().join(".next/cache")).unwrap();
+        std::fs::create_dir_all(repo.work_tree().join("src")).unwrap();
+        std::fs::write(
+            repo.work_tree().join("node_modules/pkg/index.js"),
+            b"generated",
+        )
+        .unwrap();
+        std::fs::write(repo.work_tree().join(".next/cache/chunk.bin"), b"generated").unwrap();
+        std::fs::write(repo.work_tree().join("debug.wasm"), b"binary").unwrap();
+        std::fs::write(repo.work_tree().join("src/main.rs"), b"fn main() {}").unwrap();
+
+        let excludes = std::fs::read_to_string(repo.git_dir().join("info/exclude")).unwrap();
+        assert!(excludes.contains("node_modules/"));
+        assert!(excludes.contains(".next/"));
+        assert!(excludes.contains("*.wasm"));
+
+        let id = repo.snapshot("pre-turn:1").expect("snapshot");
+        let ls = run_git(
+            repo.git_dir(),
+            repo.work_tree(),
+            &["ls-tree", "-r", "--name-only", id.as_str()],
+        )
+        .expect("ls-tree");
+        let names = String::from_utf8_lossy(&ls.stdout);
+        assert!(
+            names.contains("src/main.rs"),
+            "src/main.rs missing: {names}"
+        );
+        assert!(
+            !names.contains("node_modules"),
+            "node_modules should not be in snapshot: {names}",
+        );
+        assert!(
+            !names.contains(".next"),
+            ".next should not be in snapshot: {names}",
+        );
+        assert!(
+            !names.contains("debug.wasm"),
+            "binary artifacts should not be in snapshot: {names}",
         );
     }
 

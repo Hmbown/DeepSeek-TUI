@@ -5,6 +5,96 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.15] - 2026-05-06
+
+An auth, Windows, editor-integration, and setup stabilization release. This
+release keeps the existing DeepSeek V4 architecture intact while landing small
+community fixes that make first-run setup, terminal behavior, skills, cost
+display, and recovery paths easier to trust.
+
+### Added
+- **ACP stdio adapter for Zed/custom agents** (#782) — `deepseek serve --acp`
+  starts a local Agent Client Protocol server over stdio. The first slice
+  supports new sessions and prompt responses through the user's existing
+  DeepSeek config/API key; tool-backed editing and checkpoint replay remain
+  outside the ACP surface for now.
+- **Yuan/CNY cost display** (#806) — `cost_currency = "cny"` (also accepts
+  `yuan` / `rmb`) switches footer, context panel, `/cost`, `/tokens`, and
+  long-turn notification summaries from USD to CNY.
+- **Slash autocomplete for skills** (#808) — installed skills are visible in
+  the slash-command autocomplete menu.
+- **`/rename` session titles** (#836) — sessions can be renamed without
+  editing save files manually.
+
+### Changed
+- **Current local date in turn metadata** (#893, closes #865) — real user turns
+  now include the current local date in `<turn_meta>`, without changing the
+  stable system prompt/cache prefix.
+- **Doctor endpoint diagnostics** (#823) — `deepseek doctor` shows the resolved
+  provider/API endpoint to make proxy, China endpoint, and inherited-env
+  debugging more concrete.
+- **More conservative request sizing** (#826) — API requests cap `max_tokens`
+  against the active model/context budget before dispatch.
+- **Safer config and secret file writes** (#833, #837) — generated config files
+  use restrictive permissions and improved secret redaction.
+
+### Fixed
+- **Env-only API key failure recovery** (#892) — runtime auth failures now say
+  when the rejected key came from inherited `DEEPSEEK_API_KEY` and no saved
+  config key is present, matching the clearer `deepseek doctor` guidance.
+- **Windows Unicode output** (#887, closes #872) — TUI startup now best-effort
+  switches the Windows console input/output codepages to UTF-8, improving
+  Chinese and other non-ASCII rendering.
+- **Windows resume picker** (#886, closes #866) — the dispatcher keeps the
+  resume picker path on Windows instead of bypassing it.
+- **Windows clipboard fallback** (#850) — copy operations have a fallback path
+  when the primary clipboard backend is unavailable.
+- **Workspace trust persistence** (#870) — approval/trust choices persist in
+  global config instead of surprising users on the next launch.
+- **Ctrl+E composer behavior** (#883, closes #876) — plain Ctrl+E moves to the
+  end of the composer again; file-tree toggling moved to the shifted shortcut.
+- **Plain Markdown skills** (#869) — `SKILL.md` files without frontmatter now
+  fall back to the first `# Heading` instead of being ignored.
+- **Workspace-scoped latest resume** (#830, closes #779) — `resume --last`,
+  `--continue`, and fork/resume helpers choose the latest session for the
+  current workspace/repo rather than the newest saved session globally.
+- **Npm wrapper version fallback** (#885) — `deepseek --version` / `-v` can
+  report the package version when the native binary has not been downloaded
+  yet.
+- **TUI exit resume hint** (#863, closes #682) — exiting the TUI now points
+  users toward the relevant resume command.
+- **Startup and terminal reliability** — includes bounded stream-open waits
+  (#847), cursor-lag reduction for `@` mentions (#849), OSC52 clipboard fallback
+  for SSH (#845), legacy Ctrl+V paste recognition (#786), Windows mouse capture
+  defaulting off (#785), and UTF-8-preserving ANSI stripping (#784).
+- **Install and policy reliability** — avoids unstable Rust file-locking APIs
+  (#821), enforces network policy in `web_run` (#800), fixes repeated setup
+  language prompts after API-key setup (#844), and explains dispatcher TUI spawn
+  failures (#853).
+- **Workspace safety** — refuses dangerous snapshots for `$HOME` or unsafe
+  workspaces (#798, #804), fixes path-escape false positives for double-dots in
+  names (#824), scopes snapshot built-in excludes (#854), and replaces provider
+  `unreachable!()` paths with proper errors (#835).
+- **Skills discovery** — recursively reads the skills directory (#811), ignores
+  symlinks outside the selected install root (#814), discovers global Agents
+  skills (#848), and includes `.cursor/skills` (#817).
+- **Provider/model compatibility** — restores auto model routing (#772),
+  completes vLLM provider integration (#737), accepts provider-prefixed DeepSeek
+  model IDs (#794), preserves requested model ID casing (#733), and pins RLM
+  child calls to Flash (#832).
+
+### Thanks
+- Thanks to [@reidliu41](https://github.com/reidliu41) for the resume hint and
+  workspace trust fixes (#863, #870).
+- Thanks to [@Oliver-ZPLiu](https://github.com/Oliver-ZPLiu) for the Windows
+  clipboard fallback (#850).
+- Thanks to [@xieshutao](https://github.com/xieshutao) for the plain Markdown
+  skill fallback (#869).
+- Thanks to [@GK012](https://github.com/GK012) for the npm wrapper version
+  fallback (#885).
+- Thanks to everyone filing Windows, Chinese-language setup, auth, and
+  first-run reports. Those concrete reproductions shaped the release.
+
 ## [0.8.13] - 2026-05-05
 
 A stabilization release for DeepSeek V4 runtime and TUI reliability. The

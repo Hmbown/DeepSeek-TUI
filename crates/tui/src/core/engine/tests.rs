@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::models::SystemBlock;
+use crate::test_support::lock_test_env;
 use serde_json::json;
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -43,6 +44,35 @@ impl Drop for ScopedCapacityMemoryDir {
     }
 }
 
+struct ScopedDeepSeekApiKey {
+    previous: Option<OsString>,
+}
+
+impl ScopedDeepSeekApiKey {
+    fn set(value: &str) -> Self {
+        let previous = std::env::var_os("DEEPSEEK_API_KEY");
+        // Safety: tests using this helper serialize with lock_test_env() and
+        // restore the original value in Drop.
+        unsafe {
+            std::env::set_var("DEEPSEEK_API_KEY", value);
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for ScopedDeepSeekApiKey {
+    fn drop(&mut self) {
+        // Safety: tests using this helper serialize with lock_test_env().
+        unsafe {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var("DEEPSEEK_API_KEY", previous);
+            } else {
+                std::env::remove_var("DEEPSEEK_API_KEY");
+            }
+        }
+    }
+}
+
 fn build_engine_with_capacity(capacity: CapacityControllerConfig) -> Engine {
     let engine_config = EngineConfig {
         capacity,
@@ -50,6 +80,36 @@ fn build_engine_with_capacity(capacity: CapacityControllerConfig) -> Engine {
     };
     let (engine, _handle) = Engine::new(engine_config, &Config::default());
     engine
+}
+
+#[test]
+fn env_only_auth_error_gets_recovery_hint() {
+    let _guard = lock_test_env();
+    let _env = ScopedDeepSeekApiKey::set("stale-env-key");
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+
+    let message =
+        engine.decorate_auth_error_message("Authentication failed: invalid API key".to_string());
+
+    assert!(message.contains("DEEPSEEK_API_KEY"));
+    assert!(message.contains("no saved config key is present"));
+    assert!(message.contains("deepseek auth set --provider deepseek"));
+}
+
+#[test]
+fn config_auth_error_does_not_blame_env() {
+    let _guard = lock_test_env();
+    let _env = ScopedDeepSeekApiKey::set("stale-env-key");
+    let cfg = Config {
+        api_key: Some("fresh-config-key".to_string()),
+        ..Config::default()
+    };
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &cfg);
+
+    let message =
+        engine.decorate_auth_error_message("Authentication failed: invalid API key".to_string());
+
+    assert_eq!(message, "Authentication failed: invalid API key");
 }
 
 fn make_plan(
@@ -502,6 +562,53 @@ fn context_budget_reserves_output_and_headroom() {
 }
 
 #[test]
+fn effective_max_output_tokens_caps_api_request_for_large_window_models() {
+    // V4 models have a 1M context window but the API request cap must stay
+    // well below common provider limits (e.g., 131K total on self-hosted
+    // vLLM/SGLang). The cap should never exceed 65K.
+    let v4_cap = effective_max_output_tokens("deepseek-v4-pro");
+    assert!(
+        v4_cap <= 65_536,
+        "V4 API request cap should be ≤64K, got {v4_cap}"
+    );
+    assert!(
+        v4_cap > 0,
+        "V4 API request cap should be positive, got {v4_cap}"
+    );
+
+    let flash_cap = effective_max_output_tokens("deepseek-v4-flash");
+    assert_eq!(v4_cap, flash_cap);
+}
+
+#[test]
+fn internal_context_budget_unaffected_by_api_request_cap() {
+    // The internal context budget (used for compaction/preflight/recovery)
+    // must still use the full TURN_MAX_OUTPUT_TOKENS headroom, NOT the
+    // smaller API request cap. This ensures long-context V4 sessions don't
+    // compact prematurely.
+    let internal_budget = context_input_budget("deepseek-v4-pro", TURN_MAX_OUTPUT_TOKENS)
+        .expect("V4 should have a known context window");
+    let api_cap_budget = context_input_budget(
+        "deepseek-v4-pro",
+        effective_max_output_tokens("deepseek-v4-pro"),
+    )
+    .expect("V4 should have a known context window");
+
+    // Internal budget reserves 262K for output; API-cap budget would only
+    // reserve 64K. Internal budget must be smaller (more conservative).
+    assert!(
+        internal_budget < api_cap_budget,
+        "Internal budget ({internal_budget}) should be smaller than API-cap budget ({api_cap_budget}) \
+         because it reserves more headroom for output"
+    );
+
+    // Verify the internal budget is what the compaction logic actually uses.
+    let v4_window: usize = 1_000_000;
+    let expected_internal = v4_window - (TURN_MAX_OUTPUT_TOKENS as usize) - 1_024usize;
+    assert_eq!(internal_budget, expected_internal);
+}
+
+#[test]
 fn v4_tool_outputs_keep_large_file_reads_in_context() {
     let content = "0123456789abcdef\n".repeat(2_000);
     let output = ToolResult::success(content.clone());
@@ -607,6 +714,36 @@ fn working_set_reaches_model_as_turn_metadata() {
     assert!(text.starts_with("<turn_meta>\n"));
     assert!(text.contains(WORKING_SET_SUMMARY_MARKER));
     assert!(text.contains("src/lib.rs"));
+}
+
+#[test]
+fn turn_metadata_includes_current_local_date_without_working_set() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "what is today's date?".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    let messages = engine.messages_with_turn_metadata();
+    let first_block = messages
+        .last()
+        .and_then(|message| message.content.first())
+        .expect("turn metadata block");
+    let ContentBlock::Text { text, .. } = first_block else {
+        panic!("expected text metadata block");
+    };
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    assert!(text.starts_with("<turn_meta>\n"));
+    assert!(text.contains(&format!("Current local date: {today}")));
 }
 
 /// v0.8.11 regression: tool-result messages serialize to role="tool" on

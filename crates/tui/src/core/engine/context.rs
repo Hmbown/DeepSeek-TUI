@@ -16,6 +16,30 @@ use crate::tools::spec::ToolResult;
 /// `max_tokens` near pressure; hard-cycle/preflight checks reserve this budget
 /// plus safety headroom before sending the next request.
 pub(super) const TURN_MAX_OUTPUT_TOKENS: u32 = 262_144;
+
+/// Safe max output tokens sent in the API request. This must be low enough to
+/// work with providers that have smaller context limits than the model's native
+/// window (e.g., self-hosted vLLM/SGLang with `--max-model-len 131072`).
+/// DeepSeek's API will still produce as many tokens as needed for thinking;
+/// this cap just prevents HTTP 400 from providers with tight limits.
+const API_MAX_OUTPUT_TOKENS: u32 = 65_536;
+
+/// Compute the effective `max_tokens` to send in the API request for a given
+/// model. Uses `API_MAX_OUTPUT_TOKENS` (64K) which fits within common provider
+/// limits (128K+ total). For non-V4 models with smaller context windows, caps
+/// at half the context window.
+pub(super) fn effective_max_output_tokens(model: &str) -> u32 {
+    let window = context_window_for_model(model).unwrap_or(128_000);
+    if window >= 500_000 {
+        // V4-class models on large-context providers: use 64K which is safe
+        // for most deployments while still allowing substantial output.
+        API_MAX_OUTPUT_TOKENS
+    } else {
+        // Smaller models: cap at half the context window (leave room for input)
+        let capped = window / 2;
+        capped.min(API_MAX_OUTPUT_TOKENS)
+    }
+}
 /// Keep this many most recent messages when emergency trimming is required.
 pub(super) const MIN_RECENT_MESSAGES_TO_KEEP: usize = 4;
 /// Allow a few emergency recovery attempts before failing the turn.

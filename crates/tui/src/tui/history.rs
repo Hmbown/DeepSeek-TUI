@@ -6,7 +6,7 @@ use std::time::Instant;
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::deepseek_theme::active_theme;
 use crate::models::{ContentBlock, Message};
@@ -37,6 +37,11 @@ const USER_GLYPH: &str = "\u{258E}"; // ▎
 /// Visual marker for the assistant role. Solid bullet that pulses at 2s
 /// cycle while the response is streaming, holds full brightness when idle.
 const ASSISTANT_GLYPH: &str = "\u{25CF}"; // ●
+/// Transcript body left rail. Solid 1/8 block (`▏`) followed by a space —
+/// used as a visual left-margin anchor for continuation lines, tool-card
+/// detail rows, and affordance lines. Dimmed so it guides the eye without
+/// competing with content.
+const TRANSCRIPT_RAIL: &str = "\u{258F} "; // ▏ + space
 /// Reasoning header opener. Replaces the spinner glyph on thinking cells —
 /// reasoning is a slow exhale, not a tool spin.
 const REASONING_OPENER: &str = "\u{2026}"; // …
@@ -478,7 +483,10 @@ fn render_archived_context(
     let rendered = crate::tui::markdown_render::render_markdown(&body, content_width, body_style);
     for (idx, line) in rendered.into_iter().enumerate() {
         if idx == 0 {
-            let mut spans = vec![Span::styled("▏ ", Style::default().fg(palette::TEXT_DIM))];
+            let mut spans = vec![Span::styled(
+                TRANSCRIPT_RAIL.to_string(),
+                Style::default().fg(palette::TEXT_DIM),
+            )];
             spans.extend(line.spans);
             lines.push(Line::from(spans));
         } else {
@@ -1608,7 +1616,7 @@ fn render_checklist_change_card(
     let (marker, marker_color) = checklist_status_marker(&change.status);
     let prefix = format!("{marker} ");
     let prefix_width =
-        UnicodeWidthStr::width("\u{258F} ") + UnicodeWidthStr::width(prefix.as_str());
+        UnicodeWidthStr::width(TRANSCRIPT_RAIL) + UnicodeWidthStr::width(prefix.as_str());
     let id_label = format!("Todo #{}", change.id);
     let arrow = " \u{2192} ";
     let status_label = change.status.clone();
@@ -1702,7 +1710,7 @@ fn render_checklist_card(
         let prefix = format!("{marker} ");
         // Reserve room for the rail + marker prefix when wrapping content.
         let prefix_width =
-            UnicodeWidthStr::width("\u{258F} ") + UnicodeWidthStr::width(prefix.as_str());
+            UnicodeWidthStr::width(TRANSCRIPT_RAIL) + UnicodeWidthStr::width(prefix.as_str());
         let content_width = usize::from(width).saturating_sub(prefix_width).max(1);
         for (idx, part) in wrap_text(item.content.trim(), content_width)
             .into_iter()
@@ -2044,7 +2052,7 @@ fn render_thinking(
     // 12% reasoning surface tint over the app ink — the only deliberately
     // warm element in the transcript. Dropped on Ansi-16 terminals where the
     // tint would distort the named palette.
-    let depth = palette::ColorDepth::detect();
+    let depth = cached_color_depth();
     let body_bg = palette::reasoning_surface_tint(depth);
     let body_style = match body_bg {
         Some(bg) => style.italic().bg(bg),
@@ -2153,9 +2161,13 @@ fn render_message(
             let indent = if prefix.is_empty() {
                 String::new()
             } else {
-                " ".repeat(prefix_width + 1)
+                let mut s = String::with_capacity(prefix_width + 1);
+                s.push('\u{258F}');
+                s.extend(std::iter::repeat_n(' ', prefix_width));
+                s
             };
-            let mut spans = vec![Span::raw(indent)];
+            let rail_style = Style::default().fg(palette::TEXT_DIM);
+            let mut spans = vec![Span::styled(indent, rail_style)];
             spans.extend(line.spans);
             lines.push(Line::from(spans));
         }
@@ -2485,16 +2497,16 @@ fn file_line_style(text: &str) -> Option<Style> {
 /// Apply inline diff highlighting to a single text line.
 ///
 /// Returns the appropriate style for the line based on its prefix:
-/// - Lines starting with `+` (after trimming) => `palette::STATUS_SUCCESS` (green)
+/// - Lines starting with `+` (after trimming) => `palette::DIFF_ADDED` (green)
 /// - Lines starting with `-` (after trimming) => `palette::STATUS_ERROR` (red)
 /// - Lines starting with `@@` => `palette::DEEPSEEK_SKY` (cyan/blue)
 /// - All other lines => None (use default style)
 fn diff_line_style(text: &str) -> Option<Style> {
     let trimmed = text.trim_start();
     if trimmed.starts_with("@@") {
-        Some(Style::default().fg(palette::DEEPSEEK_SKY))
+        Some(Style::default().fg(palette::DEEPSEEK_BLUE))
     } else if trimmed.starts_with('+') && !trimmed.starts_with("+++") {
-        Some(Style::default().fg(palette::STATUS_SUCCESS))
+        Some(Style::default().fg(palette::DIFF_ADDED))
     } else if trimmed.starts_with('-') && !trimmed.starts_with("---") {
         Some(Style::default().fg(palette::STATUS_ERROR))
     } else {
@@ -2549,22 +2561,21 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
     let mut lines = Vec::new();
     let mut current = String::new();
-    let mut current_width = 0usize;
 
     for ch in text.chars() {
-        let ch_width = if ch == '\t' {
-            4
+        let tentative = if current.is_empty() {
+            ch.to_string()
         } else {
-            UnicodeWidthChar::width(ch).unwrap_or(0).max(1)
+            let mut t = current.clone();
+            t.push(ch);
+            t
         };
 
-        if current_width + ch_width > width && !current.is_empty() {
+        if UnicodeWidthStr::width(tentative.as_str()) > width && !current.is_empty() {
             lines.push(std::mem::take(&mut current));
-            current_width = 0;
         }
 
         current.push(ch);
-        current_width = current_width.saturating_add(ch_width);
     }
 
     lines.push(current);
@@ -2603,7 +2614,10 @@ fn status_symbol(started_at: Option<Instant>, status: ToolStatus, low_motion: bo
 
 fn details_affordance_line(text: &str, style: Style) -> Line<'static> {
     Line::from(vec![
-        Span::styled("▏ ", Style::default().fg(palette::TEXT_DIM)),
+        Span::styled(
+            TRANSCRIPT_RAIL.to_string(),
+            Style::default().fg(palette::TEXT_DIM),
+        ),
         Span::styled(text.to_string(), style),
     ])
 }
@@ -2812,14 +2826,17 @@ fn render_card_detail_line(
     width: u16,
 ) -> Vec<Line<'static>> {
     let label_text = label.map(|text| format!("{text}:"));
-    let prefix_width = UnicodeWidthStr::width("▏ ")
+    let prefix_width = UnicodeWidthStr::width(TRANSCRIPT_RAIL)
         + label_text.as_deref().map_or(0, UnicodeWidthStr::width)
         + usize::from(label.is_some());
     let content_width = usize::from(width).saturating_sub(prefix_width).max(1);
 
     let mut lines = Vec::new();
     for (idx, part) in wrap_text(value, content_width).into_iter().enumerate() {
-        let mut spans = vec![Span::styled("▏ ", Style::default().fg(palette::TEXT_DIM))];
+        let mut spans = vec![Span::styled(
+            TRANSCRIPT_RAIL.to_string(),
+            Style::default().fg(palette::TEXT_DIM),
+        )];
         if idx == 0 {
             if let Some(label_text) = label_text.as_deref() {
                 spans.push(Span::styled(
@@ -2845,7 +2862,10 @@ fn render_card_detail_line_single(
     value_style: Style,
 ) -> Line<'static> {
     let label_text = label.map(|text| format!("{text}:"));
-    let mut spans = vec![Span::styled("▏ ", Style::default().fg(palette::TEXT_DIM))];
+    let mut spans = vec![Span::styled(
+        TRANSCRIPT_RAIL.to_string(),
+        Style::default().fg(palette::TEXT_DIM),
+    )];
     if let Some(label_text) = label_text {
         spans.push(Span::styled(label_text, tool_detail_label_style()));
         spans.push(Span::raw(" "));
@@ -2924,6 +2944,16 @@ fn thinking_state_accent(state: ThinkingVisualState) -> Color {
         ThinkingVisualState::Done => palette::TEXT_DIM,
         ThinkingVisualState::Idle => palette::TEXT_DIM,
     }
+}
+
+// === Cached colour depth ===
+
+/// Once-initialised colour depth for the terminal session. Avoids re-reading
+/// `COLORTERM` / `TERM` env vars on every frame.
+static COLOR_DEPTH: std::sync::OnceLock<palette::ColorDepth> = std::sync::OnceLock::new();
+
+fn cached_color_depth() -> palette::ColorDepth {
+    *COLOR_DEPTH.get_or_init(palette::ColorDepth::detect)
 }
 
 /// Parse `path:line` patterns from `text` and open the file at the given line

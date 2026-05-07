@@ -25,7 +25,7 @@ use crate::client::DeepSeekClient;
 use crate::compaction::{
     CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact,
 };
-use crate::config::{Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL};
+use crate::config::{ApiProvider, Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL};
 use crate::cycle_manager::{
     CycleBriefing, CycleConfig, StructuredState, archive_cycle, build_seed_messages,
     estimate_briefing_tokens, produce_briefing, should_advance_cycle,
@@ -47,8 +47,8 @@ use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult};
 use crate::tools::subagent::{
-    Mailbox, SharedSubAgentManager, SubAgentRuntime, SubAgentType, new_shared_subagent_manager,
-    resolve_subagent_assignment_route,
+    Mailbox, SharedSubAgentManager, SubAgentCompletion, SubAgentRuntime, SubAgentType,
+    new_shared_subagent_manager, resolve_subagent_assignment_route,
 };
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tools::user_input::{UserInputRequest, UserInputResponse};
@@ -143,6 +143,11 @@ pub struct EngineConfig {
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
     pub goal_objective: Option<String>,
+    /// Resolved BCP-47 locale tag (e.g. `"en"`, `"zh-Hans"`, `"ja"`)
+    /// for the `## Environment` block in the system prompt. The
+    /// caller resolves this from `Settings` once at engine
+    /// construction; the engine never touches disk for it.
+    pub locale_tag: String,
     /// When true, force `tool_choice: "required"` so the model always calls
     /// a tool on every turn step (V4 strict tool-following mode).
     pub strict_tool_mode: bool,
@@ -179,6 +184,7 @@ impl Default for EngineConfig {
             memory_path: PathBuf::from("./memory.md"),
             strict_tool_mode: false,
             goal_objective: None,
+            locale_tag: "en".to_string(),
             workshop: None,
         }
     }
@@ -294,6 +300,7 @@ pub struct Engine {
     config: EngineConfig,
     deepseek_client: Option<DeepSeekClient>,
     deepseek_client_error: Option<String>,
+    api_key_env_only_recovery: Option<String>,
     session: Session,
     subagent_manager: SharedSubAgentManager,
     shell_manager: SharedShellManager,
@@ -303,6 +310,14 @@ pub struct Engine {
     rx_user_input: mpsc::Receiver<UserInputDecision>,
     rx_steer: mpsc::Receiver<String>,
     tx_event: mpsc::Sender<Event>,
+    /// Wakeup channel for the parent turn loop when a direct child sub-agent
+    /// terminates (issue #756). Cloned into `SubAgentRuntime` so the runtime
+    /// can fan completion events back into the engine.
+    tx_subagent_completion: mpsc::UnboundedSender<SubAgentCompletion>,
+    /// Receiver paired with `tx_subagent_completion`. Drained at the
+    /// turn-loop's empty-tool_uses branch to surface `<deepseek:subagent.done>`
+    /// sentinels into the parent's transcript before deciding to end the turn.
+    pub(super) rx_subagent_completion: mpsc::UnboundedReceiver<SubAgentCompletion>,
     cancel_token: CancellationToken,
     shared_cancel_token: Arc<StdMutex<CancellationToken>>,
     tool_exec_lock: Arc<RwLock<()>>,
@@ -346,6 +361,43 @@ impl Engine {
         }
     }
 
+    fn env_only_api_key_recovery_hint(api_config: &Config) -> Option<String> {
+        if !crate::config::active_provider_uses_env_only_api_key(api_config) {
+            return None;
+        }
+
+        let provider = api_config.api_provider();
+        let env_var = match provider {
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => "DEEPSEEK_API_KEY",
+            ApiProvider::NvidiaNim => "NVIDIA_API_KEY/NVIDIA_NIM_API_KEY",
+            ApiProvider::Openrouter => "OPENROUTER_API_KEY",
+            ApiProvider::Novita => "NOVITA_API_KEY",
+            ApiProvider::Fireworks => "FIREWORKS_API_KEY",
+            ApiProvider::Sglang => "SGLANG_API_KEY",
+            ApiProvider::Vllm => "VLLM_API_KEY",
+            ApiProvider::Ollama => "OLLAMA_API_KEY",
+        };
+
+        Some(format!(
+            "The rejected key came from {env_var}; no saved config key is present.\n\
+             Run `deepseek auth set --provider {provider}` to save a valid key in ~/.deepseek/config.toml, \
+             or remove the stale export and open a fresh shell.",
+            provider = provider.as_str()
+        ))
+    }
+
+    pub(super) fn decorate_auth_error_message(&self, message: String) -> String {
+        let Some(hint) = self.api_key_env_only_recovery.as_ref() else {
+            return message;
+        };
+        if crate::error_taxonomy::classify_error_message(&message) != ErrorCategory::Authentication
+            || message.contains("no saved config key is present")
+        {
+            return message;
+        }
+        format!("{message}\n\n{hint}")
+    }
+
     /// Create a new engine with the given configuration
     pub fn new(config: EngineConfig, api_config: &Config) -> (Self, EngineHandle) {
         let (tx_op, rx_op) = mpsc::channel(32);
@@ -353,6 +405,7 @@ impl Engine {
         let (tx_approval, rx_approval) = mpsc::channel(64);
         let (tx_user_input, rx_user_input) = mpsc::channel(32);
         let (tx_steer, rx_steer) = mpsc::channel(64);
+        let (tx_subagent_completion, rx_subagent_completion) = mpsc::unbounded_channel();
         let cancel_token = CancellationToken::new();
         let shared_cancel_token = Arc::new(StdMutex::new(cancel_token.clone()));
         let tool_exec_lock = Arc::new(RwLock::new(()));
@@ -362,6 +415,7 @@ impl Engine {
             Ok(client) => (Some(client), None),
             Err(err) => (None, Some(err.to_string())),
         };
+        let api_key_env_only_recovery = Self::env_only_api_key_recovery_hint(api_config);
 
         let mut session = Session::new(
             config.model.clone(),
@@ -386,6 +440,7 @@ impl Engine {
                 prompts::PromptSessionContext {
                     user_memory_block: user_memory_block.as_deref(),
                     goal_objective: config.goal_objective.as_deref(),
+                    locale_tag: &config.locale_tag,
                 },
                 session.approval_mode,
             );
@@ -471,6 +526,7 @@ impl Engine {
             config,
             deepseek_client,
             deepseek_client_error,
+            api_key_env_only_recovery,
             session,
             subagent_manager,
             shell_manager,
@@ -480,6 +536,8 @@ impl Engine {
             rx_user_input,
             rx_steer,
             tx_event,
+            tx_subagent_completion,
+            rx_subagent_completion,
             cancel_token: cancel_token.clone(),
             shared_cancel_token: shared_cancel_token.clone(),
             tool_exec_lock,
@@ -937,7 +995,8 @@ impl Engine {
                             self.session.reasoning_effort.clone(),
                             self.session.reasoning_effort_auto,
                         )
-                        .with_max_spawn_depth(self.config.max_spawn_depth);
+                        .with_max_spawn_depth(self.config.max_spawn_depth)
+                        .with_parent_completion_tx(self.tx_subagent_completion.clone());
                         if let Some((mailbox, cancel_token)) = mailbox_for_runtime.as_ref() {
                             rt = rt
                                 .with_mailbox(mailbox.clone())
@@ -1774,6 +1833,7 @@ impl Engine {
             prompts::PromptSessionContext {
                 user_memory_block: user_memory_block.as_deref(),
                 goal_objective: self.config.goal_objective.as_deref(),
+                locale_tag: &self.config.locale_tag,
             },
             self.session.approval_mode,
         );
@@ -1911,9 +1971,9 @@ mod context;
 pub(crate) use context::compact_tool_result_for_context;
 use context::{
     COMPACTION_SUMMARY_MARKER, MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP,
-    TURN_MAX_OUTPUT_TOKENS, context_input_budget, estimate_input_tokens_conservative,
-    extract_compaction_summary_prompt, is_context_length_error_message, summarize_text,
-    turn_response_headroom_tokens,
+    TURN_MAX_OUTPUT_TOKENS, context_input_budget, effective_max_output_tokens,
+    estimate_input_tokens_conservative, extract_compaction_summary_prompt,
+    is_context_length_error_message, summarize_text, turn_response_headroom_tokens,
 };
 mod dispatch;
 mod loop_guard;

@@ -239,7 +239,7 @@ impl Engine {
             let request = MessageRequest {
                 model: self.session.model.clone(),
                 messages: self.messages_with_turn_metadata(),
-                max_tokens: TURN_MAX_OUTPUT_TOKENS,
+                max_tokens: effective_max_output_tokens(&self.session.model),
                 system: self.session.system_prompt.clone(),
                 tools: active_tools.clone(),
                 tool_choice: if active_tools.is_some() {
@@ -270,7 +270,7 @@ impl Engine {
                     s
                 }
                 Err(e) => {
-                    let message = e.to_string();
+                    let message = self.decorate_auth_error_message(e.to_string());
                     if is_context_length_error_message(&message)
                         && context_recovery_attempts < MAX_CONTEXT_RECOVERY_ATTEMPTS
                         && self
@@ -410,7 +410,7 @@ impl Engine {
                     }
                     Err(e) => {
                         stream_errors = stream_errors.saturating_add(1);
-                        let message = e.to_string();
+                        let message = self.decorate_auth_error_message(e.to_string());
                         // #103: when the stream errors before any content was
                         // streamed AND we still have retry budget, transparently
                         // resend the request. DeepSeek has not billed for any
@@ -440,7 +440,9 @@ impl Engine {
                                     continue;
                                 }
                                 Err(retry_err) => {
-                                    let retry_msg = format!("Stream retry failed: {retry_err}");
+                                    let retry_msg = self.decorate_auth_error_message(format!(
+                                        "Stream retry failed: {retry_err}"
+                                    ));
                                     turn_error.get_or_insert(retry_msg.clone());
                                     let _ = self
                                         .tx_event
@@ -828,6 +830,100 @@ impl Engine {
                         })
                         .await;
                     }
+                    turn.next_step();
+                    continue;
+                }
+
+                // Sub-agent completion handoff (issue #756). The model finished
+                // streaming with no tool calls — but if it has direct children
+                // still running (or completions queued from children that
+                // finished while we were inferring), surface their
+                // `<deepseek:subagent.done>` sentinels into the transcript and
+                // resume instead of ending the turn. This fulfils the contract
+                // already documented in `prompts/base.md`: the parent is
+                // promised it'll see the sentinel when a child finishes.
+                let mut completions: Vec<crate::tools::subagent::SubAgentCompletion> = Vec::new();
+                while let Ok(c) = self.rx_subagent_completion.try_recv() {
+                    completions.push(c);
+                }
+                if completions.is_empty() {
+                    let running = {
+                        let mgr = self.subagent_manager.read().await;
+                        mgr.running_count()
+                    };
+                    if running > 0 {
+                        let _ = self
+                            .tx_event
+                            .send(Event::status(format!(
+                                "Waiting on {running} sub-agent(s) to complete..."
+                            )))
+                            .await;
+                        tokio::select! {
+                            biased;
+                            () = self.cancel_token.cancelled() => {
+                                let _ = self
+                                    .tx_event
+                                    .send(Event::status(
+                                        "Request cancelled while waiting for sub-agents",
+                                    ))
+                                    .await;
+                                return (TurnOutcomeStatus::Interrupted, None);
+                            }
+                            Some(c) = self.rx_subagent_completion.recv() => {
+                                completions.push(c);
+                                while let Ok(extra) = self.rx_subagent_completion.try_recv() {
+                                    completions.push(extra);
+                                }
+                            }
+                            Some(steer) = self.rx_steer.recv() => {
+                                let trimmed = steer.trim().to_string();
+                                if !trimmed.is_empty() {
+                                    self.session
+                                        .working_set
+                                        .observe_user_message(&trimmed, &self.session.workspace);
+                                    self.add_session_message(Message {
+                                        role: "user".to_string(),
+                                        content: vec![ContentBlock::Text {
+                                            text: trimmed.clone(),
+                                            cache_control: None,
+                                        }],
+                                    })
+                                    .await;
+                                    let _ = self
+                                        .tx_event
+                                        .send(Event::status(format!(
+                                            "Steer input accepted: {}",
+                                            summarize_text(&trimmed, 120)
+                                        )))
+                                        .await;
+                                }
+                                turn.next_step();
+                                continue;
+                            }
+                        }
+                    }
+                }
+                if !completions.is_empty() {
+                    let count = completions.len();
+                    for c in completions {
+                        self.session
+                            .working_set
+                            .observe_user_message(&c.payload, &self.session.workspace);
+                        self.add_session_message(Message {
+                            role: "user".to_string(),
+                            content: vec![ContentBlock::Text {
+                                text: c.payload,
+                                cache_control: None,
+                            }],
+                        })
+                        .await;
+                    }
+                    let _ = self
+                        .tx_event
+                        .send(Event::status(format!(
+                            "Resuming turn with {count} sub-agent completion(s)"
+                        )))
+                        .await;
                     turn.next_step();
                     continue;
                 }
@@ -1713,14 +1809,18 @@ impl Engine {
     }
 
     pub(super) fn messages_with_turn_metadata(&self) -> Vec<Message> {
-        let Some(summary) = self
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let working_set_summary = self
             .session
             .working_set
             .summary_block(&self.config.workspace)
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-        else {
-            return self.session.messages.clone();
+            .filter(|s| !s.is_empty());
+
+        let summary = if let Some(working_set_summary) = working_set_summary {
+            format!("Current local date: {today}\n{working_set_summary}")
+        } else {
+            format!("Current local date: {today}")
         };
 
         let mut messages = self.session.messages.clone();

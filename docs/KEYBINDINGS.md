@@ -16,7 +16,7 @@ Bindings are not (yet) user-configurable — tracked for a future release (#436,
 | `Shift-Tab`          | Cycle reasoning effort: off → high → max → off                 |
 | `Ctrl-R`             | Open the resume-session picker                                 |
 | `Ctrl-L`             | Refresh / clear the screen                                     |
-| `Ctrl-T`             | Toggle the file-tree sidebar                                   |
+| `Ctrl-Shift-E` / `Cmd-Shift-E` | Toggle the file-tree sidebar                          |
 | `Esc`                | Close topmost modal · cancel slash menu · dismiss toast        |
 
 ## Composer

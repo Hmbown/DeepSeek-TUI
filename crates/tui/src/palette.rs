@@ -82,6 +82,9 @@ pub const SURFACE_TOOL_ACTIVE: Color = Color::Rgb(29, 48, 73); // #1D3049
 pub const SURFACE_SUCCESS: Color = Color::Rgb(22, 56, 63); // #16383F
 #[allow(dead_code)]
 pub const SURFACE_ERROR: Color = Color::Rgb(63, 27, 36); // #3F1B24
+pub const DIFF_ADDED_BG: Color = Color::Rgb(18, 52, 38); // #123426 dark green tint
+pub const DIFF_DELETED_BG: Color = Color::Rgb(52, 22, 28); // #34161C dark red tint
+pub const DIFF_ADDED: Color = Color::Rgb(87, 199, 133); // #57C785
 pub const ACCENT_REASONING_LIVE: Color = Color::Rgb(146, 198, 248); // #92C6F8
 pub const ACCENT_TOOL_LIVE: Color = Color::Rgb(133, 184, 234); // #85B8EA
 pub const ACCENT_TOOL_ISSUE: Color = Color::Rgb(192, 143, 153); // #C08F99
@@ -109,6 +112,7 @@ pub struct UiTheme {
     pub composer_bg: Color,
     pub selection_bg: Color,
     pub header_bg: Color,
+    pub footer_bg: Color,
     /// Statusline mode colors (agent/yolo/plan)
     pub mode_agent: Color,
     pub mode_yolo: Color,
@@ -128,6 +132,7 @@ pub const UI_THEME: UiTheme = UiTheme {
     composer_bg: DEEPSEEK_SLATE,
     selection_bg: SELECTION_BG,
     header_bg: DEEPSEEK_INK,
+    footer_bg: DEEPSEEK_INK,
     mode_agent: MODE_AGENT,
     mode_yolo: MODE_YOLO,
     mode_plan: MODE_PLAN,

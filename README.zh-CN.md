@@ -172,6 +172,10 @@ SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model d
 
 # 自托管 vLLM
 VLLM_BASE_URL="http://localhost:8000/v1" deepseek --provider vllm --model deepseek-v4-flash
+
+# 自托管 Ollama
+ollama pull deepseek-coder:1.3b
+deepseek --provider ollama --model deepseek-coder:1.3b
 ```
 
 ---
@@ -213,6 +217,7 @@ deepseek pr <N>                                # 获取 PR 并预填审查提示
 deepseek mcp list                              # 列出已配置 MCP 服务器
 deepseek mcp validate                          # 校验 MCP 配置和连接
 deepseek mcp-server                            # 启动 dispatcher MCP stdio 服务器
+deepseek update                                # 检查并应用二进制更新
 ```
 
 ### 常用快捷键
@@ -255,12 +260,14 @@ deepseek mcp-server                            # 启动 dispatcher MCP stdio 服
 | `DEEPSEEK_API_KEY` | DeepSeek API key |
 | `DEEPSEEK_BASE_URL` | API base URL |
 | `DEEPSEEK_MODEL` | 默认模型 |
-| `DEEPSEEK_PROVIDER` | `deepseek`（默认）、`nvidia-nim`、`fireworks`、`sglang`、`vllm` |
+| `DEEPSEEK_PROVIDER` | `deepseek`（默认）、`nvidia-nim`、`fireworks`、`sglang`、`vllm`、`ollama` |
 | `DEEPSEEK_PROFILE` | 配置 profile 名称 |
 | `DEEPSEEK_MEMORY` | 设为 `on` 启用用户记忆 |
-| `NVIDIA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` | 提供商认证 |
+| `NVIDIA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | 提供商认证 |
 | `SGLANG_BASE_URL` | 自托管 SGLang 端点 |
 | `VLLM_BASE_URL` | 自托管 vLLM 端点 |
+| `OLLAMA_BASE_URL` | 自托管 Ollama 端点 |
+| `OLLAMA_MODEL` | 自托管 Ollama 模型标签 |
 | `NO_ANIMATIONS=1` | 启动时强制无障碍模式 |
 | `SSL_CERT_FILE` | 企业代理的自定义 CA 包 |
 

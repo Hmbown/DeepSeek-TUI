@@ -75,8 +75,22 @@ use crate::features::{Feature, render_feature_table};
 use crate::llm_client::LlmClient;
 use crate::mcp::{McpConfig, McpPool, McpServerConfig};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
-use crate::session_manager::{SessionManager, create_saved_session};
+use crate::session_manager::{SessionManager, create_saved_session, truncate_id};
 use crate::tui::history::{summarize_tool_args, summarize_tool_output};
+
+#[cfg(windows)]
+fn configure_windows_console_utf8() {
+    use windows::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
+
+    const CP_UTF8: u32 = 65001;
+    unsafe {
+        let _ = SetConsoleCP(CP_UTF8);
+        let _ = SetConsoleOutputCP(CP_UTF8);
+    }
+}
+
+#[cfg(not(windows))]
+fn configure_windows_console_utf8() {}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -407,6 +421,10 @@ struct ServeArgs {
     /// `[runtime_api] cors_origins` from `config.toml`. Whalescale#255.
     #[arg(long = "cors-origin", value_name = "URL")]
     cors_origin: Vec<String>,
+    /// Require this bearer token for `/v1/*` runtime API routes. Also reads
+    /// `DEEPSEEK_RUNTIME_TOKEN` when omitted.
+    #[arg(long = "auth-token", value_name = "TOKEN")]
+    auth_token: Option<String>,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -543,6 +561,8 @@ enum SandboxCommand {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    configure_windows_console_utf8();
+
     // Set up process panic hook before anything else — writes crash dumps
     // to ~/.deepseek/crashes/ even if the panic happens before tokio is up,
     // and restores the terminal so a panicked TUI doesn't leave the user's
@@ -714,6 +734,7 @@ async fn main() -> Result<()> {
                             port: args.port,
                             workers: args.workers.clamp(1, 8),
                             cors_origins,
+                            auth_token: args.auth_token,
                         },
                     )
                     .await
@@ -1229,10 +1250,23 @@ fn report_write_status(label: &str, path: &Path, status: WriteStatus) {
 enum ApiKeySource {
     Env,
     Config,
+    Keyring,
     Missing,
 }
 
 fn resolve_api_key_source(config: &Config) -> ApiKeySource {
+    if std::env::var("DEEPSEEK_API_KEY")
+        .ok()
+        .filter(|k| !k.trim().is_empty())
+        .is_some()
+    {
+        match std::env::var("DEEPSEEK_API_KEY_SOURCE").ok().as_deref() {
+            Some("config") => return ApiKeySource::Config,
+            Some("keyring") => return ApiKeySource::Keyring,
+            _ => {}
+        }
+    }
+
     if config
         .api_key
         .as_ref()
@@ -1287,6 +1321,10 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
             "  {} api_key: set via DEEPSEEK_API_KEY",
             "✓".truecolor(aqua_r, aqua_g, aqua_b)
         ),
+        ApiKeySource::Keyring => println!(
+            "  {} api_key: set via OS keyring",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b)
+        ),
         ApiKeySource::Config => println!(
             "  {} api_key: set via config",
             "✓".truecolor(aqua_r, aqua_g, aqua_b)
@@ -1317,6 +1355,9 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     "VLLM_API_KEY",
                     "deepseek auth set --provider vllm --api-key \"...\"",
                 ),
+                crate::config::ApiProvider::Ollama => {
+                    ("OLLAMA_API_KEY", "deepseek auth set --provider ollama")
+                }
                 crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => {
                     ("DEEPSEEK_API_KEY", "deepseek auth set --provider deepseek")
                 }
@@ -1331,6 +1372,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     crate::config::ApiProvider::Fireworks => "fireworks",
                     crate::config::ApiProvider::Sglang => "sglang",
                     crate::config::ApiProvider::Vllm => "vllm",
+                    crate::config::ApiProvider::Ollama => "ollama",
                     crate::config::ApiProvider::Deepseek
                     | crate::config::ApiProvider::DeepseekCN => "deepseek",
                 }
@@ -1530,6 +1572,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
 
     // Per-provider state: env + config file only (no values printed).
     // Keep doctor/status prompt-free even for unsigned rebuilt binaries.
+    let dispatcher_api_key_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
     for (provider, slot, env_names) in [
         (
             crate::config::ApiProvider::Deepseek,
@@ -1566,6 +1609,11 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "vllm",
             &["VLLM_API_KEY"][..],
         ),
+        (
+            crate::config::ApiProvider::Ollama,
+            "ollama",
+            &["OLLAMA_API_KEY"][..],
+        ),
     ] {
         let in_env = env_names.iter().any(|n| {
             std::env::var(n)
@@ -1573,11 +1621,16 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 .filter(|v| !v.trim().is_empty())
                 .is_some()
         });
+        let injected_runtime_key = matches!(
+            dispatcher_api_key_source.as_deref(),
+            Some("keyring" | "env" | "cli")
+        );
         let in_config = config
             .provider_config_for(provider)
             .and_then(|entry| entry.api_key.as_ref())
             .is_some_and(|v| !v.trim().is_empty())
             || (matches!(provider, crate::config::ApiProvider::Deepseek)
+                && !injected_runtime_key
                 && config
                     .api_key
                     .as_ref()
@@ -1594,13 +1647,24 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             if in_config { "yes" } else { "no" }
         );
     }
-    println!("  · credential precedence: ~/.deepseek/config.toml, then env");
+    println!("  · credential precedence: ~/.deepseek/config.toml, OS keyring, then env");
 
     let api_key_source = resolve_api_key_source(config);
     let has_api_key = if config.deepseek_api_key().is_ok() {
         let source_label = match api_key_source {
             ApiKeySource::Config => "config.toml",
+            ApiKeySource::Keyring => "OS keyring",
             ApiKeySource::Env => "environment",
+            ApiKeySource::Missing
+                if matches!(
+                    config.api_provider(),
+                    crate::config::ApiProvider::Sglang
+                        | crate::config::ApiProvider::Vllm
+                        | crate::config::ApiProvider::Ollama
+                ) =>
+            {
+                "optional local auth"
+            }
             ApiKeySource::Missing => "unknown source",
         };
         println!(
@@ -1646,8 +1710,17 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                     "✗".truecolor(red_r, red_g, red_b)
                 );
                 if error_msg.contains("401") || error_msg.contains("Unauthorized") {
-                    println!("    Invalid API key. Check your DEEPSEEK_API_KEY or config.toml");
-                    if matches!(api_key_source, ApiKeySource::Env) {
+                    println!(
+                        "    Invalid API key. Check `deepseek auth status`, DEEPSEEK_API_KEY, or config.toml"
+                    );
+                    if matches!(api_key_source, ApiKeySource::Keyring) {
+                        println!(
+                            "    The rejected key came from the OS keyring via the dispatcher."
+                        );
+                        println!(
+                            "    Run `deepseek auth status` to inspect config/keyring/env sources."
+                        );
+                    } else if matches!(api_key_source, ApiKeySource::Env) {
                         println!(
                             "    The rejected key came from DEEPSEEK_API_KEY; no saved config key is present."
                         );
@@ -2025,6 +2098,7 @@ fn run_doctor_json(
     let api_key_state = match resolve_api_key_source(config) {
         ApiKeySource::Env => "env",
         ApiKeySource::Config => "config",
+        ApiKeySource::Keyring => "keyring",
         ApiKeySource::Missing => "missing",
     };
 
@@ -2605,6 +2679,19 @@ fn fork_session(session_id: Option<String>, last: bool, workspace: &Path) -> Res
         system_prompt.as_ref(),
     );
     manager.save_session(&forked)?;
+
+    let source_title = saved.metadata.title.trim();
+    let source_label = if source_title.is_empty() {
+        "session".to_string()
+    } else {
+        format!("\"{source_title}\"")
+    };
+    println!(
+        "Forked {source_label} ({source_id}) → new session {new_id}",
+        source_id = truncate_id(&saved.metadata.id),
+        new_id = truncate_id(&forked.metadata.id),
+    );
+
     Ok(forked.metadata.id)
 }
 
@@ -3450,6 +3537,16 @@ fn should_use_alt_screen(cli: &Cli, config: &Config) -> bool {
 }
 
 fn should_use_mouse_capture(cli: &Cli, config: &Config, use_alt_screen: bool) -> bool {
+    let terminal_emulator = std::env::var("TERMINAL_EMULATOR").ok();
+    should_use_mouse_capture_with(cli, config, use_alt_screen, terminal_emulator.as_deref())
+}
+
+fn should_use_mouse_capture_with(
+    cli: &Cli,
+    config: &Config,
+    use_alt_screen: bool,
+    terminal_emulator: Option<&str>,
+) -> bool {
     if !use_alt_screen || cli.no_mouse_capture {
         return false;
     }
@@ -3460,11 +3557,26 @@ fn should_use_mouse_capture(cli: &Cli, config: &Config, use_alt_screen: bool) ->
         .tui
         .as_ref()
         .and_then(|tui| tui.mouse_capture)
-        .unwrap_or_else(default_mouse_capture_enabled)
+        .unwrap_or_else(|| default_mouse_capture_enabled(terminal_emulator))
 }
 
-fn default_mouse_capture_enabled() -> bool {
-    !cfg!(windows)
+/// Whether to enable terminal mouse capture by default for this platform/host.
+///
+/// Returns `false` on Windows (legacy console mouse-mode reporting is flaky;
+/// `--mouse-capture` opts in) and on JetBrains' JediTerm, which advertises
+/// mouse support but delivers SGR mouse-event escape sequences as raw text
+/// in the input stream — visible to users as garbled characters in the
+/// composer when they move the mouse over the TUI (#878, #898). The user
+/// can still opt back in with `[tui] mouse_capture = true` in
+/// `~/.deepseek/config.toml` or `--mouse-capture`.
+fn default_mouse_capture_enabled(terminal_emulator: Option<&str>) -> bool {
+    if cfg!(windows) {
+        return false;
+    }
+    if matches!(terminal_emulator, Some(t) if t.eq_ignore_ascii_case("JetBrains-JediTerm")) {
+        return false;
+    }
+    true
 }
 
 fn is_zellij() -> bool {
@@ -3965,6 +4077,11 @@ async fn run_exec_agent(
         memory_path: config.memory_path(),
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: None,
+        locale_tag: crate::localization::resolve_locale(
+            &crate::settings::Settings::load().unwrap_or_default().locale,
+        )
+        .tag()
+        .to_string(),
         workshop: config.workshop.clone(),
     };
 
@@ -4220,7 +4337,7 @@ mod terminal_mode_tests {
         let cli = parse_cli(&["deepseek"]);
         let config = Config::default();
 
-        assert!(should_use_mouse_capture(&cli, &config, true));
+        assert!(should_use_mouse_capture_with(&cli, &config, true, None));
     }
 
     #[test]
@@ -4229,7 +4346,7 @@ mod terminal_mode_tests {
         let cli = parse_cli(&["deepseek"]);
         let config = Config::default();
 
-        assert!(!should_use_mouse_capture(&cli, &config, true));
+        assert!(!should_use_mouse_capture_with(&cli, &config, true, None));
     }
 
     #[test]
@@ -4237,7 +4354,7 @@ mod terminal_mode_tests {
         let cli = parse_cli(&["deepseek", "--no-mouse-capture"]);
         let config = Config::default();
 
-        assert!(!should_use_mouse_capture(&cli, &config, true));
+        assert!(!should_use_mouse_capture_with(&cli, &config, true, None));
     }
 
     #[test]
@@ -4250,11 +4367,12 @@ mod terminal_mode_tests {
                 terminal_probe_timeout_ms: None,
                 status_items: None,
                 osc8_links: None,
+                notification_condition: None,
             }),
             ..Config::default()
         };
 
-        assert!(!should_use_mouse_capture(&cli, &config, true));
+        assert!(!should_use_mouse_capture_with(&cli, &config, true, None));
     }
 
     #[test]
@@ -4262,7 +4380,7 @@ mod terminal_mode_tests {
         let cli = parse_cli(&["deepseek", "--mouse-capture"]);
         let config = Config::default();
 
-        assert!(should_use_mouse_capture(&cli, &config, true));
+        assert!(should_use_mouse_capture_with(&cli, &config, true, None));
     }
 
     #[test]
@@ -4275,11 +4393,12 @@ mod terminal_mode_tests {
                 terminal_probe_timeout_ms: None,
                 status_items: None,
                 osc8_links: None,
+                notification_condition: None,
             }),
             ..Config::default()
         };
 
-        assert!(should_use_mouse_capture(&cli, &config, true));
+        assert!(should_use_mouse_capture_with(&cli, &config, true, None));
     }
 
     #[test]
@@ -4287,7 +4406,78 @@ mod terminal_mode_tests {
         let cli = parse_cli(&["deepseek", "--mouse-capture"]);
         let config = Config::default();
 
-        assert!(!should_use_mouse_capture(&cli, &config, false));
+        assert!(!should_use_mouse_capture_with(&cli, &config, false, None));
+    }
+
+    // Issue #878 / #898: JetBrains JediTerm advertises mouse support but
+    // forwards SGR mouse-event escapes as raw input characters, producing
+    // the "input box auto-fills with garbled characters when I move the
+    // mouse" failure mode in PyCharm/IDEA terminals. Default the capture
+    // off when we see TERMINAL_EMULATOR=JetBrains-JediTerm; explicit
+    // config / --mouse-capture still wins.
+
+    #[test]
+    fn mouse_capture_defaults_off_in_jetbrains_jediterm() {
+        let cli = parse_cli(&["deepseek"]);
+        let config = Config::default();
+
+        assert!(!should_use_mouse_capture_with(
+            &cli,
+            &config,
+            true,
+            Some("JetBrains-JediTerm"),
+        ));
+    }
+
+    #[test]
+    fn jetbrains_default_off_is_case_insensitive() {
+        let cli = parse_cli(&["deepseek"]);
+        let config = Config::default();
+
+        // JetBrains has occasionally varied the casing across releases;
+        // a case-insensitive match keeps the protection in place.
+        assert!(!should_use_mouse_capture_with(
+            &cli,
+            &config,
+            true,
+            Some("jetbrains-jediterm"),
+        ));
+    }
+
+    #[test]
+    fn mouse_capture_flag_overrides_jetbrains_default() {
+        let cli = parse_cli(&["deepseek", "--mouse-capture"]);
+        let config = Config::default();
+
+        assert!(should_use_mouse_capture_with(
+            &cli,
+            &config,
+            true,
+            Some("JetBrains-JediTerm"),
+        ));
+    }
+
+    #[test]
+    fn config_mouse_capture_true_overrides_jetbrains_default() {
+        let cli = parse_cli(&["deepseek"]);
+        let config = Config {
+            tui: Some(crate::config::TuiConfig {
+                alternate_screen: None,
+                mouse_capture: Some(true),
+                terminal_probe_timeout_ms: None,
+                status_items: None,
+                osc8_links: None,
+                notification_condition: None,
+            }),
+            ..Config::default()
+        };
+
+        assert!(should_use_mouse_capture_with(
+            &cli,
+            &config,
+            true,
+            Some("JetBrains-JediTerm"),
+        ));
     }
 }
 
@@ -4921,8 +5111,10 @@ mod setup_helper_tests {
     fn resolve_api_key_source_reports_env_when_set() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("DEEPSEEK_API_KEY").ok();
+        let prev_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
         unsafe {
             std::env::set_var("DEEPSEEK_API_KEY", "test-helper-value");
+            std::env::remove_var("DEEPSEEK_API_KEY_SOURCE");
         }
         let cfg = Config::default();
         let source = resolve_api_key_source(&cfg);
@@ -4930,15 +5122,43 @@ mod setup_helper_tests {
             Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) },
             None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
         }
+        match prev_source {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY_SOURCE", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY_SOURCE") },
+        }
         assert_eq!(source, ApiKeySource::Env);
+    }
+
+    #[test]
+    fn resolve_api_key_source_reports_dispatcher_keyring() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("DEEPSEEK_API_KEY").ok();
+        let prev_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
+        unsafe {
+            std::env::set_var("DEEPSEEK_API_KEY", "test-helper-value");
+            std::env::set_var("DEEPSEEK_API_KEY_SOURCE", "keyring");
+        }
+        let cfg = Config::default();
+        let source = resolve_api_key_source(&cfg);
+        match prev {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
+        }
+        match prev_source {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY_SOURCE", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY_SOURCE") },
+        }
+        assert_eq!(source, ApiKeySource::Keyring);
     }
 
     #[test]
     fn resolve_api_key_source_prefers_config_over_env() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("DEEPSEEK_API_KEY").ok();
+        let prev_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
         unsafe {
             std::env::set_var("DEEPSEEK_API_KEY", "stale-env-key");
+            std::env::remove_var("DEEPSEEK_API_KEY_SOURCE");
         }
         let cfg = Config {
             api_key: Some("fresh-config-key".to_string()),
@@ -4948,6 +5168,10 @@ mod setup_helper_tests {
         match prev {
             Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) },
             None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
+        }
+        match prev_source {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY_SOURCE", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY_SOURCE") },
         }
         assert_eq!(source, ApiKeySource::Config);
     }

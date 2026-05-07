@@ -34,19 +34,6 @@ pub enum Method {
     Off,
 }
 
-impl Method {
-    /// Parse from a configuration string (case-insensitive).
-    #[must_use]
-    pub fn from_str(s: &str) -> Self {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "osc9" | "osc-9" => Self::Osc9,
-            "bel" => Self::Bel,
-            "off" | "disabled" | "none" => Self::Off,
-            _ => Self::Auto,
-        }
-    }
-}
-
 /// Emit a Windows system beep via `MessageBeep(MB_OK)`.
 ///
 /// Writing BEL (`\\x07`) to the terminal is silent on most Windows
