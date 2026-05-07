@@ -6,12 +6,12 @@
 //!
 //! ## Rule ordering
 //!
-//! Rules are ordered — first match wins. A `Deny` rule at any position
-//! blocks the tool regardless of later `Allow` rules (deny-always-wins
+//! Deny rules always take precedence regardless of position — all Deny
+//! rules are checked before any Allow/Ask rules (deny-always-wins
 //! semantics).
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -55,10 +55,12 @@ pub enum PathPermissionResult {
 
 /// Manages path-based permission rules for tool execution.
 pub struct PathPermissionEngine {
-    /// Ordered rules — first match wins, deny takes precedence.
+    /// Ordered rules — deny checked first, then allow/ask in order.
     rules: Vec<PathPermissionRule>,
     /// Pending approvals that were granted for this session (tool, path).
     session_allow_all: HashSet<(String, String)>,
+    /// Cached home directory for pattern expansion.
+    home_dir: Option<PathBuf>,
 }
 
 impl PathPermissionEngine {
@@ -67,6 +69,7 @@ impl PathPermissionEngine {
         Self {
             rules,
             session_allow_all: HashSet::new(),
+            home_dir: dirs::home_dir(),
         }
     }
 
@@ -75,51 +78,69 @@ impl PathPermissionEngine {
         Self {
             rules: Vec::new(),
             session_allow_all: HashSet::new(),
+            home_dir: dirs::home_dir(),
         }
     }
 
     /// Check whether `tool_name` is allowed to operate on `file_path`.
     ///
-    /// The check runs through the ordered rules list. First matching rule
-    /// determines the result. If no rule matches, returns `NeedsApproval`.
+    /// Deny rules are always checked first (deny-always-wins), then
+    /// Allow/Ask rules are checked in order (first match wins). If no rule
+    /// matches, returns `NeedsApproval`.
     pub fn check(
         &self,
         tool_name: &str,
         file_path: &Path,
     ) -> PathPermissionResult {
-        // Check session approvals first
+        // Session approvals: shortcuts past all rules.
         let path_str = file_path.to_string_lossy().to_string();
         if self.session_allow_all.contains(&(tool_name.to_string(), path_str.clone())) {
             return PathPermissionResult::Allowed;
         }
 
-        // Check deny rules first (deny-always-wins)
+        let normalized = normalize_path(&path_str);
+
+        // Pass 1: check all Deny rules first (deny-always-wins).
+        for rule in &self.rules {
+            if rule.action != PathRuleAction::Deny {
+                continue;
+            }
+            if !self.tool_matches(&rule.tool, tool_name) {
+                continue;
+            }
+            if !self.path_matches(&rule.pattern, &normalized) {
+                continue;
+            }
+            return PathPermissionResult::Denied {
+                reason: format!(
+                    "path '{}' denied for tool '{}' by rule '{}'",
+                    path_str, tool_name, rule.pattern
+                ),
+            };
+        }
+
+        // Pass 2: check Allow/Ask rules (first match wins).
         for rule in &self.rules {
             if !self.tool_matches(&rule.tool, tool_name) {
                 continue;
             }
-            if !self.path_matches(&rule.pattern, &path_str) {
+            if !self.path_matches(&rule.pattern, &normalized) {
                 continue;
             }
             match rule.action {
-                PathRuleAction::Deny => {
-                    return PathPermissionResult::Denied {
-                        reason: format!(
-                            "path '{}' denied for tool '{}' by rule '{}'",
-                            path_str, tool_name, rule.pattern
-                        ),
-                    };
-                }
                 PathRuleAction::Allow => {
                     return PathPermissionResult::Allowed;
                 }
                 PathRuleAction::Ask => {
                     return PathPermissionResult::NeedsApproval;
                 }
+                PathRuleAction::Deny => {
+                    unreachable!("Deny rules handled in pass 1")
+                }
             }
         }
 
-        // No rule matched — needs approval
+        // No rule matched — needs approval.
         PathPermissionResult::NeedsApproval
     }
 
@@ -132,11 +153,11 @@ impl PathPermissionEngine {
     }
 
     /// Add a rule at runtime (from user approval dialog).
+    /// New rules are inserted at the front so user-granted permissions
+    /// take precedence over existing broader rules.
     pub fn add_rule(&mut self, rule: PathPermissionRule) {
-        // Avoid duplicates
-        if !self.rules.iter().any(|r| r.tool == rule.tool && r.pattern == rule.pattern) {
-            self.rules.push(rule);
-        }
+        self.rules.retain(|r| r.tool != rule.tool || r.pattern != rule.pattern);
+        self.rules.insert(0, rule);
     }
 
     /// Number of rules.
@@ -162,7 +183,7 @@ impl PathPermissionEngine {
 
     fn expand_home(&self, pattern: &str) -> String {
         if pattern.starts_with("~/") || pattern == "~" {
-            if let Some(home) = dirs::home_dir() {
+            if let Some(ref home) = self.home_dir {
                 let home_str = home.to_string_lossy().to_string();
                 pattern.replacen("~", &home_str, 1)
             } else {
@@ -174,17 +195,57 @@ impl PathPermissionEngine {
     }
 }
 
+// ── Path normalization ────────────────────────────────────────────────
+
+/// Normalize a path string: collapse redundant separators, resolve `.` and
+/// `..` components so matching cannot be bypassed with `./foo` or `a//b`.
+fn normalize_path(path: &str) -> String {
+    let p = Path::new(path);
+    let mut out = String::with_capacity(path.len());
+    for component in p.components() {
+        use std::path::Component;
+        match component {
+            Component::RootDir => out.push('/'),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Pop last segment
+                if let Some(pos) = out.rfind('/') {
+                    out.truncate(pos);
+                } else {
+                    out.clear();
+                }
+            }
+            Component::Normal(s) => {
+                if !out.is_empty() && !out.ends_with('/') {
+                    out.push('/');
+                }
+                out.push_str(&s.to_string_lossy());
+            }
+            Component::Prefix(_) => {
+                out.push_str(&component.as_os_str().to_string_lossy());
+            }
+        }
+    }
+    if out.is_empty() && path.starts_with('/') {
+        out.push('/');
+    }
+    out
+}
+
 // ── Glob matching ─────────────────────────────────────────────────────
 
-/// Simple glob matching. Supports `*` (any chars in one path segment) and
-/// `**` (any chars across path segments).
+/// Simple glob matching. Supports:
+/// - `**` — matches zero or more path segments (must be at a segment boundary).
+/// - `*` — matches any chars within a single path segment (does NOT cross `/`).
+/// - No wildcards — exact path match, or trailing filename match.
 fn simple_glob_match(pattern: &str, path: &str) -> bool {
     if pattern.contains("**") {
         let prefix = pattern.trim_end_matches("**").trim_end_matches('/');
         if prefix.is_empty() {
             return true;
         }
-        path.starts_with(prefix)
+        // Require segment boundary: path == prefix OR path starts with prefix/
+        path == prefix || path.starts_with(&format!("{}/", prefix))
     } else if pattern.contains('*') {
         let parts: Vec<&str> = pattern.split('*').collect();
         let mut remaining = path;
@@ -195,16 +256,37 @@ fn simple_glob_match(pattern: &str, path: &str) -> bool {
                 }
                 remaining = &remaining[part.len()..];
             } else if i == parts.len() - 1 {
-                return remaining.ends_with(part);
-            } else if let Some(pos) = remaining.find(part) {
-                remaining = &remaining[pos + part.len()..];
-            } else {
+                // Final part: must match the end without crossing a separator.
+                if remaining.ends_with(part) {
+                    // The matched region (between previous part and this one)
+                    // must not contain '/'. remaining ends with `part`, so the
+                    // matched region is remaining[..remaining.len()-part.len()].
+                    if remaining.len() >= part.len() {
+                        let matched = &remaining[..remaining.len() - part.len()];
+                        if matched.contains('/') {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
                 return false;
+            } else {
+                // Middle part: find within the current segment (no '/' crossing).
+                if let Some(pos) = remaining.find(part) {
+                    let matched = &remaining[..pos];
+                    if matched.contains('/') {
+                        return false;
+                    }
+                    remaining = &remaining[pos + part.len()..];
+                } else {
+                    return false;
+                }
             }
         }
         true
     } else {
-        path.contains(pattern)
+        // Non-glob: exact path match, or matches the trailing filename portion.
+        path == pattern || path.ends_with(&format!("/{}", pattern))
     }
 }
 
@@ -219,11 +301,29 @@ pub struct PermissionsConfig {
 
 impl PermissionsConfig {
     /// Load from user config file, falling back to empty.
+    /// Logs parse errors so users can diagnose misconfigured rules.
     pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default()
+        match std::fs::read_to_string(path) {
+            Ok(content) => match toml::from_str::<PermissionsConfig>(&content) {
+                Ok(config) => config,
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to parse path-permission config {}: {e}",
+                        path.display()
+                    );
+                    Self::default()
+                }
+            },
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        "failed to read path-permission config {}: {e}",
+                        path.display()
+                    );
+                }
+                Self::default()
+            }
+        }
     }
 
     /// Save to a file.
@@ -242,17 +342,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deny_takes_precedence() {
+    fn deny_takes_precedence_over_allow() {
+        // Deny is checked before Allow regardless of order.
         let rules = vec![
-            PathPermissionRule {
-                tool: "edit_file".into(),
-                pattern: "*.env".into(),
-                action: PathRuleAction::Deny,
-            },
             PathPermissionRule {
                 tool: "*".into(),
                 pattern: "*.env".into(),
                 action: PathRuleAction::Allow,
+            },
+            PathPermissionRule {
+                tool: "edit_file".into(),
+                pattern: "*.env".into(),
+                action: PathRuleAction::Deny,
             },
         ];
         let engine = PathPermissionEngine::new(rules);
@@ -313,17 +414,25 @@ mod tests {
             engine.check("edit_file", Path::new("config.toml")),
             PathPermissionResult::Allowed
         );
-        // Different file still needs approval
         assert_eq!(
             engine.check("edit_file", Path::new("other.toml")),
             PathPermissionResult::NeedsApproval
         );
     }
 
+    // ── Glob matching tests ──────────────────────────────────────────
+
     #[test]
     fn simple_glob_star() {
         assert!(simple_glob_match("*.rs", "main.rs"));
         assert!(!simple_glob_match("*.rs", "main.py"));
+    }
+
+    #[test]
+    fn star_does_not_cross_separator() {
+        // * matches chars within one segment — must not cross '/'.
+        assert!(!simple_glob_match("*.rs", "src/main.rs"));
+        assert!(!simple_glob_match("src/*", "src/sub/main.rs"));
     }
 
     #[test]
@@ -334,8 +443,95 @@ mod tests {
     }
 
     #[test]
-    fn simple_glob_contains() {
+    fn double_star_respects_segment_boundary() {
+        // src/** should NOT match src_backup/file.rs
+        assert!(!simple_glob_match("src/**", "src_backup/main.rs"));
+        assert!(simple_glob_match("src/**", "src/main.rs"));
+        assert!(simple_glob_match("src/**", "src/x"));
+        // Edge: prefix-only with trailing /
+        assert!(simple_glob_match("src/**", "src"));
+    }
+
+    #[test]
+    fn non_glob_exact_or_trailing_filename() {
+        // Exact match.
+        assert!(simple_glob_match(".env", ".env"));
+        // Trailing filename match.
         assert!(simple_glob_match(".env", "/home/user/project/.env"));
-        assert!(!simple_glob_match(".env", "/home/user/config.yml"));
+        // Does NOT substring-match in the middle.
+        assert!(!simple_glob_match(".env", "/home/user/.env.example"));
+        assert!(!simple_glob_match("passwd", "/tmp/passwd/copy"));
+    }
+
+    // ── Normalization tests ──────────────────────────────────────────
+
+    #[test]
+    fn normalization_collapses_redundant_separators() {
+        assert_eq!(normalize_path("a//b"), "a/b");
+    }
+
+    #[test]
+    fn normalization_resolves_current_dir() {
+        assert_eq!(normalize_path("./secret.txt"), "secret.txt");
+    }
+
+    #[test]
+    fn normalization_prevents_dot_slash_bypass() {
+        let rules = vec![PathPermissionRule {
+            tool: "*".into(),
+            pattern: "secret.txt".into(),
+            action: PathRuleAction::Deny,
+        }];
+        let engine = PathPermissionEngine::new(rules);
+        assert!(matches!(
+            engine.check("read_file", Path::new("./secret.txt")),
+            PathPermissionResult::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn new_rules_prepend_for_user_override() {
+        let mut engine = PathPermissionEngine::new(vec![PathPermissionRule {
+            tool: "edit_file".into(),
+            pattern: "*.env".into(),
+            action: PathRuleAction::Deny,
+        }]);
+        // User explicitly allows a specific .env file.
+        engine.add_rule(PathPermissionRule {
+            tool: "edit_file".into(),
+            pattern: ".env.local".into(),
+            action: PathRuleAction::Allow,
+        });
+        // The new Allow rule is at the front, so it matches first in pass 2.
+        assert!(matches!(
+            engine.check("edit_file", Path::new(".env.local")),
+            PathPermissionResult::Allowed
+        ));
+        // But a Deny for the same tool+pattern still wins because deny is
+        // checked in pass 1.
+        assert!(matches!(
+            engine.check("edit_file", Path::new(".env.production")),
+            PathPermissionResult::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn add_rule_replaces_existing_same_tool_and_pattern() {
+        let mut engine = PathPermissionEngine::new(vec![PathPermissionRule {
+            tool: "edit_file".into(),
+            pattern: "*.env".into(),
+            action: PathRuleAction::Ask,
+        }]);
+        // Change Ask to Allow for the same tool+pattern.
+        engine.add_rule(PathPermissionRule {
+            tool: "edit_file".into(),
+            pattern: "*.env".into(),
+            action: PathRuleAction::Allow,
+        });
+        assert_eq!(engine.len(), 1);
+        assert!(matches!(
+            engine.check("edit_file", Path::new(".env")),
+            PathPermissionResult::Allowed
+        ));
     }
 }
