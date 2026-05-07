@@ -122,6 +122,10 @@ pub trait RpcDispatcher: Send + Sync {
 
 const DEFAULT_STDOUT_LIMIT: usize = 8_192;
 const ROUND_TIMEOUT: Duration = Duration::from_secs(180);
+#[cfg(windows)]
+const PYTHON_BIN: &str = "python";
+#[cfg(not(windows))]
+const PYTHON_BIN: &str = "python3";
 #[cfg(not(windows))]
 const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(windows)]
@@ -179,7 +183,7 @@ impl PythonRuntime {
         let session_id = Uuid::new_v4().simple().to_string();
         let bootstrap = render_bootstrap(&session_id);
 
-        let mut cmd = Command::new("python3");
+        let mut cmd = Command::new(PYTHON_BIN);
         cmd.arg("-u")
             .arg("-c")
             .arg(&bootstrap)
@@ -194,16 +198,16 @@ impl PythonRuntime {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("failed to spawn python3: {e}"))?;
+            .map_err(|e| format!("failed to spawn {PYTHON_BIN}: {e}"))?;
 
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| "python3 stdin pipe missing".to_string())?;
+            .ok_or_else(|| format!("{PYTHON_BIN} stdin pipe missing"))?;
         let raw_stdout = child
             .stdout
             .take()
-            .ok_or_else(|| "python3 stdout pipe missing".to_string())?;
+            .ok_or_else(|| format!("{PYTHON_BIN} stdout pipe missing"))?;
         let stdout = BufReader::new(raw_stdout);
 
         let mut rt = Self {
@@ -226,12 +230,12 @@ impl PythonRuntime {
             Ok(Ok(())) => Ok(rt),
             Ok(Err(e)) => {
                 let _ = rt.child.kill().await;
-                Err(format!("python3 bootstrap failed: {e}"))
+                Err(format!("{PYTHON_BIN} bootstrap failed: {e}"))
             }
             Err(_) => {
                 let _ = rt.child.kill().await;
                 Err(format!(
-                    "python3 bootstrap did not signal ready within {}s",
+                    "{PYTHON_BIN} bootstrap did not signal ready within {}s",
                     SPAWN_READY_TIMEOUT.as_secs()
                 ))
             }
@@ -247,7 +251,7 @@ impl PythonRuntime {
                 .await
                 .map_err(|e| format!("stdout read: {e}"))?;
             if n == 0 {
-                return Err("python3 closed stdout before ready signal".to_string());
+                return Err(format!("{PYTHON_BIN} closed stdout before ready signal"));
             }
             let trimmed = line.trim_end_matches(['\n', '\r']);
             if trimmed == ready_sentinel {

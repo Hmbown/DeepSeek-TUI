@@ -23,6 +23,10 @@ const TOOL_SEARCH_REGEX_NAME: &str = "tool_search_tool_regex";
 const TOOL_SEARCH_REGEX_TYPE: &str = "tool_search_tool_regex_20251119";
 pub(super) const TOOL_SEARCH_BM25_NAME: &str = "tool_search_tool_bm25";
 const TOOL_SEARCH_BM25_TYPE: &str = "tool_search_tool_bm25_20251119";
+#[cfg(windows)]
+const CODE_EXECUTION_PYTHON_BIN: &str = "python";
+#[cfg(not(windows))]
+const CODE_EXECUTION_PYTHON_BIN: &str = "python3";
 
 pub(super) fn is_tool_search_tool(name: &str) -> bool {
     matches!(name, TOOL_SEARCH_REGEX_NAME | TOOL_SEARCH_BM25_NAME)
@@ -445,7 +449,7 @@ pub(super) async fn execute_code_execution_tool(
     workspace: &Path,
 ) -> Result<ToolResult, ToolError> {
     let code = required_str(input, "code")?;
-    let mut cmd = tokio::process::Command::new("python3");
+    let mut cmd = tokio::process::Command::new(CODE_EXECUTION_PYTHON_BIN);
     cmd.arg("-c");
     cmd.arg(code);
     cmd.current_dir(workspace);

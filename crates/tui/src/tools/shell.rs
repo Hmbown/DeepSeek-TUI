@@ -305,7 +305,10 @@ impl BackgroundShell {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     self.exit_code = status.code;
-                    self.status = if status.success {
+                    let helper_timed_out = windows_helper_timed_out(self.sandbox_type, status.code);
+                    self.status = if helper_timed_out {
+                        ShellStatus::TimedOut
+                    } else if status.success {
                         ShellStatus::Completed
                     } else {
                         ShellStatus::Failed
@@ -405,6 +408,9 @@ impl BackgroundShell {
 
     fn sandbox_denied(&self) -> bool {
         if matches!(self.status, ShellStatus::Running) {
+            return false;
+        }
+        if windows_helper_timed_out(self.sandbox_type, self.exit_code) {
             return false;
         }
         let (_, stderr_full, _, _) = self.full_output();
@@ -807,15 +813,19 @@ impl ShellManager {
             let stdout_str = String::from_utf8_lossy(&stdout).to_string();
             let stderr_str = String::from_utf8_lossy(&stderr).to_string();
             let exit_code = status.code().unwrap_or(-1);
+            let helper_timed_out = windows_helper_timed_out(sandbox_type, status.code());
 
             // Check if sandbox denied the operation
-            let sandbox_denied = SandboxManager::was_denied(sandbox_type, exit_code, &stderr_str);
+            let sandbox_denied = !helper_timed_out
+                && SandboxManager::was_denied(sandbox_type, exit_code, &stderr_str);
             let (stdout, stdout_meta) = truncate_with_meta(&stdout_str);
             let (stderr, stderr_meta) = truncate_with_meta(&stderr_str);
 
             Ok(ShellResult {
                 task_id: None,
-                status: if status.success() {
+                status: if helper_timed_out {
+                    ShellStatus::TimedOut
+                } else if status.success() {
                     ShellStatus::Completed
                 } else {
                     ShellStatus::Failed
@@ -912,9 +922,12 @@ impl ShellManager {
             .with_context(|| format!("Failed to execute: {original_command}"))?;
 
         if let Some(status) = child.wait_timeout(timeout)? {
+            let helper_timed_out = windows_helper_timed_out(sandbox_type, status.code());
             Ok(ShellResult {
                 task_id: None,
-                status: if status.success() {
+                status: if helper_timed_out {
+                    ShellStatus::TimedOut
+                } else if status.success() {
                     ShellStatus::Completed
                 } else {
                     ShellStatus::Failed
@@ -1405,6 +1418,16 @@ pub type SharedShellManager = Arc<Mutex<ShellManager>>;
 /// Create a new shared shell manager with default sandbox policy.
 pub fn new_shared_shell_manager(workspace: PathBuf) -> SharedShellManager {
     Arc::new(Mutex::new(ShellManager::new(workspace)))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_helper_timed_out(sandbox_type: SandboxType, exit_code: Option<i32>) -> bool {
+    matches!(sandbox_type, SandboxType::Windows) && exit_code == Some(124)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_helper_timed_out(_sandbox_type: SandboxType, _exit_code: Option<i32>) -> bool {
+    false
 }
 
 // === ToolSpec Implementations ===
