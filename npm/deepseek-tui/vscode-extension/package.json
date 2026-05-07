@@ -16,7 +16,11 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onCommand:deepseek.explainCode",
+    "onCommand:deepseek.fixCode",
+    "onCommand:deepseek.reviewCode",
+    "onCommand:deepseek.startSession",
+    "onCommand:deepseek.sendSelection"
   ],
   "main": "./out/extension.js",
   "contributes": {
