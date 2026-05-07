@@ -3,6 +3,7 @@
 //! This module provides a modular command system inspired by Codex-rs.
 //! Commands are organized by category and dispatched through a central registry.
 
+mod anchor;
 mod attachment;
 mod config;
 mod core;
@@ -134,6 +135,12 @@ impl CommandInfo {
 /// All registered commands
 pub const COMMANDS: &[CommandInfo] = &[
     // Core commands
+    CommandInfo {
+        name: "anchor",
+        aliases: &[],
+        usage: "/anchor <text> | /anchor list | /anchor remove <n>",
+        description_id: MessageId::CmdAnchorDescription,
+    },
     CommandInfo {
         name: "help",
         aliases: &["?"],
@@ -489,6 +496,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
     // Match command or alias
     match command {
         // Core commands
+        "anchor" => anchor::anchor(app, arg),
         "help" | "?" => core::help(app, arg),
         "clear" => core::clear(app),
         "exit" | "quit" | "q" => core::exit(),

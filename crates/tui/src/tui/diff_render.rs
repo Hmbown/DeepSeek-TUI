@@ -54,7 +54,9 @@ pub fn render_diff(diff: &str, width: u16) -> Vec<Line<'static>> {
                 old_line,
                 new_line,
                 '+',
-                Style::default().fg(palette::STATUS_SUCCESS),
+                Style::default()
+                    .fg(palette::DIFF_ADDED)
+                    .bg(palette::DIFF_ADDED_BG),
             ));
             if let Some(line) = new_line.as_mut() {
                 *line = line.saturating_add(1);
@@ -70,7 +72,9 @@ pub fn render_diff(diff: &str, width: u16) -> Vec<Line<'static>> {
                 old_line,
                 new_line,
                 '-',
-                Style::default().fg(palette::STATUS_ERROR),
+                Style::default()
+                    .fg(palette::STATUS_ERROR)
+                    .bg(palette::DIFF_DELETED_BG),
             ));
             if let Some(line) = old_line.as_mut() {
                 *line = line.saturating_add(1);

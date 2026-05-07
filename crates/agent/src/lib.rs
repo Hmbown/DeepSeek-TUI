@@ -185,6 +185,13 @@ impl Default for ModelRegistry {
                 supports_tools: true,
                 supports_reasoning: true,
             },
+            ModelInfo {
+                id: "deepseek-coder:1.3b".to_string(),
+                provider: ProviderKind::Ollama,
+                aliases: vec![],
+                supports_tools: true,
+                supports_reasoning: false,
+            },
         ];
         Self::new(models)
     }
@@ -218,6 +225,20 @@ impl ModelRegistry {
 
         if let Some(name) = requested {
             fallback_chain.push(format!("requested:{name}"));
+            if provider_hint == Some(ProviderKind::Ollama) {
+                return ModelResolution {
+                    requested: Some(name.to_string()),
+                    resolved: ModelInfo {
+                        id: name.trim().to_string(),
+                        provider: ProviderKind::Ollama,
+                        aliases: Vec::new(),
+                        supports_tools: true,
+                        supports_reasoning: false,
+                    },
+                    used_fallback: false,
+                    fallback_chain,
+                };
+            }
             if let Some(provider) = provider_hint
                 && let Some(model) = self
                     .models
@@ -404,6 +425,26 @@ mod tests {
 
         assert_eq!(resolved.resolved.provider, ProviderKind::Vllm);
         assert_eq!(resolved.resolved.id, "deepseek-ai/DeepSeek-V4-Pro");
+    }
+
+    #[test]
+    fn ollama_default_uses_small_local_model_id() {
+        let registry = ModelRegistry::default();
+        let resolved = registry.resolve(None, Some(ProviderKind::Ollama));
+
+        assert_eq!(resolved.resolved.provider, ProviderKind::Ollama);
+        assert_eq!(resolved.resolved.id, "deepseek-coder:1.3b");
+        assert!(!resolved.resolved.supports_reasoning);
+    }
+
+    #[test]
+    fn ollama_requested_model_tag_is_preserved() {
+        let registry = ModelRegistry::default();
+        let resolved = registry.resolve(Some("qwen2.5-coder:7b"), Some(ProviderKind::Ollama));
+
+        assert_eq!(resolved.resolved.provider, ProviderKind::Ollama);
+        assert_eq!(resolved.resolved.id, "qwen2.5-coder:7b");
+        assert!(!resolved.used_fallback);
     }
 
     #[test]

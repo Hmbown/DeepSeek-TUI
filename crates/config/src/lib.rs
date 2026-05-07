@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
+use deepseek_secrets::SecretSource;
 pub use deepseek_secrets::Secrets;
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +18,7 @@ const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-pro";
 const DEFAULT_NVIDIA_NIM_MODEL: &str = "deepseek-ai/deepseek-v4-pro";
 const DEFAULT_NVIDIA_NIM_FLASH_MODEL: &str = "deepseek-ai/deepseek-v4-flash";
 const DEFAULT_OPENAI_MODEL: &str = "gpt-4.1";
-const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
+const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/beta";
 const DEFAULT_NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OPENROUTER_MODEL: &str = "deepseek/deepseek-v4-pro";
@@ -34,6 +35,8 @@ const DEFAULT_SGLANG_BASE_URL: &str = "http://localhost:30000/v1";
 const DEFAULT_VLLM_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
+const DEFAULT_OLLAMA_MODEL: &str = "deepseek-coder:1.3b";
+const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -47,6 +50,7 @@ pub enum ProviderKind {
     Fireworks,
     Sglang,
     Vllm,
+    Ollama,
 }
 
 impl ProviderKind {
@@ -61,6 +65,7 @@ impl ProviderKind {
             Self::Fireworks => "fireworks",
             Self::Sglang => "sglang",
             Self::Vllm => "vllm",
+            Self::Ollama => "ollama",
         }
     }
 
@@ -75,6 +80,7 @@ impl ProviderKind {
             "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
             "sglang" | "sg-lang" => Some(Self::Sglang),
             "vllm" | "v-llm" => Some(Self::Vllm),
+            "ollama" | "ollama-local" => Some(Self::Ollama),
             _ => None,
         }
     }
@@ -85,6 +91,8 @@ pub struct ProviderConfigToml {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
     pub model: Option<String>,
+    #[serde(default)]
+    pub http_headers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -105,6 +113,8 @@ pub struct ProvidersToml {
     pub sglang: ProviderConfigToml,
     #[serde(default)]
     pub vllm: ProviderConfigToml,
+    #[serde(default)]
+    pub ollama: ProviderConfigToml,
 }
 
 impl ProvidersToml {
@@ -119,6 +129,7 @@ impl ProvidersToml {
             ProviderKind::Fireworks => &self.fireworks,
             ProviderKind::Sglang => &self.sglang,
             ProviderKind::Vllm => &self.vllm,
+            ProviderKind::Ollama => &self.ollama,
         }
     }
 
@@ -132,6 +143,7 @@ impl ProvidersToml {
             ProviderKind::Fireworks => &mut self.fireworks,
             ProviderKind::Sglang => &mut self.sglang,
             ProviderKind::Vllm => &mut self.vllm,
+            ProviderKind::Ollama => &mut self.ollama,
         }
     }
 }
@@ -143,6 +155,9 @@ pub struct ConfigToml {
     pub api_key: Option<String>,
     /// TUI-compatible DeepSeek base URL.
     pub base_url: Option<String>,
+    /// Optional extra HTTP headers forwarded to model API requests.
+    #[serde(default)]
+    pub http_headers: BTreeMap<String, String>,
     /// TUI-compatible default DeepSeek model.
     pub default_text_model: Option<String>,
     #[serde(default)]
@@ -293,6 +308,9 @@ impl ConfigToml {
         if project.base_url.is_some() {
             self.base_url = project.base_url;
         }
+        if !project.http_headers.is_empty() {
+            self.http_headers = project.http_headers;
+        }
         if project.default_text_model.is_some() {
             self.default_text_model = project.default_text_model;
         }
@@ -334,6 +352,7 @@ impl ConfigToml {
         merge_provider_config(&mut self.providers.fireworks, &project.providers.fireworks);
         merge_provider_config(&mut self.providers.sglang, &project.providers.sglang);
         merge_provider_config(&mut self.providers.vllm, &project.providers.vllm);
+        merge_provider_config(&mut self.providers.ollama, &project.providers.ollama);
 
         if project.network.is_some() {
             self.network = project.network;
@@ -358,6 +377,7 @@ impl ConfigToml {
             "provider" => Some(self.provider.as_str().to_string()),
             "api_key" => self.api_key.clone(),
             "base_url" => self.base_url.clone(),
+            "http_headers" => serialize_http_headers(&self.http_headers),
             "default_text_model" => self.default_text_model.clone(),
             "model" => self.model.clone(),
             "auth.mode" => self.auth_mode.clone(),
@@ -371,27 +391,57 @@ impl ConfigToml {
             "providers.deepseek.api_key" => self.providers.deepseek.api_key.clone(),
             "providers.deepseek.base_url" => self.providers.deepseek.base_url.clone(),
             "providers.deepseek.model" => self.providers.deepseek.model.clone(),
+            "providers.deepseek.http_headers" => {
+                serialize_http_headers(&self.providers.deepseek.http_headers)
+            }
             "providers.nvidia_nim.api_key" => self.providers.nvidia_nim.api_key.clone(),
             "providers.nvidia_nim.base_url" => self.providers.nvidia_nim.base_url.clone(),
             "providers.nvidia_nim.model" => self.providers.nvidia_nim.model.clone(),
+            "providers.nvidia_nim.http_headers" => {
+                serialize_http_headers(&self.providers.nvidia_nim.http_headers)
+            }
             "providers.openai.api_key" => self.providers.openai.api_key.clone(),
             "providers.openai.base_url" => self.providers.openai.base_url.clone(),
             "providers.openai.model" => self.providers.openai.model.clone(),
+            "providers.openai.http_headers" => {
+                serialize_http_headers(&self.providers.openai.http_headers)
+            }
             "providers.openrouter.api_key" => self.providers.openrouter.api_key.clone(),
             "providers.openrouter.base_url" => self.providers.openrouter.base_url.clone(),
             "providers.openrouter.model" => self.providers.openrouter.model.clone(),
+            "providers.openrouter.http_headers" => {
+                serialize_http_headers(&self.providers.openrouter.http_headers)
+            }
             "providers.novita.api_key" => self.providers.novita.api_key.clone(),
             "providers.novita.base_url" => self.providers.novita.base_url.clone(),
             "providers.novita.model" => self.providers.novita.model.clone(),
+            "providers.novita.http_headers" => {
+                serialize_http_headers(&self.providers.novita.http_headers)
+            }
             "providers.fireworks.api_key" => self.providers.fireworks.api_key.clone(),
             "providers.fireworks.base_url" => self.providers.fireworks.base_url.clone(),
             "providers.fireworks.model" => self.providers.fireworks.model.clone(),
+            "providers.fireworks.http_headers" => {
+                serialize_http_headers(&self.providers.fireworks.http_headers)
+            }
             "providers.sglang.api_key" => self.providers.sglang.api_key.clone(),
             "providers.sglang.base_url" => self.providers.sglang.base_url.clone(),
             "providers.sglang.model" => self.providers.sglang.model.clone(),
+            "providers.sglang.http_headers" => {
+                serialize_http_headers(&self.providers.sglang.http_headers)
+            }
             "providers.vllm.api_key" => self.providers.vllm.api_key.clone(),
             "providers.vllm.base_url" => self.providers.vllm.base_url.clone(),
             "providers.vllm.model" => self.providers.vllm.model.clone(),
+            "providers.vllm.http_headers" => {
+                serialize_http_headers(&self.providers.vllm.http_headers)
+            }
+            "providers.ollama.api_key" => self.providers.ollama.api_key.clone(),
+            "providers.ollama.base_url" => self.providers.ollama.base_url.clone(),
+            "providers.ollama.model" => self.providers.ollama.model.clone(),
+            "providers.ollama.http_headers" => {
+                serialize_http_headers(&self.providers.ollama.http_headers)
+            }
             _ => self.extras.get(key).map(toml::Value::to_string),
         }
     }
@@ -404,6 +454,7 @@ impl ConfigToml {
             }
             "api_key" => self.api_key = Some(value.to_string()),
             "base_url" => self.base_url = Some(value.to_string()),
+            "http_headers" => self.http_headers = parse_http_headers(value)?,
             "default_text_model" => self.default_text_model = Some(value.to_string()),
             "model" => self.model = Some(value.to_string()),
             "auth.mode" => self.auth_mode = Some(value.to_string()),
@@ -431,9 +482,17 @@ impl ConfigToml {
                 self.providers.deepseek.model = Some(value.clone());
                 self.default_text_model = Some(value);
             }
+            "providers.deepseek.http_headers" => {
+                let headers = parse_http_headers(value)?;
+                self.providers.deepseek.http_headers = headers.clone();
+                self.http_headers = headers;
+            }
             "providers.openai.api_key" => self.providers.openai.api_key = Some(value.to_string()),
             "providers.openai.base_url" => self.providers.openai.base_url = Some(value.to_string()),
             "providers.openai.model" => self.providers.openai.model = Some(value.to_string()),
+            "providers.openai.http_headers" => {
+                self.providers.openai.http_headers = parse_http_headers(value)?;
+            }
             "providers.nvidia_nim.api_key" => {
                 self.providers.nvidia_nim.api_key = Some(value.to_string());
             }
@@ -442,6 +501,9 @@ impl ConfigToml {
             }
             "providers.nvidia_nim.model" => {
                 self.providers.nvidia_nim.model = Some(value.to_string());
+            }
+            "providers.nvidia_nim.http_headers" => {
+                self.providers.nvidia_nim.http_headers = parse_http_headers(value)?;
             }
             "providers.openrouter.api_key" => {
                 self.providers.openrouter.api_key = Some(value.to_string());
@@ -452,6 +514,9 @@ impl ConfigToml {
             "providers.openrouter.model" => {
                 self.providers.openrouter.model = Some(value.to_string());
             }
+            "providers.openrouter.http_headers" => {
+                self.providers.openrouter.http_headers = parse_http_headers(value)?;
+            }
             "providers.novita.api_key" => {
                 self.providers.novita.api_key = Some(value.to_string());
             }
@@ -460,6 +525,9 @@ impl ConfigToml {
             }
             "providers.novita.model" => {
                 self.providers.novita.model = Some(value.to_string());
+            }
+            "providers.novita.http_headers" => {
+                self.providers.novita.http_headers = parse_http_headers(value)?;
             }
             "providers.fireworks.api_key" => {
                 self.providers.fireworks.api_key = Some(value.to_string());
@@ -470,6 +538,9 @@ impl ConfigToml {
             "providers.fireworks.model" => {
                 self.providers.fireworks.model = Some(value.to_string());
             }
+            "providers.fireworks.http_headers" => {
+                self.providers.fireworks.http_headers = parse_http_headers(value)?;
+            }
             "providers.sglang.api_key" => {
                 self.providers.sglang.api_key = Some(value.to_string());
             }
@@ -479,6 +550,9 @@ impl ConfigToml {
             "providers.sglang.model" => {
                 self.providers.sglang.model = Some(value.to_string());
             }
+            "providers.sglang.http_headers" => {
+                self.providers.sglang.http_headers = parse_http_headers(value)?;
+            }
             "providers.vllm.api_key" => {
                 self.providers.vllm.api_key = Some(value.to_string());
             }
@@ -487,6 +561,21 @@ impl ConfigToml {
             }
             "providers.vllm.model" => {
                 self.providers.vllm.model = Some(value.to_string());
+            }
+            "providers.vllm.http_headers" => {
+                self.providers.vllm.http_headers = parse_http_headers(value)?;
+            }
+            "providers.ollama.api_key" => {
+                self.providers.ollama.api_key = Some(value.to_string());
+            }
+            "providers.ollama.base_url" => {
+                self.providers.ollama.base_url = Some(value.to_string());
+            }
+            "providers.ollama.model" => {
+                self.providers.ollama.model = Some(value.to_string());
+            }
+            "providers.ollama.http_headers" => {
+                self.providers.ollama.http_headers = parse_http_headers(value)?;
             }
             _ => {
                 self.extras
@@ -501,6 +590,7 @@ impl ConfigToml {
             "provider" => self.provider = ProviderKind::Deepseek,
             "api_key" => self.api_key = None,
             "base_url" => self.base_url = None,
+            "http_headers" => self.http_headers.clear(),
             "default_text_model" => self.default_text_model = None,
             "model" => self.model = None,
             "auth.mode" => self.auth_mode = None,
@@ -523,27 +613,42 @@ impl ConfigToml {
                 self.providers.deepseek.model = None;
                 self.default_text_model = None;
             }
+            "providers.deepseek.http_headers" => {
+                self.providers.deepseek.http_headers.clear();
+                self.http_headers.clear();
+            }
             "providers.openai.api_key" => self.providers.openai.api_key = None,
             "providers.openai.base_url" => self.providers.openai.base_url = None,
             "providers.openai.model" => self.providers.openai.model = None,
+            "providers.openai.http_headers" => self.providers.openai.http_headers.clear(),
             "providers.nvidia_nim.api_key" => self.providers.nvidia_nim.api_key = None,
             "providers.nvidia_nim.base_url" => self.providers.nvidia_nim.base_url = None,
             "providers.nvidia_nim.model" => self.providers.nvidia_nim.model = None,
+            "providers.nvidia_nim.http_headers" => self.providers.nvidia_nim.http_headers.clear(),
             "providers.openrouter.api_key" => self.providers.openrouter.api_key = None,
             "providers.openrouter.base_url" => self.providers.openrouter.base_url = None,
             "providers.openrouter.model" => self.providers.openrouter.model = None,
+            "providers.openrouter.http_headers" => self.providers.openrouter.http_headers.clear(),
             "providers.novita.api_key" => self.providers.novita.api_key = None,
             "providers.novita.base_url" => self.providers.novita.base_url = None,
             "providers.novita.model" => self.providers.novita.model = None,
+            "providers.novita.http_headers" => self.providers.novita.http_headers.clear(),
             "providers.fireworks.api_key" => self.providers.fireworks.api_key = None,
             "providers.fireworks.base_url" => self.providers.fireworks.base_url = None,
             "providers.fireworks.model" => self.providers.fireworks.model = None,
+            "providers.fireworks.http_headers" => self.providers.fireworks.http_headers.clear(),
             "providers.sglang.api_key" => self.providers.sglang.api_key = None,
             "providers.sglang.base_url" => self.providers.sglang.base_url = None,
             "providers.sglang.model" => self.providers.sglang.model = None,
+            "providers.sglang.http_headers" => self.providers.sglang.http_headers.clear(),
             "providers.vllm.api_key" => self.providers.vllm.api_key = None,
             "providers.vllm.base_url" => self.providers.vllm.base_url = None,
             "providers.vllm.model" => self.providers.vllm.model = None,
+            "providers.vllm.http_headers" => self.providers.vllm.http_headers.clear(),
+            "providers.ollama.api_key" => self.providers.ollama.api_key = None,
+            "providers.ollama.base_url" => self.providers.ollama.base_url = None,
+            "providers.ollama.model" => self.providers.ollama.model = None,
+            "providers.ollama.http_headers" => self.providers.ollama.http_headers.clear(),
             _ => {
                 self.extras.remove(key);
             }
@@ -561,6 +666,9 @@ impl ConfigToml {
         }
         if let Some(v) = self.base_url.as_ref() {
             out.insert("base_url".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.http_headers) {
+            out.insert("http_headers".to_string(), v);
         }
         if let Some(v) = self.default_text_model.as_ref() {
             out.insert("default_text_model".to_string(), v.clone());
@@ -601,6 +709,9 @@ impl ConfigToml {
         if let Some(v) = self.providers.deepseek.model.as_ref() {
             out.insert("providers.deepseek.model".to_string(), v.clone());
         }
+        if let Some(v) = serialize_http_headers(&self.providers.deepseek.http_headers) {
+            out.insert("providers.deepseek.http_headers".to_string(), v);
+        }
         if let Some(v) = self.providers.openai.api_key.as_ref() {
             out.insert("providers.openai.api_key".to_string(), redact_secret(v));
         }
@@ -609,6 +720,9 @@ impl ConfigToml {
         }
         if let Some(v) = self.providers.openai.model.as_ref() {
             out.insert("providers.openai.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.openai.http_headers) {
+            out.insert("providers.openai.http_headers".to_string(), v);
         }
         if let Some(v) = self.providers.nvidia_nim.api_key.as_ref() {
             out.insert("providers.nvidia_nim.api_key".to_string(), redact_secret(v));
@@ -619,6 +733,9 @@ impl ConfigToml {
         if let Some(v) = self.providers.nvidia_nim.model.as_ref() {
             out.insert("providers.nvidia_nim.model".to_string(), v.clone());
         }
+        if let Some(v) = serialize_http_headers(&self.providers.nvidia_nim.http_headers) {
+            out.insert("providers.nvidia_nim.http_headers".to_string(), v);
+        }
         if let Some(v) = self.providers.openrouter.api_key.as_ref() {
             out.insert("providers.openrouter.api_key".to_string(), redact_secret(v));
         }
@@ -627,6 +744,9 @@ impl ConfigToml {
         }
         if let Some(v) = self.providers.openrouter.model.as_ref() {
             out.insert("providers.openrouter.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.openrouter.http_headers) {
+            out.insert("providers.openrouter.http_headers".to_string(), v);
         }
         if let Some(v) = self.providers.novita.api_key.as_ref() {
             out.insert("providers.novita.api_key".to_string(), redact_secret(v));
@@ -637,6 +757,9 @@ impl ConfigToml {
         if let Some(v) = self.providers.novita.model.as_ref() {
             out.insert("providers.novita.model".to_string(), v.clone());
         }
+        if let Some(v) = serialize_http_headers(&self.providers.novita.http_headers) {
+            out.insert("providers.novita.http_headers".to_string(), v);
+        }
         if let Some(v) = self.providers.fireworks.api_key.as_ref() {
             out.insert("providers.fireworks.api_key".to_string(), redact_secret(v));
         }
@@ -645,6 +768,9 @@ impl ConfigToml {
         }
         if let Some(v) = self.providers.fireworks.model.as_ref() {
             out.insert("providers.fireworks.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.fireworks.http_headers) {
+            out.insert("providers.fireworks.http_headers".to_string(), v);
         }
         if let Some(v) = self.providers.sglang.api_key.as_ref() {
             out.insert("providers.sglang.api_key".to_string(), redact_secret(v));
@@ -655,6 +781,9 @@ impl ConfigToml {
         if let Some(v) = self.providers.sglang.model.as_ref() {
             out.insert("providers.sglang.model".to_string(), v.clone());
         }
+        if let Some(v) = serialize_http_headers(&self.providers.sglang.http_headers) {
+            out.insert("providers.sglang.http_headers".to_string(), v);
+        }
         if let Some(v) = self.providers.vllm.api_key.as_ref() {
             out.insert("providers.vllm.api_key".to_string(), redact_secret(v));
         }
@@ -663,6 +792,21 @@ impl ConfigToml {
         }
         if let Some(v) = self.providers.vllm.model.as_ref() {
             out.insert("providers.vllm.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.vllm.http_headers) {
+            out.insert("providers.vllm.http_headers".to_string(), v);
+        }
+        if let Some(v) = self.providers.ollama.api_key.as_ref() {
+            out.insert("providers.ollama.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.ollama.base_url.as_ref() {
+            out.insert("providers.ollama.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.ollama.model.as_ref() {
+            out.insert("providers.ollama.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.ollama.http_headers) {
+            out.insert("providers.ollama.http_headers".to_string(), v);
         }
 
         for (k, v) in &self.extras {
@@ -673,10 +817,9 @@ impl ConfigToml {
 
     /// Resolve runtime options without touching platform credential stores.
     ///
-    /// v0.8.8 keeps the default auth path deliberately boring:
-    /// CLI flag → config file → environment. Explicit keyring migration
-    /// remains available through auth commands, but normal startup and
-    /// diagnostics must not trigger platform credential prompts.
+    /// This method keeps library callers prompt-free: CLI flag → config file
+    /// → environment. Call `resolve_runtime_options_with_secrets` when a
+    /// user-facing dispatcher should recover OS-keyring credentials.
     #[must_use]
     pub fn resolve_runtime_options(&self, cli: &CliRuntimeOverrides) -> ResolvedRuntimeOptions {
         let no_keyring = Secrets::new(std::sync::Arc::new(
@@ -687,9 +830,7 @@ impl ConfigToml {
 
     /// Resolve runtime options using an explicit secrets façade.
     ///
-    /// API-key precedence is **CLI flag → config-file → environment**.
-    /// If a caller explicitly injects a secrets façade with a populated
-    /// credential store, that store is used only when config/env are empty.
+    /// API-key precedence is **CLI flag → config-file → keyring → environment**.
     #[must_use]
     pub fn resolve_runtime_options_with_secrets(
         &self,
@@ -711,15 +852,23 @@ impl ConfigToml {
             .flatten();
         // CLI flag wins outright. Otherwise: config-file → injected secrets/env.
         // This makes `deepseek auth set` a reliable fix even when the user's
-        // shell still exports an old key. The default caller injects an empty
-        // in-memory store, so this path does not touch platform credential
-        // stores during ordinary startup.
+        // shell still exports an old key. When the file is empty, the injected
+        // secrets façade recovers older OS-keyring credentials before falling
+        // back to ambient env.
         let from_file = provider_cfg.api_key.clone().or(root_deepseek_api_key);
-        let api_key = cli
-            .api_key
-            .clone()
-            .or_else(|| from_file.clone())
-            .or_else(|| secrets.resolve(provider.as_str()));
+        let (api_key, api_key_source) = if let Some(value) = cli.api_key.clone() {
+            (Some(value), Some(RuntimeApiKeySource::Cli))
+        } else if let Some(value) = from_file.clone().filter(|v| !v.trim().is_empty()) {
+            (Some(value), Some(RuntimeApiKeySource::ConfigFile))
+        } else if let Some((value, source)) = secrets.resolve_with_source(provider.as_str()) {
+            let source = match source {
+                SecretSource::Keyring => RuntimeApiKeySource::Keyring,
+                SecretSource::Env => RuntimeApiKeySource::Env,
+            };
+            (Some(value), Some(source))
+        } else {
+            (None, None)
+        };
 
         let base_url = cli
             .base_url
@@ -736,6 +885,7 @@ impl ConfigToml {
                 ProviderKind::Fireworks => DEFAULT_FIREWORKS_BASE_URL.to_string(),
                 ProviderKind::Sglang => DEFAULT_SGLANG_BASE_URL.to_string(),
                 ProviderKind::Vllm => DEFAULT_VLLM_BASE_URL.to_string(),
+                ProviderKind::Ollama => DEFAULT_OLLAMA_BASE_URL.to_string(),
             });
 
         let model = cli
@@ -754,8 +904,16 @@ impl ConfigToml {
                 ProviderKind::Fireworks => DEFAULT_FIREWORKS_MODEL.to_string(),
                 ProviderKind::Sglang => DEFAULT_SGLANG_MODEL.to_string(),
                 ProviderKind::Vllm => DEFAULT_VLLM_MODEL.to_string(),
+                ProviderKind::Ollama => DEFAULT_OLLAMA_MODEL.to_string(),
             });
         let model = normalize_model_for_provider(provider, &model);
+
+        let mut http_headers = self.http_headers.clone();
+        http_headers.extend(provider_cfg.http_headers.clone());
+        if let Some(env_headers) = env.http_headers {
+            http_headers.extend(env_headers);
+        }
+        http_headers.retain(|name, value| !name.trim().is_empty() && !value.trim().is_empty());
 
         let output_mode = cli
             .output_mode
@@ -792,6 +950,7 @@ impl ConfigToml {
             provider,
             model,
             api_key,
+            api_key_source,
             base_url,
             auth_mode,
             output_mode,
@@ -799,6 +958,7 @@ impl ConfigToml {
             telemetry,
             approval_policy,
             sandbox_mode,
+            http_headers,
         }
     }
 }
@@ -812,6 +972,9 @@ fn merge_provider_config(target: &mut ProviderConfigToml, source: &ProviderConfi
     }
     if source.model.is_some() {
         target.model = source.model.clone();
+    }
+    if !source.http_headers.is_empty() {
+        target.http_headers = source.http_headers.clone();
     }
 }
 
@@ -827,6 +990,10 @@ pub fn load_project_config(workspace: &Path) -> Option<ConfigToml> {
 }
 
 fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> String {
+    if matches!(provider, ProviderKind::Ollama) {
+        return model.to_string();
+    }
+
     let normalized = model.trim().to_ascii_lowercase();
     match (provider, normalized.as_str()) {
         (ProviderKind::NvidiaNim, "deepseek-v4-pro" | "deepseek-v4pro") => {
@@ -890,11 +1057,32 @@ pub struct CliRuntimeOverrides {
     pub sandbox_mode: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeApiKeySource {
+    Cli,
+    ConfigFile,
+    Keyring,
+    Env,
+}
+
+impl RuntimeApiKeySource {
+    #[must_use]
+    pub fn as_env_value(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::ConfigFile => "config",
+            Self::Keyring => "keyring",
+            Self::Env => "env",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedRuntimeOptions {
     pub provider: ProviderKind,
     pub model: String,
     pub api_key: Option<String>,
+    pub api_key_source: Option<RuntimeApiKeySource>,
     pub base_url: String,
     pub auth_mode: Option<String>,
     pub output_mode: Option<String>,
@@ -902,6 +1090,7 @@ pub struct ResolvedRuntimeOptions {
     pub telemetry: bool,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    pub http_headers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1021,6 +1210,42 @@ fn parse_bool(raw: &str) -> Result<bool> {
     }
 }
 
+fn parse_http_headers(raw: &str) -> Result<BTreeMap<String, String>> {
+    let mut headers = BTreeMap::new();
+    for pair in raw.trim().split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = pair.split_once('=') else {
+            bail!("invalid header pair '{pair}', expected name=value");
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if name.is_empty() {
+            bail!("header name cannot be empty");
+        }
+        if value.is_empty() {
+            continue;
+        }
+        headers.insert(name.to_string(), value.to_string());
+    }
+    Ok(headers)
+}
+
+fn serialize_http_headers(headers: &BTreeMap<String, String>) -> Option<String> {
+    if headers.is_empty() {
+        return None;
+    }
+    Some(
+        headers
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join(","),
+    )
+}
+
 fn redact_secret(secret: &str) -> String {
     if secret.len() <= 16 {
         return "********".to_string();
@@ -1038,6 +1263,7 @@ struct EnvRuntimeOverrides {
     telemetry: Option<bool>,
     approval_policy: Option<String>,
     sandbox_mode: Option<String>,
+    http_headers: Option<BTreeMap<String, String>>,
     deepseek_base_url: Option<String>,
     nvidia_base_url: Option<String>,
     openai_base_url: Option<String>,
@@ -1046,6 +1272,7 @@ struct EnvRuntimeOverrides {
     fireworks_base_url: Option<String>,
     sglang_base_url: Option<String>,
     vllm_base_url: Option<String>,
+    ollama_base_url: Option<String>,
 }
 
 impl EnvRuntimeOverrides {
@@ -1063,6 +1290,10 @@ impl EnvRuntimeOverrides {
                 .and_then(|v| parse_bool(&v).ok()),
             approval_policy: std::env::var("DEEPSEEK_APPROVAL_POLICY").ok(),
             sandbox_mode: std::env::var("DEEPSEEK_SANDBOX_MODE").ok(),
+            http_headers: std::env::var("DEEPSEEK_HTTP_HEADERS")
+                .ok()
+                .and_then(|value| parse_http_headers(&value).ok())
+                .filter(|headers| !headers.is_empty()),
             deepseek_base_url: std::env::var("DEEPSEEK_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
@@ -1089,6 +1320,9 @@ impl EnvRuntimeOverrides {
             vllm_base_url: std::env::var("VLLM_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            ollama_base_url: std::env::var("OLLAMA_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
         }
     }
 
@@ -1104,6 +1338,7 @@ impl EnvRuntimeOverrides {
             ProviderKind::Fireworks => self.fireworks_base_url.clone(),
             ProviderKind::Sglang => self.sglang_base_url.clone(),
             ProviderKind::Vllm => self.vllm_base_url.clone(),
+            ProviderKind::Ollama => self.ollama_base_url.clone(),
         }
     }
 }
@@ -1123,6 +1358,7 @@ mod tests {
     struct EnvGuard {
         deepseek_api_key: Option<OsString>,
         deepseek_base_url: Option<OsString>,
+        deepseek_http_headers: Option<OsString>,
         deepseek_model: Option<OsString>,
         deepseek_provider: Option<OsString>,
         nvidia_api_key: Option<OsString>,
@@ -1140,6 +1376,8 @@ mod tests {
         sglang_base_url: Option<OsString>,
         vllm_api_key: Option<OsString>,
         vllm_base_url: Option<OsString>,
+        ollama_api_key: Option<OsString>,
+        ollama_base_url: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -1147,6 +1385,7 @@ mod tests {
             let guard = Self {
                 deepseek_api_key: env::var_os("DEEPSEEK_API_KEY"),
                 deepseek_base_url: env::var_os("DEEPSEEK_BASE_URL"),
+                deepseek_http_headers: env::var_os("DEEPSEEK_HTTP_HEADERS"),
                 deepseek_model: env::var_os("DEEPSEEK_MODEL"),
                 deepseek_provider: env::var_os("DEEPSEEK_PROVIDER"),
                 nvidia_api_key: env::var_os("NVIDIA_API_KEY"),
@@ -1164,11 +1403,14 @@ mod tests {
                 sglang_base_url: env::var_os("SGLANG_BASE_URL"),
                 vllm_api_key: env::var_os("VLLM_API_KEY"),
                 vllm_base_url: env::var_os("VLLM_BASE_URL"),
+                ollama_api_key: env::var_os("OLLAMA_API_KEY"),
+                ollama_base_url: env::var_os("OLLAMA_BASE_URL"),
             };
             // Safety: test-only environment mutation guarded by a module mutex.
             unsafe {
                 env::remove_var("DEEPSEEK_API_KEY");
                 env::remove_var("DEEPSEEK_BASE_URL");
+                env::remove_var("DEEPSEEK_HTTP_HEADERS");
                 env::remove_var("DEEPSEEK_MODEL");
                 env::remove_var("DEEPSEEK_PROVIDER");
                 env::remove_var("NVIDIA_API_KEY");
@@ -1186,6 +1428,8 @@ mod tests {
                 env::remove_var("SGLANG_BASE_URL");
                 env::remove_var("VLLM_API_KEY");
                 env::remove_var("VLLM_BASE_URL");
+                env::remove_var("OLLAMA_API_KEY");
+                env::remove_var("OLLAMA_BASE_URL");
             }
             guard
         }
@@ -1205,6 +1449,7 @@ mod tests {
             unsafe {
                 Self::restore_var("DEEPSEEK_API_KEY", self.deepseek_api_key.take());
                 Self::restore_var("DEEPSEEK_BASE_URL", self.deepseek_base_url.take());
+                Self::restore_var("DEEPSEEK_HTTP_HEADERS", self.deepseek_http_headers.take());
                 Self::restore_var("DEEPSEEK_MODEL", self.deepseek_model.take());
                 Self::restore_var("DEEPSEEK_PROVIDER", self.deepseek_provider.take());
                 Self::restore_var("NVIDIA_API_KEY", self.nvidia_api_key.take());
@@ -1222,6 +1467,8 @@ mod tests {
                 Self::restore_var("SGLANG_BASE_URL", self.sglang_base_url.take());
                 Self::restore_var("VLLM_API_KEY", self.vllm_api_key.take());
                 Self::restore_var("VLLM_BASE_URL", self.vllm_base_url.take());
+                Self::restore_var("OLLAMA_API_KEY", self.ollama_api_key.take());
+                Self::restore_var("OLLAMA_BASE_URL", self.ollama_base_url.take());
             }
         }
     }
@@ -1246,6 +1493,19 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_runtime_defaults_to_beta_endpoint() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let config = ConfigToml::default();
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Deepseek);
+        assert_eq!(resolved.base_url, DEFAULT_DEEPSEEK_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_DEEPSEEK_MODEL);
+    }
+
+    #[test]
     fn provider_specific_deepseek_fields_override_tui_compat_fields() {
         let _lock = env_lock();
         let _env = EnvGuard::without_deepseek_runtime_overrides();
@@ -1264,6 +1524,75 @@ mod tests {
         assert_eq!(resolved.api_key.as_deref(), Some("provider-key"));
         assert_eq!(resolved.base_url, "https://api.deepseeki.com");
         assert_eq!(resolved.model, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn provider_http_headers_override_root_headers() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let mut config = ConfigToml {
+            api_key: Some("root-key".to_string()),
+            base_url: Some("https://api.deepseek.com".to_string()),
+            default_text_model: Some("deepseek-v4-pro".to_string()),
+            ..ConfigToml::default()
+        };
+        config.providers.deepseek.api_key = Some("provider-key".to_string());
+        config.providers.deepseek.base_url = Some("https://api.deepseeki.com".to_string());
+        config.providers.deepseek.model = Some("deepseek-v4-flash".to_string());
+        config
+            .http_headers
+            .insert("X-Shared".to_string(), "root".to_string());
+        config
+            .providers
+            .deepseek
+            .http_headers
+            .insert("X-Model-Provider-Id".to_string(), "tongyi".to_string());
+        config
+            .providers
+            .deepseek
+            .http_headers
+            .insert("X-Shared".to_string(), "provider".to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.api_key.as_deref(), Some("provider-key"));
+        assert_eq!(resolved.base_url, "https://api.deepseeki.com");
+        assert_eq!(resolved.model, "deepseek-v4-flash");
+        assert_eq!(
+            resolved
+                .http_headers
+                .get("X-Model-Provider-Id")
+                .map(String::as_str),
+            Some("tongyi")
+        );
+        assert_eq!(
+            resolved.http_headers.get("X-Shared").map(String::as_str),
+            Some("provider")
+        );
+    }
+
+    #[test]
+    fn http_headers_env_overrides_config() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let mut config = ConfigToml::default();
+        config
+            .http_headers
+            .insert("X-Model-Provider-Id".to_string(), "from-file".to_string());
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_HTTP_HEADERS", "X-Model-Provider-Id=from-env");
+        }
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(
+            resolved
+                .http_headers
+                .get("X-Model-Provider-Id")
+                .map(String::as_str),
+            Some("from-env")
+        );
     }
 
     #[test]
@@ -1452,6 +1781,11 @@ mod tests {
         assert_eq!(ProviderKind::parse("sg-lang"), Some(ProviderKind::Sglang));
         assert_eq!(ProviderKind::parse("v-llm"), Some(ProviderKind::Vllm));
         assert_eq!(ProviderKind::parse("vllm"), Some(ProviderKind::Vllm));
+        assert_eq!(ProviderKind::parse("ollama"), Some(ProviderKind::Ollama));
+        assert_eq!(
+            ProviderKind::parse("ollama-local"),
+            Some(ProviderKind::Ollama)
+        );
     }
 
     #[test]
@@ -1532,6 +1866,58 @@ mod tests {
         assert_eq!(resolved.provider, ProviderKind::Vllm);
         assert_eq!(resolved.base_url, DEFAULT_VLLM_BASE_URL);
         assert_eq!(resolved.model, DEFAULT_VLLM_MODEL);
+    }
+
+    #[test]
+    fn ollama_provider_defaults_to_local_endpoint_and_small_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::Ollama,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Ollama);
+        assert_eq!(resolved.base_url, DEFAULT_OLLAMA_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_OLLAMA_MODEL);
+        assert_eq!(resolved.api_key, None);
+    }
+
+    #[test]
+    fn ollama_provider_preserves_model_tags() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::Ollama),
+            model: Some("deepseek-coder-v2:16b".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::Ollama);
+        assert_eq!(resolved.model, "deepseek-coder-v2:16b");
+    }
+
+    #[test]
+    fn ollama_env_overrides_provider_base_url_and_optional_key() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "ollama-local");
+            env::set_var("OLLAMA_BASE_URL", "http://ollama.example/v1");
+            env::set_var("OLLAMA_API_KEY", "ollama-env-key");
+        }
+
+        let resolved =
+            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Ollama);
+        assert_eq!(resolved.base_url, "http://ollama.example/v1");
+        assert_eq!(resolved.api_key.as_deref(), Some("ollama-env-key"));
     }
 
     #[test]
@@ -1687,6 +2073,10 @@ mod tests {
         let resolved =
             config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
         assert_eq!(resolved.api_key.as_deref(), Some("file-key"));
+        assert_eq!(
+            resolved.api_key_source,
+            Some(RuntimeApiKeySource::ConfigFile)
+        );
 
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
@@ -1707,6 +2097,7 @@ mod tests {
         let resolved =
             config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
         assert_eq!(resolved.api_key.as_deref(), Some("env-key"));
+        assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Env));
 
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
@@ -1726,6 +2117,31 @@ mod tests {
         let resolved =
             config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
         assert_eq!(resolved.api_key.as_deref(), Some("file-key"));
+        assert_eq!(
+            resolved.api_key_source,
+            Some(RuntimeApiKeySource::ConfigFile)
+        );
+    }
+
+    #[test]
+    fn keyring_resolves_when_config_file_empty_even_if_env_is_set() {
+        use deepseek_secrets::KeyringStore;
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "stale-env-key") };
+
+        let store = std::sync::Arc::new(deepseek_secrets::InMemoryKeyringStore::new());
+        store.set("deepseek", "ring-key").unwrap();
+        let secrets = Secrets::new(store);
+
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+        assert_eq!(resolved.api_key.as_deref(), Some("ring-key"));
+        assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Keyring));
+
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
     }
 
     #[test]
@@ -1744,5 +2160,6 @@ mod tests {
         };
         let resolved = ConfigToml::default().resolve_runtime_options_with_secrets(&cli, &secrets);
         assert_eq!(resolved.api_key.as_deref(), Some("cli-key"));
+        assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Cli));
     }
 }

@@ -189,6 +189,10 @@ fn load_context_file(path: &Path) -> Result<String, ProjectContextError> {
 
 /// Check if this project is marked as trusted
 fn check_trust_status(workspace: &Path) -> bool {
+    if crate::config::is_workspace_trusted(workspace) {
+        return true;
+    }
+
     // Check for trust markers
     let trust_markers = [
         workspace.join(".deepseek").join("trusted"),

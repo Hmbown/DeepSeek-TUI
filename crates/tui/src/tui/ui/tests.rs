@@ -17,6 +17,23 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 #[test]
+fn format_resume_hint_uses_canonical_resume_command() {
+    assert_eq!(
+        format_resume_hint(Some("019dd9d6-4f44-7c83-9863-59674a12b827")),
+        Some(
+            "To continue this session, run deepseek resume 019dd9d6-4f44-7c83-9863-59674a12b827"
+                .to_string()
+        )
+    );
+}
+
+#[test]
+fn format_resume_hint_omits_missing_session_id() {
+    assert_eq!(format_resume_hint(None), None);
+    assert_eq!(format_resume_hint(Some("   ")), None);
+}
+
+#[test]
 fn composer_newline_shortcuts_do_not_steal_ctrl_enter() {
     assert!(is_composer_newline_key(KeyEvent::new(
         KeyCode::Char('j'),
@@ -122,7 +139,7 @@ fn selection_to_text_handles_multiline_and_reversed_endpoints() {
         column: 6,
     });
 
-    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\n  gam"));
+    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\n▏ gam"));
 }
 
 #[test]
@@ -358,6 +375,26 @@ fn copy_shortcut_accepts_cmd_and_ctrl_shift_only() {
     assert!(!is_copy_shortcut(&KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::CONTROL,
+    )));
+}
+
+#[test]
+fn file_tree_shortcut_does_not_steal_plain_ctrl_e() {
+    assert!(!is_file_tree_toggle_shortcut(&KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(is_file_tree_toggle_shortcut(&KeyEvent::new(
+        KeyCode::Char('E'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(is_file_tree_toggle_shortcut(&KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    assert!(is_file_tree_toggle_shortcut(&KeyEvent::new(
+        KeyCode::Char('E'),
+        KeyModifiers::SUPER | KeyModifiers::SHIFT,
     )));
 }
 
@@ -625,6 +662,7 @@ fn terminal_probe_timeout_uses_tui_config_and_clamps() {
             terminal_probe_timeout_ms: Some(750),
             status_items: None,
             osc8_links: None,
+            notification_condition: None,
         }),
         ..Config::default()
     };
@@ -747,6 +785,31 @@ async fn dispatch_user_message_failed_send_clears_loading_state() {
         "failed dispatch must not leave the composer in a permanent busy state"
     );
     assert!(app.last_send_at.is_none());
+}
+
+#[test]
+fn fixed_model_auto_thinking_skips_auto_model_router() {
+    let mut app = create_test_app();
+    app.auto_model = false;
+    app.model = "deepseek-v4-pro".to_string();
+    app.reasoning_effort = ReasoningEffort::Auto;
+
+    assert!(
+        !should_resolve_auto_model_selection(&app),
+        "fixed-model auto thinking must stay local instead of starting a hidden router request"
+    );
+}
+
+#[test]
+fn auto_model_still_uses_auto_model_router() {
+    let mut app = create_test_app();
+    app.auto_model = true;
+    app.reasoning_effort = ReasoningEffort::Auto;
+
+    assert!(
+        should_resolve_auto_model_selection(&app),
+        "auto model still needs the router to choose the concrete model"
+    );
 }
 
 fn init_git_repo() -> TempDir {
@@ -1090,6 +1153,15 @@ fn footer_auxiliary_spans_show_cache_and_cost_when_roomy() {
         !roomy.contains("ctx"),
         "context % removed from footer — shown in header only"
     );
+}
+
+#[test]
+fn footer_auxiliary_spans_show_tiny_positive_cost_when_roomy() {
+    let mut app = create_test_app();
+    app.session.session_cost = 0.00005;
+
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 32));
+    assert!(roomy.contains("<$0.0001"));
 }
 
 #[test]
@@ -1888,6 +1960,72 @@ fn spillover_pager_section_returns_notice_when_file_missing() {
 
     let section = spillover_pager_section(&app, 0).expect("still emits a notice section");
     assert!(section.contains("could not read spillover file"));
+}
+
+#[test]
+fn terminal_pause_has_live_owner_only_for_running_exec_cells() {
+    let mut app = create_test_app();
+    assert!(!terminal_pause_has_live_owner(&app));
+
+    let mut active = ActiveCell::new();
+    active.push_tool(
+        "tool-1",
+        HistoryCell::Tool(ToolCell::Exec(ExecCell {
+            command: "python3 -i".to_string(),
+            status: ToolStatus::Running,
+            output: None,
+            started_at: Some(Instant::now()),
+            duration_ms: None,
+            source: ExecSource::Assistant,
+            interaction: Some("interactive".to_string()),
+        })),
+    );
+    app.active_cell = Some(active);
+    assert!(terminal_pause_has_live_owner(&app));
+
+    let mut active = ActiveCell::new();
+    active.push_tool(
+        "tool-2",
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "rlm".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("file_path: Cargo.lock".to_string()),
+            output: None,
+            prompts: None,
+            spillover_path: None,
+        })),
+    );
+    app.active_cell = Some(active);
+    assert!(
+        !terminal_pause_has_live_owner(&app),
+        "non-interactive RLM work must not keep the terminal in host-scrollback mode"
+    );
+}
+
+#[test]
+fn active_rlm_task_entries_surface_foreground_rlm_work() {
+    let mut app = create_test_app();
+    app.turn_started_at = Some(Instant::now() - Duration::from_secs(3));
+    let mut active = ActiveCell::new();
+    active.push_tool(
+        "tool-rlm",
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "rlm".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("file_path: Cargo.lock".to_string()),
+            output: None,
+            prompts: None,
+            spillover_path: None,
+        })),
+    );
+    app.active_cell = Some(active);
+
+    let entries = active_rlm_task_entries(&app);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, "rlm-1");
+    assert_eq!(entries[0].status, "running");
+    assert_eq!(entries[0].prompt_summary, "RLM: file_path: Cargo.lock");
+    assert!(entries[0].duration_ms.unwrap_or_default() >= 3000);
 }
 
 #[test]
@@ -3170,13 +3308,14 @@ fn render_footer_from_with_default_items_renders_mode_and_model() {
     // Default footer composition should show the mode chip and model
     // identifier — whatever the configured default model is.
     let mut app = create_test_app();
-    app.session.session_cost = 0.42;
+    app.session.session_cost = 0.00005;
     let items = crate::config::StatusItem::default_footer();
     let props = render_footer_from(&app, &items, None);
     assert_eq!(props.mode_label, "agent");
     assert!(!props.model.is_empty(), "footer should show a model name");
-    // Cost chip is included whenever cost > 0.001.
+    // Tiny but real costs should render instead of disappearing as "$0.00".
     assert!(!props.cost.is_empty());
+    assert_eq!(spans_text(&props.cost), "<$0.0001");
 }
 
 #[test]
@@ -3342,4 +3481,150 @@ fn scroll_with_arrows_returns_false_when_input_has_text() {
         !super::should_scroll_with_arrows(&app),
         "text in composer: Up/Down should navigate history"
     );
+}
+
+#[test]
+fn notification_settings_tui_always_keeps_configured_method_no_threshold() {
+    let config = Config {
+        tui: Some(crate::config::TuiConfig {
+            notification_condition: Some(crate::config::NotificationCondition::Always),
+            ..Default::default()
+        }),
+        notifications: Some(crate::config::NotificationsConfig {
+            method: crate::config::NotificationMethod::Bel,
+            threshold_secs: 120,
+            include_summary: true,
+        }),
+        ..Config::default()
+    };
+
+    let (method, threshold, include_summary) =
+        super::notification_settings(&config).expect("notification should be enabled");
+    assert_eq!(method, crate::tui::notifications::Method::Bel);
+    assert_eq!(threshold, Duration::ZERO);
+    assert!(include_summary);
+}
+
+#[test]
+fn notification_settings_tui_never_disables_notifications() {
+    let config = Config {
+        tui: Some(crate::config::TuiConfig {
+            notification_condition: Some(crate::config::NotificationCondition::Never),
+            ..Default::default()
+        }),
+        ..Config::default()
+    };
+
+    assert!(super::notification_settings(&config).is_none());
+}
+
+#[test]
+fn notification_settings_no_tui_override_uses_notifications_block() {
+    let config = Config {
+        notifications: Some(crate::config::NotificationsConfig {
+            method: crate::config::NotificationMethod::Osc9,
+            threshold_secs: 45,
+            include_summary: false,
+        }),
+        ..Config::default()
+    };
+
+    let (method, threshold, include_summary) =
+        super::notification_settings(&config).expect("notification should be enabled");
+    assert_eq!(method, crate::tui::notifications::Method::Osc9);
+    assert_eq!(threshold, Duration::from_secs(45));
+    assert!(!include_summary);
+}
+
+#[test]
+fn completed_turn_notification_uses_streaming_text() {
+    let app = create_test_app();
+    let msg = super::completed_turn_notification_message(
+        &app,
+        "Hello there.\n\nWhat's next?",
+        false,
+        Duration::from_secs(12),
+        None,
+    );
+    assert_eq!(msg, "Hello there.\nWhat's next?");
+}
+
+#[test]
+fn completed_turn_notification_falls_back_to_latest_assistant_message() {
+    let mut app = create_test_app();
+    app.api_messages.push(crate::models::Message {
+        role: "assistant".to_string(),
+        content: vec![crate::models::ContentBlock::Text {
+            text: "Earlier turn".to_string(),
+            cache_control: None,
+        }],
+    });
+    app.api_messages.push(crate::models::Message {
+        role: "user".to_string(),
+        content: vec![crate::models::ContentBlock::Text {
+            text: "next".to_string(),
+            cache_control: None,
+        }],
+    });
+    app.api_messages.push(crate::models::Message {
+        role: "assistant".to_string(),
+        content: vec![crate::models::ContentBlock::Text {
+            text: "Latest reply".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    let msg =
+        super::completed_turn_notification_message(&app, "", false, Duration::from_secs(75), None);
+    assert_eq!(msg, "Latest reply");
+}
+
+#[test]
+fn completed_turn_notification_falls_back_to_default_when_empty() {
+    let app = create_test_app();
+    let msg =
+        super::completed_turn_notification_message(&app, "", false, Duration::from_secs(5), None);
+    assert_eq!(msg, "deepseek: turn complete");
+}
+
+#[test]
+fn completed_turn_notification_truncates_long_text() {
+    let app = create_test_app();
+    let long = "a".repeat(500);
+    let msg = super::completed_turn_notification_message(
+        &app,
+        &long,
+        false,
+        Duration::from_secs(5),
+        None,
+    );
+    assert!(msg.ends_with("..."));
+    // 360-char body + 3-char ellipsis
+    assert_eq!(msg.chars().count(), 363);
+}
+
+#[test]
+fn subagent_completion_notification_uses_summary_line_not_sentinel() {
+    let msg = super::subagent_completion_notification_message(
+        "agent_live",
+        "Finished the docs audit.\n<deepseek:subagent.done>{}</deepseek:subagent.done>",
+        false,
+        Duration::from_secs(42),
+    );
+
+    assert_eq!(msg, "sub-agent agent_live: Finished the docs audit.");
+    assert!(!msg.contains("deepseek:subagent.done"));
+}
+
+#[test]
+fn subagent_completion_notification_can_include_elapsed_summary() {
+    let msg = super::subagent_completion_notification_message(
+        "agent_live",
+        "",
+        true,
+        Duration::from_secs(65),
+    );
+
+    assert!(msg.contains("deepseek: sub-agent agent_live complete"));
+    assert!(msg.contains("deepseek: sub-agent complete (1m 5s)"));
 }

@@ -1,4 +1,4 @@
-//! File-tree pane — Ctrl+E toggles a left-side workspace file navigator.
+//! File-tree pane — Ctrl+Shift+E toggles a left-side workspace file navigator.
 //!
 //! Shows the workspace directory tree with expandable directories. Up/Down
 //! navigate, Enter expands/collapses directories or inserts `@path` for files,

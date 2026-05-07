@@ -470,7 +470,9 @@ mod tests {
             resume_session_id: None,
             initial_input: None,
         };
-        App::new(options, &Config::default())
+        let mut app = App::new(options, &Config::default());
+        app.skills_dir = tmpdir.path().join("skills");
+        app
     }
 
     fn create_skill_dir(tmpdir: &TempDir, skill_name: &str, skill_content: &str) {

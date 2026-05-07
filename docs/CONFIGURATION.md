@@ -55,14 +55,25 @@ the legacy `deepseek login --api-key ...` alias) saves the key to
 `~/.deepseek/config.toml`, and `deepseek --model deepseek-v4-flash` is forwarded
 to the TUI as `DEEPSEEK_MODEL`.
 
-For hosted or self-hosted DeepSeek V4 providers, set `provider = "nvidia-nim"`,
-`"fireworks"`, `"sglang"`, or `"vllm"` or pass `deepseek --provider <name>`. The facade
+For hosted or self-hosted providers, set `provider = "nvidia-nim"`,
+`"fireworks"`, `"sglang"`, `"vllm"`, or `"ollama"` or pass `deepseek --provider <name>`. The facade
 saves provider credentials to the shared user config and forwards the resolved
 key, base URL, provider, and model to the TUI process. Use
 `deepseek auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"` or
 `deepseek auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"` to
-save hosted-provider keys through the facade. SGLang and vLLM are self-hosted and can run
-without an API key by default.
+save hosted-provider keys through the facade. SGLang, vLLM, and Ollama are self-hosted and can run
+without an API key by default. Ollama defaults to `http://localhost:11434/v1` and sends model tags
+such as `deepseek-coder:1.3b` or `qwen2.5-coder:7b` unchanged.
+
+Third-party OpenAI-compatible gateways that need extra request headers can set
+`http_headers = { "X-Model-Provider-Id" = "your-model-provider" }` at the top
+level or under a provider table such as `[providers.deepseek]`. When configured,
+DeepSeek TUI sends those custom headers on model API requests. The equivalent
+environment override is `DEEPSEEK_HTTP_HEADERS`, using comma-separated
+`name=value` pairs such as
+`X-Model-Provider-Id=your-model-provider,X-Gateway-Route=dev`. `Authorization`
+and `Content-Type` are managed by the client and are not overridden by this
+setting.
 
 To bootstrap MCP and skills directories at their resolved paths, run `deepseek-tui setup`.
 To only scaffold MCP, run `deepseek-tui mcp init`.
@@ -83,7 +94,7 @@ default_text_model = "deepseek-v4-pro"
 
 [profiles.work]
 api_key = "WORK_KEY"
-base_url = "https://api.deepseek.com"
+base_url = "https://api.deepseek.com/beta"
 
 [profiles.nvidia-nim]
 provider = "nvidia-nim"
@@ -104,6 +115,11 @@ default_text_model = "deepseek-ai/DeepSeek-V4-Pro"
 provider = "vllm"
 base_url = "http://localhost:8000/v1"
 default_text_model = "deepseek-ai/DeepSeek-V4-Pro"
+
+[profiles.ollama]
+provider = "ollama"
+base_url = "http://localhost:11434/v1"
+default_text_model = "deepseek-coder:1.3b"
 ```
 
 Select a profile with:
@@ -119,7 +135,8 @@ These override config values:
 
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_BASE_URL`
-- `DEEPSEEK_PROVIDER` (`deepseek|nvidia-nim|openrouter|novita|fireworks|sglang|vllm`)
+- `DEEPSEEK_HTTP_HEADERS` (custom model request headers, comma-separated `name=value` pairs)
+- `DEEPSEEK_PROVIDER` (`deepseek|nvidia-nim|openrouter|novita|fireworks|sglang|vllm|ollama`)
 - `DEEPSEEK_MODEL` or `DEEPSEEK_DEFAULT_TEXT_MODEL`
 - `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (preferred when provider is `nvidia-nim`; falls back to `DEEPSEEK_API_KEY`)
 - `NVIDIA_NIM_BASE_URL`, `NIM_BASE_URL`, or `NVIDIA_BASE_URL`
@@ -132,6 +149,9 @@ These override config values:
 - `VLLM_BASE_URL`
 - `VLLM_MODEL`
 - `VLLM_API_KEY` (optional; many localhost vLLM servers do not require auth)
+- `OLLAMA_BASE_URL`
+- `OLLAMA_MODEL`
+- `OLLAMA_API_KEY` (optional; many localhost Ollama servers do not require auth)
 - `DEEPSEEK_LOG_LEVEL` or `RUST_LOG` (`info`/`debug`/`trace` enables lightweight verbose logs)
 - `DEEPSEEK_SKILLS_DIR`
 - `DEEPSEEK_MCP_CONFIG`
@@ -276,7 +296,7 @@ separate:
 | Quantity | Meaning | Allowed to drive |
 |---|---|---|
 | Active request input estimate | Conservative estimate of the next request's live system prompt and transcript payload. | Header/footer context percent, hard-cycle trigger, opt-in Flash seam trigger, and emergency overflow preflight. |
-| Reserved response headroom | The requested `max_tokens` budget plus safety headroom. v0.7.5 keeps normal turns at `262144` output tokens and adds `1024` safety tokens for context-window checks. | Hard-cycle and emergency overflow budget checks only. |
+| Reserved response headroom | The internal turn budget plus safety headroom. v0.8.16 keeps normal turns at `262144` reserved output tokens and adds `1024` safety tokens for context-window checks, even though V4 capability metadata reports the official `384000` max output. | Hard-cycle and emergency overflow budget checks only. |
 | Cumulative API usage | Provider-reported input plus output tokens summed across completed API calls; multi-tool turns may count the same stable prefix more than once. | Session usage and approximate cost telemetry only. |
 | Prompt cache hit/miss | Provider cache telemetry for the most recent call when available. | Cache-hit display and cost estimation only; never compaction, seam, or cycle triggers. |
 | Context percent | Active request input estimate divided by the model context window. | Display only; it mirrors the active-input basis used by context safeguards. |
@@ -305,10 +325,10 @@ If you are upgrading from older releases:
 
 ### Core keys (used by the TUI/engine)
 
-- `provider` (string, optional): `deepseek` (default), `deepseek-cn`, `nvidia-nim`, `openrouter`, `novita`, `fireworks`, `sglang`, or `vllm`. `deepseek-cn` uses DeepSeek's mainland China endpoint (`https://api.deepseeki.com`); `nvidia-nim` targets NVIDIA's NIM-hosted DeepSeek endpoints through `https://integrate.api.nvidia.com/v1`; `fireworks` targets `https://api.fireworks.ai/inference/v1`; `sglang` targets a self-hosted OpenAI-compatible endpoint, defaulting to `http://localhost:30000/v1`; `vllm` targets a self-hosted vLLM OpenAI-compatible endpoint, defaulting to `http://localhost:8000/v1`.
-- `api_key` (string, required): must be non-empty (or set `DEEPSEEK_API_KEY`).
-- `base_url` (string, optional): defaults to `https://api.deepseek.com` for DeepSeek's OpenAI-compatible Chat Completions API, `https://api.deepseeki.com` for `provider = "deepseek-cn"`, or the provider-specific endpoint for hosted/self-hosted providers. `https://api.deepseek.com/v1` is also accepted for SDK compatibility; use `https://api.deepseek.com/beta` only for DeepSeek beta features such as strict tool mode, chat prefix completion, and FIM completion.
-- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, and `deepseek-ai/DeepSeek-V4-Pro` for SGLang. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash`. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. Use `/models` or `deepseek models` to discover live IDs from your configured endpoint. `DEEPSEEK_MODEL` overrides this for a single process.
+- `provider` (string, optional): `deepseek` (default), `deepseek-cn`, `nvidia-nim`, `openrouter`, `novita`, `fireworks`, `sglang`, `vllm`, or `ollama`. `deepseek-cn` uses DeepSeek's mainland China endpoint (`https://api.deepseeki.com`); `nvidia-nim` targets NVIDIA's NIM-hosted DeepSeek endpoints through `https://integrate.api.nvidia.com/v1`; `fireworks` targets `https://api.fireworks.ai/inference/v1`; `sglang` targets a self-hosted OpenAI-compatible endpoint, defaulting to `http://localhost:30000/v1`; `vllm` targets a self-hosted vLLM OpenAI-compatible endpoint, defaulting to `http://localhost:8000/v1`; `ollama` targets Ollama's OpenAI-compatible endpoint, defaulting to `http://localhost:11434/v1`.
+- `api_key` (string, required for hosted providers): must be non-empty for DeepSeek/hosted providers (or set the provider API key env var). Self-hosted SGLang, vLLM, and Ollama can omit it.
+- `base_url` (string, optional): defaults to `https://api.deepseek.com/beta` for DeepSeek's OpenAI-compatible Chat Completions API in v0.8.16, `https://api.deepseeki.com` for `provider = "deepseek-cn"`, or the provider-specific endpoint for hosted/self-hosted providers. Set `https://api.deepseek.com` or `https://api.deepseek.com/v1` explicitly to opt out of DeepSeek beta features.
+- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, `deepseek-ai/DeepSeek-V4-Pro` for SGLang/vLLM, and `deepseek-coder:1.3b` for Ollama. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows, 384K max output, and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash` until July 24, 2026. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. Ollama model tags are passed through unchanged. Use `/models` or `deepseek models` to discover live IDs from your configured endpoint. `DEEPSEEK_MODEL` overrides this for a single process.
 - `reasoning_effort` (string, optional): `off`, `low`, `medium`, `high`, or `max`; defaults to the configured UI tier. DeepSeek Platform receives top-level `thinking` / `reasoning_effort` fields. NVIDIA NIM receives equivalent settings through `chat_template_kwargs`.
 - `allow_shell` (bool, optional): defaults to `true` (sandboxed).
 - `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
@@ -326,7 +346,7 @@ If you are upgrading from older releases:
   keys such as `worker`, `explorer`, `general`, `explore`, `plan`, and
   `review`. Values must normalize to a supported DeepSeek model id before an
   agent is spawned.
-- `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is a directory containing `SKILL.md`). Workspace-local `.agents/skills` or `./skills` are preferred when present; the runtime also discovers global agentskills.io-compatible `~/.agents/skills`.
+- `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is a directory containing `SKILL.md`). Workspace-local `.agents/skills` or `./skills` are preferred when present; the runtime also discovers global agentskills.io-compatible `~/.agents/skills` and the broader Claude-ecosystem `~/.claude/skills`.
 - `mcp_config_path` (string, optional): defaults to `~/.deepseek/mcp.json`.
   It is visible in `/config` and can be changed from the TUI. The new path is
   used immediately by `/mcp`, but rebuilding the model-visible MCP tool pool
@@ -394,7 +414,7 @@ If you are upgrading from older releases:
   `false`. When `true`, the notification body includes the elapsed
   duration and the turn's cost in the configured display currency.
 - `tui.alternate_screen` (string, optional): `auto`, `always`, or `never`. `auto` disables the alternate screen in Zellij; `--no-alt-screen` forces inline mode. Set `never` or run with `--no-alt-screen` when you want real terminal scrollback.
-- `tui.mouse_capture` (bool, optional, default `true` on non-Windows terminals and `false` on Windows when the alternate screen is active): enable internal mouse scrolling, transcript selection, and right-click context actions. TUI-owned drag selection copies only user/assistant transcript text. Set this to `false` or run with `--no-mouse-capture` for raw terminal selection; set it to `true` or run with `--mouse-capture` to opt in on Windows.
+- `tui.mouse_capture` (bool, optional, default `true` on non-Windows terminals when the alternate screen is active; `false` on Windows and inside JetBrains JediTerm — PyCharm/IDEA/CLion/etc. — where mouse-event escapes leak into the input stream as garbled text, see #878 / #898): enable internal mouse scrolling, transcript selection, and right-click context actions. TUI-owned drag selection copies only user/assistant transcript text. Set this to `false` or run with `--no-mouse-capture` for raw terminal selection; set it to `true` or run with `--mouse-capture` to opt in anywhere it's defaulted off.
 - `tui.terminal_probe_timeout_ms` (int, optional, default `500`): startup terminal-mode probe timeout in milliseconds. Values are clamped to `100..=5000`; timeout emits a warning and aborts startup instead of hanging indefinitely.
 - `tui.osc8_links` (bool, optional, default `true`): emit OSC 8 escape sequences around URLs in transcript output so terminals that support them (iTerm2, Terminal.app 13+, Ghostty, Kitty, WezTerm, Alacritty, recent gnome-terminal/konsole) render them as Cmd+click hyperlinks. Terminals without OSC 8 support render the plain URL and ignore the escape. Set `false` for terminals that misrender the sequence; selection/clipboard output always strips the escapes.
 - `hooks` (optional): lifecycle hooks configuration (see `config.example.toml`).
@@ -530,14 +550,12 @@ The `capability` key contains per-provider capability info derived from
 static knowledge (release docs, API guides) rather than live API probes.
 Top-level sub-keys: `resolved_provider`, `resolved_model`, `context_window`,
 `max_output`, `thinking_supported`, `cache_telemetry_supported`,
-`request_payload_mode`, and `deprecation`. When the resolved model is a known
-legacy alias (e.g. `deepseek-chat`, `deepseek-reasoner`), the `deprecation`
-sub-object carries `alias`, `replacement`, and `notice` fields.
+and `request_payload_mode`.
 
-Use `capability.context_window` and `capability.max_output` for context-window
-budgeting in CI scripts. Use `capability.thinking_supported` to decide whether
-to configure reasoning effort. Use `capability.deprecation` to warn users about
-legacy model aliases.
+Use `capability.context_window` and `capability.max_output` for model-limit
+checks in CI scripts; do not treat `capability.max_output` as the per-turn
+request budget. Use `capability.thinking_supported` to decide whether to
+configure reasoning effort.
 
 ## Setup status, clean, and extension dirs
 

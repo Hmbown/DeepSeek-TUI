@@ -1845,6 +1845,11 @@ impl RuntimeThreadManager {
             ),
             strict_tool_mode: self.config.strict_tool_mode.unwrap_or(false),
             goal_objective: None,
+            locale_tag: crate::localization::resolve_locale(
+                &crate::settings::Settings::load().unwrap_or_default().locale,
+            )
+            .tag()
+            .to_string(),
             workshop: self.config.workshop.clone(),
         };
 

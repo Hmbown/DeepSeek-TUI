@@ -266,9 +266,17 @@ impl FileKeyringStore {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&self.path)?.permissions();
-            perms.set_mode(0o600);
-            fs::set_permissions(&self.path, perms)?;
+            // Best-effort 0o600 — matches the parent-dir chmod above which
+            // is also `let _ = ...`. Filesystems that don't support Unix
+            // chmod (Docker bind-mounts of NTFS, network shares — #897)
+            // would otherwise fail the whole save here even though the
+            // blob already wrote successfully. The host's native ACLs
+            // are doing access control in those environments.
+            if let Ok(meta) = fs::metadata(&self.path) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o600);
+                let _ = fs::set_permissions(&self.path, perms);
+            }
         }
         Ok(())
     }
@@ -318,6 +326,15 @@ pub struct Secrets {
     /// `key` parameter passed to `resolve` is mapped to a slot in the
     /// store as-is, while envs are looked up by canonical name.
     service: String,
+}
+
+/// Source layer that provided a resolved secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretSource {
+    /// The configured keyring backend returned the secret.
+    Keyring,
+    /// A process environment variable returned the secret.
+    Env,
 }
 
 impl std::fmt::Debug for Secrets {
@@ -371,12 +388,18 @@ impl Secrets {
     /// Empty strings on either layer are treated as "not set".
     #[must_use]
     pub fn resolve(&self, name: &str) -> Option<String> {
+        self.resolve_with_source(name).map(|(value, _)| value)
+    }
+
+    /// Resolve a secret and report which layer supplied it.
+    #[must_use]
+    pub fn resolve_with_source(&self, name: &str) -> Option<(String, SecretSource)> {
         if let Ok(Some(v)) = self.store.get(name)
             && !v.trim().is_empty()
         {
-            return Some(v);
+            return Some((v, SecretSource::Keyring));
         }
-        env_for(name)
+        env_for(name).map(|value| (value, SecretSource::Env))
     }
 
     /// Convenience: write a secret through the underlying store.
@@ -412,6 +435,7 @@ pub fn env_for(name: &str) -> Option<String> {
         "fireworks" | "fireworks-ai" => &["FIREWORKS_API_KEY"],
         "sglang" | "sg-lang" => &["SGLANG_API_KEY"],
         "vllm" | "v-llm" => &["VLLM_API_KEY"],
+        "ollama" | "ollama-local" => &["OLLAMA_API_KEY"],
         "openai" => &["OPENAI_API_KEY"],
         _ => return None,
     };
@@ -449,6 +473,7 @@ mod tests {
             "FIREWORKS_API_KEY",
             "SGLANG_API_KEY",
             "VLLM_API_KEY",
+            "OLLAMA_API_KEY",
             "OPENAI_API_KEY",
         ] {
             // Safety: tests serialise on env_lock(); the broader
@@ -486,6 +511,10 @@ mod tests {
         let secrets = Secrets::new(store);
 
         assert_eq!(secrets.resolve("deepseek").as_deref(), Some("ring-key"));
+        assert_eq!(
+            secrets.resolve_with_source("deepseek"),
+            Some(("ring-key".to_string(), SecretSource::Keyring))
+        );
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
     }
@@ -499,6 +528,10 @@ mod tests {
 
         let secrets = Secrets::new(Arc::new(InMemoryKeyringStore::new()));
         assert_eq!(secrets.resolve("deepseek").as_deref(), Some("env-fallback"));
+        assert_eq!(
+            secrets.resolve_with_source("deepseek"),
+            Some(("env-fallback".to_string(), SecretSource::Env))
+        );
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
     }
@@ -576,6 +609,19 @@ mod tests {
         assert_eq!(env_for("v-llm").as_deref(), Some("vllm-key"));
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::remove_var("VLLM_API_KEY") };
+    }
+
+    #[test]
+    fn ollama_env_aliases_resolve() {
+        let _lock = env_lock();
+        clear_known_envs();
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::set_var("OLLAMA_API_KEY", "ollama-key") };
+
+        assert_eq!(env_for("ollama").as_deref(), Some("ollama-key"));
+        assert_eq!(env_for("ollama-local").as_deref(), Some("ollama-key"));
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::remove_var("OLLAMA_API_KEY") };
     }
 
     #[cfg(unix)]

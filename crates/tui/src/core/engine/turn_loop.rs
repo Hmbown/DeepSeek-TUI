@@ -55,14 +55,8 @@ impl Engine {
                 self.session
                     .working_set
                     .observe_user_message(&steer, &self.session.workspace);
-                self.add_session_message(Message {
-                    role: "user".to_string(),
-                    content: vec![ContentBlock::Text {
-                        text: steer.clone(),
-                        cache_control: None,
-                    }],
-                })
-                .await;
+                self.add_session_message(self.user_text_message_with_turn_metadata(steer.clone()))
+                    .await;
                 let _ = self
                     .tx_event
                     .send(Event::status(format!(
@@ -239,7 +233,7 @@ impl Engine {
             let request = MessageRequest {
                 model: self.session.model.clone(),
                 messages: self.messages_with_turn_metadata(),
-                max_tokens: TURN_MAX_OUTPUT_TOKENS,
+                max_tokens: effective_max_output_tokens(&self.session.model),
                 system: self.session.system_prompt.clone(),
                 tools: active_tools.clone(),
                 tool_choice: if active_tools.is_some() {
@@ -270,7 +264,7 @@ impl Engine {
                     s
                 }
                 Err(e) => {
-                    let message = e.to_string();
+                    let message = self.decorate_auth_error_message(e.to_string());
                     if is_context_length_error_message(&message)
                         && context_recovery_attempts < MAX_CONTEXT_RECOVERY_ATTEMPTS
                         && self
@@ -410,7 +404,7 @@ impl Engine {
                     }
                     Err(e) => {
                         stream_errors = stream_errors.saturating_add(1);
-                        let message = e.to_string();
+                        let message = self.decorate_auth_error_message(e.to_string());
                         // #103: when the stream errors before any content was
                         // streamed AND we still have retry budget, transparently
                         // resend the request. DeepSeek has not billed for any
@@ -440,7 +434,9 @@ impl Engine {
                                     continue;
                                 }
                                 Err(retry_err) => {
-                                    let retry_msg = format!("Stream retry failed: {retry_err}");
+                                    let retry_msg = self.decorate_auth_error_message(format!(
+                                        "Stream retry failed: {retry_err}"
+                                    ));
                                     turn_error.get_or_insert(retry_msg.clone());
                                     let _ = self
                                         .tx_event
@@ -819,15 +815,90 @@ impl Engine {
                         self.session
                             .working_set
                             .observe_user_message(&steer, &self.session.workspace);
-                        self.add_session_message(Message {
-                            role: "user".to_string(),
-                            content: vec![ContentBlock::Text {
-                                text: steer,
-                                cache_control: None,
-                            }],
-                        })
-                        .await;
+                        self.add_session_message(self.user_text_message_with_turn_metadata(steer))
+                            .await;
                     }
+                    turn.next_step();
+                    continue;
+                }
+
+                // Sub-agent completion handoff (issue #756). The model finished
+                // streaming with no tool calls — but if it has direct children
+                // still running (or completions queued from children that
+                // finished while we were inferring), surface their
+                // `<deepseek:subagent.done>` sentinels into the transcript and
+                // resume instead of ending the turn. This fulfils the contract
+                // already documented in `prompts/base.md`: the parent is
+                // promised it'll see the sentinel when a child finishes.
+                let mut completions: Vec<crate::tools::subagent::SubAgentCompletion> = Vec::new();
+                while let Ok(c) = self.rx_subagent_completion.try_recv() {
+                    completions.push(c);
+                }
+                if completions.is_empty() {
+                    let running = {
+                        let mgr = self.subagent_manager.read().await;
+                        mgr.running_count()
+                    };
+                    if running > 0 {
+                        let _ = self
+                            .tx_event
+                            .send(Event::status(format!(
+                                "Waiting on {running} sub-agent(s) to complete..."
+                            )))
+                            .await;
+                        tokio::select! {
+                            biased;
+                            () = self.cancel_token.cancelled() => {
+                                let _ = self
+                                    .tx_event
+                                    .send(Event::status(
+                                        "Request cancelled while waiting for sub-agents",
+                                    ))
+                                    .await;
+                                return (TurnOutcomeStatus::Interrupted, None);
+                            }
+                            Some(c) = self.rx_subagent_completion.recv() => {
+                                completions.push(c);
+                                while let Ok(extra) = self.rx_subagent_completion.try_recv() {
+                                    completions.push(extra);
+                                }
+                            }
+                            Some(steer) = self.rx_steer.recv() => {
+                                let trimmed = steer.trim().to_string();
+                                if !trimmed.is_empty() {
+                                    self.session
+                                        .working_set
+                                        .observe_user_message(&trimmed, &self.session.workspace);
+                                    self.add_session_message(
+                                        self.user_text_message_with_turn_metadata(trimmed.clone()),
+                                    )
+                                    .await;
+                                    let _ = self
+                                        .tx_event
+                                        .send(Event::status(format!(
+                                            "Steer input accepted: {}",
+                                            summarize_text(&trimmed, 120)
+                                        )))
+                                        .await;
+                                }
+                                turn.next_step();
+                                continue;
+                            }
+                        }
+                    }
+                }
+                if !completions.is_empty() {
+                    let count = completions.len();
+                    for c in completions {
+                        self.add_session_message(subagent_completion_runtime_message(&c.payload))
+                            .await;
+                    }
+                    let _ = self
+                        .tx_event
+                        .send(Event::status(format!(
+                            "Resuming turn with {count} sub-agent completion(s)"
+                        )))
+                        .await;
                     turn.next_step();
                     continue;
                 }
@@ -881,13 +952,9 @@ impl Engine {
                                 } else {
                                     format!("[REPL round {round_num} output]\n{}", round.stdout)
                                 };
-                                self.add_session_message(Message {
-                                    role: "user".to_string(),
-                                    content: vec![ContentBlock::Text {
-                                        text: feedback,
-                                        cache_control: None,
-                                    }],
-                                })
+                                self.add_session_message(
+                                    self.user_text_message_with_turn_metadata(feedback),
+                                )
                                 .await;
                             }
                             Err(e) => {
@@ -897,15 +964,11 @@ impl Engine {
                                         "REPL round {round_num} failed: {e}"
                                     )))
                                     .await;
-                                self.add_session_message(Message {
-                                    role: "user".to_string(),
-                                    content: vec![ContentBlock::Text {
-                                        text: format!(
-                                            "[REPL round {round_num} execution failed]\n{e}"
-                                        ),
-                                        cache_control: None,
-                                    }],
-                                })
+                                self.add_session_message(
+                                    self.user_text_message_with_turn_metadata(format!(
+                                        "[REPL round {round_num} execution failed]\n{e}"
+                                    )),
+                                )
                                 .await;
                             }
                         }
@@ -1669,14 +1732,8 @@ impl Engine {
                     self.session
                         .working_set
                         .observe_user_message(&steer, &self.session.workspace);
-                    self.add_session_message(Message {
-                        role: "user".to_string(),
-                        content: vec![ContentBlock::Text {
-                            text: steer,
-                            cache_control: None,
-                        }],
-                    })
-                    .await;
+                    self.add_session_message(self.user_text_message_with_turn_metadata(steer))
+                        .await;
                 }
             }
 
@@ -1713,50 +1770,29 @@ impl Engine {
     }
 
     pub(super) fn messages_with_turn_metadata(&self) -> Vec<Message> {
-        let Some(summary) = self
-            .session
-            .working_set
-            .summary_block(&self.config.workspace)
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-        else {
-            return self.session.messages.clone();
-        };
+        // `<turn_meta>` is stored on user-text messages when the message is
+        // appended. Do not rewrite historical messages at request time: doing
+        // so makes the API prefix differ from the bytes sent in earlier turns
+        // and destroys DeepSeek's KV prefix cache reuse.
+        self.session.messages.clone()
+    }
+}
 
-        let mut messages = self.session.messages.clone();
-        // v0.8.11 hotfix: tool-result messages are stored as role="user" in
-        // our internal representation but serialize to role="tool" on the
-        // wire. Prepending a Text block onto a tool-result message breaks
-        // the assistant→tool_result invariant — the API rejects the request
-        // with `"insufficient tool messages following tool_calls"`. Inject
-        // only into actual user-typed messages, recognizable by having at
-        // least one Text content block (and no ToolResult blocks).
-        let Some(last_user) = messages.iter_mut().rev().find(|message| {
-            message.role == "user"
-                && message
-                    .content
-                    .iter()
-                    .all(|block| !matches!(block, ContentBlock::ToolResult { .. }))
-                && message
-                    .content
-                    .iter()
-                    .any(|block| matches!(block, ContentBlock::Text { .. }))
-        }) else {
-            // No real user message in the trailing slice (e.g. mid-turn
-            // after a tool call). Skip injection — the working_set will
-            // surface again on the next genuine user prompt.
-            return messages;
-        };
-
-        let turn_meta = format!("<turn_meta>\n{summary}\n</turn_meta>");
-        last_user.content.insert(
-            0,
-            ContentBlock::Text {
-                text: turn_meta,
-                cache_control: None,
-            },
-        );
-        messages
+fn subagent_completion_runtime_message(payload: &str) -> Message {
+    Message {
+        role: "system".to_string(),
+        content: vec![ContentBlock::Text {
+            text: format!(
+                "<deepseek:runtime_event kind=\"subagent_completion\" visibility=\"internal\">\n\
+This is an internal runtime event, not user input. Use the sub-agent completion \
+data below to continue coordinating the current task. Do not tell the user they \
+pasted sentinels, do not explain the sentinel protocol, and do not quote the raw \
+XML unless the user explicitly asks to debug sub-agent internals.\n\n\
+{payload}\n\
+</deepseek:runtime_event>"
+            ),
+            cache_control: None,
+        }],
     }
 }
 
@@ -1778,7 +1814,11 @@ fn resolve_auto_effort(reasoning_effort: Option<&str>, messages: &[Message]) -> 
                         .iter()
                         .filter_map(|block| {
                             if let ContentBlock::Text { text, .. } = block {
-                                Some(text.as_str())
+                                if is_turn_metadata_text(text) {
+                                    None
+                                } else {
+                                    Some(text.as_str())
+                                }
                             } else {
                                 None
                             }
@@ -1803,5 +1843,54 @@ fn resolve_auto_effort(reasoning_effort: Option<&str>, messages: &[Message]) -> 
         }
         Some(other) => Some(other.to_string()),
         None => None,
+    }
+}
+
+fn is_turn_metadata_text(text: &str) -> bool {
+    text.trim_start().starts_with("<turn_meta>")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subagent_completion_handoff_is_internal_system_message() {
+        let message = subagent_completion_runtime_message(
+            "Build passed\n<deepseek:subagent.done>{\"agent_id\":\"agent_a\"}</deepseek:subagent.done>",
+        );
+
+        assert_eq!(message.role, "system");
+        let text = match &message.content[0] {
+            ContentBlock::Text { text, .. } => text,
+            other => panic!("expected text block, got {other:?}"),
+        };
+        assert!(text.contains("internal runtime event, not user input"));
+        assert!(text.contains("Do not tell the user they pasted sentinels"));
+        assert!(text.contains("<deepseek:subagent.done>"));
+        assert!(text.contains("Build passed"));
+    }
+
+    #[test]
+    fn resolve_auto_effort_ignores_stored_turn_metadata() {
+        let messages = vec![Message {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "<turn_meta>\nRecent errors: src/failing.rs\n</turn_meta>".to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::Text {
+                    text: "hello".to_string(),
+                    cache_control: None,
+                },
+            ],
+        }];
+
+        assert_eq!(
+            resolve_auto_effort(Some("auto"), &messages),
+            Some("high".to_string()),
+            "auto thinking should classify the user request, not stored metadata"
+        );
     }
 }

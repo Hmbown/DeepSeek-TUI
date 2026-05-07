@@ -42,6 +42,16 @@ pub fn agents_global_skills_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|p| p.join(".agents").join("skills"))
 }
 
+/// Global Claude-compatible skills directory (`~/.claude/skills`). The
+/// SKILL.md frontmatter convention is shared across the broader Claude
+/// ecosystem, so picking up the global path lets users inherit skills
+/// they already installed for other Claude-compatible tools without
+/// re-authoring them in DeepSeek's native layout (#902).
+#[must_use]
+pub fn claude_global_skills_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|p| p.join(".claude").join("skills"))
+}
+
 // === Types ===
 
 /// Parsed representation of a SKILL.md definition.
@@ -194,7 +204,11 @@ impl SkillRegistry {
 
     fn parse_skill(_path: &Path, content: &str) -> std::result::Result<Skill, String> {
         let trimmed = content.trim_start();
-        let (frontmatter, body) = if trimmed.starts_with("---") {
+
+        // Try to parse frontmatter block first. If absent, fall back to
+        // extracting the first `# Heading` as the skill name so that plain
+        // Markdown files (no `---` fence) are accepted instead of rejected.
+        if trimmed.starts_with("---") {
             let start = content
                 .find("---")
                 .ok_or_else(|| "missing frontmatter opening delimiter".to_string())?;
@@ -202,38 +216,54 @@ impl SkillRegistry {
             let end = rest
                 .find("---")
                 .ok_or_else(|| "missing frontmatter closing delimiter".to_string())?;
-            (&rest[..end], &rest[end + 3..])
-        } else {
-            return Err("missing frontmatter opening delimiter '---'".to_string());
-        };
+            let frontmatter = &rest[..end];
+            let body = &rest[end + 3..];
 
-        let mut metadata = HashMap::new();
-        for raw in frontmatter.lines() {
-            let line = raw.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
+            let mut metadata = HashMap::new();
+            for raw in frontmatter.lines() {
+                let line = raw.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Some((key, value)) = line.split_once(':') {
+                    metadata.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
+                }
             }
-            if let Some((key, value)) = line.split_once(':') {
-                metadata.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
-            }
+
+            let name = metadata
+                .get("name")
+                .filter(|name| !name.is_empty())
+                .cloned()
+                .ok_or_else(|| "missing required frontmatter field: name".to_string())?;
+
+            let description = metadata.get("description").cloned().unwrap_or_default();
+
+            return Ok(Skill {
+                name,
+                description,
+                body: body.trim().to_string(),
+                // Filled in by `discover` after parse succeeds; default to an
+                // empty path so direct constructors (e.g. tests) compile.
+                path: PathBuf::new(),
+            });
         }
 
-        let name = metadata
-            .get("name")
-            .filter(|name| !name.is_empty())
-            .cloned()
-            .ok_or_else(|| "missing required frontmatter field: name".to_string())?;
-
-        let description = metadata.get("description").cloned().unwrap_or_default();
-
-        let body = body.trim().to_string();
+        // Graceful degradation: no frontmatter fence found.
+        // Extract the first `# Heading` as the skill name.
+        let heading_re = regex::Regex::new(r"(?m)^#\s+(.+)$").expect("static regex is valid");
+        let name = heading_re
+            .captures(content)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                "no frontmatter and no `# Heading` found to use as skill name".to_string()
+            })?;
 
         Ok(Skill {
             name,
-            description,
-            body,
-            // Filled in by `discover` after parse succeeds; default to an
-            // empty path so direct constructors (e.g. tests) compile.
+            description: String::new(),
+            body: content.trim().to_string(),
             path: PathBuf::new(),
         })
     }
@@ -314,7 +344,8 @@ pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
 /// 4. `<workspace>/.claude/skills` — Claude Code interop.
 /// 5. `<workspace>/.cursor/skills` — Cursor interop.
 /// 6. [`agents_global_skills_dir`] — agentskills.io global.
-/// 7. [`default_skills_dir`] — DeepSeek global, user-installed.
+/// 7. [`claude_global_skills_dir`] — Claude-ecosystem global (#902).
+/// 8. [`default_skills_dir`] — DeepSeek global, user-installed.
 ///
 /// Only directories that exist on disk are returned — callers don't
 /// need to filter further. Returns an empty vec when nothing is
@@ -330,6 +361,9 @@ pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
     ];
     if let Some(global_agents) = agents_global_skills_dir() {
         candidates.push(global_agents);
+    }
+    if let Some(global_claude) = claude_global_skills_dir() {
+        candidates.push(global_claude);
     }
     candidates.push(default_skills_dir());
     existing_skill_dirs(candidates)
@@ -723,6 +757,38 @@ mod tests {
     }
 
     #[test]
+    fn claude_global_skills_dir_returns_home_relative_path() {
+        // Smoke test for the #902 helper. We don't assert the exact path
+        // because dirs::home_dir() is host-dependent; we just pin the
+        // suffix shape so a future refactor can't silently rename it.
+        let path = super::claude_global_skills_dir().expect("home dir resolves on test host");
+        assert!(path.ends_with(".claude/skills") || path.ends_with(r".claude\skills"));
+    }
+
+    #[test]
+    fn existing_skill_dirs_orders_globals_agents_then_claude_then_deepseek() {
+        // Pins the precedence among the three global skill roots (#902).
+        // Workspace candidates are tested separately above; here we only
+        // exercise the global ordering at the existing_skill_dirs level
+        // so the assertion is host-independent.
+        let tmpdir = TempDir::new().unwrap();
+        let agents_global = tmpdir.path().join(".agents").join("skills");
+        let claude_global = tmpdir.path().join(".claude").join("skills");
+        let deepseek_global = tmpdir.path().join(".deepseek").join("skills");
+        std::fs::create_dir_all(&agents_global).unwrap();
+        std::fs::create_dir_all(&claude_global).unwrap();
+        std::fs::create_dir_all(&deepseek_global).unwrap();
+
+        let dirs = super::existing_skill_dirs(vec![
+            agents_global.clone(),
+            claude_global.clone(),
+            deepseek_global.clone(),
+        ]);
+
+        assert_eq!(dirs, vec![agents_global, claude_global, deepseek_global]);
+    }
+
+    #[test]
     fn existing_skill_dirs_keeps_agents_global_before_deepseek_global() {
         let tmpdir = TempDir::new().unwrap();
         let agents_global = tmpdir.path().join(".agents").join("skills");
@@ -821,6 +887,46 @@ mod tests {
         assert!(
             registry.get("cursor-only").is_some(),
             ".cursor/skills must be scanned"
+        );
+    }
+
+    #[test]
+    fn discover_accepts_plain_markdown_heading_without_frontmatter() {
+        let tmpdir = TempDir::new().unwrap();
+        let skill_dir = tmpdir.path().join("plain-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Plain Skill\n\nUse this skill without YAML frontmatter.\n",
+        )
+        .unwrap();
+
+        let registry = super::SkillRegistry::discover(tmpdir.path());
+        let skill = registry.get("Plain Skill").expect("plain skill parsed");
+        assert_eq!(skill.description, "");
+        assert!(skill.body.contains("Use this skill"));
+    }
+
+    #[test]
+    fn discover_warns_for_plain_markdown_without_heading() {
+        let tmpdir = TempDir::new().unwrap();
+        let skill_dir = tmpdir.path().join("plain-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "Use this skill without a heading or YAML frontmatter.\n",
+        )
+        .unwrap();
+
+        let registry = super::SkillRegistry::discover(tmpdir.path());
+        assert!(registry.is_empty());
+        assert!(
+            registry
+                .warnings()
+                .iter()
+                .any(|warning| warning.contains("no `# Heading` found")),
+            "expected missing-heading warning, got {:?}",
+            registry.warnings()
         );
     }
 

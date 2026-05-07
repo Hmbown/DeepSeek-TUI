@@ -92,7 +92,7 @@ deepseek doctor --json
   "api_key": {
     "source": "env"
   },
-  "base_url": "https://api.deepseek.com",
+  "base_url": "https://api.deepseek.com/beta",
   "default_text_model": "deepseek-v4-pro",
   "memory": {
     "enabled": false,
@@ -116,13 +116,23 @@ deepseek doctor --json
 ## HTTP/SSE runtime API: `deepseek serve --http`
 
 ```bash
-deepseek serve --http [--host 127.0.0.1] [--port 7878] [--workers 2]
+deepseek serve --http [--host 127.0.0.1] [--port 7878] [--workers 2] [--auth-token TOKEN]
 ```
 
 Defaults: host `127.0.0.1`, port `7878`, 2 workers (clamped 1–8).
 
 The server binds to `localhost` by default. Configuration is via CLI flags —
 there is no `[app_server]` config section.
+
+By default, existing local behavior is unchanged and `/v1/*` routes are not
+authenticated. To require a bearer token for `/v1/*` routes, pass
+`--auth-token TOKEN` or set `DEEPSEEK_RUNTIME_TOKEN=TOKEN` before starting the
+server. `/health` remains public for local process supervision and readiness
+checks.
+
+Authenticated clients can provide the token as `Authorization: Bearer TOKEN`,
+`X-DeepSeek-Runtime-Token: TOKEN`, or `?token=TOKEN` for EventSource-style
+clients that cannot set custom headers.
 
 ### Endpoints
 
@@ -296,7 +306,11 @@ Common event names: `thread.started`, `thread.forked`, `turn.started`,
 
 - **Localhost only**. The server binds to `127.0.0.1` by default. Set
   `--host 0.0.0.0` only when you have a reverse-proxy / VPN that
-  authenticates — there is no built-in auth, user isolation, or TLS.
+  authenticates. The runtime does not provide user isolation or TLS.
+- **Optional token guard**. `--auth-token` or `DEEPSEEK_RUNTIME_TOKEN`
+  requires a matching bearer token for `/v1/*` routes. This is a local
+  convenience guard, not a replacement for TLS, VPN, or a trusted reverse
+  proxy on public networks.
 - **No provider-token custody**. The server never returns the API key. The
   `api_key.source` capability field reports `env`, `config`, or `missing` —
   never the key itself.

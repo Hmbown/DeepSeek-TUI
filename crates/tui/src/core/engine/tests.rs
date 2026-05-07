@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::models::SystemBlock;
+use crate::test_support::lock_test_env;
 use serde_json::json;
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -43,6 +44,35 @@ impl Drop for ScopedCapacityMemoryDir {
     }
 }
 
+struct ScopedDeepSeekApiKey {
+    previous: Option<OsString>,
+}
+
+impl ScopedDeepSeekApiKey {
+    fn set(value: &str) -> Self {
+        let previous = std::env::var_os("DEEPSEEK_API_KEY");
+        // Safety: tests using this helper serialize with lock_test_env() and
+        // restore the original value in Drop.
+        unsafe {
+            std::env::set_var("DEEPSEEK_API_KEY", value);
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for ScopedDeepSeekApiKey {
+    fn drop(&mut self) {
+        // Safety: tests using this helper serialize with lock_test_env().
+        unsafe {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var("DEEPSEEK_API_KEY", previous);
+            } else {
+                std::env::remove_var("DEEPSEEK_API_KEY");
+            }
+        }
+    }
+}
+
 fn build_engine_with_capacity(capacity: CapacityControllerConfig) -> Engine {
     let engine_config = EngineConfig {
         capacity,
@@ -50,6 +80,36 @@ fn build_engine_with_capacity(capacity: CapacityControllerConfig) -> Engine {
     };
     let (engine, _handle) = Engine::new(engine_config, &Config::default());
     engine
+}
+
+#[test]
+fn env_only_auth_error_gets_recovery_hint() {
+    let _guard = lock_test_env();
+    let _env = ScopedDeepSeekApiKey::set("stale-env-key");
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+
+    let message =
+        engine.decorate_auth_error_message("Authentication failed: invalid API key".to_string());
+
+    assert!(message.contains("DEEPSEEK_API_KEY"));
+    assert!(message.contains("no saved config key is present"));
+    assert!(message.contains("deepseek auth set --provider deepseek"));
+}
+
+#[test]
+fn config_auth_error_does_not_blame_env() {
+    let _guard = lock_test_env();
+    let _env = ScopedDeepSeekApiKey::set("stale-env-key");
+    let cfg = Config {
+        api_key: Some("fresh-config-key".to_string()),
+        ..Config::default()
+    };
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &cfg);
+
+    let message =
+        engine.decorate_auth_error_message("Authentication failed: invalid API key".to_string());
+
+    assert_eq!(message, "Authentication failed: invalid API key");
 }
 
 fn make_plan(
@@ -440,13 +500,20 @@ fn agent_and_yolo_modes_elevate_shell_sandbox_to_allow_network() {
         "Yolo mode must use DangerFullAccess (no sandbox); got {yolo_policy:?}",
     );
 
-    // Plan mode is read-only investigation and does not register the shell
-    // tool, so it intentionally leaves the policy at the strict default.
+    // Plan mode can still expose shell tools for local read-only inspection,
+    // but it keeps outbound network blocked and attaches an explicit hint so
+    // network command failures are not mistaken for DNS/proxy issues.
+    let plan_ctx = engine.build_tool_context(AppMode::Plan, false);
+    let plan_policy = plan_ctx
+        .elevated_sandbox_policy
+        .as_ref()
+        .expect("Plan mode should make the shell sandbox policy explicit");
+    assert!(!plan_policy.has_network_access());
     assert!(
-        engine
-            .build_tool_context(AppMode::Plan, false)
-            .elevated_sandbox_policy
-            .is_none(),
+        plan_ctx
+            .shell_network_denied_hint
+            .as_deref()
+            .is_some_and(|hint| hint.contains("Plan mode")),
     );
 }
 
@@ -499,6 +566,53 @@ fn context_budget_reserves_output_and_headroom() {
     let v4_window: usize = 1_000_000;
     let expected = v4_window - (TURN_MAX_OUTPUT_TOKENS as usize) - 1_024usize;
     assert_eq!(budget, expected);
+}
+
+#[test]
+fn effective_max_output_tokens_caps_api_request_for_large_window_models() {
+    // V4 models have a 1M context window but the API request cap must stay
+    // well below common provider limits (e.g., 131K total on self-hosted
+    // vLLM/SGLang). The cap should never exceed 65K.
+    let v4_cap = effective_max_output_tokens("deepseek-v4-pro");
+    assert!(
+        v4_cap <= 65_536,
+        "V4 API request cap should be ≤64K, got {v4_cap}"
+    );
+    assert!(
+        v4_cap > 0,
+        "V4 API request cap should be positive, got {v4_cap}"
+    );
+
+    let flash_cap = effective_max_output_tokens("deepseek-v4-flash");
+    assert_eq!(v4_cap, flash_cap);
+}
+
+#[test]
+fn internal_context_budget_unaffected_by_api_request_cap() {
+    // The internal context budget (used for compaction/preflight/recovery)
+    // must still use the full TURN_MAX_OUTPUT_TOKENS headroom, NOT the
+    // smaller API request cap. This ensures long-context V4 sessions don't
+    // compact prematurely.
+    let internal_budget = context_input_budget("deepseek-v4-pro", TURN_MAX_OUTPUT_TOKENS)
+        .expect("V4 should have a known context window");
+    let api_cap_budget = context_input_budget(
+        "deepseek-v4-pro",
+        effective_max_output_tokens("deepseek-v4-pro"),
+    )
+    .expect("V4 should have a known context window");
+
+    // Internal budget reserves 262K for output; API-cap budget would only
+    // reserve 64K. Internal budget must be smaller (more conservative).
+    assert!(
+        internal_budget < api_cap_budget,
+        "Internal budget ({internal_budget}) should be smaller than API-cap budget ({api_cap_budget}) \
+         because it reserves more headroom for output"
+    );
+
+    // Verify the internal budget is what the compaction logic actually uses.
+    let v4_window: usize = 1_000_000;
+    let expected_internal = v4_window - (TURN_MAX_OUTPUT_TOKENS as usize) - 1_024usize;
+    assert_eq!(internal_budget, expected_internal);
 }
 
 #[test]
@@ -588,13 +702,9 @@ fn working_set_reaches_model_as_turn_metadata() {
         .session
         .working_set
         .observe_user_message("please inspect src/lib.rs", tmp.path());
-    engine.session.add_message(Message {
-        role: "user".to_string(),
-        content: vec![ContentBlock::Text {
-            text: "please inspect src/lib.rs".to_string(),
-            cache_control: None,
-        }],
-    });
+    let user_msg =
+        engine.user_text_message_with_turn_metadata("please inspect src/lib.rs".to_string());
+    engine.session.add_message(user_msg);
 
     let messages = engine.messages_with_turn_metadata();
     let first_block = messages
@@ -609,14 +719,75 @@ fn working_set_reaches_model_as_turn_metadata() {
     assert!(text.contains("src/lib.rs"));
 }
 
+#[test]
+fn turn_metadata_includes_current_local_date_without_working_set() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    let user_msg = engine.user_text_message_with_turn_metadata("what is today's date?".to_string());
+    engine.session.add_message(user_msg);
+
+    let messages = engine.messages_with_turn_metadata();
+    let first_block = messages
+        .last()
+        .and_then(|message| message.content.first())
+        .expect("turn metadata block");
+    let ContentBlock::Text { text, .. } = first_block else {
+        panic!("expected text metadata block");
+    };
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    assert!(text.starts_with("<turn_meta>\n"));
+    assert!(text.contains(&format!("Current local date: {today}")));
+}
+
+#[test]
+fn messages_with_turn_metadata_preserves_stored_messages_for_prefix_cache() {
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine
+        .session
+        .working_set
+        .observe_user_message("inspect src/lib.rs", tmp.path());
+
+    let first_user = engine.user_text_message_with_turn_metadata("inspect src/lib.rs".to_string());
+    engine.session.add_message(first_user.clone());
+    let first_request = engine.messages_with_turn_metadata();
+    assert_eq!(first_request, engine.session.messages);
+
+    engine.session.add_message(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "I inspected it.".to_string(),
+            cache_control: None,
+        }],
+    });
+    engine
+        .session
+        .working_set
+        .observe_user_message("now summarize it", tmp.path());
+    let second_user = engine.user_text_message_with_turn_metadata("now summarize it".to_string());
+    engine.session.add_message(second_user);
+
+    let second_request = engine.messages_with_turn_metadata();
+    assert_eq!(second_request, engine.session.messages);
+    assert_eq!(second_request.first(), Some(&first_user));
+}
+
 /// v0.8.11 regression: tool-result messages serialize to role="tool" on
-/// the wire but are stored as role="user" internally. Prepending
-/// `<turn_meta>` text onto a tool-result message broke the
-/// assistant→tool_result invariant and caused HTTP 400 from DeepSeek's
-/// API ("insufficient tool messages following tool_calls"). The fix:
-/// inject only into messages that have a Text content block and no
-/// ToolResult blocks; mid-turn (tool-result is the trailing user
-/// message) the injection skips.
+/// the wire but are stored as role="user" internally. `<turn_meta>` must
+/// be stored only on actual user-text messages, not retroactively added
+/// to tool-result messages at request time.
 #[test]
 fn turn_metadata_skips_tool_result_messages() {
     let tmp = tempdir().expect("tempdir");
@@ -634,13 +805,8 @@ fn turn_metadata_skips_tool_result_messages() {
         .observe_user_message("inspect src/lib.rs", tmp.path());
 
     // Real user message — should be eligible for injection.
-    engine.session.add_message(Message {
-        role: "user".to_string(),
-        content: vec![ContentBlock::Text {
-            text: "inspect src/lib.rs".to_string(),
-            cache_control: None,
-        }],
-    });
+    let user_msg = engine.user_text_message_with_turn_metadata("inspect src/lib.rs".to_string());
+    engine.session.add_message(user_msg);
     // Assistant tool-call.
     engine.session.add_message(Message {
         role: "assistant".to_string(),
@@ -674,7 +840,7 @@ fn turn_metadata_skips_tool_result_messages() {
         Some(ContentBlock::ToolResult { .. })
     ));
 
-    // The earlier real user message receives the turn_meta prefix.
+    // The earlier real user message already carries the turn_meta prefix.
     let real_user = messages.first().expect("first user message");
     assert_eq!(real_user.role, "user");
     let ContentBlock::Text { text, .. } = real_user.content.first().expect("user text content")
@@ -686,10 +852,8 @@ fn turn_metadata_skips_tool_result_messages() {
 }
 
 /// When the turn is mid-execution and the trailing user message is a
-/// tool result, no turn_meta is injected at all (rather than landing on
-/// some earlier user message and confusing the API's tool-call
-/// continuity check). The working_set surfaces again on the next
-/// genuine user prompt.
+/// tool result, no turn_meta is injected at request time. The working_set
+/// surfaces again on the next stored user-text message.
 #[test]
 fn turn_metadata_skips_when_only_tool_results_trail() {
     let tmp = tempdir().expect("tempdir");
@@ -1696,12 +1860,24 @@ async fn post_edit_hook_injects_diagnostics_message_before_next_request() {
 
     let last = engine.session.messages.last().expect("message appended");
     assert_eq!(last.role, "user");
-    let text = match &last.content[0] {
+    let meta = match &last.content[0] {
         crate::models::ContentBlock::Text { text, .. } => text.clone(),
         other => panic!("expected text block, got {other:?}"),
     };
-    assert!(text.contains("<diagnostics file=\""));
-    assert!(text.contains("ERROR [1:14] expected i32, found &str"));
+    assert!(meta.starts_with("<turn_meta>\n"));
+    let diagnostic_text = last
+        .content
+        .iter()
+        .find_map(|block| match block {
+            crate::models::ContentBlock::Text { text, .. }
+                if text.contains("<diagnostics file=\"") =>
+            {
+                Some(text)
+            }
+            _ => None,
+        })
+        .expect("diagnostics text block");
+    assert!(diagnostic_text.contains("ERROR [1:14] expected i32, found &str"));
 }
 
 #[tokio::test]

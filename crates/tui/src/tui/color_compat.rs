@@ -14,19 +14,21 @@ use ratatui::{
     layout::{Position, Size},
 };
 
-use crate::palette::{self, ColorDepth};
+use crate::palette::{self, ColorDepth, PaletteMode};
 
 #[derive(Debug)]
 pub(crate) struct ColorCompatBackend<W: Write> {
     inner: CrosstermBackend<W>,
     depth: ColorDepth,
+    palette_mode: PaletteMode,
 }
 
 impl<W: Write> ColorCompatBackend<W> {
-    pub(crate) fn new(writer: W, depth: ColorDepth) -> Self {
+    pub(crate) fn new(writer: W, depth: ColorDepth, palette_mode: PaletteMode) -> Self {
         Self {
             inner: CrosstermBackend::new(writer),
             depth,
+            palette_mode,
         }
     }
 }
@@ -49,7 +51,7 @@ impl<W: Write> Backend for ColorCompatBackend<W> {
         let adapted = content
             .map(|(x, y, cell)| {
                 let mut cell = cell.clone();
-                adapt_cell_colors(&mut cell, self.depth);
+                adapt_cell_colors(&mut cell, self.depth, self.palette_mode);
                 (x, y, cell)
             })
             .collect::<Vec<_>>();
@@ -98,7 +100,10 @@ impl<W: Write> Backend for ColorCompatBackend<W> {
     }
 }
 
-fn adapt_cell_colors(cell: &mut Cell, depth: ColorDepth) {
+fn adapt_cell_colors(cell: &mut Cell, depth: ColorDepth, palette_mode: PaletteMode) {
+    let original_bg = cell.bg;
+    cell.fg = palette::adapt_fg_for_palette_mode(cell.fg, original_bg, palette_mode);
+    cell.bg = palette::adapt_bg_for_palette_mode(cell.bg, palette_mode);
     cell.fg = palette::adapt_color(cell.fg, depth);
     cell.bg = palette::adapt_bg(cell.bg, depth);
 }
@@ -132,7 +137,7 @@ mod tests {
         cell.set_fg(Color::Rgb(53, 120, 229));
         cell.set_bg(Color::Rgb(11, 21, 38));
 
-        adapt_cell_colors(&mut cell, ColorDepth::Ansi256);
+        adapt_cell_colors(&mut cell, ColorDepth::Ansi256, PaletteMode::Dark);
 
         assert!(matches!(cell.fg, Color::Indexed(_)));
         assert!(matches!(cell.bg, Color::Indexed(_)));
@@ -144,7 +149,7 @@ mod tests {
         cell.set_fg(Color::Rgb(53, 120, 229));
         cell.set_bg(Color::Rgb(11, 21, 38));
 
-        adapt_cell_colors(&mut cell, ColorDepth::TrueColor);
+        adapt_cell_colors(&mut cell, ColorDepth::TrueColor, PaletteMode::Dark);
 
         assert_eq!(cell.fg, Color::Rgb(53, 120, 229));
         assert_eq!(cell.bg, Color::Rgb(11, 21, 38));
@@ -154,7 +159,7 @@ mod tests {
     fn ansi256_backend_output_does_not_emit_truecolor_sgr() {
         let writer = SharedWriter::default();
         let capture = writer.0.clone();
-        let mut backend = ColorCompatBackend::new(writer, ColorDepth::Ansi256);
+        let mut backend = ColorCompatBackend::new(writer, ColorDepth::Ansi256, PaletteMode::Dark);
         let mut cell = Cell::default();
         cell.set_symbol("x")
             .set_fg(Color::Rgb(53, 120, 229))
@@ -165,5 +170,17 @@ mod tests {
         let output = String::from_utf8_lossy(&capture.borrow()).to_string();
         assert!(!output.contains("38;2;"), "{output:?}");
         assert!(!output.contains("48;2;"), "{output:?}");
+    }
+
+    #[test]
+    fn light_palette_maps_dark_cells_before_depth_adaptation() {
+        let mut cell = Cell::default();
+        cell.set_fg(Color::White);
+        cell.set_bg(Color::Rgb(11, 21, 38));
+
+        adapt_cell_colors(&mut cell, ColorDepth::TrueColor, PaletteMode::Light);
+
+        assert_eq!(cell.fg, palette::LIGHT_TEXT_BODY);
+        assert_eq!(cell.bg, palette::LIGHT_SURFACE);
     }
 }

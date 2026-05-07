@@ -41,24 +41,26 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     };
 
     if !lines.is_empty() {
-        let (step, total) = onboarding_step(app);
-        let panel = Block::default()
+        let mut panel = Block::default()
             .title(Line::from(Span::styled(
                 " DeepSeek TUI ",
                 Style::default()
                     .fg(palette::DEEPSEEK_BLUE)
                     .add_modifier(Modifier::BOLD),
             )))
-            .title_bottom(Line::from(Span::styled(
-                format!(" Step {step}/{total} "),
-                Style::default()
-                    .fg(palette::TEXT_MUTED)
-                    .add_modifier(Modifier::BOLD),
-            )))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette::BORDER_COLOR))
             .style(Style::default().bg(palette::DEEPSEEK_SLATE))
             .padding(Padding::new(2, 2, 1, 1));
+        if !app.onboarding_workspace_trust_gate {
+            let (step, total) = onboarding_step(app);
+            panel = panel.title_bottom(Line::from(Span::styled(
+                format!(" Step {step}/{total} "),
+                Style::default()
+                    .fg(palette::TEXT_MUTED)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
         let inner = panel.inner(content_area);
         f.render_widget(panel, content_area);
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
@@ -152,6 +154,10 @@ pub fn mark_onboarded() -> std::io::Result<PathBuf> {
 }
 
 pub fn needs_trust(workspace: &Path) -> bool {
+    if crate::config::is_workspace_trusted(workspace) {
+        return false;
+    }
+
     let markers = [
         workspace.join(".deepseek").join("trusted"),
         workspace.join(".deepseek").join("trust.json"),
@@ -159,10 +165,6 @@ pub fn needs_trust(workspace: &Path) -> bool {
     !markers.iter().any(|path| path.exists())
 }
 
-pub fn mark_trusted(workspace: &Path) -> std::io::Result<PathBuf> {
-    let dir = workspace.join(".deepseek");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join("trusted");
-    std::fs::write(&path, "")?;
-    Ok(path)
+pub fn mark_trusted(workspace: &Path) -> anyhow::Result<PathBuf> {
+    crate::config::save_workspace_trust(workspace)
 }

@@ -82,6 +82,7 @@ use crate::tui::tool_routing::{
 };
 use crate::tui::ui_text::{history_cell_to_text, line_to_plain, slice_text, text_display_width};
 use crate::tui::user_input::UserInputView;
+use crate::tui::views::subagent_view_agents;
 
 use super::active_cell::ActiveCell;
 use super::app::{
@@ -233,8 +234,13 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         );
     }
     let color_depth = palette::ColorDepth::detect();
-    tracing::debug!(?color_depth, "terminal color depth detected");
-    let backend = ColorCompatBackend::new(stdout, color_depth);
+    let palette_mode = palette::PaletteMode::detect();
+    tracing::debug!(
+        ?color_depth,
+        ?palette_mode,
+        "terminal color profile detected"
+    );
+    let backend = ColorCompatBackend::new(stdout, color_depth, palette_mode);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
     let event_broker = EventBroker::new();
@@ -447,8 +453,25 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         execute!(terminal.backend_mut(), DisableBracketedPaste)?;
     }
     terminal.show_cursor()?;
+    drop(terminal);
+
+    if result.is_ok()
+        && let Some(hint) = format_resume_hint(app.current_session_id.as_deref())
+    {
+        println!("{hint}");
+    }
 
     result
+}
+
+fn format_resume_hint(session_id: Option<&str>) -> Option<String> {
+    let session_id = session_id?.trim();
+    if session_id.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "To continue this session, run deepseek resume {session_id}"
+    ))
 }
 
 fn terminal_probe_timeout(config: &Config) -> Duration {
@@ -556,6 +579,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         vision_session_manager,
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: app.goal.goal_objective.clone(),
+        locale_tag: app.ui_locale.tag().to_string(),
         workshop: config.workshop.clone(),
     }
 }
@@ -567,6 +591,8 @@ async fn refresh_active_task_panel(app: &mut App, task_manager: &SharedTaskManag
         .filter(|task| matches!(task.status, TaskStatus::Queued | TaskStatus::Running))
         .map(task_summary_to_panel_entry)
         .collect();
+
+    entries.extend(active_rlm_task_entries(app));
 
     if let Some(shell_mgr) = app.runtime_services.shell_manager.as_ref()
         && let Ok(mut mgr) = shell_mgr.lock()
@@ -585,6 +611,39 @@ async fn refresh_active_task_panel(app: &mut App, task_manager: &SharedTaskManag
     }
 
     app.task_panel = entries;
+}
+
+fn active_rlm_task_entries(app: &App) -> Vec<TaskPanelEntry> {
+    let Some(active) = app.active_cell.as_ref() else {
+        return Vec::new();
+    };
+    let duration_ms = app
+        .turn_started_at
+        .map(|started| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+    active
+        .entries()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, entry)| {
+            let HistoryCell::Tool(ToolCell::Generic(generic)) = entry else {
+                return None;
+            };
+            if generic.name != "rlm" || generic.status != ToolStatus::Running {
+                return None;
+            }
+            let summary = generic
+                .input_summary
+                .as_deref()
+                .filter(|summary| !summary.trim().is_empty())
+                .unwrap_or("running chunked analysis");
+            Some(TaskPanelEntry {
+                id: format!("rlm-{}", idx + 1),
+                status: "running".to_string(),
+                prompt_summary: format!("RLM: {summary}"),
+                duration_ms,
+            })
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_lines)]
@@ -614,6 +673,7 @@ async fn run_event_loop(
     // #376: native-copy escape — hold Shift to bypass alt-screen mouse capture
     // for terminal-native text selection.
     let mut shift_bypass_active = false;
+    let mut terminal_paused_at: Option<Instant> = None;
 
     loop {
         if !drain_web_config_events(&mut web_config_session, app, config, &engine_handle).await {
@@ -947,33 +1007,18 @@ async fn run_event_loop(
                         }
 
                         // Emit OSC 9 / BEL desktop notification for long turns.
-                        if status == crate::core::events::TurnOutcomeStatus::Completed {
-                            let notif = config.notifications_config();
-                            let method =
-                                crate::tui::notifications::Method::from_str(match &notif.method {
-                                    crate::config::NotificationMethod::Auto => "auto",
-                                    crate::config::NotificationMethod::Osc9 => "osc9",
-                                    crate::config::NotificationMethod::Bel => "bel",
-                                    crate::config::NotificationMethod::Off => "off",
-                                });
-                            let threshold = std::time::Duration::from_secs(notif.threshold_secs);
+                        if status == crate::core::events::TurnOutcomeStatus::Completed
+                            && let Some((method, threshold, include_summary)) =
+                                notification_settings(config)
+                        {
                             let in_tmux = std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
-                            let msg = if notif.include_summary {
-                                let human =
-                                    crate::tui::notifications::humanize_duration(turn_elapsed);
-                                match turn_cost {
-                                    Some(c) => {
-                                        let cost = crate::pricing::format_cost_estimate(
-                                            c,
-                                            app.cost_currency,
-                                        );
-                                        format!("deepseek: turn complete ({human}, {cost})")
-                                    }
-                                    None => format!("deepseek: turn complete ({human})"),
-                                }
-                            } else {
-                                "deepseek: turn complete".to_string()
-                            };
+                            let msg = completed_turn_notification_message(
+                                app,
+                                &current_streaming_text,
+                                include_summary,
+                                turn_elapsed,
+                                turn_cost,
+                            );
                             crate::tui::notifications::notify_done(
                                 method,
                                 in_tmux,
@@ -1124,6 +1169,7 @@ async fn run_event_loop(
                                 app.use_bracketed_paste,
                             )?;
                             event_broker.pause_events();
+                            terminal_paused_at = Some(Instant::now());
                         }
                     }
                     EngineEvent::ResumeEvents => {
@@ -1135,6 +1181,7 @@ async fn run_event_loop(
                                 app.use_bracketed_paste,
                             )?;
                             event_broker.resume_events();
+                            terminal_paused_at = None;
                         }
                     }
                     EngineEvent::AgentSpawned { id, prompt } => {
@@ -1163,11 +1210,54 @@ async fn run_event_loop(
                         app.status_message = Some(format!("Sub-agent {id}: {display}"));
                     }
                     EngineEvent::AgentComplete { id, result } => {
+                        let subagent_elapsed = app
+                            .agent_activity_started_at
+                            .or(app.turn_started_at)
+                            .map(|started| started.elapsed())
+                            .unwrap_or_default();
+                        let has_other_running_subagents =
+                            app.agent_progress.keys().any(|agent_id| agent_id != &id)
+                                || app.subagent_cache.iter().any(|agent| {
+                                    agent.agent_id != id
+                                        && matches!(agent.status, SubAgentStatus::Running)
+                                });
                         app.agent_progress.remove(&id);
                         app.status_message = Some(format!(
                             "Sub-agent {id} completed: {}",
                             summarize_tool_output(&result)
                         ));
+                        let should_recapture_terminal =
+                            !has_other_running_subagents && app.use_alt_screen;
+                        if !has_other_running_subagents
+                            && let Some((method, threshold, include_summary)) =
+                                notification_settings(config)
+                        {
+                            let in_tmux = std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
+                            let msg = subagent_completion_notification_message(
+                                &id,
+                                &result,
+                                include_summary,
+                                subagent_elapsed,
+                            );
+                            crate::tui::notifications::notify_done(
+                                method,
+                                in_tmux,
+                                &msg,
+                                threshold,
+                                subagent_elapsed,
+                            );
+                        }
+                        if should_recapture_terminal {
+                            resume_terminal(
+                                terminal,
+                                app.use_alt_screen,
+                                app.use_mouse_capture,
+                                app.use_bracketed_paste,
+                            )?;
+                            event_broker.resume_events();
+                            terminal_paused_at = None;
+                            app.needs_redraw = true;
+                        }
                         let _ = engine_handle.send(Op::ListSubAgents).await;
                     }
                     EngineEvent::AgentList { agents } => {
@@ -1176,9 +1266,10 @@ async fn run_event_loop(
                         sorted.retain(|a| !a.from_prior_session);
                         app.subagent_cache = sorted.clone();
                         reconcile_subagent_activity_state(app);
-                        if app.view_stack.update_subagents(&sorted) {
+                        let view_agents = subagent_view_agents(app, &sorted);
+                        if app.view_stack.update_subagents(&view_agents) {
                             app.status_message =
-                                Some(format!("Sub-agents: {} total", sorted.len()));
+                                Some(format!("Sub-agents: {} total", view_agents.len()));
                         }
                         // Individual spawn/complete events already log to history;
                         // full list available via /agents command.
@@ -1334,6 +1425,19 @@ async fn run_event_loop(
                 }
             }
         }
+        if let Some(index) = app.streaming_message_index {
+            let committed = app.streaming_state.commit_text(0);
+            if !committed.is_empty() {
+                append_streaming_text(app, index, &committed);
+                transcript_batch_updated = true;
+            }
+        } else if let Some(entry_idx) = app.streaming_thinking_active_entry {
+            let committed = app.streaming_state.commit_text(0);
+            if !committed.is_empty() {
+                append_streaming_thinking(app, entry_idx, &committed);
+                transcript_batch_updated = true;
+            }
+        }
         if transcript_batch_updated {
             app.mark_history_updated();
         }
@@ -1394,8 +1498,23 @@ async fn run_event_loop(
         }
 
         if event_broker.is_paused() {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            continue;
+            let grace_active = terminal_paused_at
+                .map(|paused_at| paused_at.elapsed() < Duration::from_millis(500))
+                .unwrap_or(false);
+            if terminal_pause_has_live_owner(app) || grace_active {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                continue;
+            }
+            resume_terminal(
+                terminal,
+                app.use_alt_screen,
+                app.use_mouse_capture,
+                app.use_bracketed_paste,
+            )?;
+            event_broker.resume_events();
+            terminal_paused_at = None;
+            app.status_message = Some("Terminal controls restored".to_string());
+            app.needs_redraw = true;
         }
 
         let now = Instant::now();
@@ -1498,7 +1617,13 @@ async fn run_event_loop(
             }
 
             if let Event::Resize(width, height) = evt {
-                tracing::debug!(width, height, "Event::Resize received; clearing terminal");
+                tracing::debug!(
+                    width,
+                    height,
+                    coherence = ?app.coherence_state,
+                    use_alt_screen = app.use_alt_screen,
+                    "Event::Resize received; clearing terminal"
+                );
                 // Drain any further Resize events queued in this poll cycle so we
                 // act on the final size only, then issue a single clear + redraw.
                 // crossterm coalesces some resize events but rapid drag-resizes
@@ -1527,6 +1652,28 @@ async fn run_event_loop(
                         Err(_) => break,
                     }
                 }
+
+                // #582: commit the event-reported size to ratatui's
+                // viewport explicitly before the redraw, instead of
+                // relying on `crossterm::terminal::size()` which gets
+                // queried internally during `terminal.draw`. On
+                // Windows ConHost specifically, `terminal::size()` has
+                // been observed to return stale dimensions briefly
+                // during a maximize→windowed transition; the next
+                // `draw` then paints into a buffer that does not
+                // match the post-restore viewport, producing the
+                // unrecoverable black screen reported by @imakid.
+                // The `Event::Resize` payload itself carries the
+                // authoritative new size, so we forward it.
+                if let Err(err) = terminal.resize(Rect::new(0, 0, final_w, final_h)) {
+                    tracing::warn!(
+                        ?err,
+                        final_w,
+                        final_h,
+                        "terminal.resize during Resize event failed; falling back to clear+draw"
+                    );
+                }
+
                 terminal.clear()?;
                 app.handle_resize(final_w, final_h);
                 // Draw immediately so the cleared screen gets repainted before
@@ -1712,14 +1859,19 @@ async fn run_event_loop(
                         }
                         OnboardingState::None => {}
                     },
-                    KeyCode::Char('y') | KeyCode::Char('Y')
+                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('1')
                         if app.onboarding == OnboardingState::TrustDirectory =>
                     {
                         match onboarding::mark_trusted(&app.workspace) {
                             Ok(_) => {
                                 app.trust_mode = true;
                                 app.status_message = None;
-                                app.onboarding = OnboardingState::Tips;
+                                if app.onboarding_workspace_trust_gate {
+                                    app.onboarding_workspace_trust_gate = false;
+                                    app.onboarding = OnboardingState::None;
+                                } else {
+                                    app.onboarding = OnboardingState::Tips;
+                                }
                             }
                             Err(err) => {
                                 app.status_message =
@@ -1727,11 +1879,11 @@ async fn run_event_loop(
                             }
                         }
                     }
-                    KeyCode::Char('n') | KeyCode::Char('N')
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('2')
                         if app.onboarding == OnboardingState::TrustDirectory =>
                     {
-                        app.status_message = None;
-                        app.onboarding = OnboardingState::Tips;
+                        let _ = engine_handle.send(Op::Shutdown).await;
+                        return Ok(());
                     }
                     KeyCode::Backspace if app.onboarding == OnboardingState::ApiKey => {
                         app.delete_api_key_char();
@@ -1797,10 +1949,9 @@ async fn run_event_loop(
                 continue;
             }
 
-            // Ctrl+E toggles the file-tree pane. Visible even when other
-            // modals are open (the file tree is part of the body layout,
-            // not a modal overlay).
-            if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            // Shifted shortcuts toggle the file-tree pane. Keep plain Ctrl+E
+            // reserved for the composer end-of-line binding used by shells.
+            if is_file_tree_toggle_shortcut(&key) {
                 if let Some(_state) = app.file_tree.as_mut() {
                     // File tree visible → hide it.
                     app.file_tree = None;
@@ -1995,7 +2146,9 @@ async fn run_event_loop(
                     continue;
                 }
                 KeyCode::Char('o')
-                    if key.modifiers == KeyModifiers::CONTROL && open_thinking_pager(app) =>
+                    if key.modifiers == KeyModifiers::CONTROL
+                        && app.input.is_empty()
+                        && open_thinking_pager(app) =>
                 {
                     continue;
                 }
@@ -2554,7 +2707,10 @@ async fn run_event_loop(
                     app.move_cursor_end();
                 }
                 KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    // Ctrl+E: spawn $EDITOR on the composer contents (#91).
+                    app.move_cursor_end();
+                }
+                KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    // Ctrl+O: spawn $EDITOR on the composer contents (#91).
                     // Only fires when no modal is active (the !view_stack
                     // branch above already returns early in that case) and
                     // the composer is the focused input target. We accept the
@@ -2971,6 +3127,154 @@ fn sanitize_stream_chunk(chunk: &str) -> String {
         .collect()
 }
 
+/// Resolve the effective notification method/threshold/include-summary tuple
+/// for a completed turn, taking the high-level
+/// `[tui].notification_condition` override into account on top of the
+/// lower-level `[notifications]` block.
+///
+/// Returns `None` to mean "do not notify" (either because the user set
+/// `notification_condition = "never"` or because the resolved method is
+/// `Off`).
+fn notification_settings(
+    config: &Config,
+) -> Option<(crate::tui::notifications::Method, Duration, bool)> {
+    let notif = config.notifications_config();
+    let method = match notif.method {
+        crate::config::NotificationMethod::Auto => crate::tui::notifications::Method::Auto,
+        crate::config::NotificationMethod::Osc9 => crate::tui::notifications::Method::Osc9,
+        crate::config::NotificationMethod::Bel => crate::tui::notifications::Method::Bel,
+        crate::config::NotificationMethod::Off => crate::tui::notifications::Method::Off,
+    };
+
+    if let Some(condition) = config
+        .tui
+        .as_ref()
+        .and_then(|tui| tui.notification_condition)
+    {
+        match condition {
+            crate::config::NotificationCondition::Always => {
+                return Some((method, Duration::ZERO, notif.include_summary));
+            }
+            crate::config::NotificationCondition::Never => return None,
+        }
+    }
+
+    Some((
+        method,
+        Duration::from_secs(notif.threshold_secs),
+        notif.include_summary,
+    ))
+}
+
+/// Build the notification body for a completed turn. Prefers the live
+/// streaming text the user just saw; falls back to the latest assistant
+/// message in `api_messages` if streaming text is empty (for example, the
+/// turn finished entirely through tool output). When `include_summary` is
+/// true, an elapsed/cost line is appended.
+fn completed_turn_notification_message(
+    app: &App,
+    current_streaming_text: &str,
+    include_summary: bool,
+    turn_elapsed: Duration,
+    turn_cost: Option<crate::pricing::CostEstimate>,
+) -> String {
+    let mut msg = notification_text_summary(current_streaming_text)
+        .or_else(|| latest_assistant_notification_text(&app.api_messages))
+        .unwrap_or_else(|| "deepseek: turn complete".to_string());
+
+    if include_summary {
+        let human = crate::tui::notifications::humanize_duration(turn_elapsed);
+        let summary = match turn_cost {
+            Some(c) => {
+                let cost = crate::pricing::format_cost_estimate(c, app.cost_currency);
+                format!("deepseek: turn complete ({human}, {cost})")
+            }
+            None => format!("deepseek: turn complete ({human})"),
+        };
+        if msg == "deepseek: turn complete" {
+            msg = summary;
+        } else {
+            msg.push('\n');
+            msg.push_str(&summary);
+        }
+    }
+
+    msg
+}
+
+fn subagent_completion_notification_message(
+    id: &str,
+    result: &str,
+    include_summary: bool,
+    elapsed: Duration,
+) -> String {
+    let result_line = result
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("<deepseek:subagent.done>"));
+    let mut msg = result_line
+        .and_then(notification_text_summary)
+        .map(|summary| format!("sub-agent {id}: {summary}"))
+        .unwrap_or_else(|| format!("deepseek: sub-agent {id} complete"));
+
+    if include_summary {
+        let human = crate::tui::notifications::humanize_duration(elapsed);
+        msg.push('\n');
+        msg.push_str(&format!("deepseek: sub-agent complete ({human})"));
+    }
+
+    msg
+}
+
+fn latest_assistant_notification_text(messages: &[Message]) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "assistant")
+        .and_then(|message| {
+            let text = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    ContentBlock::Thinking { .. }
+                    | ContentBlock::ToolUse { .. }
+                    | ContentBlock::ToolResult { .. }
+                    | ContentBlock::ServerToolUse { .. }
+                    | ContentBlock::ToolSearchToolResult { .. }
+                    | ContentBlock::CodeExecutionToolResult { .. } => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            notification_text_summary(&text)
+        })
+}
+
+fn notification_text_summary(text: &str) -> Option<String> {
+    const MAX_CHARS: usize = 360;
+
+    let sanitized = sanitize_stream_chunk(text);
+    let collapsed = sanitized
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let trimmed = collapsed.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some((idx, _)) = trimmed.char_indices().nth(MAX_CHARS) {
+        let mut s = String::with_capacity(idx + 3);
+        s.push_str(&trimmed[..idx]);
+        s.push_str("...");
+        Some(s)
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// Ensure an in-flight streaming Assistant cell exists in history and return
 /// its index. Thinking cells go through `ensure_streaming_thinking_active_entry`
 /// (active cell) instead.
@@ -3299,6 +3603,7 @@ async fn dispatch_user_message(
             prompts::PromptSessionContext {
                 user_memory_block: None,
                 goal_objective: app.goal.goal_objective.as_deref(),
+                locale_tag: app.ui_locale.tag(),
             },
         ),
     );
@@ -3332,7 +3637,7 @@ async fn dispatch_user_message(
         persistence_actor::persist(PersistRequest::Checkpoint(session));
     }
 
-    let auto_selection = if app.auto_model || app.reasoning_effort == ReasoningEffort::Auto {
+    let auto_selection = if should_resolve_auto_model_selection(app) {
         Some(resolve_auto_model_selection(app, config, &message, &content).await)
     } else {
         None
@@ -3400,6 +3705,10 @@ async fn dispatch_user_message(
     }
 
     Ok(())
+}
+
+fn should_resolve_auto_model_selection(app: &App) -> bool {
+    app.auto_model
 }
 
 async fn resolve_auto_model_selection(
@@ -4529,6 +4838,7 @@ async fn execute_command_input(
             providers.fireworks.api_key = None;
             providers.sglang.api_key = None;
             providers.vllm.api_key = None;
+            providers.ollama.api_key = None;
         }
         app.api_key_env_only = crate::config::active_provider_uses_env_only_api_key(config);
     }
@@ -4907,6 +5217,7 @@ fn render(f: &mut Frame, app: &mut App) {
             crate::config::ApiProvider::Fireworks => Some("Fireworks"),
             crate::config::ApiProvider::Sglang => Some("SGLang"),
             crate::config::ApiProvider::Vllm => Some("vLLM"),
+            crate::config::ApiProvider::Ollama => Some("Ollama"),
         };
         let header_data = HeaderData::new(
             app.mode,
@@ -5537,6 +5848,7 @@ async fn apply_provider_picker_api_key(
             ApiProvider::Fireworks => &mut providers.fireworks,
             ApiProvider::Sglang => &mut providers.sglang,
             ApiProvider::Vllm => &mut providers.vllm,
+            ApiProvider::Ollama => &mut providers.ollama,
         };
         entry.api_key = Some(api_key);
     }
@@ -6148,6 +6460,17 @@ fn active_foreground_shell_running(app: &App) -> bool {
     })
 }
 
+fn terminal_pause_has_live_owner(app: &App) -> bool {
+    app.active_cell.as_ref().is_some_and(|active| {
+        active.entries().iter().any(|cell| {
+            matches!(
+                cell,
+                HistoryCell::Tool(ToolCell::Exec(exec)) if exec.status == ToolStatus::Running
+            )
+        })
+    })
+}
+
 fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatusSnapshot) {
     let HistoryCell::Tool(tool) = cell else {
         return;
@@ -6262,12 +6585,8 @@ fn render_footer_from(
     } else {
         Vec::new()
     };
-    let displayed_cost = app.displayed_session_cost_for_currency(app.cost_currency);
-    let cost = if has(S::Cost) && displayed_cost > 0.001 {
-        vec![Span::styled(
-            app.format_cost_amount(displayed_cost),
-            Style::default().fg(palette::TEXT_MUTED),
-        )]
+    let cost = if has(S::Cost) {
+        footer_cost_spans(app)
     } else {
         Vec::new()
     };
@@ -6343,6 +6662,21 @@ fn footer_context_percent_spans(app: &App) -> Vec<Span<'static>> {
     )]
 }
 
+fn footer_cost_spans(app: &App) -> Vec<Span<'static>> {
+    let displayed_cost = app.displayed_session_cost_for_currency(app.cost_currency);
+    if !should_show_footer_cost(displayed_cost) {
+        return Vec::new();
+    }
+    vec![Span::styled(
+        app.format_cost_amount(displayed_cost),
+        Style::default().fg(palette::TEXT_MUTED),
+    )]
+}
+
+fn should_show_footer_cost(displayed_cost: f64) -> bool {
+    displayed_cost.is_finite() && displayed_cost > 0.0
+}
+
 /// Test-only helper retained as a parity reference for `FooterWidget`'s
 /// auxiliary-span composition. Production rendering is performed by the
 /// widget itself; the existing footer parity tests still exercise this
@@ -6358,15 +6692,7 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
         crate::tui::widgets::footer_agents_chip(running_agent_count(app), app.ui_locale);
     let replay_spans = footer_reasoning_replay_spans(app);
     let cache_spans = footer_cache_spans(app);
-    let displayed_cost = app.displayed_session_cost_for_currency(app.cost_currency);
-    let cost_spans = if displayed_cost > 0.001 {
-        vec![Span::styled(
-            app.format_cost_amount(displayed_cost),
-            Style::default().fg(palette::TEXT_MUTED),
-        )]
-    } else {
-        Vec::new()
-    };
+    let cost_spans = footer_cost_spans(app);
 
     let parts: Vec<&Vec<Span<'static>>> = [
         &coherence_spans,
@@ -7547,6 +7873,25 @@ fn is_copy_shortcut(key: &KeyEvent) -> bool {
     }
 
     key.modifiers.contains(KeyModifiers::CONTROL) && key.modifiers.contains(KeyModifiers::SHIFT)
+}
+
+fn is_file_tree_toggle_shortcut(key: &KeyEvent) -> bool {
+    let is_shifted_e = matches!(key.code, KeyCode::Char('E'))
+        || (matches!(key.code, KeyCode::Char('e')) && key.modifiers.contains(KeyModifiers::SHIFT));
+    if !is_shifted_e {
+        return false;
+    }
+
+    let has_forbidden_modifier =
+        key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SUPER);
+    let ctrl_shift_e = key.modifiers.contains(KeyModifiers::CONTROL) && !has_forbidden_modifier;
+
+    let cmd_shift_e = key.modifiers.contains(KeyModifiers::SUPER)
+        && key.modifiers.contains(KeyModifiers::SHIFT)
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT);
+
+    ctrl_shift_e || cmd_shift_e
 }
 
 fn details_shortcut_modifiers(modifiers: KeyModifiers) -> bool {
