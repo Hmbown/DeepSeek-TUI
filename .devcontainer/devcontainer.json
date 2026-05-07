@@ -1,7 +1,6 @@
 {
   "name": "DeepSeek TUI",
   "dockerFile": "../Dockerfile",
-  "build": {
     "args": {
       "RUST_VERSION": "1.88"
     }
