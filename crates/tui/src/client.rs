@@ -1073,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_messages_keep_reasoning_content_on_all_assistant_messages() {
+    fn chat_messages_keep_current_turn_reasoning_content() {
         let message = Message {
             role: "assistant".to_string(),
             content: vec![
@@ -1098,7 +1098,58 @@ mod tests {
         assert_eq!(
             assistant.get("reasoning_content").and_then(Value::as_str),
             Some("plan"),
-            "thinking-mode models must keep reasoning_content on all assistant messages"
+            "thinking-mode models keep reasoning_content while still in the current turn"
+        );
+    }
+
+    #[test]
+    fn chat_messages_replay_tool_round_reasoning_before_new_user_turn() {
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Need the date".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "Need to call a tool".to_string(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "tool-1".to_string(),
+                        name: "get_date".to_string(),
+                        input: json!({}),
+                        caller: None,
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".to_string(),
+                    content: "2026-04-23".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+        ];
+        let out = build_chat_messages(None, &messages, "deepseek-v4-pro");
+        let tool_assistant = out
+            .iter()
+            .find(|value| {
+                value.get("role").and_then(Value::as_str) == Some("assistant")
+                    && value.get("tool_calls").is_some()
+            })
+            .expect("tool-call assistant message");
+        assert_eq!(
+            tool_assistant
+                .get("reasoning_content")
+                .and_then(Value::as_str),
+            Some("Need to call a tool"),
+            "thinking-mode tool sub-turns must replay reasoning_content until the tool chain finishes"
         );
     }
 
@@ -1163,7 +1214,54 @@ mod tests {
                 .get("reasoning_content")
                 .and_then(Value::as_str),
             Some("Need to call a tool"),
-            "thinking-mode tool rounds must replay reasoning_content on later requests"
+            "tool-call reasoning_content must be replayed across later user turns"
+        );
+    }
+
+    #[test]
+    fn chat_messages_omit_prior_non_tool_reasoning_after_new_user_turn() {
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Explain it".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "Internal explanation plan".to_string(),
+                    },
+                    ContentBlock::Text {
+                        text: "Final answer".to_string(),
+                        cache_control: None,
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Next question".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ];
+
+        let out = build_chat_messages(None, &messages, "deepseek-v4-pro");
+        let assistant = out
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+
+        assert_eq!(
+            assistant.get("content").and_then(Value::as_str),
+            Some("Final answer")
+        );
+        assert!(
+            assistant.get("reasoning_content").is_none(),
+            "non-tool reasoning from previous turns should not be replayed"
         );
     }
 
@@ -1998,6 +2096,35 @@ mod tests {
         let chars = count_reasoning_replay_chars(&body);
         // "(reasoning omitted)" is 19 bytes.
         assert_eq!(chars, 19);
+    }
+
+    #[test]
+    fn sanitize_thinking_mode_keeps_tool_call_placeholder_after_new_user_turn() {
+        let mut body = json!({
+            "model": "deepseek-v4-pro",
+            "messages": [
+                { "role": "user", "content": "step 1" },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{ "id": "1", "type": "function" }]
+                },
+                { "role": "tool", "tool_call_id": "1", "content": "ok" },
+                { "role": "user", "content": "step 2" }
+            ]
+        });
+
+        sanitize_thinking_mode_messages(&mut body, "deepseek-v4-pro", Some("max"));
+
+        let messages = body["messages"].as_array().unwrap();
+        let assistant = messages
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .expect("assistant tool-call message");
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("(reasoning omitted)")
+        );
     }
 
     #[test]

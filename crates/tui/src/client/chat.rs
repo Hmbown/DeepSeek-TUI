@@ -437,13 +437,16 @@ fn build_chat_messages_with_reasoning(
         }));
     }
 
-    for message in messages.iter() {
+    for (message_index, message) in messages.iter().enumerate() {
         let role = message.role.as_str();
         let mut text_parts = Vec::new();
         let mut thinking_parts = Vec::new();
         let mut tool_calls = Vec::new();
         let mut tool_call_ids = Vec::new();
         let mut tool_results: Vec<(String, Value)> = Vec::new();
+        let later_user_turn = messages[message_index + 1..]
+            .iter()
+            .any(message_starts_user_turn);
 
         for block in &message.content {
             match block {
@@ -499,19 +502,14 @@ fn build_chat_messages_with_reasoning(
             let mut reasoning_content = thinking_parts.join("\n");
             let has_text = !content.trim().is_empty();
             let has_tool_calls = !tool_calls.is_empty();
-            // DeepSeek thinking-mode rule: every assistant message in the
-            // conversation must carry its `reasoning_content` when thinking
-            // is enabled. The docs say non-tool-call messages' reasoning is
-            // "ignored", but the API still validates presence and rejects
-            // with a 400 if any assistant message is missing it. If reasoning
-            // was lost (e.g. a session checkpoint from before this rule was
-            // enforced, or a sub-turn with no streamed reasoning text),
-            // substitute a non-empty placeholder so the API accepts the
-            // request.
-            let include_reasoning_for_turn = include_reasoning;
+            // DeepSeek thinking-mode tool calls must replay `reasoning_content`
+            // on subsequent requests. Non-tool assistant reasoning can be
+            // omitted once a later real user text message starts a new turn.
+            let include_reasoning_for_turn =
+                include_reasoning && (has_tool_calls || !later_user_turn);
             let mut has_reasoning =
                 include_reasoning_for_turn && !reasoning_content.trim().is_empty();
-            if include_reasoning_for_turn && !has_reasoning {
+            if include_reasoning_for_turn && has_tool_calls && !has_reasoning {
                 logging::warn(
                     "Substituting placeholder reasoning_content for DeepSeek tool-call assistant message",
                 );
@@ -696,6 +694,14 @@ fn build_chat_messages_with_reasoning(
     out
 }
 
+fn message_starts_user_turn(message: &Message) -> bool {
+    message.role == "user"
+        && message.content.iter().any(|block| match block {
+            ContentBlock::Text { text, .. } => !text.trim().is_empty(),
+            _ => false,
+        })
+}
+
 pub(super) fn tool_to_chat(tool: &Tool) -> Value {
     let mut value = json!({
         "type": "function",
@@ -766,16 +772,15 @@ fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {
 }
 
 /// Final-pass sanitizer over the outgoing chat-completions JSON payload.
-/// Forces a non-empty `reasoning_content` onto every `assistant` message that
-/// carries `tool_calls`, when the model + effort combination requires it.
-/// DeepSeek's thinking-mode API rejects such messages with a 400 error;
-/// substituting a placeholder keeps the conversation chain intact.
+/// Forces a non-empty `reasoning_content` onto assistant messages that carry
+/// `tool_calls`, when the model + effort combination requires it. DeepSeek's
+/// thinking-mode API rejects such messages with a 400 error; substituting a
+/// placeholder keeps the conversation chain intact. Non-tool assistant
+/// reasoning can stay omitted once a later user text turn begins.
 ///
 /// Also tallies the size of all replayed `reasoning_content` and logs it, so
 /// users on `RUST_LOG=deepseek_tui=debug` can see how much of their input
-/// budget is being spent re-sending prior thinking traces (V4 §5.1.1
-/// "Interleaved Thinking" requires the full trace to be replayed across user
-/// message boundaries in tool-calling sessions).
+/// budget is being spent re-sending prior thinking traces.
 pub(super) fn sanitize_thinking_mode_messages(
     body: &mut Value,
     model: &str,
@@ -792,11 +797,12 @@ pub(super) fn sanitize_thinking_mode_messages(
         if msg.get("role").and_then(Value::as_str) != Some("assistant") {
             continue;
         }
+        let has_tool_calls = msg.get("tool_calls").is_some();
         let needs_placeholder = msg
             .get("reasoning_content")
             .and_then(Value::as_str)
             .is_none_or(|s| s.trim().is_empty());
-        if needs_placeholder {
+        if has_tool_calls && needs_placeholder {
             msg["reasoning_content"] = json!("(reasoning omitted)");
             substitutions = substitutions.saturating_add(1);
             logging::warn(format!(
