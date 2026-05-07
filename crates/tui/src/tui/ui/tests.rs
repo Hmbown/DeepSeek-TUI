@@ -274,6 +274,35 @@ fn mouse_selection_autocopies_on_release_without_ctrl_c() {
 }
 
 #[test]
+fn jump_to_latest_button_click_scrolls_to_tail() {
+    let mut app = create_test_app();
+    app.viewport.transcript_scroll = TranscriptScroll::at_line(7);
+    app.viewport.jump_to_latest_button_area = Some(Rect {
+        x: 10,
+        y: 5,
+        width: 3,
+        height: 3,
+    });
+    app.user_scrolled_during_stream = true;
+
+    let events = handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 11,
+            row: 6,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(events.is_empty());
+    assert!(app.viewport.transcript_scroll.is_at_tail());
+    assert!(app.viewport.jump_to_latest_button_area.is_none());
+    assert!(!app.user_scrolled_during_stream);
+    assert!(!app.viewport.transcript_selection.dragging);
+}
+
+#[test]
 fn right_click_opens_context_menu() {
     let mut app = create_test_app();
 

@@ -580,6 +580,7 @@ pub struct ViewportState {
     pub last_transcript_visible: usize,
     pub last_transcript_total: usize,
     pub last_transcript_padding_top: usize,
+    pub jump_to_latest_button_area: Option<Rect>,
 }
 
 impl Default for ViewportState {
@@ -595,6 +596,7 @@ impl Default for ViewportState {
             last_transcript_visible: 0,
             last_transcript_total: 0,
             last_transcript_padding_top: 0,
+            jump_to_latest_button_area: None,
         }
     }
 }
@@ -2453,6 +2455,7 @@ impl App {
         self.viewport.last_transcript_visible = 0;
         self.viewport.last_transcript_total = 0;
         self.viewport.last_transcript_padding_top = 0;
+        self.viewport.jump_to_latest_button_area = None;
 
         self.mark_history_updated();
     }
@@ -2711,6 +2714,7 @@ impl App {
     pub fn scroll_to_bottom(&mut self) {
         self.viewport.transcript_scroll = TranscriptScroll::to_bottom();
         self.viewport.pending_scroll_delta = 0;
+        self.viewport.jump_to_latest_button_area = None;
         self.user_scrolled_during_stream = false;
         self.needs_redraw = true;
     }

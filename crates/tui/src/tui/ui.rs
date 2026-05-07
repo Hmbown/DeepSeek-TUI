@@ -7083,6 +7083,11 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
             }
         }
         MouseEventKind::Down(MouseButton::Left) => {
+            if mouse_hits_rect(mouse, app.viewport.jump_to_latest_button_area) {
+                app.scroll_to_bottom();
+                return Vec::new();
+            }
+
             if let Some(point) = selection_point_from_mouse(app, mouse) {
                 app.viewport.transcript_selection.anchor = Some(point);
                 app.viewport.transcript_selection.head = Some(point);
@@ -7121,6 +7126,17 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
     }
 
     Vec::new()
+}
+
+fn mouse_hits_rect(mouse: MouseEvent, area: Option<Rect>) -> bool {
+    let Some(area) = area else {
+        return false;
+    };
+
+    mouse.column >= area.x
+        && mouse.column < area.x.saturating_add(area.width)
+        && mouse.row >= area.y
+        && mouse.row < area.y.saturating_add(area.height)
 }
 
 fn open_context_menu(app: &mut App, mouse: MouseEvent) {
