@@ -258,6 +258,11 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
             crate::deepseek_theme::ThemeArg::Light => crate::deepseek_theme::Theme::light(),
         };
         crate::deepseek_theme::set_active_theme(theme);
+        app.ui_theme = if theme.variant == crate::deepseek_theme::Variant::Light {
+            crate::palette::LIGHT_UI_THEME
+        } else {
+            crate::palette::UI_THEME
+        };
     }
 
     // Load existing session if resuming.
