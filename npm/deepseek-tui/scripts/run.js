@@ -30,7 +30,7 @@ async function run(binaryName) {
     handleVersionFallback(binaryName);
     throw result.error;
   }
-  process.exit(result.status ?? 1);
+  process.exit(result.status != null ? result.status : 1);
 }
 
 async function runDeepseek() {

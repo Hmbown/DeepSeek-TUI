@@ -355,8 +355,8 @@ function connectThroughProxy(proxy, targetHost, targetPort, timeoutMs) {
 // ────────────────────────────────────────────────────────────────────────────
 
 function httpRequest(rawUrl, opts = {}) {
-  const totalTimeoutMs = opts.totalTimeoutMs ?? downloadTimeoutMs();
-  const stallMs = opts.stallMs ?? downloadStallMs();
+  const totalTimeoutMs = opts.totalTimeoutMs !== undefined ? opts.totalTimeoutMs : downloadTimeoutMs();
+  const stallMs = opts.stallMs !== undefined ? opts.stallMs : downloadStallMs();
 
   return new Promise((resolve, reject) => {
     let url;

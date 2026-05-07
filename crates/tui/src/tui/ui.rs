@@ -4009,8 +4009,19 @@ async fn switch_provider(
     app.api_provider = target;
     app.model = new_model.clone();
     app.update_model_compaction_budget();
+    // Clear all per-session telemetry so stale cache-chip data and cost
+    // counters from the previous provider don't bleed into the new session.
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
+    app.session.last_prompt_cache_hit_tokens = None;
+    app.session.last_prompt_cache_miss_tokens = None;
+    app.session.last_reasoning_replay_tokens = None;
+    app.session.turn_cache_history.clear();
+    app.session.session_cost = 0.0;
+    app.session.session_cost_cny = 0.0;
+    app.session.subagent_cost = 0.0;
+    app.session.subagent_cost_cny = 0.0;
+    app.session.subagent_cost_event_seqs.clear();
 
     let _ = engine_handle.send(Op::Shutdown).await;
     let engine_config = build_engine_config(app, config);

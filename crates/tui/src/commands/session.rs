@@ -99,6 +99,18 @@ pub fn load(app: &mut App, path: Option<&str>) -> CommandResult {
     app.session.total_conversation_tokens = app.session.total_tokens;
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
+    // Clear per-session telemetry so the loaded session starts with a
+    // clean slate — stale cache-chip data and cost counters from the
+    // previous in-memory session must not bleed into the restored one.
+    app.session.last_prompt_cache_hit_tokens = None;
+    app.session.last_prompt_cache_miss_tokens = None;
+    app.session.last_reasoning_replay_tokens = None;
+    app.session.turn_cache_history.clear();
+    app.session.session_cost = 0.0;
+    app.session.session_cost_cny = 0.0;
+    app.session.subagent_cost = 0.0;
+    app.session.subagent_cost_cny = 0.0;
+    app.session.subagent_cost_event_seqs.clear();
     app.current_session_id = Some(session.metadata.id.clone());
     if let Some(sp) = session.system_prompt {
         app.system_prompt = Some(crate::models::SystemPrompt::Text(sp));
@@ -404,6 +416,68 @@ mod tests {
         assert_eq!(app2.session.total_tokens, 500);
         assert!(app2.current_session_id.is_some());
         assert!(matches!(result.action, Some(AppAction::SyncSession { .. })));
+    }
+
+    #[test]
+    fn test_load_clears_prior_session_telemetry() {
+        // Regression test: /load must not inherit the in-memory session's
+        // cache chip data, turn_cache_history, or cost counters.
+        let tmpdir = TempDir::new().unwrap();
+
+        // Save a session from app1.
+        let mut app1 = create_test_app_with_tmpdir(&tmpdir);
+        app1.api_messages.push(crate::models::Message {
+            role: "user".to_string(),
+            content: vec![crate::models::ContentBlock::Text {
+                text: "hello".to_string(),
+                cache_control: None,
+            }],
+        });
+        let save_path = tmpdir.path().join("telem_test.json");
+        save(&mut app1, Some(save_path.to_str().unwrap()));
+
+        // Populate app2 with stale telemetry that must be cleared by /load.
+        let mut app2 = create_test_app_with_tmpdir(&tmpdir);
+        app2.session.session_cost = 9.99;
+        app2.session.session_cost_cny = 72.0;
+        app2.session.subagent_cost = 1.23;
+        app2.session.subagent_cost_cny = 8.8;
+        app2.session.last_prompt_cache_hit_tokens = Some(50_000);
+        app2.session.last_prompt_cache_miss_tokens = Some(5_000);
+        app2.session.last_reasoning_replay_tokens = Some(1_000);
+        app2.push_turn_cache_record(crate::tui::app::TurnCacheRecord {
+            input_tokens: 55_000,
+            output_tokens: 800,
+            cache_hit_tokens: Some(50_000),
+            cache_miss_tokens: Some(5_000),
+            reasoning_replay_tokens: Some(1_000),
+            recorded_at: std::time::Instant::now(),
+        });
+
+        let result = load(&mut app2, Some(save_path.to_str().unwrap()));
+        assert!(result.message.as_deref().unwrap_or("").contains("Session loaded"));
+
+        // All stale telemetry must be gone after the load.
+        assert_eq!(app2.session.session_cost, 0.0, "session_cost must be zeroed on load");
+        assert_eq!(app2.session.session_cost_cny, 0.0);
+        assert_eq!(app2.session.subagent_cost, 0.0, "subagent_cost must be zeroed on load");
+        assert_eq!(app2.session.subagent_cost_cny, 0.0);
+        assert!(
+            app2.session.last_prompt_cache_hit_tokens.is_none(),
+            "cache hit tokens must be cleared on load"
+        );
+        assert!(
+            app2.session.last_prompt_cache_miss_tokens.is_none(),
+            "cache miss tokens must be cleared on load"
+        );
+        assert!(
+            app2.session.last_reasoning_replay_tokens.is_none(),
+            "reasoning replay tokens must be cleared on load"
+        );
+        assert!(
+            app2.session.turn_cache_history.is_empty(),
+            "turn_cache_history must be empty after load"
+        );
     }
 
     #[test]

@@ -97,9 +97,11 @@ impl SkillRegistry {
     /// are skipped to avoid descending into VCS / cache trees like
     /// `.git/`. The provided `dir` itself is always honored, even if
     /// hidden — that's what the user explicitly configured.
-    /// Symlinked directories are not followed, which keeps the walk
-    /// finite when a skills layout contains symlinks. The depth is also
-    /// capped at [`Self::MAX_DISCOVERY_DEPTH`].
+    /// Symlinked directories are followed so users can organise skill
+    /// packs via symlinks (e.g. `ln -s ~/my-skills skills/my-skills`). The
+    /// depth cap at [`Self::MAX_DISCOVERY_DEPTH`] and the hidden-dir filter
+    /// together prevent infinite traversal even when a symlink creates a
+    /// cycle.
     #[must_use]
     pub fn discover(dir: &Path) -> Self {
         let mut registry = Self::default();
@@ -134,11 +136,20 @@ impl SkillRegistry {
         };
 
         for entry in entries.flatten() {
-            // Use `file_type()` (which on Unix returns symlink metadata
-            // without following) so we don't traverse into symlinked
-            // directories — that closes the door on cycles.
+            // `file_type()` returns the type of the directory entry itself
+            // (i.e. symlink metadata, not the target). We also accept
+            // symlinks so users can organise skill packs via `ln -s`.
+            // Infinite-loop protection comes from the depth cap and the
+            // hidden-dir filter (which drops `.`-prefixed names like
+            // common targets of accidental cycles).
             let Ok(ft) = entry.file_type() else { continue };
-            if !ft.is_dir() {
+            let is_dir_or_symlink = ft.is_dir() || ft.is_symlink();
+            if !is_dir_or_symlink {
+                continue;
+            }
+            // For symlinks: verify the target actually is a directory before
+            // recursing. If the symlink is broken or points to a file, skip.
+            if ft.is_symlink() && !entry.path().is_dir() {
                 continue;
             }
 
@@ -524,7 +535,9 @@ pub fn list(skills_dir: &Path) -> Result<()> {
     let mut entries = Vec::new();
     for entry in fs::read_dir(skills_dir)? {
         let entry = entry?;
-        if entry.file_type()?.is_dir() {
+        // Follow symlinks so `list` sees symlinked skill directories.
+        let ft = entry.file_type()?;
+        if ft.is_dir() || (ft.is_symlink() && entry.path().is_dir()) {
             entries.push(entry.file_name().to_string_lossy().to_string());
         }
     }

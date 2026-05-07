@@ -52,6 +52,7 @@ pub fn clear(app: &mut App) -> CommandResult {
     app.viewport.transcript_selection.clear();
     app.queued_messages.clear();
     app.queued_draft = None;
+    app.session.total_tokens = 0;
     app.session.total_conversation_tokens = 0;
     let todos_cleared = app.clear_todos();
     app.tool_log.clear();
@@ -63,6 +64,15 @@ pub fn clear(app: &mut App) -> CommandResult {
     app.last_exec_wait_command = None;
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
+    app.session.last_prompt_cache_hit_tokens = None;
+    app.session.last_prompt_cache_miss_tokens = None;
+    app.session.last_reasoning_replay_tokens = None;
+    app.session.turn_cache_history.clear();
+    app.session.session_cost = 0.0;
+    app.session.session_cost_cny = 0.0;
+    app.session.subagent_cost = 0.0;
+    app.session.subagent_cost_cny = 0.0;
+    app.session.subagent_cost_event_seqs.clear();
     app.current_session_id = None;
     let locale = app.ui_locale;
     let message = if todos_cleared {
@@ -408,7 +418,23 @@ mod tests {
             role: "user".to_string(),
             content: vec![],
         });
+        app.session.total_tokens = 500;
         app.session.total_conversation_tokens = 100;
+        app.session.session_cost = 1.23;
+        app.session.session_cost_cny = 8.76;
+        app.session.subagent_cost = 0.50;
+        app.session.subagent_cost_cny = 3.55;
+        app.session.last_prompt_cache_hit_tokens = Some(10_000);
+        app.session.last_prompt_cache_miss_tokens = Some(2_000);
+        app.session.last_reasoning_replay_tokens = Some(500);
+        app.push_turn_cache_record(crate::tui::app::TurnCacheRecord {
+            input_tokens: 12_000,
+            output_tokens: 300,
+            cache_hit_tokens: Some(10_000),
+            cache_miss_tokens: Some(2_000),
+            reasoning_replay_tokens: Some(500),
+            recorded_at: std::time::Instant::now(),
+        });
         app.tool_log.push("test".to_string());
         app.current_session_id = Some("existing-session".to_string());
 
@@ -416,7 +442,16 @@ mod tests {
         assert!(result.message.is_some());
         assert!(app.history.is_empty());
         assert!(app.api_messages.is_empty());
+        assert_eq!(app.session.total_tokens, 0, "total_tokens must be zeroed");
         assert_eq!(app.session.total_conversation_tokens, 0);
+        assert_eq!(app.session.session_cost, 0.0, "session_cost must be zeroed");
+        assert_eq!(app.session.session_cost_cny, 0.0);
+        assert_eq!(app.session.subagent_cost, 0.0, "subagent_cost must be zeroed");
+        assert_eq!(app.session.subagent_cost_cny, 0.0);
+        assert!(app.session.last_prompt_cache_hit_tokens.is_none(), "cache hit tokens must be cleared");
+        assert!(app.session.last_prompt_cache_miss_tokens.is_none(), "cache miss tokens must be cleared");
+        assert!(app.session.last_reasoning_replay_tokens.is_none(), "reasoning replay tokens must be cleared");
+        assert!(app.session.turn_cache_history.is_empty(), "turn_cache_history must be cleared");
         assert!(app.tool_log.is_empty());
         assert!(app.tool_cells.is_empty());
         assert!(app.tool_details_by_cell.is_empty());
