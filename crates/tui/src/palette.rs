@@ -12,6 +12,19 @@ pub const DEEPSEEK_INK_RGB: (u8, u8, u8) = (11, 21, 38);
 pub const DEEPSEEK_SLATE_RGB: (u8, u8, u8) = (18, 28, 46);
 pub const DEEPSEEK_RED_RGB: (u8, u8, u8) = (226, 80, 96);
 
+pub const LIGHT_SURFACE_RGB: (u8, u8, u8) = (248, 250, 252); // #F8FAFC
+pub const LIGHT_PANEL_RGB: (u8, u8, u8) = (241, 245, 249); // #F1F5F9
+pub const LIGHT_ELEVATED_RGB: (u8, u8, u8) = (226, 232, 240); // #E2E8F0
+pub const LIGHT_REASONING_RGB: (u8, u8, u8) = (254, 243, 199); // #FEF3C7
+pub const LIGHT_SUCCESS_RGB: (u8, u8, u8) = (220, 252, 231); // #DCFCE7
+pub const LIGHT_ERROR_RGB: (u8, u8, u8) = (254, 226, 226); // #FEE2E2
+pub const LIGHT_TEXT_BODY_RGB: (u8, u8, u8) = (15, 23, 42); // #0F172A
+pub const LIGHT_TEXT_MUTED_RGB: (u8, u8, u8) = (71, 85, 105); // #475569
+pub const LIGHT_TEXT_HINT_RGB: (u8, u8, u8) = (100, 116, 139); // #64748B
+pub const LIGHT_TEXT_SOFT_RGB: (u8, u8, u8) = (51, 65, 85); // #334155
+pub const LIGHT_BORDER_RGB: (u8, u8, u8) = (148, 163, 184); // #94A3B8
+pub const LIGHT_SELECTION_RGB: (u8, u8, u8) = (219, 234, 254); // #DBEAFE
+
 // New semantic colors
 pub const BORDER_COLOR_RGB: (u8, u8, u8) = (42, 74, 127); // #2A4A7F
 
@@ -43,6 +56,56 @@ pub const DEEPSEEK_SLATE: Color = Color::Rgb(
 );
 pub const DEEPSEEK_RED: Color =
     Color::Rgb(DEEPSEEK_RED_RGB.0, DEEPSEEK_RED_RGB.1, DEEPSEEK_RED_RGB.2);
+
+pub const LIGHT_SURFACE: Color = Color::Rgb(
+    LIGHT_SURFACE_RGB.0,
+    LIGHT_SURFACE_RGB.1,
+    LIGHT_SURFACE_RGB.2,
+);
+pub const LIGHT_PANEL: Color = Color::Rgb(LIGHT_PANEL_RGB.0, LIGHT_PANEL_RGB.1, LIGHT_PANEL_RGB.2);
+pub const LIGHT_ELEVATED: Color = Color::Rgb(
+    LIGHT_ELEVATED_RGB.0,
+    LIGHT_ELEVATED_RGB.1,
+    LIGHT_ELEVATED_RGB.2,
+);
+pub const LIGHT_REASONING: Color = Color::Rgb(
+    LIGHT_REASONING_RGB.0,
+    LIGHT_REASONING_RGB.1,
+    LIGHT_REASONING_RGB.2,
+);
+pub const LIGHT_SUCCESS: Color = Color::Rgb(
+    LIGHT_SUCCESS_RGB.0,
+    LIGHT_SUCCESS_RGB.1,
+    LIGHT_SUCCESS_RGB.2,
+);
+pub const LIGHT_ERROR: Color = Color::Rgb(LIGHT_ERROR_RGB.0, LIGHT_ERROR_RGB.1, LIGHT_ERROR_RGB.2);
+pub const LIGHT_TEXT_BODY: Color = Color::Rgb(
+    LIGHT_TEXT_BODY_RGB.0,
+    LIGHT_TEXT_BODY_RGB.1,
+    LIGHT_TEXT_BODY_RGB.2,
+);
+pub const LIGHT_TEXT_MUTED: Color = Color::Rgb(
+    LIGHT_TEXT_MUTED_RGB.0,
+    LIGHT_TEXT_MUTED_RGB.1,
+    LIGHT_TEXT_MUTED_RGB.2,
+);
+pub const LIGHT_TEXT_HINT: Color = Color::Rgb(
+    LIGHT_TEXT_HINT_RGB.0,
+    LIGHT_TEXT_HINT_RGB.1,
+    LIGHT_TEXT_HINT_RGB.2,
+);
+pub const LIGHT_TEXT_SOFT: Color = Color::Rgb(
+    LIGHT_TEXT_SOFT_RGB.0,
+    LIGHT_TEXT_SOFT_RGB.1,
+    LIGHT_TEXT_SOFT_RGB.2,
+);
+pub const LIGHT_BORDER: Color =
+    Color::Rgb(LIGHT_BORDER_RGB.0, LIGHT_BORDER_RGB.1, LIGHT_BORDER_RGB.2);
+pub const LIGHT_SELECTION_BG: Color = Color::Rgb(
+    LIGHT_SELECTION_RGB.0,
+    LIGHT_SELECTION_RGB.1,
+    LIGHT_SELECTION_RGB.2,
+);
 
 pub const TEXT_BODY: Color = Color::White;
 pub const TEXT_SECONDARY: Color = Color::Rgb(192, 192, 192); // #C0C0C0
@@ -107,8 +170,41 @@ pub const SELECTION_BG: Color = Color::Rgb(26, 44, 74);
 pub const COMPOSER_BG: Color = DEEPSEEK_SLATE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteMode {
+    Dark,
+    Light,
+}
+
+impl PaletteMode {
+    /// Parse `COLORFGBG`, whose last numeric segment is the terminal
+    /// background color. Values >= 8 conventionally indicate a light profile.
+    #[must_use]
+    pub fn from_colorfgbg(value: &str) -> Option<Self> {
+        let bg = value
+            .split(';')
+            .rev()
+            .find_map(|part| part.parse::<u16>().ok())?;
+        Some(if bg >= 8 { Self::Light } else { Self::Dark })
+    }
+
+    /// Detect whether the terminal profile is light. Missing or unparsable
+    /// values default to dark so existing terminal setups keep the tuned theme.
+    #[must_use]
+    pub fn detect() -> Self {
+        std::env::var("COLORFGBG")
+            .ok()
+            .and_then(|value| Self::from_colorfgbg(&value))
+            .unwrap_or(Self::Dark)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UiTheme {
     pub name: &'static str,
+    pub mode: PaletteMode,
+    pub surface_bg: Color,
+    pub panel_bg: Color,
+    pub elevated_bg: Color,
     pub composer_bg: Color,
     pub selection_bg: Color,
     pub header_bg: Color,
@@ -125,10 +221,17 @@ pub struct UiTheme {
     pub text_dim: Color,
     pub text_hint: Color,
     pub text_muted: Color,
+    pub text_body: Color,
+    pub text_soft: Color,
+    pub border: Color,
 }
 
 pub const UI_THEME: UiTheme = UiTheme {
     name: "whale",
+    mode: PaletteMode::Dark,
+    surface_bg: DEEPSEEK_INK,
+    panel_bg: DEEPSEEK_SLATE,
+    elevated_bg: SURFACE_ELEVATED,
     composer_bg: DEEPSEEK_SLATE,
     selection_bg: SELECTION_BG,
     header_bg: DEEPSEEK_INK,
@@ -142,7 +245,111 @@ pub const UI_THEME: UiTheme = UiTheme {
     text_dim: TEXT_DIM,
     text_hint: TEXT_HINT,
     text_muted: TEXT_MUTED,
+    text_body: TEXT_BODY,
+    text_soft: TEXT_SOFT,
+    border: BORDER_COLOR,
 };
+
+pub const LIGHT_UI_THEME: UiTheme = UiTheme {
+    name: "whale-light",
+    mode: PaletteMode::Light,
+    surface_bg: LIGHT_SURFACE,
+    panel_bg: LIGHT_PANEL,
+    elevated_bg: LIGHT_ELEVATED,
+    composer_bg: LIGHT_PANEL,
+    selection_bg: LIGHT_SELECTION_BG,
+    header_bg: LIGHT_SURFACE,
+    footer_bg: LIGHT_SURFACE,
+    mode_agent: DEEPSEEK_BLUE,
+    mode_yolo: DEEPSEEK_RED,
+    mode_plan: Color::Rgb(180, 83, 9),
+    status_ready: LIGHT_TEXT_MUTED,
+    status_working: DEEPSEEK_BLUE,
+    status_warning: Color::Rgb(180, 83, 9),
+    text_dim: LIGHT_TEXT_HINT,
+    text_hint: LIGHT_TEXT_HINT,
+    text_muted: LIGHT_TEXT_MUTED,
+    text_body: LIGHT_TEXT_BODY,
+    text_soft: LIGHT_TEXT_SOFT,
+    border: LIGHT_BORDER,
+};
+
+impl UiTheme {
+    #[must_use]
+    pub fn for_mode(mode: PaletteMode) -> Self {
+        match mode {
+            PaletteMode::Dark => UI_THEME,
+            PaletteMode::Light => LIGHT_UI_THEME,
+        }
+    }
+
+    #[must_use]
+    pub fn detect() -> Self {
+        Self::for_mode(PaletteMode::detect())
+    }
+}
+
+#[must_use]
+pub fn adapt_fg_for_palette_mode(color: Color, _bg: Color, mode: PaletteMode) -> Color {
+    if mode == PaletteMode::Dark {
+        return color;
+    }
+
+    if color == TEXT_BODY || color == SELECTION_TEXT || color == Color::White {
+        LIGHT_TEXT_BODY
+    } else if color == TEXT_SECONDARY || color == TEXT_MUTED {
+        LIGHT_TEXT_MUTED
+    } else if color == TEXT_HINT || color == TEXT_DIM {
+        LIGHT_TEXT_HINT
+    } else if color == TEXT_SOFT || color == TEXT_TOOL_OUTPUT {
+        LIGHT_TEXT_SOFT
+    } else if color == BORDER_COLOR {
+        LIGHT_BORDER
+    } else if color == TEXT_ACCENT || color == DEEPSEEK_SKY || color == ACCENT_TOOL_LIVE {
+        DEEPSEEK_BLUE
+    } else if color == ACCENT_REASONING_LIVE {
+        Color::Rgb(146, 64, 14)
+    } else if color == ACCENT_TOOL_ISSUE {
+        Color::Rgb(159, 18, 57)
+    } else if color == DIFF_ADDED {
+        Color::Rgb(22, 101, 52)
+    } else {
+        color
+    }
+}
+
+#[must_use]
+pub fn adapt_bg_for_palette_mode(color: Color, mode: PaletteMode) -> Color {
+    if mode == PaletteMode::Dark {
+        return color;
+    }
+
+    if color == DEEPSEEK_INK || color == BACKGROUND_DARK {
+        LIGHT_SURFACE
+    } else if color == DEEPSEEK_SLATE
+        || color == COMPOSER_BG
+        || color == SURFACE_PANEL
+        || color == SURFACE_TOOL
+    {
+        LIGHT_PANEL
+    } else if color == SURFACE_ELEVATED || color == SURFACE_TOOL_ACTIVE {
+        LIGHT_ELEVATED
+    } else if color == SURFACE_REASONING || color == SURFACE_REASONING_ACTIVE {
+        LIGHT_REASONING
+    } else if color == SURFACE_SUCCESS {
+        LIGHT_SUCCESS
+    } else if color == SURFACE_ERROR {
+        LIGHT_ERROR
+    } else if color == DIFF_ADDED_BG {
+        LIGHT_SUCCESS
+    } else if color == DIFF_DELETED_BG {
+        LIGHT_ERROR
+    } else if color == SELECTION_BG {
+        LIGHT_SELECTION_BG
+    } else {
+        color
+    }
+}
 
 // === Color depth + brightness helpers (v0.6.6 UI redesign) ===
 
@@ -404,10 +611,54 @@ fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
 mod tests {
     use super::{
         ACCENT_REASONING_LIVE, ColorDepth, DEEPSEEK_INK, DEEPSEEK_RED, DEEPSEEK_SKY,
-        SURFACE_REASONING, adapt_bg, adapt_color, blend, nearest_ansi16, pulse_brightness,
-        reasoning_surface_tint, rgb_to_ansi256,
+        DEEPSEEK_SLATE, LIGHT_PANEL, LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT,
+        LIGHT_UI_THEME, PaletteMode, SURFACE_REASONING, TEXT_HINT, adapt_bg,
+        adapt_bg_for_palette_mode, adapt_color, adapt_fg_for_palette_mode, blend, nearest_ansi16,
+        pulse_brightness, reasoning_surface_tint, rgb_to_ansi256,
     };
     use ratatui::style::Color;
+
+    #[test]
+    fn palette_mode_parses_colorfgbg_background_slot() {
+        assert_eq!(
+            PaletteMode::from_colorfgbg("0;15"),
+            Some(PaletteMode::Light)
+        );
+        assert_eq!(PaletteMode::from_colorfgbg("15;0"), Some(PaletteMode::Dark));
+        assert_eq!(
+            PaletteMode::from_colorfgbg("7;default;15"),
+            Some(PaletteMode::Light)
+        );
+        assert_eq!(PaletteMode::from_colorfgbg("not-a-color"), None);
+    }
+
+    #[test]
+    fn ui_theme_selects_light_variant() {
+        let theme = super::UiTheme::for_mode(PaletteMode::Light);
+        assert_eq!(theme, LIGHT_UI_THEME);
+        assert_eq!(theme.surface_bg, LIGHT_SURFACE);
+        assert_eq!(theme.text_body, LIGHT_TEXT_BODY);
+    }
+
+    #[test]
+    fn light_palette_maps_dark_surfaces_and_text() {
+        assert_eq!(
+            adapt_bg_for_palette_mode(DEEPSEEK_INK, PaletteMode::Light),
+            LIGHT_SURFACE
+        );
+        assert_eq!(
+            adapt_bg_for_palette_mode(DEEPSEEK_SLATE, PaletteMode::Light),
+            LIGHT_PANEL
+        );
+        assert_eq!(
+            adapt_fg_for_palette_mode(Color::White, LIGHT_SURFACE, PaletteMode::Light),
+            LIGHT_TEXT_BODY
+        );
+        assert_eq!(
+            adapt_fg_for_palette_mode(TEXT_HINT, LIGHT_SURFACE, PaletteMode::Light),
+            LIGHT_TEXT_HINT
+        );
+    }
 
     #[test]
     fn adapt_color_passes_through_truecolor() {

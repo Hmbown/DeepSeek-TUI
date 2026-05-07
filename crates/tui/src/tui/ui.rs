@@ -233,8 +233,13 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         );
     }
     let color_depth = palette::ColorDepth::detect();
-    tracing::debug!(?color_depth, "terminal color depth detected");
-    let backend = ColorCompatBackend::new(stdout, color_depth);
+    let palette_mode = palette::PaletteMode::detect();
+    tracing::debug!(
+        ?color_depth,
+        ?palette_mode,
+        "terminal color profile detected"
+    );
+    let backend = ColorCompatBackend::new(stdout, color_depth, palette_mode);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
     let event_broker = EventBroker::new();
