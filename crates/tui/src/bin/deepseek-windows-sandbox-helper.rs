@@ -1,11 +1,14 @@
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 use std::time::Duration;
 
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
+
+#[cfg(windows)]
+use std::process::Command;
 
 #[cfg(windows)]
 use wait_timeout::ChildExt;
