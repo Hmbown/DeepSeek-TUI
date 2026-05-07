@@ -225,8 +225,7 @@ async fn run_rlm_turn_impl(
     };
 
     // 3. Build the bridge that services llm_query / rlm_query RPCs.
-    let bridge = RlmBridge::new(Arc::clone(&client), child_model.clone(), max_depth)
-        .with_parent_context(prompt.chars().count());
+    let bridge = RlmBridge::new(Arc::clone(&client), child_model.clone(), max_depth);
     let usage_handle = bridge.usage_handle();
 
     let _ = tx_event
@@ -668,13 +667,11 @@ async fn run_rlm_turn_impl(
 fn save_rlm_result(task: &str, answer: &str, prompt: &str) {
     // Best-effort: don't fail the turn if memory storage is unavailable.
     // Load existing memories, check for duplicates, save if new.
-    let task_snippet = prompt.chars().take(200).collect::<String>();
-    let _task_key = task_snippet; // dedup key based on prompt prefix
-
     if let Ok(mem) = crate::memory::store::load_memories(None, false) {
+        let head = truncate_for_memory(answer, 50);
         let similar = mem.iter().any(|m| {
             m.tags.contains(&"rlm".to_string())
-                && m.content.contains(&answer[..answer.len().min(50)])
+                && m.content.contains(&head)
         });
         if !similar {
             let memory = crate::memory::store::new_memory(

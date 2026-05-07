@@ -63,9 +63,6 @@ pub struct RlmBridge {
     /// zero, those requests fall back to plain `Llm` completions.
     depth_remaining: u32,
     usage: Arc<Mutex<Usage>>,
-    /// Optional preview of the parent context (for child call chain).
-    /// When set, child RLM calls include this in their initial metadata.
-    parent_context_len: Option<usize>,
 }
 
 impl RlmBridge {
@@ -79,15 +76,7 @@ impl RlmBridge {
             child_model,
             depth_remaining,
             usage: Arc::new(Mutex::new(Usage::default())),
-            parent_context_len: None,
         }
-    }
-
-    /// Set the parent context length for child call chain optimization.
-    /// When set, child RLMs see a hint about the parent data scope.
-    pub(crate) fn with_parent_context(mut self, context_len: usize) -> Self {
-        self.parent_context_len = Some(context_len);
-        self
     }
 
     pub fn usage_handle(&self) -> Arc<Mutex<Usage>> {
