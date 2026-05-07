@@ -153,11 +153,19 @@ Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.c
 
 ### Windows (Scoop)
 
-[Scoop](https://scoop.sh) is a Windows package manager. Once installed, run:
+[Scoop](https://scoop.sh) is a Windows package manager. DeepSeek TUI is listed
+in Scoop's main bucket, but that manifest updates independently and can lag the
+GitHub/npm/Cargo release. Run `scoop update` first, then verify the installed
+version with `deepseek --version`:
 
 ```bash
+scoop update
 scoop install deepseek-tui
+deepseek --version
 ```
+
+Use npm or direct GitHub release downloads when you need the newest release
+before Scoop's manifest catches up.
 
 
 <details id="install-from-source">
