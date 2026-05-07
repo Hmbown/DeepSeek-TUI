@@ -159,19 +159,19 @@ impl InMemoryKeyringStore {
 
 impl KeyringStore for InMemoryKeyringStore {
     fn get(&self, key: &str) -> Result<Option<String>, SecretsError> {
-        Ok(self.entries.lock().unwrap().get(key).cloned())
+        Ok(self.entries.lock().expect("in-memory keyring lock poisoned").get(key).cloned())
     }
 
     fn set(&self, key: &str, value: &str) -> Result<(), SecretsError> {
         self.entries
             .lock()
-            .unwrap()
+            .expect("in-memory keyring lock poisoned")
             .insert(key.to_string(), value.to_string());
         Ok(())
     }
 
     fn delete(&self, key: &str) -> Result<(), SecretsError> {
-        self.entries.lock().unwrap().remove(key);
+        self.entries.lock().expect("in-memory keyring lock poisoned").remove(key);
         Ok(())
     }
 
