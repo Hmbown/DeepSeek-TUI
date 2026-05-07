@@ -32,6 +32,7 @@ enum ProviderArg {
     Sglang,
     Vllm,
     Ollama,
+    Shengsuanyun,
 }
 
 impl From<ProviderArg> for ProviderKind {
@@ -46,6 +47,7 @@ impl From<ProviderArg> for ProviderKind {
             ProviderArg::Sglang => ProviderKind::Sglang,
             ProviderArg::Vllm => ProviderKind::Vllm,
             ProviderArg::Ollama => ProviderKind::Ollama,
+            ProviderArg::Shengsuanyun => ProviderKind::ShengSuanYun,
         }
     }
 }
@@ -666,11 +668,12 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
         ProviderKind::Sglang => "sglang",
         ProviderKind::Vllm => "vllm",
         ProviderKind::Ollama => "ollama",
+        ProviderKind::ShengSuanYun => "shengsuanyun",
     }
 }
 
 /// Provider order used by the `auth list` and `auth status` outputs.
-const PROVIDER_LIST: [ProviderKind; 9] = [
+const PROVIDER_LIST: [ProviderKind; 10] = [
     ProviderKind::Deepseek,
     ProviderKind::NvidiaNim,
     ProviderKind::Openrouter,
@@ -680,6 +683,7 @@ const PROVIDER_LIST: [ProviderKind; 9] = [
     ProviderKind::Vllm,
     ProviderKind::Ollama,
     ProviderKind::Openai,
+    ProviderKind::ShengSuanYun,
 ];
 
 #[cfg(test)]
@@ -1302,9 +1306,10 @@ fn build_tui_command(
             | ProviderKind::Sglang
             | ProviderKind::Vllm
             | ProviderKind::Ollama
+            | ProviderKind::ShengSuanYun
     ) {
         bail!(
-            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenRouter, Novita, Fireworks, SGLang, vLLM, and Ollama providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
+            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenRouter, Novita, Fireworks, SGLang, vLLM, Ollama, and ShengSuanYun providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
             resolved_runtime.provider.as_str()
         );
     }

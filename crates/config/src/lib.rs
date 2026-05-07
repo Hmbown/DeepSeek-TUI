@@ -37,7 +37,8 @@ const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
 const DEFAULT_OLLAMA_MODEL: &str = "deepseek-coder:1.3b";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
-
+const DEFAULT_SHENGSUANYUN_MODEL: &str = "deepseek/deepseek-v4-pro";
+const DEFAULT_SHENGSUANYUN_BASE_URL: &str = "https://router.shengsuanyun.com/api/v1";
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProviderKind {
@@ -51,6 +52,7 @@ pub enum ProviderKind {
     Sglang,
     Vllm,
     Ollama,
+    ShengSuanYun,
 }
 
 impl ProviderKind {
@@ -66,6 +68,7 @@ impl ProviderKind {
             Self::Sglang => "sglang",
             Self::Vllm => "vllm",
             Self::Ollama => "ollama",
+            Self::ShengSuanYun => "shengsuanyun",
         }
     }
 
@@ -81,6 +84,7 @@ impl ProviderKind {
             "sglang" | "sg-lang" => Some(Self::Sglang),
             "vllm" | "v-llm" => Some(Self::Vllm),
             "ollama" | "ollama-local" => Some(Self::Ollama),
+            "shengsuanyun" | "sheng-suan-yun" => Some(Self::ShengSuanYun),
             _ => None,
         }
     }
@@ -115,6 +119,8 @@ pub struct ProvidersToml {
     pub vllm: ProviderConfigToml,
     #[serde(default)]
     pub ollama: ProviderConfigToml,
+    #[serde(default)]
+    pub shengsuanyun: ProviderConfigToml,
 }
 
 impl ProvidersToml {
@@ -130,6 +136,7 @@ impl ProvidersToml {
             ProviderKind::Sglang => &self.sglang,
             ProviderKind::Vllm => &self.vllm,
             ProviderKind::Ollama => &self.ollama,
+            ProviderKind::ShengSuanYun => &self.shengsuanyun,
         }
     }
 
@@ -144,6 +151,7 @@ impl ProvidersToml {
             ProviderKind::Sglang => &mut self.sglang,
             ProviderKind::Vllm => &mut self.vllm,
             ProviderKind::Ollama => &mut self.ollama,
+            ProviderKind::ShengSuanYun => &mut self.shengsuanyun,
         }
     }
 }
@@ -353,6 +361,10 @@ impl ConfigToml {
         merge_provider_config(&mut self.providers.sglang, &project.providers.sglang);
         merge_provider_config(&mut self.providers.vllm, &project.providers.vllm);
         merge_provider_config(&mut self.providers.ollama, &project.providers.ollama);
+        merge_provider_config(
+            &mut self.providers.shengsuanyun,
+            &project.providers.shengsuanyun,
+        );
 
         if project.network.is_some() {
             self.network = project.network;
@@ -441,6 +453,12 @@ impl ConfigToml {
             "providers.ollama.model" => self.providers.ollama.model.clone(),
             "providers.ollama.http_headers" => {
                 serialize_http_headers(&self.providers.ollama.http_headers)
+            }
+            "providers.shengsuanyun.api_key" => self.providers.shengsuanyun.api_key.clone(),
+            "providers.shengsuanyun.base_url" => self.providers.shengsuanyun.base_url.clone(),
+            "providers.shengsuanyun.model" => self.providers.shengsuanyun.model.clone(),
+            "providers.shengsuanyun.http_headers" => {
+                serialize_http_headers(&self.providers.shengsuanyun.http_headers)
             }
             _ => self.extras.get(key).map(toml::Value::to_string),
         }
@@ -577,6 +595,18 @@ impl ConfigToml {
             "providers.ollama.http_headers" => {
                 self.providers.ollama.http_headers = parse_http_headers(value)?;
             }
+            "providers.shengsuanyun.api_key" => {
+                self.providers.shengsuanyun.api_key = Some(value.to_string());
+            }
+            "providers.shengsuanyun.base_url" => {
+                self.providers.shengsuanyun.base_url = Some(value.to_string());
+            }
+            "providers.shengsuanyun.model" => {
+                self.providers.shengsuanyun.model = Some(value.to_string());
+            }
+            "providers.shengsuanyun.http_headers" => {
+                self.providers.shengsuanyun.http_headers = parse_http_headers(value)?;
+            }
             _ => {
                 self.extras
                     .insert(key.to_string(), toml::Value::String(value.to_string()));
@@ -649,6 +679,12 @@ impl ConfigToml {
             "providers.ollama.base_url" => self.providers.ollama.base_url = None,
             "providers.ollama.model" => self.providers.ollama.model = None,
             "providers.ollama.http_headers" => self.providers.ollama.http_headers.clear(),
+            "providers.shengsuanyun.api_key" => self.providers.shengsuanyun.api_key = None,
+            "providers.shengsuanyun.base_url" => self.providers.shengsuanyun.base_url = None,
+            "providers.shengsuanyun.model" => self.providers.shengsuanyun.model = None,
+            "providers.shengsuanyun.http_headers" => {
+                self.providers.shengsuanyun.http_headers.clear()
+            }
             _ => {
                 self.extras.remove(key);
             }
@@ -886,6 +922,7 @@ impl ConfigToml {
                 ProviderKind::Sglang => DEFAULT_SGLANG_BASE_URL.to_string(),
                 ProviderKind::Vllm => DEFAULT_VLLM_BASE_URL.to_string(),
                 ProviderKind::Ollama => DEFAULT_OLLAMA_BASE_URL.to_string(),
+                ProviderKind::ShengSuanYun => DEFAULT_SHENGSUANYUN_BASE_URL.to_string(),
             });
 
         let model = cli
@@ -905,6 +942,7 @@ impl ConfigToml {
                 ProviderKind::Sglang => DEFAULT_SGLANG_MODEL.to_string(),
                 ProviderKind::Vllm => DEFAULT_VLLM_MODEL.to_string(),
                 ProviderKind::Ollama => DEFAULT_OLLAMA_MODEL.to_string(),
+                ProviderKind::ShengSuanYun => DEFAULT_SHENGSUANYUN_MODEL.to_string(),
             });
         let model = normalize_model_for_provider(provider, &model);
 
@@ -1273,6 +1311,7 @@ struct EnvRuntimeOverrides {
     sglang_base_url: Option<String>,
     vllm_base_url: Option<String>,
     ollama_base_url: Option<String>,
+    shengsuanyun_base_url: Option<String>,
 }
 
 impl EnvRuntimeOverrides {
@@ -1323,6 +1362,9 @@ impl EnvRuntimeOverrides {
             ollama_base_url: std::env::var("OLLAMA_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            shengsuanyun_base_url: std::env::var("SHENGSUANYUN_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
         }
     }
 
@@ -1339,6 +1381,7 @@ impl EnvRuntimeOverrides {
             ProviderKind::Sglang => self.sglang_base_url.clone(),
             ProviderKind::Vllm => self.vllm_base_url.clone(),
             ProviderKind::Ollama => self.ollama_base_url.clone(),
+            ProviderKind::ShengSuanYun => self.shengsuanyun_base_url.clone(),
         }
     }
 }

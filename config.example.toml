@@ -197,6 +197,11 @@ max_subagents = 10 # optional (1-20)
 # base_url = "http://localhost:11434/v1"
 # model = "deepseek-coder:1.3b"             # or any local Ollama tag
 
+[providers.shengsuanyun]
+# api_key = "YOUR_SHENGSUANYUN_API_KEY"
+# base_url = "https://router.shengsuanyun.com/api/v1"
+# model = "deepseek/deepseek-v4-pro"
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # Network Policy (#135)
 # ─────────────────────────────────────────────────────────────────────────────────
