@@ -1,5 +1,7 @@
 # Configuration
 
+[简体中文版](CONFIGURATION.zh-CN.md)
+
 DeepSeek TUI reads configuration from a TOML file plus environment variables.
 At process startup it also loads a workspace-local `.env` file when present.
 Use the tracked `.env.example` as the template; copy it to `.env`, then edit

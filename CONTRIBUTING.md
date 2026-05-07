@@ -1,5 +1,7 @@
 # Contributing to DeepSeek TUI
 
+[简体中文版](CONTRIBUTING.zh-CN.md)
+
 Thank you for your interest in contributing to DeepSeek TUI! This document provides guidelines and instructions for contributing.
 
 ## Getting Started

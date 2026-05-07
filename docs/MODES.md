@@ -1,5 +1,7 @@
 # Modes and Approvals
 
+[简体中文版](MODES.zh-CN.md)
+
 DeepSeek TUI has two related concepts:
 
 - **TUI mode**: what kind of visible interaction you're in (Plan/Agent/YOLO).
