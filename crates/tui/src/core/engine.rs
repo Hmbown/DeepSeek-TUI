@@ -1415,7 +1415,8 @@ impl Engine {
         .with_shell_manager(self.shell_manager.clone())
         .with_runtime_services(self.config.runtime_services.clone())
         .with_cancel_token(self.cancel_token.clone())
-        .with_trusted_external_paths(trusted.paths().to_vec());
+        .with_trusted_external_paths(trusted.paths().to_vec())
+        .with_lsp_manager(self.lsp_manager.clone());
 
         // Hand the user-memory path to tools so the model-callable
         // `remember` tool can append entries (#489). `None` when the

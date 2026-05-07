@@ -275,7 +275,6 @@ impl ToolContext {
     /// Attach an LSP manager so that edit tools can auto-inject diagnostics
     /// into their results after a successful file modification (#428).
     #[must_use]
-    #[allow(dead_code)]
     pub fn with_lsp_manager(mut self, manager: Arc<LspManager>) -> Self {
         self.lsp_manager = Some(manager);
         self
