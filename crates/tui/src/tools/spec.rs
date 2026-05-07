@@ -126,6 +126,11 @@ pub struct ToolContext {
     /// result when this is present and the manager is enabled.
     pub lsp_manager: Option<Arc<LspManager>>,
 
+    /// Path-permission engine (Phase 3). When `Some`, tools can check
+    /// whether they're allowed to operate on a given file path before
+    /// requesting user approval. `None` disables path-level rules.
+    pub path_permissions: Option<Arc<tokio::sync::Mutex<crate::execpolicy::path_permission::PathPermissionEngine>>>,
+
     /// Large-output router (#548). When `Some`, tool results that exceed the
     /// configured token threshold are routed through a V4-Flash synthesis
     /// sub-agent before being returned to the parent context. `None` disables
@@ -167,6 +172,7 @@ impl ToolContext {
             sandbox_backend: None,
             memory_path: None,
             lsp_manager: None,
+            path_permissions: None,
             large_output_router: None,
             workshop_vars: None,
         }
@@ -201,6 +207,7 @@ impl ToolContext {
             sandbox_backend: None,
             memory_path: None,
             lsp_manager: None,
+            path_permissions: None,
             large_output_router: None,
             workshop_vars: None,
         }
@@ -235,6 +242,7 @@ impl ToolContext {
             sandbox_backend: None,
             memory_path: None,
             lsp_manager: None,
+            path_permissions: None,
             large_output_router: None,
             workshop_vars: None,
         }
