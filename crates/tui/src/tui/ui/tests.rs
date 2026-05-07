@@ -611,6 +611,52 @@ fn apply_loaded_session_restores_dangling_user_tail_as_retry_draft() {
     );
 }
 
+#[test]
+fn apply_loaded_session_resets_unpersisted_telemetry() {
+    let mut app = create_test_app();
+    app.session.session_cost = 1.25;
+    app.session.session_cost_cny = 9.13;
+    app.session.subagent_cost = 0.75;
+    app.session.subagent_cost_cny = 5.48;
+    app.session.subagent_cost_event_seqs.insert(42);
+    app.session.displayed_cost_high_water = 2.0;
+    app.session.displayed_cost_high_water_cny = 14.61;
+    app.session.last_prompt_tokens = Some(120);
+    app.session.last_completion_tokens = Some(35);
+    app.session.last_prompt_cache_hit_tokens = Some(80);
+    app.session.last_prompt_cache_miss_tokens = Some(40);
+    app.session.last_reasoning_replay_tokens = Some(12);
+    app.push_turn_cache_record(crate::tui::app::TurnCacheRecord {
+        input_tokens: 120,
+        output_tokens: 35,
+        cache_hit_tokens: Some(80),
+        cache_miss_tokens: Some(40),
+        reasoning_replay_tokens: Some(12),
+        recorded_at: Instant::now(),
+    });
+    let mut session = saved_session_with_messages(vec![text_message("assistant", "ready")]);
+    session.metadata.total_tokens = 500;
+
+    let recovered = apply_loaded_session(&mut app, &session);
+
+    assert!(!recovered);
+    assert_eq!(app.session.total_tokens, 500);
+    assert_eq!(app.session.total_conversation_tokens, 500);
+    assert_eq!(app.session.session_cost, 0.0);
+    assert_eq!(app.session.session_cost_cny, 0.0);
+    assert_eq!(app.session.subagent_cost, 0.0);
+    assert_eq!(app.session.subagent_cost_cny, 0.0);
+    assert!(app.session.subagent_cost_event_seqs.is_empty());
+    assert_eq!(app.session.displayed_cost_high_water, 0.0);
+    assert_eq!(app.session.displayed_cost_high_water_cny, 0.0);
+    assert_eq!(app.session.last_prompt_tokens, None);
+    assert_eq!(app.session.last_completion_tokens, None);
+    assert_eq!(app.session.last_prompt_cache_hit_tokens, None);
+    assert_eq!(app.session.last_prompt_cache_miss_tokens, None);
+    assert_eq!(app.session.last_reasoning_replay_tokens, None);
+    assert!(app.session.turn_cache_history.is_empty());
+}
+
 #[tokio::test]
 async fn drain_web_config_events_applies_draft_without_closing_session() {
     let mut app = create_test_app();
