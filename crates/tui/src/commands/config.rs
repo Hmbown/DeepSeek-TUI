@@ -505,6 +505,27 @@ pub fn plan_mode(app: &mut App) -> CommandResult {
     )
 }
 
+/// Toggle between light and dark theme.
+pub fn theme(app: &mut App) -> CommandResult {
+    let current = crate::deepseek_theme::active_theme().variant;
+    let (new_variant, label) = match current {
+        crate::deepseek_theme::Variant::Dark => (crate::deepseek_theme::Variant::Light, "light"),
+        crate::deepseek_theme::Variant::Light => (crate::deepseek_theme::Variant::Dark, "dark"),
+    };
+    let new_theme = if new_variant == crate::deepseek_theme::Variant::Light {
+        crate::deepseek_theme::Theme::light()
+    } else {
+        crate::deepseek_theme::Theme::dark()
+    };
+    crate::deepseek_theme::set_active_theme(new_theme);
+    app.ui_theme = if new_variant == crate::deepseek_theme::Variant::Light {
+        crate::palette::UI_THEME_LIGHT
+    } else {
+        crate::palette::UI_THEME
+    };
+    CommandResult::message(format!("Theme switched to {label}."))
+}
+
 /// Manage workspace-level trust and the per-path allowlist.
 ///
 /// Subcommands:
@@ -1040,6 +1061,7 @@ mod tests {
             yolo: false,
             resume_session_id: None,
             initial_input: None,
+            theme: None,
         };
         App::new(options, &Config::default())
     }

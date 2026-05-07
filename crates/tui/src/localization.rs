@@ -264,6 +264,7 @@ pub enum MessageId {
     CmdSwarmDescription,
     CmdSystemDescription,
     CmdTaskDescription,
+    CmdThemeDescription,
     CmdTokensDescription,
     CmdTrustDescription,
     CmdLspDescription,
@@ -321,6 +322,7 @@ pub enum MessageId {
     KbToolDetailsPager,
     KbThinkingPager,
     KbLiveTranscript,
+    KbToggleTheme,
     KbBacktrackMessage,
     KbCompleteCycleModes,
     KbJumpPlanAgentYolo,
@@ -454,6 +456,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdSwarmDescription,
     MessageId::CmdSystemDescription,
     MessageId::CmdTaskDescription,
+    MessageId::CmdThemeDescription,
     MessageId::CmdTokensDescription,
     MessageId::CmdTrustDescription,
     MessageId::CmdLspDescription,
@@ -511,6 +514,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::KbToolDetailsPager,
     MessageId::KbThinkingPager,
     MessageId::KbLiveTranscript,
+    MessageId::KbToggleTheme,
     MessageId::KbBacktrackMessage,
     MessageId::KbCompleteCycleModes,
     MessageId::KbJumpPlanAgentYolo,
@@ -793,6 +797,7 @@ fn english(id: MessageId) -> &'static str {
         }
         MessageId::CmdSystemDescription => "Show current system prompt",
         MessageId::CmdTaskDescription => "Manage background tasks",
+        MessageId::CmdThemeDescription => "Toggle between light and dark theme",
         MessageId::CmdTokensDescription => "Show token usage for session",
         MessageId::CmdTrustDescription => {
             "Manage workspace trust and per-path allowlist (`/trust add <path>`, `/trust list`, `/trust on|off`)"
@@ -890,6 +895,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::KbToolDetailsPager => "Open tool-details pager",
         MessageId::KbThinkingPager => "Open thinking pager",
         MessageId::KbLiveTranscript => "Open live transcript overlay (sticky-tail auto-scroll)",
+        MessageId::KbToggleTheme => "Toggle light/dark theme",
         MessageId::KbBacktrackMessage => {
             "Backtrack to a previous user message (Left/Right step, Enter to rewind)"
         }
@@ -1078,6 +1084,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdSystemDescription => "現在のシステムプロンプトを表示",
         MessageId::CmdTaskDescription => "バックグラウンドタスクを管理",
+        MessageId::CmdThemeDescription => "ライト/ダークテーマを切り替え",
         MessageId::CmdTokensDescription => "セッションのトークン使用量を表示",
         MessageId::CmdTrustDescription => {
             "ワークスペースの信頼設定とパス別許可リストを管理（`/trust add <path>`、`/trust list`、`/trust on|off`）"
@@ -1174,6 +1181,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::KbToolDetailsPager => "ツール詳細のページャーを開く",
         MessageId::KbThinkingPager => "思考内容のページャーを開く",
         MessageId::KbLiveTranscript => "ライブ会話履歴オーバーレイを開く（自動追尾スクロール）",
+        MessageId::KbToggleTheme => "ライト/ダークテーマを切り替え",
         MessageId::KbBacktrackMessage => {
             "前のユーザーメッセージに戻る（左右でステップ、Enter で巻き戻し）"
         }
@@ -1335,6 +1343,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdSystemDescription => "显示当前系统提示词",
         MessageId::CmdTaskDescription => "管理后台任务",
+        MessageId::CmdThemeDescription => "切换浅色/深色主题",
         MessageId::CmdTokensDescription => "显示本次会话的 token 用量",
         MessageId::CmdTrustDescription => {
             "管理工作区信任与按路径的白名单（`/trust add <path>`、`/trust list`、`/trust on|off`）"
@@ -1421,6 +1430,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::KbToolDetailsPager => "打开工具详情分页器",
         MessageId::KbThinkingPager => "打开思考内容分页器",
         MessageId::KbLiveTranscript => "打开实时对话覆盖层（自动滚动尾随）",
+        MessageId::KbToggleTheme => "切换浅色/深色主题",
         MessageId::KbBacktrackMessage => "回退到之前的用户消息（左右键步进，Enter 回退）",
         MessageId::KbCompleteCycleModes => {
             "补全 /command、排队运行轮次跟进、切换模式；Shift+Tab 切换推理强度"
@@ -1608,6 +1618,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdSystemDescription => "Exibir o prompt de sistema atual",
         MessageId::CmdTaskDescription => "Gerenciar tarefas em segundo plano",
+        MessageId::CmdThemeDescription => "Alternar entre tema claro e escuro",
         MessageId::CmdTokensDescription => "Exibir o uso de tokens da sessão",
         MessageId::CmdTrustDescription => {
             "Gerenciar a confiança do workspace e a allowlist por caminho (`/trust add <path>`, `/trust list`, `/trust on|off`)"
@@ -1712,6 +1723,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::KbToolDetailsPager => "Abrir paginador de detalhes da ferramenta",
         MessageId::KbThinkingPager => "Abrir paginador de raciocínio",
         MessageId::KbLiveTranscript => "Abrir sobreposição de transcrição ao vivo (auto-scroll)",
+        MessageId::KbToggleTheme => "Alternar tema claro/escuro",
         MessageId::KbBacktrackMessage => {
             "Retroceder para mensagem anterior do usuário (esquerda/direita, Enter para rebobinar)"
         }
