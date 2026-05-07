@@ -564,6 +564,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         memory_path: config.memory_path(),
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: app.goal.goal_objective.clone(),
+        locale_tag: app.ui_locale.tag().to_string(),
         workshop: config.workshop.clone(),
     }
 }
@@ -3357,6 +3358,7 @@ async fn dispatch_user_message(
             prompts::PromptSessionContext {
                 user_memory_block: None,
                 goal_objective: app.goal.goal_objective.as_deref(),
+                locale_tag: app.ui_locale.tag(),
             },
         ),
     );

@@ -143,6 +143,11 @@ pub struct EngineConfig {
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
     pub goal_objective: Option<String>,
+    /// Resolved BCP-47 locale tag (e.g. `"en"`, `"zh-Hans"`, `"ja"`)
+    /// for the `## Environment` block in the system prompt. The
+    /// caller resolves this from `Settings` once at engine
+    /// construction; the engine never touches disk for it.
+    pub locale_tag: String,
     /// When true, force `tool_choice: "required"` so the model always calls
     /// a tool on every turn step (V4 strict tool-following mode).
     pub strict_tool_mode: bool,
@@ -179,6 +184,7 @@ impl Default for EngineConfig {
             memory_path: PathBuf::from("./memory.md"),
             strict_tool_mode: false,
             goal_objective: None,
+            locale_tag: "en".to_string(),
             workshop: None,
         }
     }
@@ -433,6 +439,7 @@ impl Engine {
                 prompts::PromptSessionContext {
                     user_memory_block: user_memory_block.as_deref(),
                     goal_objective: config.goal_objective.as_deref(),
+                    locale_tag: &config.locale_tag,
                 },
                 session.approval_mode,
             );
@@ -1825,6 +1832,7 @@ impl Engine {
             prompts::PromptSessionContext {
                 user_memory_block: user_memory_block.as_deref(),
                 goal_objective: self.config.goal_objective.as_deref(),
+                locale_tag: &self.config.locale_tag,
             },
             self.session.approval_mode,
         );

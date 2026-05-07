@@ -17,6 +17,12 @@ use std::path::{Path, PathBuf};
 pub struct PromptSessionContext<'a> {
     pub user_memory_block: Option<&'a str>,
     pub goal_objective: Option<&'a str>,
+    /// Resolved BCP-47 locale tag for the `## Environment` block in
+    /// the system prompt (e.g. `"en"`, `"zh-Hans"`, `"ja"`). The
+    /// caller is responsible for resolving this from `Settings`; no
+    /// disk I/O happens inside the prompt builder, so the workspace-
+    /// static portion of the system prompt stays cache-friendly.
+    pub locale_tag: &'a str,
 }
 
 /// Conventional location for the structured session-handoff artifact (#32).
@@ -31,6 +37,30 @@ pub const HANDOFF_RELATIVE_PATH: &str = ".deepseek/handoff.md";
 /// its own. Files larger than this are truncated with an `[…elided]`
 /// marker rather than skipped entirely so the model still sees the head.
 const INSTRUCTIONS_FILE_MAX_BYTES: usize = 100 * 1024;
+
+/// Render a `## Environment` block listing the resolved locale tag,
+/// host platform, login shell, and current working directory.
+///
+/// The block is appended to the workspace-static portion of the
+/// system prompt (after mode prompt + project context, before
+/// configured instructions / skills) so the `## Language` directive
+/// in `prompts/base.md` can reference it without the model having to
+/// guess from the user's first message. `locale_tag` is resolved by
+/// the caller from `Settings` so this function stays I/O-free.
+fn render_environment_block(workspace: &Path, locale_tag: &str) -> String {
+    let platform = std::env::consts::OS;
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".to_string());
+    let pwd = workspace.display();
+
+    format!(
+        "## Environment\n\
+         \n\
+         - lang: {locale_tag}\n\
+         - platform: {platform}\n\
+         - shell: {shell}\n\
+         - pwd: {pwd}"
+    )
+}
 
 /// Render the `instructions = [...]` config array as a single
 /// system-prompt block (#454). Each path is loaded in declared order;
@@ -301,6 +331,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
         PromptSessionContext {
             user_memory_block,
             goal_objective: None,
+            locale_tag: "en",
         },
     )
 }
@@ -350,6 +381,17 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
             mode_prompt, summary, tree
         )
     };
+
+    // 2.25. Environment block — locale, platform, shell, pwd. All
+    // four inputs are session-stable (workspace path is fixed for
+    // the run; locale is loaded once by the caller; platform/shell
+    // come from process env). Inserted above instructions/skills so
+    // it remains in the workspace-static cache layer alongside the
+    // mode prompt and project context.
+    full_prompt = format!(
+        "{full_prompt}\n\n{}",
+        render_environment_block(workspace, session_context.locale_tag),
+    );
 
     // 2.5a. Configured `instructions = [...]` files (#454). Loaded
     // and concatenated in declared order. Lives above the skills
@@ -474,6 +516,39 @@ mod tests {
     /// Discriminator unique to the injected handoff block (not present in the
     /// agent prompt's own discussion of the convention).
     const HANDOFF_BLOCK_MARKER: &str = "left a handoff at `.deepseek/handoff.md`";
+
+    #[test]
+    fn render_environment_block_lists_supplied_locale_and_workspace() {
+        let tmp = tempdir().expect("tempdir");
+        let block = render_environment_block(tmp.path(), "zh-Hans");
+        assert!(block.starts_with("## Environment"));
+        assert!(block.contains("- lang: zh-Hans"));
+        assert!(block.contains(&format!("- pwd: {}", tmp.path().display())));
+        assert!(block.contains("- platform:"));
+        assert!(block.contains("- shell:"));
+    }
+
+    #[test]
+    fn environment_block_is_inserted_into_system_prompt() {
+        let tmp = tempdir().expect("tempdir");
+        let prompt = match system_prompt_for_mode_with_context_skills_and_session(
+            AppMode::Agent,
+            tmp.path(),
+            None,
+            None,
+            None,
+            PromptSessionContext {
+                user_memory_block: None,
+                goal_objective: None,
+                locale_tag: "ja",
+            },
+        ) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+        assert!(prompt.contains("## Environment"));
+        assert!(prompt.contains("- lang: ja"));
+    }
 
     #[test]
     fn handoff_artifact_is_prepended_to_system_prompt_when_present() {
@@ -607,6 +682,7 @@ mod tests {
             PromptSessionContext {
                 user_memory_block: None,
                 goal_objective: Some("Fix transcript corruption"),
+                locale_tag: "en",
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -633,6 +709,7 @@ mod tests {
             PromptSessionContext {
                 user_memory_block: None,
                 goal_objective: Some("   "),
+                locale_tag: "en",
             },
         ) {
             SystemPrompt::Text(text) => text,
