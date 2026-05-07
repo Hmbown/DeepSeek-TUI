@@ -443,6 +443,26 @@ fn subagent_auto_reasoning_resolves_to_distinct_v4_tiers() {
 }
 
 #[test]
+fn fixed_model_subagent_auto_reasoning_skips_flash_router() {
+    let runtime = stub_runtime().with_reasoning_effort(Some("high".to_string()), true);
+
+    assert!(
+        !should_use_subagent_flash_router(&runtime),
+        "fixed-model auto thinking should resolve locally without a hidden router request"
+    );
+}
+
+#[test]
+fn auto_model_subagent_assignments_still_use_flash_router() {
+    let runtime = stub_runtime().with_auto_model(true);
+
+    assert!(
+        should_use_subagent_flash_router(&runtime),
+        "auto-model sub-agent assignments still need router guidance"
+    );
+}
+
+#[test]
 fn subagent_router_prompt_frames_assignment_as_auto_routing() {
     let runtime = stub_runtime()
         .with_auto_model(true)

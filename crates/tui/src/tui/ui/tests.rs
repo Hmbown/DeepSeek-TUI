@@ -787,6 +787,31 @@ async fn dispatch_user_message_failed_send_clears_loading_state() {
     assert!(app.last_send_at.is_none());
 }
 
+#[test]
+fn fixed_model_auto_thinking_skips_auto_model_router() {
+    let mut app = create_test_app();
+    app.auto_model = false;
+    app.model = "deepseek-v4-pro".to_string();
+    app.reasoning_effort = ReasoningEffort::Auto;
+
+    assert!(
+        !should_resolve_auto_model_selection(&app),
+        "fixed-model auto thinking must stay local instead of starting a hidden router request"
+    );
+}
+
+#[test]
+fn auto_model_still_uses_auto_model_router() {
+    let mut app = create_test_app();
+    app.auto_model = true;
+    app.reasoning_effort = ReasoningEffort::Auto;
+
+    assert!(
+        should_resolve_auto_model_selection(&app),
+        "auto model still needs the router to choose the concrete model"
+    );
+}
+
 fn init_git_repo() -> TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
 

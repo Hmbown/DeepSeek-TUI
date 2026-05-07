@@ -3390,7 +3390,7 @@ pub(crate) async fn resolve_subagent_assignment_route(
     let explicit_model = configured_model.is_some();
     let mut route = fallback_subagent_assignment_route(runtime, configured_model, prompt);
 
-    if (runtime.auto_model || runtime.reasoning_effort_auto)
+    if should_use_subagent_flash_router(runtime)
         && let Ok(Some(recommendation)) = subagent_flash_router(runtime, prompt).await
     {
         if runtime.auto_model && !explicit_model {
@@ -3405,6 +3405,10 @@ pub(crate) async fn resolve_subagent_assignment_route(
     }
 
     route
+}
+
+fn should_use_subagent_flash_router(runtime: &SubAgentRuntime) -> bool {
+    runtime.auto_model
 }
 
 fn fallback_subagent_assignment_route(

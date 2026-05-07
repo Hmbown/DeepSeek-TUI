@@ -3628,7 +3628,7 @@ async fn dispatch_user_message(
         persistence_actor::persist(PersistRequest::Checkpoint(session));
     }
 
-    let auto_selection = if app.auto_model || app.reasoning_effort == ReasoningEffort::Auto {
+    let auto_selection = if should_resolve_auto_model_selection(app) {
         Some(resolve_auto_model_selection(app, config, &message, &content).await)
     } else {
         None
@@ -3696,6 +3696,10 @@ async fn dispatch_user_message(
     }
 
     Ok(())
+}
+
+fn should_resolve_auto_model_selection(app: &App) -> bool {
+    app.auto_model
 }
 
 async fn resolve_auto_model_selection(
