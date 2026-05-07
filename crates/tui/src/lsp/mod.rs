@@ -37,6 +37,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserialize;
+use serde_json::json;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
 
@@ -47,6 +48,27 @@ pub mod registry;
 pub use client::{LspTransport, StdioLspTransport};
 pub use diagnostics::{Diagnostic, DiagnosticBlock, Severity, render_blocks};
 pub use registry::Language;
+
+// ── Shared types for LSP code intelligence ────────────────────────────
+
+/// A file location returned by goto-definition and find-references.
+#[derive(Debug, Clone)]
+pub struct LspLocation {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+/// A symbol returned by document-symbols and workspace-symbols.
+#[derive(Debug, Clone)]
+pub struct LspSymbol {
+    pub name: String,
+    pub kind: String,
+    pub file: Option<String>,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+    pub container: Option<String>,
+}
 
 /// `[lsp]` config schema. Mirrors the TOML keys documented in
 /// `config.example.toml`. Unknown keys are ignored.
@@ -252,6 +274,117 @@ impl LspManager {
         }
     }
 
+    // ── Code intelligence methods (Phase 2: LSP tools) ──────────────
+
+    /// Resolve the location(s) where the symbol at `file:line:col` is defined.
+    /// Returns `None` when the LSP server is unavailable.
+    pub async fn goto_definition(
+        &self,
+        file: &Path,
+        line: u32,
+        column: u32,
+    ) -> Option<Vec<LspLocation>> {
+        let transport = self.transport_for_file(file).await?;
+        let uri = client::uri_from_path(file);
+        let params = json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line.saturating_sub(1), "character": column.saturating_sub(1) }
+        });
+        let result = transport
+            .send_request("textDocument/definition", params)
+            .await
+            .ok()?;
+        parse_locations(&result)
+    }
+
+    /// Find all references to the symbol at `file:line:col`.
+    /// Returns `None` when the LSP server is unavailable.
+    pub async fn find_references(
+        &self,
+        file: &Path,
+        line: u32,
+        column: u32,
+    ) -> Option<Vec<LspLocation>> {
+        let transport = self.transport_for_file(file).await?;
+        let uri = client::uri_from_path(file);
+        let params = json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line.saturating_sub(1), "character": column.saturating_sub(1) },
+            "context": { "includeDeclaration": false }
+        });
+        let result = transport
+            .send_request("textDocument/references", params)
+            .await
+            .ok()?;
+        parse_locations(&result)
+    }
+
+    /// Get hover information (type, docs) for the symbol at `file:line:col`.
+    /// Returns `None` when no hover info is available.
+    pub async fn hover(&self, file: &Path, line: u32, column: u32) -> Option<String> {
+        let transport = self.transport_for_file(file).await?;
+        let uri = client::uri_from_path(file);
+        let params = json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line.saturating_sub(1), "character": column.saturating_sub(1) }
+        });
+        let result = transport
+            .send_request("textDocument/hover", params)
+            .await
+            .ok()?;
+        parse_hover(&result)
+    }
+
+    /// List all symbols defined in `file`.
+    /// Returns `None` when the LSP server is unavailable.
+    pub async fn document_symbols(&self, file: &Path) -> Option<Vec<LspSymbol>> {
+        let transport = self.transport_for_file(file).await?;
+        let uri = client::uri_from_path(file);
+        let params = json!({
+            "textDocument": { "uri": uri }
+        });
+        let result = transport
+            .send_request("textDocument/documentSymbol", params)
+            .await
+            .ok()?;
+        parse_symbols(&result, Some(file))
+    }
+
+    /// Search for symbols across the entire workspace by name.
+    /// Queries all active language transports and merges results.
+    /// Returns `None` when no transport is available.
+    pub async fn workspace_symbols(&self, query: &str) -> Option<Vec<LspSymbol>> {
+        let transports: Vec<Arc<dyn LspTransport>> =
+            self.transports.lock().await.values().cloned().collect();
+        if transports.is_empty() {
+            return None;
+        }
+        let params = json!({ "query": query });
+        let mut all_symbols = Vec::new();
+        for transport in &transports {
+            if let Ok(result) = transport.send_request("workspace/symbol", params.clone()).await {
+                if let Some(syms) = parse_symbols(&result, None) {
+                    all_symbols.extend(syms);
+                }
+            }
+        }
+        if all_symbols.is_empty() {
+            None
+        } else {
+            Some(all_symbols)
+        }
+    }
+
+    /// Resolve a transport for a file — uses language detection from the
+    /// file extension, then delegates to `transport_for`.
+    async fn transport_for_file(&self, file: &Path) -> Option<Arc<dyn LspTransport>> {
+        let lang = registry::detect_language(file);
+        if lang == registry::Language::Other {
+            return None;
+        }
+        self.transport_for(lang).await
+    }
+
     /// Best-effort shutdown of every spawned transport. Called when the
     /// session ends.
     #[allow(dead_code)]
@@ -294,6 +427,200 @@ impl LspManager {
     }
 }
 
+// ── LSP response parsing helpers ──────────────────────────────────────
+
+/// Parse `textDocument/definition` or `textDocument/references` response
+/// into `Vec<LspLocation>`. Handles:
+/// - Single `Location` (`uri` + `range`)
+/// - `Location[]`
+/// - `LocationLink` (`targetUri` + `targetRange`) — newer servers
+fn parse_locations(result: &serde_json::Value) -> Option<Vec<LspLocation>> {
+    // Single Location: { uri, range }
+    if let Some(uri) = result.get("uri").and_then(|v| v.as_str()) {
+        let (line, col) = parse_range_start(result.get("range")?);
+        let file = uri_to_relative(uri);
+        return Some(vec![LspLocation { file, line, column: col }]);
+    }
+    // Single LocationLink: { targetUri, targetRange }
+    if let Some(uri) = result.get("targetUri").and_then(|v| v.as_str()) {
+        let (line, col) = parse_range_start(result.get("targetRange").or(result.get("targetSelectionRange"))?);
+        let file = uri_to_relative(uri);
+        return Some(vec![LspLocation { file, line, column: col }]);
+    }
+    if let Some(arr) = result.as_array() {
+        let mut locs = Vec::new();
+        for item in arr {
+            // Try LocationLink first (targetUri/targetRange), then Location (uri/range).
+            if let Some(uri) = item.get("targetUri").and_then(|v| v.as_str()) {
+                let (line, col) = parse_range_start(
+                    item.get("targetRange")
+                        .or(item.get("targetSelectionRange"))?,
+                );
+                let file = uri_to_relative(uri);
+                locs.push(LspLocation { file, line, column: col });
+            } else if let Some(uri) = item.get("uri").and_then(|v| v.as_str()) {
+                let (line, col) = parse_range_start(item.get("range")?);
+                let file = uri_to_relative(uri);
+                locs.push(LspLocation { file, line, column: col });
+            }
+        }
+        return if locs.is_empty() { None } else { Some(locs) };
+    }
+    None
+}
+
+/// Parse `textDocument/hover` response into a plain-text string.
+fn parse_hover(result: &serde_json::Value) -> Option<String> {
+    let contents = result.get("contents")?;
+    if let Some(s) = contents.as_str() {
+        return Some(s.to_string());
+    }
+    if let Some(obj) = contents.as_object() {
+        if let Some(value) = obj.get("value").and_then(|v| v.as_str()) {
+            return Some(value.to_string());
+        }
+    }
+    if let Some(arr) = contents.as_array() {
+        let mut parts = Vec::new();
+        for item in arr {
+            if let Some(s) = item.as_str() {
+                parts.push(s.to_string());
+            } else if let Some(obj) = item.as_object() {
+                if let Some(v) = obj.get("value").and_then(|v| v.as_str()) {
+                    parts.push(v.to_string());
+                }
+            }
+        }
+        if !parts.is_empty() {
+            return Some(parts.join("\n---\n"));
+        }
+    }
+    None
+}
+
+/// Parse `textDocument/documentSymbol` or `workspace/symbol` response
+/// into `Vec<LspSymbol>`.
+fn parse_symbols(
+    result: &serde_json::Value,
+    context_file: Option<&Path>,
+) -> Option<Vec<LspSymbol>> {
+    let arr = result.as_array()?;
+    let mut syms = Vec::new();
+    for item in arr {
+        syms.extend(flatten_symbol(item, context_file, 0));
+    }
+    if syms.is_empty() {
+        None
+    } else {
+        Some(syms)
+    }
+}
+
+/// Flatten a `DocumentSymbol` (which can have children) into a flat list.
+fn flatten_symbol(
+    value: &serde_json::Value,
+    context_file: Option<&Path>,
+    depth: u32,
+) -> Vec<LspSymbol> {
+    const MAX_DEPTH: u32 = 16;
+    if depth > MAX_DEPTH {
+        return Vec::new();
+    }
+    let name = value
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?")
+        .to_string();
+    let kind = value
+        .get("kind")
+        .and_then(|v| v.as_u64())
+        .map(symbol_kind_name)
+        .unwrap_or("unknown")
+        .to_string();
+    let file = value.get("location").and_then(|loc| {
+        loc.get("uri")
+            .and_then(|v| v.as_str())
+            .map(uri_to_relative)
+    });
+    let (line, column) = value
+        .get("location")
+        .and_then(|loc| loc.get("range"))
+        .or_else(|| value.get("range").or_else(|| value.get("selectionRange")))
+        .map(parse_range_start)
+        .unwrap_or((0, 0));
+    let container = value
+        .get("containerName")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let mut out = vec![LspSymbol {
+        name,
+        kind,
+        file: file.or_else(|| context_file.map(|p| p.to_string_lossy().to_string())),
+        line: Some(line),
+        column: Some(column),
+        container,
+    }];
+    if let Some(children) = value.get("children").and_then(|v| v.as_array()) {
+        for child in children {
+            out.extend(flatten_symbol(child, context_file, depth + 1));
+        }
+    }
+    out
+}
+
+fn symbol_kind_name(kind: u64) -> &'static str {
+    match kind {
+        1 => "file", 2 => "module", 3 => "namespace", 4 => "package",
+        5 => "class", 6 => "method", 7 => "property", 8 => "field",
+        9 => "constructor", 10 => "enum", 11 => "interface", 12 => "function",
+        13 => "variable", 14 => "constant", 15 => "string", 16 => "number",
+        17 => "boolean", 18 => "array", 19 => "object", 20 => "key",
+        21 => "null", 22 => "enum member", 23 => "struct", 24 => "event",
+        25 => "operator", 26 => "type parameter", _ => "symbol",
+    }
+}
+
+fn parse_range_start(range: &serde_json::Value) -> (u32, u32) {
+    let start = match range.get("start") {
+        Some(s) => s,
+        None => return (0, 0),
+    };
+    let line = start.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32 + 1;
+    let col = start.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as u32 + 1;
+    (line, col)
+}
+
+/// Convert a `file://` URI to a workspace-relative or absolute path.
+/// Handles percent-decoding for URIs containing special characters.
+fn uri_to_relative(uri: &str) -> String {
+    let path = uri.strip_prefix("file://").unwrap_or(uri);
+    // Preserve the leading '/' for Unix absolute paths.
+    let decoded = percent_decode(path);
+    decoded.to_string()
+}
+
+/// Decode percent-encoded characters in a URI path segment (%20 → space, etc.).
+fn percent_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let hi = chars.next().and_then(|c| c.to_digit(16));
+            let lo = chars.next().and_then(|c| c.to_digit(16));
+            if let (Some(h), Some(l)) = (hi, lo) {
+                if let Some(decoded) = char::from_u32(h * 16 + l) {
+                    out.push(decoded);
+                    continue;
+                }
+            }
+            out.push('%');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -330,6 +657,14 @@ pub(crate) mod tests {
         ) -> anyhow::Result<Vec<Diagnostic>> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(self.items.clone())
+        }
+
+        async fn send_request(
+            &self,
+            _method: &str,
+            _params: serde_json::Value,
+        ) -> anyhow::Result<serde_json::Value> {
+            Ok(serde_json::json!({"result": "stub"}))
         }
 
         async fn shutdown(&self) {}
