@@ -16,6 +16,8 @@ use deepseek_app_server::{
 use deepseek_config::{
     CliRuntimeOverrides, ConfigStore, ProviderKind, ResolvedRuntimeOptions, RuntimeApiKeySource,
 };
+use deepmap::engine::RepoMapEngine;
+use deepmap::renderer;
 use deepseek_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
 use deepseek_mcp::{McpServerDefinition, run_stdio_server};
 use deepseek_secrets::Secrets;
@@ -190,6 +192,56 @@ The command prints the completion script to stdout; redirect it to a path your s
     Metrics(MetricsArgs),
     /// Check for and apply updates to the `deepseek` binary.
     Update,
+    /// Analyze a codebase with DeepMap (symbols, dependency graph, PageRank).
+    Deepmap(DeepmapArgs),
+}
+
+#[derive(Debug, Args)]
+struct DeepmapArgs {
+    #[command(subcommand)]
+    command: DeepmapCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum DeepmapCommand {
+    /// Generate a project map overview (entry points, hotspots, reading order).
+    Overview {
+        #[arg(long, default_value = ".")] project: PathBuf,
+        #[arg(long, default_value = "2000")] max_files: usize,
+        #[arg(long, default_value = "16000")] max_chars: usize,
+    },
+    /// Trace callers and callees for a symbol.
+    CallChain {
+        #[arg(long, default_value = ".")] project: PathBuf,
+        #[arg(long)] symbol: String,
+        #[arg(long, default_value = "3")] max_depth: usize,
+        #[arg(long, default_value = "16000")] max_chars: usize,
+    },
+    /// List symbols in a file with PageRank scores and signatures.
+    FileDetail {
+        #[arg(long, default_value = ".")] project: PathBuf,
+        #[arg(long)] file: String,
+        #[arg(long, default_value = "12")] max_symbols: usize,
+        #[arg(long, default_value = "6000")] max_chars: usize,
+    },
+    /// Search codebase by topic keywords.
+    Query {
+        #[arg(long, default_value = ".")] project: PathBuf,
+        #[arg(long)] keywords: String,
+        #[arg(long, default_value = "20")] max_files: usize,
+        #[arg(long, default_value = "8000")] max_chars: usize,
+    },
+    /// Analyze impact of changes on given files.
+    Impact {
+        #[arg(long, default_value = ".")] project: PathBuf,
+        #[arg(long, value_delimiter = ',')] files: Vec<String>,
+        #[arg(long, default_value = "8000")] max_chars: usize,
+    },
+    /// Assess risk of pending git changes.
+    DiffRisk {
+        #[arg(long, default_value = ".")] project: PathBuf,
+        #[arg(long, default_value = "8000")] max_chars: usize,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -510,6 +562,7 @@ fn run() -> Result<()> {
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
         Some(Commands::Update) => update::run_update(),
+        Some(Commands::Deepmap(ref args)) => run_deepmap_command(args),
         None => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             let mut forwarded = Vec::new();
@@ -1460,6 +1513,55 @@ fn sibling_tui_candidate(dispatcher: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn run_deepmap_command(args: &DeepmapArgs) -> Result<()> {
+    match &args.command {
+        DeepmapCommand::Overview { project, max_files, max_chars } => {
+            eprintln!("Scanning {} (max {} files)...", project.display(), max_files);
+            let engine = RepoMapEngine::get_or_scan(project, *max_files, 300.0);
+            println!("{}", renderer::render_overview_report(&engine, *max_chars));
+        }
+        DeepmapCommand::CallChain { project, symbol, max_depth, max_chars } => {
+            eprintln!("Scanning {}...", project.display());
+            let engine = RepoMapEngine::get_or_scan(project, 2000, 300.0);
+            let r = renderer::render_call_chain_report(&engine, symbol, *max_depth);
+            println!("{}", if r.len() > *max_chars { format!("{}...", &r[..*max_chars]) } else { r });
+        }
+        DeepmapCommand::FileDetail { project, file, max_symbols, max_chars } => {
+            eprintln!("Scanning {}...", project.display());
+            let engine = RepoMapEngine::get_or_scan(project, 2000, 300.0);
+            println!("{}", renderer::render_file_detail_report(&engine, file, *max_symbols, *max_chars));
+        }
+        DeepmapCommand::Query { project, keywords, max_files, max_chars } => {
+            eprintln!("Scanning {}...", project.display());
+            let engine = RepoMapEngine::get_or_scan(project, 2000, 300.0);
+            println!("{}", renderer::render_query_report(&engine, keywords, *max_files, *max_chars));
+        }
+        DeepmapCommand::Impact { project, files, max_chars } => {
+            eprintln!("Scanning {}...", project.display());
+            let engine = RepoMapEngine::get_or_scan(project, 2000, 300.0);
+            println!("{}", renderer::render_impact_report(&engine, files, *max_chars));
+        }
+        DeepmapCommand::DiffRisk { project, max_chars } => {
+            eprintln!("Scanning {}...", project.display());
+            let engine = RepoMapEngine::get_or_scan(project, 2000, 300.0);
+            let changed = get_git_changed_files(project);
+            println!("{}", renderer::render_diff_risk_report(&engine, &changed, *max_chars));
+        }
+    }
+    Ok(())
+}
+
+fn get_git_changed_files(project: &Path) -> Vec<String> {
+    std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(project)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| if l.len() >= 4 { Some(l[3..].trim().to_string()) } else { None }).collect())
+        .unwrap_or_default()
 }
 
 fn run_metrics_command(args: MetricsArgs) -> Result<()> {
