@@ -761,9 +761,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdPlanDescription => {
             "Switch to plan mode and review suggested implementation steps"
         }
-        MessageId::CmdThemeDescription => {
-            "Toggle between dark and light theme"
-        }
+        MessageId::CmdThemeDescription => "Toggle between dark and light theme",
         MessageId::CmdProviderDescription => {
             "Switch or view the active LLM backend (deepseek | nvidia-nim | ollama)"
         }
@@ -1577,9 +1575,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdPlanDescription => {
             "Mudar para o modo plan e revisar os passos de implementação sugeridos"
         }
-        MessageId::CmdThemeDescription => {
-            "Alternar entre o tema claro e escuro"
-        }
+        MessageId::CmdThemeDescription => "Alternar entre o tema claro e escuro",
         MessageId::CmdProviderDescription => {
             "Trocar ou exibir o backend LLM ativo (deepseek | nvidia-nim | ollama)"
         }

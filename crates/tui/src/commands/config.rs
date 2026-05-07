@@ -542,8 +542,12 @@ pub fn plan_mode(app: &mut App) -> CommandResult {
 /// Toggle between dark and light theme.
 pub fn theme(app: &mut App) -> CommandResult {
     let new_theme = match app.ui_theme.mode {
-        crate::palette::PaletteMode::Dark => crate::palette::UiTheme::for_mode(crate::palette::PaletteMode::Light),
-        crate::palette::PaletteMode::Light => crate::palette::UiTheme::for_mode(crate::palette::PaletteMode::Dark),
+        crate::palette::PaletteMode::Dark => {
+            crate::palette::UiTheme::for_mode(crate::palette::PaletteMode::Light)
+        }
+        crate::palette::PaletteMode::Light => {
+            crate::palette::UiTheme::for_mode(crate::palette::PaletteMode::Dark)
+        }
     };
     app.ui_theme = new_theme;
     let label = match new_theme.mode {

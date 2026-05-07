@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+use crate::config::OnExceedStrategy;
 use crate::core::coherence::CoherenceState;
 use crate::error_taxonomy::ErrorEnvelope;
 use crate::models::{Message, SystemPrompt, Usage};
@@ -177,6 +178,19 @@ pub enum Event {
         label: String,
         description: String,
         reason: String,
+    },
+
+    BudgetSoftReached {
+        currency: crate::pricing::CostCurrency,
+        current: f64,
+        cap: f64,
+    },
+
+    BudgetHardReached {
+        currency: crate::pricing::CostCurrency,
+        current: f64,
+        cap: f64,
+        strategy: OnExceedStrategy,
     },
 
     // === Sub-Agent Events ===

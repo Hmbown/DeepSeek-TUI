@@ -16,6 +16,7 @@ mod acp_server;
 mod audit;
 mod auto_reasoning;
 mod automation_manager;
+mod budget;
 mod client;
 mod command_safety;
 mod commands;

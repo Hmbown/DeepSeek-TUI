@@ -29,6 +29,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::audit::log_sensitive_event;
 use crate::automation_manager::{AutomationManager, AutomationSchedulerConfig, spawn_scheduler};
+use crate::budget::BudgetState;
 use crate::client::DeepSeekClient;
 use crate::commands;
 use crate::compaction::estimate_input_tokens_conservative;
@@ -749,6 +750,34 @@ async fn run_event_loop(
                             });
                         }
                     }
+                    EngineEvent::BudgetSoftReached {
+                        currency,
+                        current,
+                        cap,
+                    } => {
+                        app.add_message(HistoryCell::System {
+                            content: format!(
+                                "⚠ Soft budget {} reached (current {}). /budget to manage.",
+                                crate::pricing::format_cost_amount(cap, currency),
+                                crate::pricing::format_cost_amount(current, currency)
+                            ),
+                        });
+                    }
+                    EngineEvent::BudgetHardReached {
+                        currency,
+                        current,
+                        cap,
+                        strategy,
+                    } => {
+                        app.add_message(HistoryCell::System {
+                            content: format!(
+                                "Hard budget {} reached (current {}), strategy {:?}.",
+                                crate::pricing::format_cost_amount(cap, currency),
+                                crate::pricing::format_cost_amount(current, currency),
+                                strategy
+                            ),
+                        });
+                    }
                     EngineEvent::ThinkingStarted { .. } => {
                         // P2.3: thinking lives in the active cell so it groups
                         // visually with the tool calls that follow until the
@@ -959,6 +988,9 @@ async fn run_event_loop(
                         );
                         if let Some(cost) = turn_cost {
                             app.accrue_session_cost_estimate(cost);
+                            if matches!(app.session.budget_state, BudgetState::Stopped) {
+                                engine_handle.cancel();
+                            }
                         }
 
                         // Emit OSC 9 / BEL desktop notification for long turns.
@@ -1484,6 +1516,9 @@ async fn run_event_loop(
         let pending_bg_cost = crate::cost_status::drain();
         if pending_bg_cost.is_positive() {
             app.accrue_subagent_cost_estimate(pending_bg_cost);
+            if matches!(app.session.budget_state, BudgetState::Stopped) {
+                engine_handle.cancel();
+            }
             app.needs_redraw = true;
         }
         // Expire the "Press Ctrl+C again to quit" prompt silently after its
@@ -3590,6 +3625,25 @@ async fn dispatch_user_message(
     engine_handle: &EngineHandle,
     message: QueuedMessage,
 ) -> Result<()> {
+    match app.session.budget_state.clone() {
+        BudgetState::Paused { reason } => {
+            app.add_message(HistoryCell::System {
+                content: format!(
+                    "{reason} Budget paused. Use /budget extend <usd>, /budget release, or /budget downgrade."
+                ),
+            });
+            return Ok(());
+        }
+        BudgetState::Stopped => {
+            app.add_message(HistoryCell::System {
+                content: "Budget stopped. Use /budget release to continue this session."
+                    .to_string(),
+            });
+            return Ok(());
+        }
+        BudgetState::Active | BudgetState::SoftWarned => {}
+    }
+
     // #455 (observer-only): fire `message_submit` hooks before
     // dispatch. Hooks see the user's display text via the
     // `with_message` builder. Read-only — they can log, audit, or
@@ -5941,6 +5995,12 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     app.session.subagent_cost_event_seqs.clear();
     app.session.displayed_cost_high_water = 0.0;
     app.session.displayed_cost_high_water_cny = 0.0;
+    app.session.budget_state = BudgetState::Active;
+    app.session.budget_overrides = Default::default();
+    app.session.budget_soft_fired_usd = false;
+    app.session.budget_soft_fired_cny = false;
+    app.session.budget_hard_fired_usd = false;
+    app.session.budget_hard_fired_cny = false;
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
     app.session.last_prompt_cache_hit_tokens = None;
@@ -6758,7 +6818,11 @@ fn footer_cost_spans(app: &App) -> Vec<Span<'static>> {
     }
     vec![Span::styled(
         app.format_cost_amount(displayed_cost),
-        Style::default().fg(palette::TEXT_MUTED),
+        Style::default().fg(match app.session.budget_state {
+            BudgetState::Active => palette::TEXT_MUTED,
+            BudgetState::SoftWarned => palette::STATUS_WARNING,
+            BudgetState::Paused { .. } | BudgetState::Stopped => palette::STATUS_ERROR,
+        }),
     )]
 }
 
