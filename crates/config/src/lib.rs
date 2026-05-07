@@ -289,6 +289,10 @@ pub struct LspConfigToml {
     pub include_warnings: Option<bool>,
     /// Optional override for the `language -> [cmd, ...args]` table.
     pub servers: Option<BTreeMap<String, Vec<String>>>,
+    /// When `true`, skip the built-in LSP shim and read diagnostics from a
+    /// VS Code extension sidecar (local socket/file). Defaults to `false`.
+    #[serde(default)]
+    pub vscode_diagnostics: Option<bool>,
 }
 
 impl ConfigToml {
