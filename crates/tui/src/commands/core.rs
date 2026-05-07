@@ -53,6 +53,7 @@ pub fn clear(app: &mut App) -> CommandResult {
     app.queued_messages.clear();
     app.queued_draft = None;
     app.session.total_conversation_tokens = 0;
+    app.session.total_reasoning_tokens = 0;
     let todos_cleared = app.clear_todos();
     app.tool_log.clear();
     app.tool_cells.clear();
@@ -63,6 +64,8 @@ pub fn clear(app: &mut App) -> CommandResult {
     app.last_exec_wait_command = None;
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
+    app.session.last_reasoning_tokens = None;
+    app.session.last_reasoning_replay_tokens = None;
     app.current_session_id = None;
     let locale = app.ui_locale;
     let message = if todos_cleared {
@@ -101,6 +104,10 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
             app.update_model_compaction_budget();
             app.session.last_prompt_tokens = None;
             app.session.last_completion_tokens = None;
+            app.session.last_reasoning_tokens = None;
+            app.session.last_prompt_cache_hit_tokens = None;
+            app.session.last_prompt_cache_miss_tokens = None;
+            app.session.last_reasoning_replay_tokens = None;
             return CommandResult::with_message_and_action(
                 tr(app.ui_locale, MessageId::ModelChanged)
                     .replace("{old}", &old_model)
@@ -121,6 +128,10 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
         app.update_model_compaction_budget();
         app.session.last_prompt_tokens = None;
         app.session.last_completion_tokens = None;
+        app.session.last_reasoning_tokens = None;
+        app.session.last_prompt_cache_hit_tokens = None;
+        app.session.last_prompt_cache_miss_tokens = None;
+        app.session.last_reasoning_replay_tokens = None;
         CommandResult::with_message_and_action(
             tr(app.ui_locale, MessageId::ModelChanged)
                 .replace("{old}", &old_model)

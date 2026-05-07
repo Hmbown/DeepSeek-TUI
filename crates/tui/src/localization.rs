@@ -281,6 +281,9 @@ pub enum MessageId {
     CmdTokensCacheMissOnly,
     CmdTokensContextUnknownWindow,
     CmdTokensContextWithWindow,
+    CmdTokensReasoningFull,
+    CmdTokensReasoningOutputOnly,
+    CmdTokensReasoningReplayOnly,
     CmdTokensNotReported,
     CmdTokensReport,
     FooterAgentSingular,
@@ -471,6 +474,9 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdTokensCacheMissOnly,
     MessageId::CmdTokensContextUnknownWindow,
     MessageId::CmdTokensContextWithWindow,
+    MessageId::CmdTokensReasoningFull,
+    MessageId::CmdTokensReasoningOutputOnly,
+    MessageId::CmdTokensReasoningReplayOnly,
     MessageId::CmdTokensNotReported,
     MessageId::CmdTokensReport,
     MessageId::FooterAgentSingular,
@@ -821,17 +827,28 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdCostReport => {
             "Session Cost:\n\
              ─────────────────────────────\n\
-             Approx total spent: {cost}\n\n\
-             Cost estimates are approximate and use provider usage telemetry when available.\n\n\
+               Approx total spent: {cost}\n\
+               Main turns:         {main_cost}\n\
+               Background/agents:  {background_cost}\n\
+             V4 reasoning output: {reasoning_tokens} tokens\n\n\
+               Cost estimates are approximate and use provider usage telemetry when available.\n\
+               DeepSeek V4 output pricing includes hidden thinking tokens when the provider reports them.\n\n\
              DeepSeek API Pricing:\n\
              ─────────────────────────────\n\
-             Pricing details are not configured in this CLI."
+               Built-in rates cover DeepSeek V4 Pro and V4 Flash; unknown hosted variants are left unpriced."
         }
         MessageId::CmdTokensCacheBoth => "{hit} hit / {miss} miss",
         MessageId::CmdTokensCacheHitOnly => "{hit} hit / miss not reported",
         MessageId::CmdTokensCacheMissOnly => "hit not reported / {miss} miss",
         MessageId::CmdTokensContextUnknownWindow => "~{estimated} / unknown window",
         MessageId::CmdTokensContextWithWindow => "~{used} / {window} ({percent}%)",
+        MessageId::CmdTokensReasoningFull => {
+            "{visible} answer output / {reasoning} thinking output / {replay} replay input"
+        }
+        MessageId::CmdTokensReasoningOutputOnly => {
+            "{visible} answer output / {reasoning} thinking output"
+        }
+        MessageId::CmdTokensReasoningReplayOnly => "{replay} replay input",
         MessageId::FooterAgentSingular => "1 agent",
         MessageId::FooterAgentsPlural => "{count} agents",
         MessageId::FooterPressCtrlCAgain => "Press Ctrl+C again to quit",
@@ -850,6 +867,7 @@ fn english(id: MessageId) -> &'static str {
              Active context:        {active}\n\
              Last API input:        {input} (turn telemetry; may count repeated prefix across tool rounds)\n\
              Last API output:       {output}\n\
+             V4 reasoning ledger:   {reasoning}\n\
              Cache hit/miss:        {cache} (telemetry/cost only)\n\
              Cumulative tokens:     {total} (session usage telemetry)\n\
              Approx session cost:   {cost}\n\
@@ -1105,17 +1123,26 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdCostReport => {
             "セッション費用:\n\
              ─────────────────────────────\n\
-             累計概算: {cost}\n\n\
-             費用は概算値。プロバイダの使用量テレメトリがあれば優先して使用します。\n\n\
+               累計概算: {cost}\n\
+               メインターン: {main_cost}\n\
+               バックグラウンド/エージェント: {background_cost}\n\
+               V4 推論出力: {reasoning_tokens} トークン\n\n\
+               費用は概算値。プロバイダの使用量テレメトリがあれば優先して使用します。\n\
+               DeepSeek V4 の出力料金には、プロバイダが報告する hidden thinking トークンも含めます。\n\n\
              DeepSeek API 料金:\n\
              ─────────────────────────────\n\
-             本 CLI には詳細な料金表は組み込まれていません。"
+               組み込み料金表は DeepSeek V4 Pro と V4 Flash を対象にし、不明なホスト版は未計算のままにします。"
         }
         MessageId::CmdTokensCacheBoth => "ヒット {hit} / ミス {miss}",
         MessageId::CmdTokensCacheHitOnly => "ヒット {hit} / ミスは未報告",
         MessageId::CmdTokensCacheMissOnly => "ヒットは未報告 / ミス {miss}",
         MessageId::CmdTokensContextUnknownWindow => "~{estimated} / コンテキスト窓不明",
         MessageId::CmdTokensContextWithWindow => "~{used} / {window} ({percent}%)",
+        MessageId::CmdTokensReasoningFull => {
+            "回答出力 {visible} / thinking 出力 {reasoning} / replay 入力 {replay}"
+        }
+        MessageId::CmdTokensReasoningOutputOnly => "回答出力 {visible} / thinking 出力 {reasoning}",
+        MessageId::CmdTokensReasoningReplayOnly => "replay 入力 {replay}",
         MessageId::FooterAgentSingular => "1 エージェント",
         MessageId::FooterAgentsPlural => "{count} エージェント",
         MessageId::FooterPressCtrlCAgain => "もう一度 Ctrl+C で終了",
@@ -1134,6 +1161,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
              アクティブコンテキスト: {active}\n\
              直近の API 入力:        {input}（ターン単位のテレメトリ。複数回のツール往復で同じプレフィックスが重複してカウントされる場合あり）\n\
              直近の API 出力:        {output}\n\
+             V4 推論台帳:            {reasoning}\n\
              キャッシュヒット/ミス:  {cache}（テレメトリ/コスト用のみ）\n\
              累計トークン:           {total}（セッション使用量テレメトリ）\n\
              セッション費用概算:     {cost}\n\
@@ -1358,17 +1386,26 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdCostReport => {
             "会话费用：\n\
              ─────────────────────────────\n\
-             预估累计消耗：{cost}\n\n\
-             费用为估算值；如有提供方用量遥测会优先使用。\n\n\
+               预估累计消耗：{cost}\n\
+               主轮次：        {main_cost}\n\
+               后台/子代理：   {background_cost}\n\
+               V4 推理输出：   {reasoning_tokens} 令牌\n\n\
+               费用为估算值；如有提供方用量遥测会优先使用。\n\
+               DeepSeek V4 输出计费会计入提供方上报的 hidden thinking 令牌。\n\n\
              DeepSeek API 计费：\n\
              ─────────────────────────────\n\
-             此 CLI 中未配置详细计费规则。"
+               内置费率覆盖 DeepSeek V4 Pro 与 V4 Flash；未知托管变体不会套用 DeepSeek 平台价格。"
         }
         MessageId::CmdTokensCacheBoth => "命中 {hit} / 未命中 {miss}",
         MessageId::CmdTokensCacheHitOnly => "命中 {hit} / 未命中未上报",
         MessageId::CmdTokensCacheMissOnly => "命中未上报 / 未命中 {miss}",
         MessageId::CmdTokensContextUnknownWindow => "~{estimated} / 窗口未知",
         MessageId::CmdTokensContextWithWindow => "~{used} / {window}（{percent}%）",
+        MessageId::CmdTokensReasoningFull => {
+            "回答输出 {visible} / thinking 输出 {reasoning} / replay 输入 {replay}"
+        }
+        MessageId::CmdTokensReasoningOutputOnly => "回答输出 {visible} / thinking 输出 {reasoning}",
+        MessageId::CmdTokensReasoningReplayOnly => "replay 输入 {replay}",
         MessageId::FooterAgentSingular => "1 个子代理",
         MessageId::FooterAgentsPlural => "{count} 个子代理",
         MessageId::FooterPressCtrlCAgain => "再次按 Ctrl+C 退出",
@@ -1387,6 +1424,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
              活动上下文：       {active}\n\
              上次 API 输入：    {input}（来自轮次遥测；多轮工具调用中相同前缀可能被重复计入）\n\
              上次 API 输出：    {output}\n\
+             V4 推理台账：      {reasoning}\n\
              缓存命中/未命中：  {cache}（仅用于遥测/计费）\n\
              累计令牌：         {total}（会话用量遥测）\n\
              预估会话费用：     {cost}\n\
@@ -1637,17 +1675,28 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdCostReport => {
             "Custo da sessão:\n\
              ─────────────────────────────\n\
-             Total aproximado: {cost}\n\n\
-             Estimativas de custo são aproximadas e usam a telemetria de uso do provedor quando disponível.\n\n\
+               Total aproximado: {cost}\n\
+               Turnos principais: {main_cost}\n\
+               Background/agentes: {background_cost}\n\
+               Saída de raciocínio V4: {reasoning_tokens} tokens\n\n\
+               Estimativas de custo são aproximadas e usam a telemetria de uso do provedor quando disponível.\n\
+               A precificação de saída do DeepSeek V4 inclui tokens hidden thinking quando reportados pelo provedor.\n\n\
              Preços da API DeepSeek:\n\
              ─────────────────────────────\n\
-             Os detalhes de preço não estão configurados nesta CLI."
+               As tarifas embutidas cobrem DeepSeek V4 Pro e V4 Flash; variantes hospedadas desconhecidas ficam sem preço."
         }
         MessageId::CmdTokensCacheBoth => "{hit} hit / {miss} miss",
         MessageId::CmdTokensCacheHitOnly => "{hit} hit / miss não reportado",
         MessageId::CmdTokensCacheMissOnly => "hit não reportado / {miss} miss",
         MessageId::CmdTokensContextUnknownWindow => "~{estimated} / janela desconhecida",
         MessageId::CmdTokensContextWithWindow => "~{used} / {window} ({percent}%)",
+        MessageId::CmdTokensReasoningFull => {
+            "{visible} saída de resposta / {reasoning} saída thinking / {replay} entrada replay"
+        }
+        MessageId::CmdTokensReasoningOutputOnly => {
+            "{visible} saída de resposta / {reasoning} saída thinking"
+        }
+        MessageId::CmdTokensReasoningReplayOnly => "{replay} entrada replay",
         MessageId::FooterAgentSingular => "1 sub-agente",
         MessageId::FooterAgentsPlural => "{count} sub-agentes",
         MessageId::FooterPressCtrlCAgain => "Pressione Ctrl+C novamente para sair",
@@ -1666,6 +1715,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
              Contexto ativo:           {active}\n\
              Última entrada da API:    {input} (telemetria por turno; pode contar o mesmo prefixo várias vezes em rodadas com ferramentas)\n\
              Última saída da API:      {output}\n\
+             Livro de reasoning V4:    {reasoning}\n\
              Hit/miss do cache:        {cache} (apenas para telemetria/custo)\n\
              Tokens acumulados:        {total} (telemetria de uso da sessão)\n\
              Custo aproximado:         {cost}\n\

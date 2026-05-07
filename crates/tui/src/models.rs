@@ -207,6 +207,21 @@ pub struct Usage {
     pub server_tool_use: Option<ServerToolUsage>,
 }
 
+impl Usage {
+    /// Provider-reported output tokens that were spent on hidden reasoning.
+    #[must_use]
+    pub fn reasoning_output_tokens(&self) -> u32 {
+        self.reasoning_tokens.unwrap_or(0)
+    }
+
+    /// Output tokens that produced visible assistant content.
+    #[must_use]
+    pub fn visible_output_tokens(&self) -> u32 {
+        self.output_tokens
+            .saturating_sub(self.reasoning_output_tokens())
+    }
+}
+
 /// Map known models to their approximate context window sizes.
 #[must_use]
 pub fn context_window_for_model(model: &str) -> Option<u32> {

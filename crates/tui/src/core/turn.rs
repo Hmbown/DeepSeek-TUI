@@ -116,6 +116,10 @@ impl TurnContext {
         );
         self.usage.reasoning_tokens =
             add_optional_usage(self.usage.reasoning_tokens, usage.reasoning_tokens);
+        self.usage.reasoning_replay_tokens = add_optional_usage(
+            self.usage.reasoning_replay_tokens,
+            usage.reasoning_replay_tokens,
+        );
     }
 }
 
@@ -193,5 +197,35 @@ impl TurnToolCall {
     pub fn set_error(&mut self, error: String, duration: Duration) {
         self.error = Some(error);
         self.duration = Some(duration);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_usage_accumulates_reasoning_and_replay_tokens() {
+        let mut turn = TurnContext::new(4);
+
+        turn.add_usage(&Usage {
+            input_tokens: 100,
+            output_tokens: 20,
+            reasoning_tokens: Some(12),
+            reasoning_replay_tokens: Some(30),
+            ..Usage::default()
+        });
+        turn.add_usage(&Usage {
+            input_tokens: 120,
+            output_tokens: 10,
+            reasoning_tokens: Some(4),
+            reasoning_replay_tokens: Some(25),
+            ..Usage::default()
+        });
+
+        assert_eq!(turn.usage.input_tokens, 220);
+        assert_eq!(turn.usage.output_tokens, 30);
+        assert_eq!(turn.usage.reasoning_tokens, Some(16));
+        assert_eq!(turn.usage.reasoning_replay_tokens, Some(55));
     }
 }

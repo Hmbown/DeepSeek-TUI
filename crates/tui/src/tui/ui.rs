@@ -277,8 +277,10 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                 app.session.total_tokens =
                     u32::try_from(saved.metadata.total_tokens).unwrap_or(u32::MAX);
                 app.session.total_conversation_tokens = app.session.total_tokens;
+                app.session.total_reasoning_tokens = 0;
                 app.session.last_prompt_tokens = None;
                 app.session.last_completion_tokens = None;
+                app.session.last_reasoning_tokens = None;
                 app.session.last_prompt_cache_hit_tokens = None;
                 app.session.last_prompt_cache_miss_tokens = None;
                 app.session.last_reasoning_replay_tokens = None;
@@ -931,9 +933,14 @@ async fn run_event_loop(
                             .saturating_add(turn_tokens);
                         app.session.last_prompt_tokens = Some(usage.input_tokens);
                         app.session.last_completion_tokens = Some(usage.output_tokens);
+                        app.session.last_reasoning_tokens = usage.reasoning_tokens;
                         app.session.last_prompt_cache_hit_tokens = usage.prompt_cache_hit_tokens;
                         app.session.last_prompt_cache_miss_tokens = usage.prompt_cache_miss_tokens;
                         app.session.last_reasoning_replay_tokens = usage.reasoning_replay_tokens;
+                        app.session.total_reasoning_tokens = app
+                            .session
+                            .total_reasoning_tokens
+                            .saturating_add(u64::from(usage.reasoning_output_tokens()));
                         app.push_turn_cache_record(crate::tui::app::TurnCacheRecord {
                             input_tokens: usage.input_tokens,
                             output_tokens: usage.output_tokens,
@@ -3496,6 +3503,7 @@ async fn dispatch_user_message(
     }
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
+    app.session.last_reasoning_tokens = None;
     app.session.last_prompt_cache_hit_tokens = None;
     app.session.last_prompt_cache_miss_tokens = None;
     app.session.last_reasoning_replay_tokens = None;
@@ -3784,6 +3792,7 @@ async fn apply_model_picker_choice(
         app.update_model_compaction_budget();
         app.session.last_prompt_tokens = None;
         app.session.last_completion_tokens = None;
+        app.session.last_reasoning_tokens = None;
         app.session.last_prompt_cache_hit_tokens = None;
         app.session.last_prompt_cache_miss_tokens = None;
         app.session.last_reasoning_replay_tokens = None;
@@ -3909,6 +3918,10 @@ async fn switch_provider(
     app.update_model_compaction_budget();
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
+    app.session.last_reasoning_tokens = None;
+    app.session.last_prompt_cache_hit_tokens = None;
+    app.session.last_prompt_cache_miss_tokens = None;
+    app.session.last_reasoning_replay_tokens = None;
 
     let _ = engine_handle.send(Op::Shutdown).await;
     let engine_config = build_engine_config(app, config);
@@ -4464,6 +4477,10 @@ async fn apply_command_result(
                         app.update_model_compaction_budget();
                         app.session.last_prompt_tokens = None;
                         app.session.last_completion_tokens = None;
+                        app.session.last_reasoning_tokens = None;
+                        app.session.last_prompt_cache_hit_tokens = None;
+                        app.session.last_prompt_cache_miss_tokens = None;
+                        app.session.last_reasoning_replay_tokens = None;
                         // Rebuild the engine with the new config so API key/model/base URL take effect.
                         let _ = engine_handle.send(Op::Shutdown).await;
                         let engine_config = build_engine_config(app, config);
@@ -5769,10 +5786,13 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) {
     app.workspace.clone_from(&session.metadata.workspace);
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
+    app.session.total_reasoning_tokens = 0;
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
+    app.session.last_reasoning_tokens = None;
     app.session.last_prompt_cache_hit_tokens = None;
     app.session.last_prompt_cache_miss_tokens = None;
+    app.session.last_reasoning_replay_tokens = None;
     app.current_session_id = Some(session.metadata.id.clone());
     app.workspace_context = None;
     app.workspace_context_refreshed_at = None;

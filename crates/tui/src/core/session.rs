@@ -90,6 +90,8 @@ pub struct Session {
 pub struct SessionUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub reasoning_replay_tokens: u64,
     #[allow(dead_code)]
     pub cache_creation_input_tokens: u64,
     #[allow(dead_code)]
@@ -101,6 +103,8 @@ impl SessionUsage {
     pub fn add(&mut self, usage: &Usage) {
         self.input_tokens += u64::from(usage.input_tokens);
         self.output_tokens += u64::from(usage.output_tokens);
+        self.reasoning_tokens += u64::from(usage.reasoning_output_tokens());
+        self.reasoning_replay_tokens += u64::from(usage.reasoning_replay_tokens.unwrap_or(0));
         if let Some(tokens) = usage.prompt_cache_miss_tokens {
             self.cache_creation_input_tokens += u64::from(tokens);
         }

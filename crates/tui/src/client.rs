@@ -1811,6 +1811,7 @@ mod tests {
 
         assert_eq!(usage.input_tokens, 100);
         assert_eq!(usage.output_tokens, 20);
+        assert_eq!(usage.visible_output_tokens(), 8);
         assert_eq!(usage.prompt_cache_hit_tokens, Some(70));
         assert_eq!(usage.prompt_cache_miss_tokens, Some(30));
         assert_eq!(usage.reasoning_tokens, Some(12));
@@ -1828,6 +1829,7 @@ mod tests {
 
         assert_eq!(usage.input_tokens, 100);
         assert_eq!(usage.output_tokens, 12);
+        assert_eq!(usage.visible_output_tokens(), 0);
         assert_eq!(usage.reasoning_tokens, Some(12));
         assert!(
             crate::pricing::calculate_turn_cost_from_usage("deepseek-v4-pro", &usage)

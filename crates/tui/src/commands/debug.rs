@@ -18,6 +18,31 @@ fn token_count(value: Option<u32>, locale: Locale) -> String {
     )
 }
 
+fn reasoning_summary(app: &App, locale: Locale) -> String {
+    match (
+        app.session.last_completion_tokens,
+        app.session.last_reasoning_tokens,
+        app.session.last_reasoning_replay_tokens,
+    ) {
+        (output, Some(reasoning), Some(replay)) => {
+            let visible = output.unwrap_or(0).saturating_sub(reasoning);
+            tr(locale, MessageId::CmdTokensReasoningFull)
+                .replace("{visible}", &visible.to_string())
+                .replace("{reasoning}", &reasoning.to_string())
+                .replace("{replay}", &replay.to_string())
+        }
+        (output, Some(reasoning), None) => {
+            let visible = output.unwrap_or(0).saturating_sub(reasoning);
+            tr(locale, MessageId::CmdTokensReasoningOutputOnly)
+                .replace("{visible}", &visible.to_string())
+                .replace("{reasoning}", &reasoning.to_string())
+        }
+        (_, None, Some(replay)) => tr(locale, MessageId::CmdTokensReasoningReplayOnly)
+            .replace("{replay}", &replay.to_string()),
+        (_, None, None) => tr(locale, MessageId::CmdTokensNotReported).to_string(),
+    }
+}
+
 fn active_context_summary(app: &App, locale: Locale) -> String {
     let estimated =
         estimate_input_tokens_conservative(&app.api_messages, app.system_prompt.as_ref());
@@ -69,6 +94,7 @@ pub fn tokens(app: &mut App) -> CommandResult {
             "{output}",
             &token_count(app.session.last_completion_tokens, locale),
         )
+        .replace("{reasoning}", &reasoning_summary(app, locale))
         .replace("{cache}", &cache_summary(app, locale))
         .replace("{total}", &app.session.total_tokens.to_string())
         .replace(
@@ -83,10 +109,21 @@ pub fn tokens(app: &mut App) -> CommandResult {
 
 /// Show session cost breakdown
 pub fn cost(app: &mut App) -> CommandResult {
-    let report = tr(app.ui_locale, MessageId::CmdCostReport).replace(
-        "{cost}",
-        &app.format_cost_amount_precise(app.session_cost_for_currency(app.cost_currency)),
-    );
+    let locale = app.ui_locale;
+    let main_cost =
+        app.format_cost_amount_precise(app.session_cost_for_currency(app.cost_currency));
+    let background_cost =
+        app.format_cost_amount_precise(app.subagent_cost_for_currency(app.cost_currency));
+    let total_cost =
+        app.format_cost_amount_precise(app.displayed_session_cost_for_currency(app.cost_currency));
+    let report = tr(locale, MessageId::CmdCostReport)
+        .replace("{cost}", &total_cost)
+        .replace("{main_cost}", &main_cost)
+        .replace("{background_cost}", &background_cost)
+        .replace(
+            "{reasoning_tokens}",
+            &app.session.total_reasoning_tokens.to_string(),
+        );
     CommandResult::message(report)
 }
 
@@ -309,6 +346,8 @@ mod tests {
         app.session.session_cost = 0.05;
         app.session.last_prompt_tokens = Some(100);
         app.session.last_completion_tokens = Some(25);
+        app.session.last_reasoning_tokens = Some(10);
+        app.session.last_reasoning_replay_tokens = Some(6);
         app.session.last_prompt_cache_hit_tokens = Some(70);
         app.session.last_prompt_cache_miss_tokens = Some(30);
         app.api_messages.push(Message {
@@ -329,6 +368,8 @@ mod tests {
         assert!(msg.contains("Active context:"));
         assert!(msg.contains("Last API input:"));
         assert!(msg.contains("Last API output:"));
+        assert!(msg.contains("V4 reasoning ledger:"));
+        assert!(msg.contains("15 answer output / 10 thinking output / 6 replay input"));
         assert!(msg.contains("Cache hit/miss:"));
         assert!(msg.contains("70 hit / 30 miss"));
         assert!(msg.contains("Cumulative tokens:"));
@@ -342,13 +383,20 @@ mod tests {
     fn test_cost_shows_spending_info() {
         let mut app = create_test_app();
         app.session.session_cost = 0.1234;
+        app.session.subagent_cost = 0.0201;
+        app.session.total_reasoning_tokens = 42;
+        app.refresh_displayed_cost_high_water();
         let result = cost(&mut app);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(msg.contains("Session Cost"));
         assert!(msg.contains("Approx total spent:"));
+        assert!(msg.contains("Main turns:"));
+        assert!(msg.contains("Background/agents:"));
+        assert!(msg.contains("V4 reasoning output:"));
+        assert!(msg.contains("42 tokens"));
         assert!(msg.contains("approximate"));
-        assert!(msg.contains("$0.1234"));
+        assert!(msg.contains("$0.1435"));
     }
 
     #[test]

@@ -97,8 +97,13 @@ pub fn load(app: &mut App, path: Option<&str>) -> CommandResult {
     app.workspace.clone_from(&session.metadata.workspace);
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
+    app.session.total_reasoning_tokens = 0;
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
+    app.session.last_reasoning_tokens = None;
+    app.session.last_prompt_cache_hit_tokens = None;
+    app.session.last_prompt_cache_miss_tokens = None;
+    app.session.last_reasoning_replay_tokens = None;
     app.current_session_id = Some(session.metadata.id.clone());
     if let Some(sp) = session.system_prompt {
         app.system_prompt = Some(crate::models::SystemPrompt::Text(sp));
