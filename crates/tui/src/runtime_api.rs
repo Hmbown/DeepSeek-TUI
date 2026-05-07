@@ -11,8 +11,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_stream::stream;
-use axum::extract::{Path, Query, State};
-use axum::http::{HeaderValue, Method, StatusCode};
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{HeaderValue, Method, StatusCode, header};
+use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -52,6 +53,7 @@ pub struct RuntimeApiState {
     sessions_dir: PathBuf,
     mcp_config_path: PathBuf,
     automations: SharedAutomationManager,
+    runtime_token: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +67,9 @@ pub struct RuntimeApiOptions {
     /// `DEEPSEEK_CORS_ORIGINS` (comma-separated), and `[runtime_api]
     /// cors_origins` in `config.toml`. Whalescale#255 / #561.
     pub cors_origins: Vec<String>,
+    /// Optional bearer token required for `/v1/*` routes. If omitted here,
+    /// `run_http_server` also checks `DEEPSEEK_RUNTIME_TOKEN`.
+    pub auth_token: Option<String>,
 }
 
 impl Default for RuntimeApiOptions {
@@ -74,6 +79,7 @@ impl Default for RuntimeApiOptions {
             port: 7878,
             workers: 2,
             cors_origins: Vec::new(),
+            auth_token: None,
         }
     }
 }
@@ -301,6 +307,12 @@ pub async fn run_http_server(
             .map(|h| h.join(".deepseek").join("sessions"))
             .unwrap_or_else(|| PathBuf::from(".deepseek").join("sessions"))
     });
+    let runtime_token = options
+        .auth_token
+        .clone()
+        .or_else(|| std::env::var("DEEPSEEK_RUNTIME_TOKEN").ok())
+        .filter(|token| !token.trim().is_empty());
+    let auth_enabled = runtime_token.is_some();
     let state = RuntimeApiState {
         config: config.clone(),
         workspace,
@@ -310,6 +322,7 @@ pub async fn run_http_server(
         sessions_dir,
         mcp_config_path: config.mcp_config_path(),
         automations,
+        runtime_token,
     };
     let app = build_router(state);
 
@@ -322,6 +335,9 @@ pub async fn run_http_server(
 
     println!("Runtime API listening on http://{addr}");
     println!("Security: this server is local-first. Do not expose it to untrusted networks.");
+    if auth_enabled {
+        println!("Runtime API auth: bearer token required for /v1/* routes.");
+    }
     let serve_result = axum::serve(listener, app)
         .await
         .map_err(|e| anyhow!("Runtime API server error: {e}"));
@@ -331,8 +347,7 @@ pub async fn run_http_server(
 }
 
 pub fn build_router(state: RuntimeApiState) -> Router {
-    Router::new()
-        .route("/health", get(health))
+    let api_routes = Router::new()
         .route("/v1/sessions", get(list_sessions))
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route(
@@ -378,8 +393,62 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/automations/{id}/resume", post(resume_automation))
         .route("/v1/automations/{id}/runs", get(list_automation_runs))
         .route("/v1/usage", get(get_usage))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_runtime_token,
+        ));
+
+    Router::new()
+        .route("/health", get(health))
+        .merge(api_routes)
         .layer(cors_layer(&state.cors_origins))
         .with_state(state)
+}
+
+async fn require_runtime_token(
+    State(state): State<RuntimeApiState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let Some(expected) = state.runtime_token.as_deref() else {
+        return next.run(req).await;
+    };
+    let authorized = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|raw| raw.strip_prefix("Bearer "))
+        .is_some_and(|token| token == expected)
+        || req
+            .headers()
+            .get("x-deepseek-runtime-token")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|token| token == expected)
+        || token_from_query(req.uri().query()).is_some_and(|token| token == expected);
+
+    if authorized {
+        next.run(req).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": {
+                    "message": "runtime API bearer token required",
+                    "status": StatusCode::UNAUTHORIZED.as_u16(),
+                }
+            })),
+        )
+            .into_response()
+    }
+}
+
+fn token_from_query(query: Option<&str>) -> Option<&str> {
+    query.and_then(|query| {
+        query.split('&').find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key == "token").then_some(value)
+        })
+    })
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -1642,6 +1711,20 @@ mod tests {
             tokio::task::JoinHandle<()>,
         )>,
     > {
+        spawn_test_server_with_root_and_token(root, sessions_dir, None).await
+    }
+
+    async fn spawn_test_server_with_root_and_token(
+        root: PathBuf,
+        sessions_dir: PathBuf,
+        runtime_token: Option<String>,
+    ) -> Result<
+        Option<(
+            SocketAddr,
+            SharedRuntimeThreadManager,
+            tokio::task::JoinHandle<()>,
+        )>,
+    > {
         fs::create_dir_all(&sessions_dir)?;
         let manager = TaskManager::start_with_executor(
             TaskManagerConfig {
@@ -1695,6 +1778,7 @@ mod tests {
             sessions_dir,
             mcp_config_path: root.join("mcp.json"),
             automations,
+            runtime_token,
         };
         let app = build_router(state);
         let listener = match TcpListener::bind("127.0.0.1:0").await {
@@ -1853,6 +1937,50 @@ mod tests {
             .error_for_status()?
             .json()
             .await?;
+
+        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_token_guard_protects_v1_routes() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("deepseek-runtime-api-{}", Uuid::new_v4()));
+        let sessions_dir = root.join("sessions");
+        let token = "local-test-token".to_string();
+        let Some((addr, _runtime_threads, handle)) =
+            spawn_test_server_with_root_and_token(root, sessions_dir, Some(token.clone())).await?
+        else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+
+        let health = client
+            .get(format!("http://{addr}/health"))
+            .send()
+            .await?
+            .error_for_status()?;
+        assert_eq!(health.status(), StatusCode::OK);
+
+        let unauthorized = client
+            .get(format!("http://{addr}/v1/threads/summary"))
+            .send()
+            .await?;
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let bearer = client
+            .get(format!("http://{addr}/v1/threads/summary"))
+            .bearer_auth(&token)
+            .send()
+            .await?
+            .error_for_status()?;
+        assert_eq!(bearer.status(), StatusCode::OK);
+
+        let query_token = client
+            .get(format!("http://{addr}/v1/threads/summary?token={token}"))
+            .send()
+            .await?
+            .error_for_status()?;
+        assert_eq!(query_token.status(), StatusCode::OK);
 
         handle.abort();
         Ok(())

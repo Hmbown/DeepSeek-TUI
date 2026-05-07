@@ -109,11 +109,11 @@ Current boundary note (v0.8.6):
 #### DeepSeek API Endpoints
 
 DeepSeek exposes OpenAI-compatible endpoints. The CLI uses:
-- `https://api.deepseek.com/v1/chat/completions` - normal and streaming model turns
-- `https://api.deepseek.com/v1/models` - live model discovery and health checks
+- `https://api.deepseek.com/beta/chat/completions` - default v0.8.16 DeepSeek model turns
+- `https://api.deepseek.com/beta/models` - default v0.8.16 live model discovery and health checks
 
 `https://api.deepseek.com/v1` is accepted for OpenAI SDK compatibility, and
-`https://api.deepseek.com/beta` can be configured for beta-only features such as
+can still be configured explicitly to opt out of beta-only features such as
 strict tool mode, chat prefix completion, and FIM completion. The public
 DeepSeek docs do not document a Responses API path for this workflow; the engine
 drives turns through Chat Completions.

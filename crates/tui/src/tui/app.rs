@@ -1149,11 +1149,7 @@ impl App {
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
         let max_input_history = settings.max_input_history;
         let use_paste_burst_detection = settings.paste_burst_detection;
-        let ui_theme = if crate::deepseek_theme::active_theme().variant == crate::deepseek_theme::Variant::Light {
-    crate::palette::UI_THEME_LIGHT
-} else {
-    palette::UI_THEME
-};
+        let ui_theme = palette::UiTheme::detect();
         let model = settings.default_model.clone().unwrap_or(model);
         let auto_model = model.trim().eq_ignore_ascii_case("auto");
         let threshold_model = if auto_model {
@@ -3707,7 +3703,7 @@ impl App {
         set_active_theme(new_theme);
         // Update ui_theme to match the new theme variant
         self.ui_theme = if new_theme.variant == Variant::Light {
-            crate::palette::UI_THEME_LIGHT
+            crate::palette::LIGHT_UI_THEME
         } else {
             crate::palette::UI_THEME
         };

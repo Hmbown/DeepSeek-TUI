@@ -538,6 +538,14 @@ fn build_chat_messages_with_reasoning(
                 pending_tool_calls.clear();
             }
             out.push(msg);
+        } else if role == "system" {
+            let content = text_parts.join("\n");
+            if !content.trim().is_empty() {
+                out.push(json!({
+                    "role": "system",
+                    "content": content,
+                }));
+            }
         } else if role == "user" {
             let content = text_parts.join("\n");
             if !content.trim().is_empty() {
@@ -1600,5 +1608,22 @@ mod stream_decoder_tests {
             })
             .expect("tool-use block present");
         assert_eq!(id, "call_xyz");
+    }
+
+    #[test]
+    fn request_builder_preserves_internal_system_messages() {
+        let messages = vec![Message {
+            role: "system".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "internal runtime event".to_string(),
+                cache_control: None,
+            }],
+        }];
+
+        let built = build_chat_messages(None, &messages, "deepseek-v4-flash");
+
+        assert_eq!(built.len(), 1);
+        assert_eq!(built[0]["role"], "system");
+        assert_eq!(built[0]["content"], "internal runtime event");
     }
 }

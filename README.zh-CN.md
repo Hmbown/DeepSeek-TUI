@@ -128,11 +128,8 @@ deepseek --version
 
 ### Windows (Scoop)
 
-[Scoop](https://scoop.sh) 是一个 Windows 软件包管理器。安装好 Scoop 后，运行：
-
-```bash
-scoop install deepseek-tui
-```
+Scoop manifest 还没有正式发布。现在请先使用 npm、Cargo，或者从
+[GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases) 下载 Windows 预编译二进制。
 
 
 <details id="install-from-source">
@@ -172,6 +169,10 @@ SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model d
 
 # 自托管 vLLM
 VLLM_BASE_URL="http://localhost:8000/v1" deepseek --provider vllm --model deepseek-v4-flash
+
+# 自托管 Ollama
+ollama pull deepseek-coder:1.3b
+deepseek --provider ollama --model deepseek-coder:1.3b
 ```
 
 ---
@@ -213,6 +214,7 @@ deepseek pr <N>                                # 获取 PR 并预填审查提示
 deepseek mcp list                              # 列出已配置 MCP 服务器
 deepseek mcp validate                          # 校验 MCP 配置和连接
 deepseek mcp-server                            # 启动 dispatcher MCP stdio 服务器
+deepseek update                                # 检查并应用二进制更新
 ```
 
 ### 常用快捷键
@@ -255,12 +257,14 @@ deepseek mcp-server                            # 启动 dispatcher MCP stdio 服
 | `DEEPSEEK_API_KEY` | DeepSeek API key |
 | `DEEPSEEK_BASE_URL` | API base URL |
 | `DEEPSEEK_MODEL` | 默认模型 |
-| `DEEPSEEK_PROVIDER` | `deepseek`（默认）、`nvidia-nim`、`fireworks`、`sglang`、`vllm` |
+| `DEEPSEEK_PROVIDER` | `deepseek`（默认）、`nvidia-nim`、`fireworks`、`sglang`、`vllm`、`ollama` |
 | `DEEPSEEK_PROFILE` | 配置 profile 名称 |
 | `DEEPSEEK_MEMORY` | 设为 `on` 启用用户记忆 |
-| `NVIDIA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` | 提供商认证 |
+| `NVIDIA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | 提供商认证 |
 | `SGLANG_BASE_URL` | 自托管 SGLang 端点 |
 | `VLLM_BASE_URL` | 自托管 vLLM 端点 |
+| `OLLAMA_BASE_URL` | 自托管 Ollama 端点 |
+| `OLLAMA_MODEL` | 自托管 Ollama 模型标签 |
 | `NO_ANIMATIONS=1` | 启动时强制无障碍模式 |
 | `SSL_CERT_FILE` | 企业代理的自定义 CA 包 |
 
@@ -367,13 +371,27 @@ description: 当 DeepSeek 需要遵循我的自定义工作流时使用这个技
 - **[toi500](https://github.com/toi500)** — Windows 粘贴修复报告
 - **[xsstomy](https://github.com/xsstomy)** — 终端启动重绘报告
 - **[melody0709](https://github.com/melody0709)** — 斜杠前缀回车激活报告
-- **[lloydzhou](https://github.com/lloydzhou)** 和 **[jeoor](https://github.com/jeoor)** — 压缩成本报告
+- **[lloydzhou](https://github.com/lloydzhou)** 和 **[jeoor](https://github.com/jeoor)** — 压缩成本报告；lloydzhou 还贡献了确定性的环境上下文注入 (#813, #922)
 - **[Agent-Skill-007](https://github.com/Agent-Skill-007)** — README 清晰化改进 (#685)
-- **[woyxiang](https://github.com/woyxiang)** — Windows Scoop 安装文档 (#696)
+- **[woyxiang](https://github.com/woyxiang)** — Windows 安装文档 (#696)
 - **[wangfeng](mailto:wangfengcsu@qq.com)** — 价格/折扣信息更新 (#692)
 - **[zichen0116](https://github.com/zichen0116)** — CODE_OF_CONDUCT.md (#686)
 - **[dfwqdyl-ui](https://github.com/dfwqdyl-ui)** — 模型 ID 大小写兼容性报告 (#729)
-- **[Oliver-ZPLiu](https://github.com/Oliver-ZPLiu)** — `working...` 卡死状态 Bug 报告，含详细复现步骤和修复建议 (#738)
+- **[Oliver-ZPLiu](https://github.com/Oliver-ZPLiu)** — `working...` 卡死状态 Bug 报告和 Windows 剪贴板兜底修复 (#738, #850)
+- **[reidliu41](https://github.com/reidliu41)** — 退出后的恢复提示、工作区信任持久化，以及 Ollama provider 支持 (#863, #870, #921)
+- **[xieshutao](https://github.com/xieshutao)** — 纯 Markdown skill 兜底解析 (#869)
+- **[GK012](https://github.com/GK012)** — npm wrapper 的 `--version` 兜底 (#885)
+- **[y0sif](https://github.com/y0sif)** — 直接子智能体完成后唤醒父级 turn loop (#901)
+- **[mac119](https://github.com/mac119)** 和 **[leo119](https://github.com/leo119)** — `deepseek update` 命令文档 (#838, #917)
+- **[dumbjack](https://github.com/dumbjack)** / **浩淼的mac** — shell 命令空字节安全加固 (#706, #918)
+- **macworkers** — fork 完成后显示新 session id (#600, #919)
+- **zero** 和 **[zerx-lab](https://github.com/zerx-lab)** — 通知条件配置和更完整的 OSC 9 通知正文 (#820, #920)
+- **[chnjames](https://github.com/chnjames)** — @mention 补全缓存和配置恢复优化 (#849, #927)
+- **[angziii](https://github.com/angziii)** — 配置安全、异步清理、Docker 加固和命令安全修复 (#822, #824, #827, #831, #833, #835, #837)
+- **[elowen53](https://github.com/elowen53)** — UTF-8 解码和确定性测试覆盖 (#825, #840)
+- **[wdw8276](https://github.com/wdw8276)** — 用于自定义 session 标题的 `/rename` 命令 (#836)
+- **[banqii](https://github.com/banqii)** — `.cursor/skills` 发现路径支持 (#817)
+- **[junskyeed](https://github.com/junskyeed)** — API 请求动态 `max_tokens` 计算 (#826)
 - **Hafeez Pizofreude** — `fetch_url` 的 SSRF 保护和 Star History 图表
 - **Unic (YuniqueUnic)** — 基于 schema 的配置 UI（TUI + web）
 - **Jason** — SSRF 安全加固

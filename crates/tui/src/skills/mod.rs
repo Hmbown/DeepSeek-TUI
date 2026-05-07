@@ -42,6 +42,16 @@ pub fn agents_global_skills_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|p| p.join(".agents").join("skills"))
 }
 
+/// Global Claude-compatible skills directory (`~/.claude/skills`). The
+/// SKILL.md frontmatter convention is shared across the broader Claude
+/// ecosystem, so picking up the global path lets users inherit skills
+/// they already installed for other Claude-compatible tools without
+/// re-authoring them in DeepSeek's native layout (#902).
+#[must_use]
+pub fn claude_global_skills_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|p| p.join(".claude").join("skills"))
+}
+
 // === Types ===
 
 /// Parsed representation of a SKILL.md definition.
@@ -334,7 +344,8 @@ pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
 /// 4. `<workspace>/.claude/skills` — Claude Code interop.
 /// 5. `<workspace>/.cursor/skills` — Cursor interop.
 /// 6. [`agents_global_skills_dir`] — agentskills.io global.
-/// 7. [`default_skills_dir`] — DeepSeek global, user-installed.
+/// 7. [`claude_global_skills_dir`] — Claude-ecosystem global (#902).
+/// 8. [`default_skills_dir`] — DeepSeek global, user-installed.
 ///
 /// Only directories that exist on disk are returned — callers don't
 /// need to filter further. Returns an empty vec when nothing is
@@ -350,6 +361,9 @@ pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
     ];
     if let Some(global_agents) = agents_global_skills_dir() {
         candidates.push(global_agents);
+    }
+    if let Some(global_claude) = claude_global_skills_dir() {
+        candidates.push(global_claude);
     }
     candidates.push(default_skills_dir());
     existing_skill_dirs(candidates)
@@ -740,6 +754,38 @@ mod tests {
             Some(&cursor),
             "cursor must come after claude"
         );
+    }
+
+    #[test]
+    fn claude_global_skills_dir_returns_home_relative_path() {
+        // Smoke test for the #902 helper. We don't assert the exact path
+        // because dirs::home_dir() is host-dependent; we just pin the
+        // suffix shape so a future refactor can't silently rename it.
+        let path = super::claude_global_skills_dir().expect("home dir resolves on test host");
+        assert!(path.ends_with(".claude/skills") || path.ends_with(r".claude\skills"));
+    }
+
+    #[test]
+    fn existing_skill_dirs_orders_globals_agents_then_claude_then_deepseek() {
+        // Pins the precedence among the three global skill roots (#902).
+        // Workspace candidates are tested separately above; here we only
+        // exercise the global ordering at the existing_skill_dirs level
+        // so the assertion is host-independent.
+        let tmpdir = TempDir::new().unwrap();
+        let agents_global = tmpdir.path().join(".agents").join("skills");
+        let claude_global = tmpdir.path().join(".claude").join("skills");
+        let deepseek_global = tmpdir.path().join(".deepseek").join("skills");
+        std::fs::create_dir_all(&agents_global).unwrap();
+        std::fs::create_dir_all(&claude_global).unwrap();
+        std::fs::create_dir_all(&deepseek_global).unwrap();
+
+        let dirs = super::existing_skill_dirs(vec![
+            agents_global.clone(),
+            claude_global.clone(),
+            deepseek_global.clone(),
+        ]);
+
+        assert_eq!(dirs, vec![agents_global, claude_global, deepseek_global]);
     }
 
     #[test]

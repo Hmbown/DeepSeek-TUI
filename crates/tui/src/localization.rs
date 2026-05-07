@@ -216,6 +216,7 @@ pub enum MessageId {
     HelpFooterClose,
     CmdAgentDescription,
     CmdAttachDescription,
+    CmdAnchorDescription,
     CmdCacheDescription,
     CmdClearDescription,
     CmdCompactDescription,
@@ -407,6 +408,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::HelpFooterJump,
     MessageId::HelpFooterClose,
     MessageId::CmdAgentDescription,
+    MessageId::CmdAnchorDescription,
     MessageId::CmdAttachDescription,
     MessageId::CmdCacheDescription,
     MessageId::CmdClearDescription,
@@ -718,6 +720,9 @@ fn english(id: MessageId) -> &'static str {
         MessageId::HelpFooterJump => " PgUp/PgDn jump ",
         MessageId::HelpFooterClose => " Esc close ",
         MessageId::CmdAgentDescription => "Switch to agent mode",
+        MessageId::CmdAnchorDescription => {
+            "Pin a fact that survives compaction (auto-injected into context)"
+        }
         MessageId::CmdAttachDescription => {
             "Attach image/video media; use @path for text files or directories"
         }
@@ -760,7 +765,7 @@ fn english(id: MessageId) -> &'static str {
             "Switch to plan mode and review suggested implementation steps"
         }
         MessageId::CmdProviderDescription => {
-            "Switch or view the active LLM backend (deepseek | nvidia-nim)"
+            "Switch or view the active LLM backend (deepseek | nvidia-nim | ollama)"
         }
         MessageId::CmdQueueDescription => "View or edit queued messages",
         MessageId::CmdRecallDescription => "Search prior cycle archives (BM25 over message text)",
@@ -1000,6 +1005,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::HelpFooterJump => " PgUp/PgDn ジャンプ ",
         MessageId::HelpFooterClose => " Esc 閉じる ",
         MessageId::CmdAgentDescription => "Agent モードに切り替え",
+        MessageId::CmdAnchorDescription => {
+            "コンパクション後も保持される重要な事実をピン留め（コンテキストに自動注入）"
+        }
         MessageId::CmdAttachDescription => {
             "画像・動画メディアを添付（テキストファイルやディレクトリは @path）"
         }
@@ -1042,7 +1050,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdNoteDescription => "永続ノートファイル（.deepseek/notes.md）に追記",
         MessageId::CmdPlanDescription => "Plan モードに切り替え、推奨される実装手順を確認",
         MessageId::CmdProviderDescription => {
-            "現在の LLM バックエンドを切り替え・確認（deepseek | nvidia-nim）"
+            "現在の LLM バックエンドを切り替え・確認（deepseek | nvidia-nim | ollama）"
         }
         MessageId::CmdQueueDescription => "キューされたメッセージを確認・編集",
         MessageId::CmdRecallDescription => {
@@ -1274,6 +1282,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::HelpFooterJump => " PgUp/PgDn 跳转 ",
         MessageId::HelpFooterClose => " Esc 关闭 ",
         MessageId::CmdAgentDescription => "切换到 Agent 模式",
+        MessageId::CmdAnchorDescription => "钉选关键事实，在压缩后自动注入上下文",
         MessageId::CmdAttachDescription => "附加图片或视频媒体；文本文件或目录请使用 @path",
         MessageId::CmdCacheDescription => "显示最近 N 轮的 DeepSeek 前缀缓存命中/未命中统计",
         MessageId::CmdClearDescription => "清除对话历史",
@@ -1307,7 +1316,9 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdNetworkDescription => "管理网络允许和拒绝规则",
         MessageId::CmdNoteDescription => "将笔记追加到持久笔记文件（.deepseek/notes.md）",
         MessageId::CmdPlanDescription => "切换到 Plan 模式并查看建议的实现步骤",
-        MessageId::CmdProviderDescription => "切换或查看当前 LLM 后端（deepseek | nvidia-nim）",
+        MessageId::CmdProviderDescription => {
+            "切换或查看当前 LLM 后端（deepseek | nvidia-nim | ollama）"
+        }
         MessageId::CmdQueueDescription => "查看或编辑已排队的消息",
         MessageId::CmdRecallDescription => "搜索此前的循环归档（基于消息文本的 BM25 检索）",
         MessageId::CmdRenameDescription => "重命名当前会话",
@@ -1516,6 +1527,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::HelpFooterJump => " PgUp/PgDn salta ",
         MessageId::HelpFooterClose => " Esc fecha ",
         MessageId::CmdAgentDescription => "Mudar para o modo agent",
+        MessageId::CmdAnchorDescription => {
+            "Fixar um fato que sobrevive à compactação (injetado automaticamente no contexto)"
+        }
         MessageId::CmdAttachDescription => {
             "Anexar imagem ou vídeo; use @path para arquivos de texto ou diretórios"
         }
@@ -1568,7 +1582,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
             "Mudar para o modo plan e revisar os passos de implementação sugeridos"
         }
         MessageId::CmdProviderDescription => {
-            "Trocar ou exibir o backend LLM ativo (deepseek | nvidia-nim)"
+            "Trocar ou exibir o backend LLM ativo (deepseek | nvidia-nim | ollama)"
         }
         MessageId::CmdQueueDescription => "Ver ou editar mensagens enfileiradas",
         MessageId::CmdRecallDescription => {

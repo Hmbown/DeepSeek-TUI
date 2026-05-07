@@ -47,8 +47,8 @@ use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult};
 use crate::tools::subagent::{
-    Mailbox, SharedSubAgentManager, SubAgentRuntime, SubAgentType, new_shared_subagent_manager,
-    resolve_subagent_assignment_route,
+    Mailbox, SharedSubAgentManager, SubAgentCompletion, SubAgentRuntime, SubAgentType,
+    new_shared_subagent_manager, resolve_subagent_assignment_route,
 };
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tools::user_input::{UserInputRequest, UserInputResponse};
@@ -143,6 +143,11 @@ pub struct EngineConfig {
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
     pub goal_objective: Option<String>,
+    /// Resolved BCP-47 locale tag (e.g. `"en"`, `"zh-Hans"`, `"ja"`)
+    /// for the `## Environment` block in the system prompt. The
+    /// caller resolves this from `Settings` once at engine
+    /// construction; the engine never touches disk for it.
+    pub locale_tag: String,
     /// When true, force `tool_choice: "required"` so the model always calls
     /// a tool on every turn step (V4 strict tool-following mode).
     pub strict_tool_mode: bool,
@@ -179,6 +184,7 @@ impl Default for EngineConfig {
             memory_path: PathBuf::from("./memory.md"),
             strict_tool_mode: false,
             goal_objective: None,
+            locale_tag: "en".to_string(),
             workshop: None,
         }
     }
@@ -304,6 +310,14 @@ pub struct Engine {
     rx_user_input: mpsc::Receiver<UserInputDecision>,
     rx_steer: mpsc::Receiver<String>,
     tx_event: mpsc::Sender<Event>,
+    /// Wakeup channel for the parent turn loop when a direct child sub-agent
+    /// terminates (issue #756). Cloned into `SubAgentRuntime` so the runtime
+    /// can fan completion events back into the engine.
+    tx_subagent_completion: mpsc::UnboundedSender<SubAgentCompletion>,
+    /// Receiver paired with `tx_subagent_completion`. Drained at the
+    /// turn-loop's empty-tool_uses branch to surface `<deepseek:subagent.done>`
+    /// sentinels into the parent's transcript before deciding to end the turn.
+    pub(super) rx_subagent_completion: mpsc::UnboundedReceiver<SubAgentCompletion>,
     cancel_token: CancellationToken,
     shared_cancel_token: Arc<StdMutex<CancellationToken>>,
     tool_exec_lock: Arc<RwLock<()>>,
@@ -361,6 +375,7 @@ impl Engine {
             ApiProvider::Fireworks => "FIREWORKS_API_KEY",
             ApiProvider::Sglang => "SGLANG_API_KEY",
             ApiProvider::Vllm => "VLLM_API_KEY",
+            ApiProvider::Ollama => "OLLAMA_API_KEY",
         };
 
         Some(format!(
@@ -390,6 +405,7 @@ impl Engine {
         let (tx_approval, rx_approval) = mpsc::channel(64);
         let (tx_user_input, rx_user_input) = mpsc::channel(32);
         let (tx_steer, rx_steer) = mpsc::channel(64);
+        let (tx_subagent_completion, rx_subagent_completion) = mpsc::unbounded_channel();
         let cancel_token = CancellationToken::new();
         let shared_cancel_token = Arc::new(StdMutex::new(cancel_token.clone()));
         let tool_exec_lock = Arc::new(RwLock::new(()));
@@ -424,6 +440,7 @@ impl Engine {
                 prompts::PromptSessionContext {
                     user_memory_block: user_memory_block.as_deref(),
                     goal_objective: config.goal_objective.as_deref(),
+                    locale_tag: &config.locale_tag,
                 },
                 session.approval_mode,
             );
@@ -519,6 +536,8 @@ impl Engine {
             rx_user_input,
             rx_steer,
             tx_event,
+            tx_subagent_completion,
+            rx_subagent_completion,
             cancel_token: cancel_token.clone(),
             shared_cancel_token: shared_cancel_token.clone(),
             tool_exec_lock,
@@ -976,7 +995,8 @@ impl Engine {
                             self.session.reasoning_effort.clone(),
                             self.session.reasoning_effort_auto,
                         )
-                        .with_max_spawn_depth(self.config.max_spawn_depth);
+                        .with_max_spawn_depth(self.config.max_spawn_depth)
+                        .with_parent_completion_tx(self.tx_subagent_completion.clone());
                         if let Some((mailbox, cancel_token)) = mailbox_for_runtime.as_ref() {
                             rt = rt
                                 .with_mailbox(mailbox.clone())
@@ -1813,6 +1833,7 @@ impl Engine {
             prompts::PromptSessionContext {
                 user_memory_block: user_memory_block.as_deref(),
                 goal_objective: self.config.goal_objective.as_deref(),
+                locale_tag: &self.config.locale_tag,
             },
             self.session.approval_mode,
         );

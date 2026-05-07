@@ -153,11 +153,8 @@ Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.c
 
 ### Windows (Scoop)
 
-[Scoop](https://scoop.sh) is a Windows package manager. Once installed, run:
-
-```bash
-scoop install deepseek-tui
-```
+A Scoop manifest has not been published yet. For now, use npm, Cargo, or the
+prebuilt Windows binaries from [GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases).
 
 
 <details id="install-from-source">
@@ -197,22 +194,36 @@ SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model d
 
 # Self-hosted vLLM
 VLLM_BASE_URL="http://localhost:8000/v1" deepseek --provider vllm --model deepseek-v4-flash
+
+# Self-hosted Ollama
+ollama pull deepseek-coder:1.3b
+deepseek --provider ollama --model deepseek-coder:1.3b
 ```
 
 ---
 
-## What's New In v0.8.15
+## What's New In v0.8.16
 
-A community-driven stabilization release focused on auth recovery, Windows
-terminals, Zed/ACP compatibility, setup friction, and clearer cost display.
+A focused hotfix for RLM, sub-agent visibility, and terminal ownership on top
+of v0.8.15.
 [Full changelog](CHANGELOG.md).
 
-- **Friendlier auth recovery** — runtime API-key failures now explain when the active key came only from `DEEPSEEK_API_KEY` and no saved config key is present
-- **Zed / ACP adapter** — `deepseek serve --acp` exposes a local stdio Agent Client Protocol server for Zed and other compatible editors
-- **Windows terminal fixes** — UTF-8 console setup, dispatcher resume handling, clipboard fallback, Ctrl+E composer behavior, and safer Windows mouse defaults
-- **Yuan cost display** — set `cost_currency = "cny"` (or `yuan` / `rmb`) to show footer, `/cost`, `/tokens`, and notification summaries in CNY
-- **Setup and skill polish** — workspace trust persists globally, plain Markdown `SKILL.md` files load correctly, global Agents/Cursor skill paths are discovered, and the TUI shows skills in slash autocomplete
-- **Reliability fixes** — workspace-scoped `resume --last`, capped API `max_tokens`, endpoint diagnostics in `deepseek doctor`, npm `--version` fallback, and current-date turn metadata
+- **RLM no longer has the old 180s wall-clock timeout** — long-input REPL work
+  can keep running while it is still making progress.
+- **RLM reports what happened** — output now includes input size, iteration
+  count, elapsed time, sub-LLM RPC count, and termination state.
+- **RLM chunking is safer for exact answers** — prompts require deterministic
+  Python for counts/aggregation and coverage reporting for whole-input chunks.
+- **Sub-agent visibility is more truthful** — `/subagents`, the transcript, and
+  the right rail include live progress and fanout workers instead of showing
+  false `No agents` or `No active tasks` states.
+- **Sub-agent cards are quieter** — internal scheduler lines are hidden while
+  useful tool activity remains visible.
+- **Sub-agent completion events stay internal** — the parent agent integrates
+  child results without explaining raw sentinel XML back to the user.
+- **Terminal ownership is hardened** — background sub-agents cannot take over
+  the parent terminal, and the TUI restores alternate-screen mode after
+  delegated work drains.
 
 ---
 
@@ -240,6 +251,7 @@ deepseek pr <N>                                  # fetch PR and pre-seed review 
 deepseek mcp list                                # list configured MCP servers
 deepseek mcp validate                            # validate MCP config/connectivity
 deepseek mcp-server                              # run dispatcher MCP stdio server
+deepseek update                                  # check for and apply binary updates
 ```
 
 ### Zed / ACP
@@ -303,13 +315,16 @@ Key environment variables:
 |---|---|
 | `DEEPSEEK_API_KEY` | API key |
 | `DEEPSEEK_BASE_URL` | API base URL |
+| `DEEPSEEK_HTTP_HEADERS` | Optional custom model request headers, e.g. `X-Model-Provider-Id=your-model-provider` |
 | `DEEPSEEK_MODEL` | Default model |
-| `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `fireworks`, `sglang`, `vllm` |
+| `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `fireworks`, `sglang`, `vllm`, `ollama` |
 | `DEEPSEEK_PROFILE` | Config profile name |
 | `DEEPSEEK_MEMORY` | Set to `on` to enable user memory |
-| `NVIDIA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` | Provider auth |
+| `NVIDIA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
 | `SGLANG_BASE_URL` | Self-hosted SGLang endpoint |
 | `VLLM_BASE_URL` | Self-hosted vLLM endpoint |
+| `OLLAMA_BASE_URL` | Self-hosted Ollama endpoint |
+| `OLLAMA_MODEL` | Self-hosted Ollama model tag |
 | `NO_ANIMATIONS=1` | Force accessibility mode at startup |
 | `SSL_CERT_FILE` | Custom CA bundle for corporate proxies |
 
@@ -324,7 +339,9 @@ UI locale is separate from model language — set `locale` in `settings.toml`, u
 | `deepseek-v4-pro` | 1M | $0.003625 / 1M* | $0.435 / 1M* | $0.87 / 1M* |
 | `deepseek-v4-flash` | 1M | $0.0028 / 1M | $0.14 / 1M | $0.28 / 1M |
 
-Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash`. NVIDIA NIM variants use your NVIDIA account terms.
+DeepSeek Platform defaults to `https://api.deepseek.com/beta` in v0.8.16 so beta-gated API features can be tested without extra setup. Set `base_url = "https://api.deepseek.com"` to opt out.
+
+Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash` and retire after July 24, 2026. NVIDIA NIM variants use your NVIDIA account terms.
 
 *DeepSeek Pro rates currently reflect a limited-time 75% discount, which remains valid until 15:59 UTC on 31 May 2026. After that time, the TUI cost estimator will revert to the base Pro rates.*
 
@@ -335,7 +352,7 @@ Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash`.
 
 ## Publishing Your Own Skill
 
-DeepSeek TUI discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills`) and global directories (`~/.agents/skills` → `~/.deepseek/skills`). Each skill is a directory with a `SKILL.md` file:
+DeepSeek TUI discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills`) and global directories (`~/.agents/skills` → `~/.claude/skills` → `~/.deepseek/skills`). Each skill is a directory with a `SKILL.md` file:
 
 ```text
 ~/.agents/skills/my-skill/
@@ -393,16 +410,27 @@ This project ships with help from a growing community of contributors:
 - **[toi500](https://github.com/toi500)** — Windows paste fix report
 - **[xsstomy](https://github.com/xsstomy)** — Terminal startup repaint report
 - **[melody0709](https://github.com/melody0709)** — Slash-prefix Enter activation report
-- **[lloydzhou](https://github.com/lloydzhou)** and **[jeoor](https://github.com/jeoor)** — Compaction cost reports
+- **[lloydzhou](https://github.com/lloydzhou)** and **[jeoor](https://github.com/jeoor)** — Compaction cost reports; lloydzhou also contributed deterministic environment context (#813, #922)
 - **[Agent-Skill-007](https://github.com/Agent-Skill-007)** — README clarity pass (#685)
-- **[woyxiang](https://github.com/woyxiang)** — Windows Scoop install docs (#696)
+- **[woyxiang](https://github.com/woyxiang)** — Windows install documentation (#696)
 - **[wangfeng](mailto:wangfengcsu@qq.com)** — Pricing/discount info update (#692)
 - **[zichen0116](https://github.com/zichen0116)** — CODE_OF_CONDUCT.md (#686)
 - **[dfwqdyl-ui](https://github.com/dfwqdyl-ui)** — model ID case-sensitivity compatibility report (#729)
 - **[Oliver-ZPLiu](https://github.com/Oliver-ZPLiu)** — stale `working...` state bug report and Windows clipboard fallback (#738, #850)
-- **[reidliu41](https://github.com/reidliu41)** — resume hint and workspace trust persistence fixes (#863, #870)
+- **[reidliu41](https://github.com/reidliu41)** — resume hint, workspace trust persistence, and Ollama provider support (#863, #870, #921)
 - **[xieshutao](https://github.com/xieshutao)** — plain Markdown skill fallback (#869)
 - **[GK012](https://github.com/GK012)** — npm wrapper `--version` fallback (#885)
+- **[y0sif](https://github.com/y0sif)** — parent turn-loop wakeup after direct child sub-agent completion (#901)
+- **[mac119](https://github.com/mac119)** and **[leo119](https://github.com/leo119)** — `deepseek update` command documentation (#838, #917)
+- **[dumbjack](https://github.com/dumbjack)** / **浩淼的mac** — command-safety null-byte hardening (#706, #918)
+- **macworkers** — fork confirmation with the new session id (#600, #919)
+- **zero** and **[zerx-lab](https://github.com/zerx-lab)** — notification condition config and richer OSC 9 notification body (#820, #920)
+- **[chnjames](https://github.com/chnjames)** — cached @mention completions and config recovery polish (#849, #927)
+- **[angziii](https://github.com/angziii)** — config safety, async cleanup, Docker hardening, and command-safety fixes (#822, #824, #827, #831, #833, #835, #837)
+- **[elowen53](https://github.com/elowen53)** — UTF-8 decoding and deterministic test coverage (#825, #840)
+- **[wdw8276](https://github.com/wdw8276)** — `/rename` command for custom session titles (#836)
+- **[banqii](https://github.com/banqii)** — `.cursor/skills` discovery path support (#817)
+- **[junskyeed](https://github.com/junskyeed)** — dynamic `max_tokens` calculation for API requests (#826)
 - **Hafeez Pizofreude** — SSRF protection in `fetch_url` and Star History chart
 - **Unic (YuniqueUnic)** — Schema-driven config UI (TUI + web)
 - **Jason** — SSRF security hardening
