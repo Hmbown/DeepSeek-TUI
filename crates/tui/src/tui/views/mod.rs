@@ -1414,18 +1414,18 @@ pub(crate) fn subagent_view_agents(
 
     for cell in &app.history {
         match cell {
-            HistoryCell::SubAgent(SubAgentCell::Delegate(card)) => {
-                if seen.insert(card.agent_id.clone()) {
-                    let agent_type =
-                        SubAgentType::from_str(&card.agent_type).unwrap_or(SubAgentType::General);
-                    agents.push(live_subagent_result(
-                        &card.agent_id,
-                        agent_type,
-                        lifecycle_to_subagent_status(card.status),
-                        card.summary.as_deref().unwrap_or(card.agent_type.as_str()),
-                        Some("transcript"),
-                    ));
-                }
+            HistoryCell::SubAgent(SubAgentCell::Delegate(card))
+                if seen.insert(card.agent_id.clone()) =>
+            {
+                let agent_type =
+                    SubAgentType::from_str(&card.agent_type).unwrap_or(SubAgentType::General);
+                agents.push(live_subagent_result(
+                    &card.agent_id,
+                    agent_type,
+                    lifecycle_to_subagent_status(card.status),
+                    card.summary.as_deref().unwrap_or(card.agent_type.as_str()),
+                    Some("transcript"),
+                ));
             }
             HistoryCell::SubAgent(SubAgentCell::Fanout(card)) => {
                 for worker in &card.workers {
