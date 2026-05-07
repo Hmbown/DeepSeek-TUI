@@ -1065,6 +1065,7 @@ impl Engine {
             Some(&self.session.workspace),
             Some(&compaction_pins),
             Some(&compaction_paths),
+            &self.session.invoked_skills,
         )
         .await
         {
@@ -1275,6 +1276,7 @@ impl Engine {
             Some(&self.session.workspace),
             None,
             None,
+            &self.session.invoked_skills,
         )
         .await
         {
@@ -1742,6 +1744,8 @@ impl Engine {
         // Drop any compaction summary — that path is incompatible with the
         // fresh-context model and would Frankenstein-merge with the briefing.
         self.session.compaction_summary_prompt = None;
+        // Skill records are cycle-scoped: a fresh cycle = fresh skill catalogue.
+        self.session.invoked_skills.clear();
         self.refresh_system_prompt(mode);
         self.emit_session_updated().await;
 

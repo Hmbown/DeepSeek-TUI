@@ -1,6 +1,7 @@
 //! Session state management for the core engine.
 //!
-//! Tracks conversation history, token usage, and session metadata.
+//! Tracks conversation history, token usage, session metadata, and invoked
+//! skill records for compaction durability.
 
 use crate::cycle_manager::CycleBriefing;
 use crate::models::{Message, SystemPrompt, Usage};
@@ -8,7 +9,22 @@ use crate::project_context::{ProjectContext, load_project_context_with_parents};
 use crate::tui::approval::ApprovalMode;
 use crate::working_set::WorkingSet;
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// Record of a skill invoked during the current cycle.
+///
+/// Persisted so that compaction can re-inject skill content into the
+/// post-compact message stream instead of losing it inside summarized
+/// tool results.  Repeated invocations of the same skill overwrite the
+/// entry (keyed by `skill_name`) so only the latest body + timestamp
+/// survive — the Map is the dedup mechanism.
+#[derive(Debug, Clone)]
+pub struct InvokedSkillRecord {
+    pub skill_name: String,
+    pub content: String,
+    pub invoked_at: DateTime<Utc>,
+}
 
 /// Session state for the engine.
 #[derive(Debug, Clone)]
@@ -82,6 +98,11 @@ pub struct Session {
     /// Briefings produced at past cycle boundaries, in chronological order.
     /// Bounded growth: one entry per cycle, briefing capped at ~3,000 tokens.
     pub cycle_briefings: Vec<CycleBriefing>,
+
+    /// Skills invoked in the current cycle (keyed by skill name so repeat
+    /// calls overwrite — the Map itself is the dedup mechanism). Compacted
+    /// into synthetic messages so skill content survives summarization.
+    pub invoked_skills: HashMap<String, InvokedSkillRecord>,
 }
 
 /// Cumulative usage statistics for a session.
@@ -148,6 +169,7 @@ impl Session {
             },
             last_system_prompt_hash: None,
             working_set: WorkingSet::default(),
+            invoked_skills: HashMap::new(),
             cycle_count: 0,
             current_cycle_started: Utc::now(),
             cycle_briefings: Vec::new(),
@@ -163,5 +185,104 @@ impl Session {
     pub fn rebuild_working_set(&mut self) {
         self.working_set
             .rebuild_from_messages(&self.messages, &self.workspace);
+    }
+
+    /// Record a skill invocation so compaction can re-inject its content.
+    /// Repeat calls with the same `skill_name` overwrite the previous
+    /// record — the `HashMap` key is the dedup mechanism.
+    pub fn record_skill_invocation(&mut self, skill_name: String, content: String) {
+        self.invoked_skills.insert(
+            skill_name.clone(),
+            InvokedSkillRecord {
+                skill_name,
+                content,
+                invoked_at: Utc::now(),
+            },
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_session() -> Session {
+        Session::new(
+            "deepseek-v4-pro".to_string(),
+            std::path::PathBuf::from("."),
+            true,
+            false,
+            std::path::PathBuf::from("notes.txt"),
+            std::path::PathBuf::from("mcp.json"),
+        )
+    }
+
+    #[test]
+    fn record_skill_invocation_stores_entry() {
+        let mut session = test_session();
+        assert!(session.invoked_skills.is_empty());
+
+        session.record_skill_invocation(
+            "security-review".to_string(),
+            "# Security Review\n\nCheck for vulnerabilities.".to_string(),
+        );
+
+        assert_eq!(session.invoked_skills.len(), 1);
+        let record = session.invoked_skills.get("security-review").unwrap();
+        assert_eq!(record.skill_name, "security-review");
+        assert!(record.content.contains("Security Review"));
+        assert!(record.content.contains("vulnerabilities"));
+    }
+
+    #[test]
+    fn repeat_skill_invocation_overwrites_and_deduplicates() {
+        let mut session = test_session();
+
+        session.record_skill_invocation(
+            "review-pr".to_string(),
+            "v1: simple review".to_string(),
+        );
+
+        let first_invoked_at = session
+            .invoked_skills
+            .get("review-pr")
+            .unwrap()
+            .invoked_at;
+
+        // Small sleep to ensure timestamp differs.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        session.record_skill_invocation(
+            "review-pr".to_string(),
+            "v2: detailed review with checklists".to_string(),
+        );
+
+        // Still only one entry — dedup by name.
+        assert_eq!(session.invoked_skills.len(), 1);
+        let record = session.invoked_skills.get("review-pr").unwrap();
+        assert!(record.content.contains("v2"));
+        assert!(!record.content.contains("v1"));
+        // Timestamp must have advanced.
+        assert!(record.invoked_at > first_invoked_at);
+    }
+
+    #[test]
+    fn multiple_different_skills_accumulate() {
+        let mut session = test_session();
+
+        session.record_skill_invocation("a".to_string(), "body a".to_string());
+        session.record_skill_invocation("b".to_string(), "body b".to_string());
+        session.record_skill_invocation("c".to_string(), "body c".to_string());
+
+        assert_eq!(session.invoked_skills.len(), 3);
+        assert!(session.invoked_skills.contains_key("a"));
+        assert!(session.invoked_skills.contains_key("b"));
+        assert!(session.invoked_skills.contains_key("c"));
+    }
+
+    #[test]
+    fn invoked_skills_is_initially_empty() {
+        let session = test_session();
+        assert!(session.invoked_skills.is_empty());
     }
 }

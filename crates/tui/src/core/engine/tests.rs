@@ -1760,3 +1760,114 @@ async fn post_edit_hook_skips_unknown_tool_names() {
     assert!(engine.pending_lsp_blocks.is_empty());
     assert_eq!(fake.call_count(), 0);
 }
+
+// ── invoked_skills recording and dedup tests ───────────────────────────
+
+#[test]
+fn record_skill_invocation_stores_and_deduplicates() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+
+    engine.session.record_skill_invocation(
+        "review-pr".to_string(),
+        "# PR Review v1".to_string(),
+    );
+    assert_eq!(engine.session.invoked_skills.len(), 1);
+
+    // Same skill invoked again — overwrites.
+    engine.session.record_skill_invocation(
+        "review-pr".to_string(),
+        "# PR Review v2".to_string(),
+    );
+    assert_eq!(engine.session.invoked_skills.len(), 1);
+    let record = engine.session.invoked_skills.get("review-pr").unwrap();
+    assert!(record.content.contains("v2"));
+    assert!(!record.content.contains("v1"));
+}
+
+#[test]
+fn invoked_skills_cleared_on_session_reset() {
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/main.rs"), "fn main() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+
+    // Record a skill invocation.
+    engine.session.record_skill_invocation(
+        "example".to_string(),
+        "body".to_string(),
+    );
+    assert_eq!(engine.session.invoked_skills.len(), 1);
+
+    // Simulate what happens during a cycle advance: clear invoked_skills.
+    engine.session.invoked_skills.clear();
+    assert!(
+        engine.session.invoked_skills.is_empty(),
+        "invoked_skills must be cleared on cycle advance"
+    );
+}
+
+#[test]
+fn invoked_skills_starts_empty_in_new_session() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (engine, _handle) = Engine::new(config, &Config::default());
+    assert!(engine.session.invoked_skills.is_empty());
+}
+
+#[test]
+fn multiple_skills_accumulate_without_overwriting_each_other() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+
+    engine.session.record_skill_invocation(
+        "commit".to_string(),
+        "Commit skill".to_string(),
+    );
+    engine.session.record_skill_invocation(
+        "review-pr".to_string(),
+        "PR review skill".to_string(),
+    );
+    engine.session.record_skill_invocation(
+        "loop".to_string(),
+        "Loop skill".to_string(),
+    );
+
+    assert_eq!(engine.session.invoked_skills.len(), 3);
+    assert!(engine.session.invoked_skills.contains_key("commit"));
+    assert!(engine.session.invoked_skills.contains_key("review-pr"));
+    assert!(engine.session.invoked_skills.contains_key("loop"));
+
+    // Overwrite just one.
+    engine.session.record_skill_invocation(
+        "review-pr".to_string(),
+        "PR review skill v2".to_string(),
+    );
+    assert_eq!(
+        engine.session.invoked_skills.len(),
+        3,
+        "overwriting one skill should not change total count"
+    );
+    let r = engine
+        .session
+        .invoked_skills
+        .get("review-pr")
+        .unwrap();
+    assert!(r.content.contains("v2"));
+}

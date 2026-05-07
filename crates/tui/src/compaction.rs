@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use crate::client::DeepSeekClient;
 use crate::config::DEFAULT_TEXT_MODEL;
+use crate::core::session::InvokedSkillRecord;
 use crate::llm_client::LlmClient;
 use crate::logging;
 use crate::models::{
@@ -841,6 +842,48 @@ pub struct CompactionResult {
     pub retries_used: u32,
 }
 
+/// Build a single synthetic user message from invoked-skill records so
+/// skill content survives compaction.  All skills are bundled into one
+/// message (matching Claude Code's post-compact layout), most-recent-first,
+/// separated by `---`.  Returns the number of skills included (0 if none).
+fn inject_invoked_skills(
+    messages: &mut Vec<Message>,
+    invoked_skills: &HashMap<String, InvokedSkillRecord>,
+) -> usize {
+    if invoked_skills.is_empty() {
+        return 0;
+    }
+
+    let mut skills: Vec<&InvokedSkillRecord> = invoked_skills.values().collect();
+    skills.sort_by_key(|s| std::cmp::Reverse(s.invoked_at));
+
+    let mut body = String::from(
+        "The following skills were invoked in this session. Continue to follow these guidelines:\n",
+    );
+
+    for (i, info) in skills.iter().enumerate() {
+        if i > 0 {
+            body.push_str("\n---\n\n");
+        } else {
+            body.push('\n');
+        }
+        let _ = write!(
+            body,
+            "### Skill: {}\n\n{}",
+            info.skill_name, info.content
+        );
+    }
+
+    messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: body,
+            cache_control: None,
+        }],
+    });
+    skills.len()
+}
+
 /// Check if an error is transient and worth retrying. Categories that map to
 /// transient retry: Network, RateLimit, Timeout. Anything else (auth, parse,
 /// invalid request, etc.) is permanent and propagates.
@@ -871,6 +914,7 @@ pub async fn compact_messages_safe(
     workspace: Option<&Path>,
     external_pins: Option<&[usize]>,
     external_working_set_paths: Option<&[String]>,
+    invoked_skills: &HashMap<String, InvokedSkillRecord>,
 ) -> Result<CompactionResult> {
     const MAX_RETRIES: u32 = 3;
     const BASE_DELAY_MS: u64 = 1000;
@@ -896,8 +940,10 @@ pub async fn compact_messages_safe(
             external_working_set_paths,
         );
         if was_over_threshold && now_under_threshold {
+            let mut final_messages = pruned_messages;
+            inject_invoked_skills(&mut final_messages, invoked_skills);
             return Ok(CompactionResult {
-                messages: pruned_messages,
+                messages: final_messages,
                 summary_prompt: None,
                 removed_messages: Vec::new(),
                 retries_used: 0,
@@ -924,6 +970,7 @@ pub async fn compact_messages_safe(
             workspace,
             external_pins,
             external_working_set_paths,
+            invoked_skills,
         )
         .await
         {
@@ -956,9 +1003,12 @@ pub async fn compact_messages(
     workspace: Option<&Path>,
     external_pins: Option<&[usize]>,
     external_working_set_paths: Option<&[String]>,
+    invoked_skills: &HashMap<String, InvokedSkillRecord>,
 ) -> Result<(Vec<Message>, Option<SystemPrompt>, Vec<Message>)> {
     if messages.is_empty() {
-        return Ok((Vec::new(), None, Vec::new()));
+        let mut empty_skills = Vec::new();
+        inject_invoked_skills(&mut empty_skills, invoked_skills);
+        return Ok((empty_skills, None, Vec::new()));
     }
 
     let plan = plan_compaction(
@@ -969,7 +1019,9 @@ pub async fn compact_messages(
         external_working_set_paths,
     );
     if plan.summarize_indices.is_empty() {
-        return Ok((messages.to_vec(), None, Vec::new()));
+        let mut kept = messages.to_vec();
+        inject_invoked_skills(&mut kept, invoked_skills);
+        return Ok((kept, None, Vec::new()));
     }
 
     let to_summarize: Vec<Message> = plan
@@ -1010,14 +1062,21 @@ pub async fn compact_messages(
         },
     };
 
-    let pinned_messages = messages
+    // Build pinned message list first, then prepend invoked-skill synthetic
+    // messages so the model sees them immediately after the compaction
+    // boundary, before pinned history.
+    let pinned_messages: Vec<Message> = messages
         .iter()
         .enumerate()
         .filter_map(|(idx, msg)| plan.pinned_indices.contains(&idx).then_some(msg.clone()))
         .collect();
 
+    let mut skill_messages = Vec::new();
+    inject_invoked_skills(&mut skill_messages, invoked_skills);
+    skill_messages.extend(pinned_messages);
+
     Ok((
-        pinned_messages,
+        skill_messages,
         Some(SystemPrompt::Blocks(vec![summary_block])),
         to_summarize,
     ))
@@ -2536,5 +2595,192 @@ mod tests {
             None,
         );
         assert!(plan.pinned_indices.contains(&0)); // src/main.rs mention
+    }
+
+    // ── inject_invoked_skills tests ──────────────────────────────────────
+
+    fn make_skill_record(
+        name: &str,
+        content: &str,
+        age_ms: u64,
+    ) -> InvokedSkillRecord {
+        InvokedSkillRecord {
+            skill_name: name.to_string(),
+            content: content.to_string(),
+            invoked_at: chrono::Utc::now()
+                - chrono::Duration::milliseconds(age_ms as i64),
+        }
+    }
+
+    #[test]
+    fn inject_returns_zero_for_empty_map() {
+        let skills = HashMap::new();
+        let mut messages = Vec::new();
+        let added = inject_invoked_skills(&mut messages, &skills);
+        assert_eq!(added, 0);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn inject_single_skill_produces_one_message_with_markdown_header() {
+        let mut skills = HashMap::new();
+        skills.insert(
+            "review-pr".to_string(),
+            make_skill_record("review-pr", "# PR Review\n\nSteps:\n1. Read diff\n2. Comment", 0),
+        );
+
+        let mut messages = Vec::new();
+        let added = inject_invoked_skills(&mut messages, &skills);
+        assert_eq!(added, 1);
+        // Single message for all skills.
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "user");
+        let text = match &messages[0].content[0] {
+            ContentBlock::Text { text, .. } => text,
+            other => panic!("expected Text block, got {other:?}"),
+        };
+        assert!(text.starts_with("The following skills were invoked"), "{text}");
+        assert!(text.contains("### Skill: review-pr"), "{text}");
+        assert!(text.contains("Steps:"), "{text}");
+        assert!(text.contains("Read diff"), "{text}");
+    }
+
+    #[test]
+    fn inject_sorts_most_recent_first_within_single_message() {
+        let mut skills = HashMap::new();
+        skills.insert(
+            "old".to_string(),
+            make_skill_record("old", "older content", 10_000),
+        );
+        skills.insert(
+            "fresh".to_string(),
+            make_skill_record("fresh", "fresher content", 0),
+        );
+
+        let mut messages = Vec::new();
+        inject_invoked_skills(&mut messages, &skills);
+
+        // One message containing both skills.
+        assert_eq!(messages.len(), 1);
+        let text = match &messages[0].content[0] {
+            ContentBlock::Text { text, .. } => text,
+            other => panic!("{other:?}"),
+        };
+        let fresh_pos = text.find("### Skill: fresh").unwrap();
+        let old_pos = text.find("### Skill: old").unwrap();
+        assert!(
+            fresh_pos < old_pos,
+            "fresh must appear before old (most-recent-first)"
+        );
+    }
+
+    #[test]
+    fn inject_uses_separator_between_skills() {
+        let mut skills = HashMap::new();
+        skills.insert(
+            "a".to_string(),
+            make_skill_record("a", "body a", 2_000),
+        );
+        skills.insert(
+            "b".to_string(),
+            make_skill_record("b", "body b", 1_000),
+        );
+        skills.insert(
+            "c".to_string(),
+            make_skill_record("c", "body c", 0),
+        );
+
+        let mut messages = Vec::new();
+        inject_invoked_skills(&mut messages, &skills);
+
+        assert_eq!(messages.len(), 1);
+        let text = match &messages[0].content[0] {
+            ContentBlock::Text { text, .. } => text,
+            other => panic!("{other:?}"),
+        };
+        // Exactly 2 separators for 3 skills.
+        assert_eq!(text.matches("\n---\n").count(), 2, "3 skills → 2 separators");
+    }
+
+    #[test]
+    fn inject_preserves_full_skill_content_no_truncation() {
+        let mut skills = HashMap::new();
+        let large = "x".repeat(30_000);
+        skills.insert("big-skill".to_string(), make_skill_record("big-skill", &large, 0));
+
+        let mut messages = Vec::new();
+        let added = inject_invoked_skills(&mut messages, &skills);
+        assert_eq!(added, 1);
+        assert_eq!(messages.len(), 1);
+
+        let text = match &messages[0].content[0] {
+            ContentBlock::Text { text, .. } => text,
+            other => panic!("{other:?}"),
+        };
+        assert!(text.contains(&large), "full body must be preserved");
+        assert!(text.contains("### Skill: big-skill"), "{text}");
+    }
+
+    #[test]
+    fn inject_all_skills_in_one_message_with_correct_count() {
+        let mut skills = HashMap::new();
+        for i in 0..30 {
+            skills.insert(
+                format!("skill-{i}"),
+                make_skill_record(&format!("skill-{i}"), &format!("body of skill {i}"), (30 - i) as u64 * 1_000),
+            );
+        }
+
+        let mut messages = Vec::new();
+        let added = inject_invoked_skills(&mut messages, &skills);
+        assert_eq!(added, 30);
+        // All 30 skills in a single message.
+        assert_eq!(messages.len(), 1);
+        let text = match &messages[0].content[0] {
+            ContentBlock::Text { text, .. } => text,
+            other => panic!("{other:?}"),
+        };
+        // 30 skills → 29 separators.
+        assert_eq!(text.matches("\n---\n").count(), 29);
+
+        // Most-recent-first: skill-29 (age 0) before skill-0 (age 29_000).
+        let pos_29 = text.find("### Skill: skill-29").unwrap();
+        let pos_0 = text.find("### Skill: skill-0").unwrap();
+        assert!(pos_29 < pos_0, "skill-29 (freshest) must be first");
+    }
+
+    #[test]
+    fn inject_appends_after_existing_messages() {
+        let mut skills = HashMap::new();
+        skills.insert(
+            "solo".to_string(),
+            make_skill_record("solo", "skill body", 0),
+        );
+
+        let mut messages = vec![Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "existing message".to_string(),
+                cache_control: None,
+            }],
+        }];
+
+        let added = inject_invoked_skills(&mut messages, &skills);
+        assert_eq!(added, 1);
+        // Skill message appended.
+        assert_eq!(messages.len(), 2);
+        assert_eq!(
+            match &messages[0].content[0] {
+                ContentBlock::Text { text, .. } => text.as_str(),
+                other => panic!("{other:?}"),
+            },
+            "existing message"
+        );
+        let skill_text = match &messages[1].content[0] {
+            ContentBlock::Text { text, .. } => text,
+            other => panic!("{other:?}"),
+        };
+        assert!(skill_text.contains("### Skill: solo"), "{skill_text}");
+        assert!(skill_text.starts_with("The following skills were invoked"), "{skill_text}");
     }
 }

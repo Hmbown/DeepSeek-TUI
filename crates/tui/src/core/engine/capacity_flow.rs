@@ -413,6 +413,7 @@ impl Engine {
                 Some(&self.session.workspace),
                 Some(&compaction_pins),
                 Some(&compaction_paths),
+                &self.session.invoked_skills,
             )
             .await
             {

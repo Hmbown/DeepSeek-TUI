@@ -117,6 +117,7 @@ impl Engine {
                     Some(&self.session.workspace),
                     Some(&compaction_pins),
                     Some(&compaction_paths),
+                    &self.session.invoked_skills,
                 )
                 .await
                 {
@@ -1577,6 +1578,22 @@ impl Engine {
                         if output.success {
                             self.run_post_edit_lsp_hook(&outcome.name, &tool_input)
                                 .await;
+                        }
+
+                        // Record skill invocations so compaction can re-inject
+                        // the body content after summarization. Uses tool_input
+                        // (cloned before `outcome.input` was moved) and
+                        // output_content (the raw full body — deliberately NOT
+                        // output_for_context which may have been truncated).
+                        if outcome.name == "load_skill" && output.success {
+                            if let Some(skill_name) =
+                                tool_input.get("name").and_then(|v| v.as_str())
+                            {
+                                self.session.record_skill_invocation(
+                                    skill_name.to_string(),
+                                    output_content.clone(),
+                                );
+                            }
                         }
 
                         self.add_session_message(Message {
