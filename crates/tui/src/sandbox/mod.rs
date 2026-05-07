@@ -10,7 +10,9 @@
 //!
 //! - **macOS**: Uses Seatbelt (sandbox-exec) for mandatory access control
 //! - **Linux**: Uses Landlock (kernel 5.13+) for filesystem access control
-//! - **Windows**: Windows Sandbox/AppContainer/Restricted token (best-effort)
+//! - **Windows**: No OS sandbox is advertised yet. The planned first helper
+//!   contract is process-tree containment only via a Windows Job Object; it
+//!   must not claim filesystem, network, registry, or AppContainer isolation.
 //!
 //! # Usage
 //!
@@ -170,7 +172,10 @@ pub enum SandboxType {
     #[cfg(target_os = "linux")]
     LinuxLandlock,
 
-    /// Windows sandboxing (Windows Sandbox/AppContainer/Restricted token).
+    /// Windows process-containment helper.
+    ///
+    /// Not advertised until a helper enforces Job Object cleanup. This does
+    /// not imply filesystem, network, registry, or AppContainer isolation.
     #[cfg(target_os = "windows")]
     Windows,
 }
@@ -418,10 +423,12 @@ impl SandboxManager {
         }
     }
 
-    /// Prepare a Windows-sandboxed execution environment.
+    /// Prepare a Windows helper execution environment.
     ///
-    /// Note: Windows sandboxing requires a helper process for full isolation.
-    /// This implementation marks intent and defers enforcement to a helper.
+    /// Windows support is currently not advertised by `get_platform_sandbox`.
+    /// This branch only exists for forced tests and future helper wiring.
+    /// The first supported helper contract is process-tree containment only;
+    /// it must not be presented as filesystem or network isolation.
     #[cfg(target_os = "windows")]
     fn prepare_windows(spec: &CommandSpec) -> ExecEnv {
         let mut command = vec![spec.program.clone()];
