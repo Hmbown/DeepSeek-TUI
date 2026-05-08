@@ -39,6 +39,26 @@ pub enum ApprovalRequirement {
     Required,
 }
 
+/// A corrected error that bundles a human-readable suggestion alongside the
+/// error message. Returned to the model so it can self-correct rather than
+/// retrying the same failing call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorrectedError {
+    /// The original error message.
+    pub error: String,
+    /// A human-readable suggestion for how to correct the issue.
+    pub suggestion: String,
+}
+
+impl CorrectedError {
+    pub fn new(error: impl Into<String>, suggestion: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            suggestion: suggestion.into(),
+        }
+    }
+}
+
 /// Errors that can occur during tool execution.
 #[derive(Debug, Clone)]
 pub enum ToolError {
@@ -48,7 +68,7 @@ pub enum ToolError {
     ExecutionFailed { message: String },
     Timeout { seconds: u64 },
     NotAvailable { message: String },
-    PermissionDenied { message: String },
+    PermissionDenied { message: String, suggestion: Option<String> },
 }
 
 impl std::fmt::Display for ToolError {
@@ -82,8 +102,18 @@ impl std::fmt::Display for ToolError {
             Self::NotAvailable { message } => {
                 write!(f, "Failed to locate tool: {message}")
             }
-            Self::PermissionDenied { message } => {
-                write!(f, "Failed to authorize tool execution: {message}")
+            Self::PermissionDenied {
+                message,
+                suggestion,
+            } => {
+                if let Some(suggestion) = suggestion {
+                    write!(
+                        f,
+                        "Failed to authorize tool execution: {message}. Suggestion: {suggestion}"
+                    )
+                } else {
+                    write!(f, "Failed to authorize tool execution: {message}")
+                }
             }
         }
     }
@@ -129,6 +159,18 @@ impl ToolError {
     pub fn permission_denied(msg: impl Into<String>) -> Self {
         Self::PermissionDenied {
             message: msg.into(),
+            suggestion: None,
+        }
+    }
+
+    #[must_use]
+    pub fn permission_denied_with_suggestion(
+        msg: impl Into<String>,
+        suggestion: impl Into<String>,
+    ) -> Self {
+        Self::PermissionDenied {
+            message: msg.into(),
+            suggestion: Some(suggestion.into()),
         }
     }
 }

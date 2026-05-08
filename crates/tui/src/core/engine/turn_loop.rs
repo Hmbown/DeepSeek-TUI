@@ -1094,10 +1094,13 @@ impl Engine {
                 }
 
                 if !caller_allowed_for_tool(tool_caller.as_ref(), tool_def) {
-                    blocked_error = Some(ToolError::permission_denied(format!(
-                        "Tool '{tool_name}' does not allow caller '{}'",
-                        caller_type_for_tool_use(tool_caller.as_ref())
-                    )));
+                    blocked_error = Some(ToolError::permission_denied_with_suggestion(
+                        format!(
+                            "Tool '{tool_name}' does not allow caller '{}'",
+                            caller_type_for_tool_use(tool_caller.as_ref())
+                        ),
+                        "Try asking the user first",
+                    ));
                 }
 
                 if blocked_error.is_none()
@@ -1488,9 +1491,10 @@ impl Engine {
                                     "caller": caller_type_for_tool_use(tool_caller.as_ref()),
                                 }));
                                 (
-                                    Some(Err(ToolError::permission_denied(format!(
-                                        "Tool '{tool_name}' denied by user"
-                                    )))),
+                                    Some(Err(ToolError::permission_denied_with_suggestion(
+                                        format!("Tool '{tool_name}' denied by user"),
+                                        "Try asking the user first",
+                                    ))),
                                     None,
                                 )
                             }

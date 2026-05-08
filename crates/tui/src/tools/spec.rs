@@ -20,8 +20,8 @@ use crate::sandbox::backend::SandboxBackend;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 #[allow(unused_imports)]
 pub use deepseek_tools::{
-    ApprovalRequirement, ToolCapability, ToolError, ToolResult, optional_bool, optional_str,
-    optional_u64, required_str, required_u64,
+    ApprovalRequirement, CorrectedError, ToolCapability, ToolError, ToolResult, optional_bool,
+    optional_str, optional_u64, required_str, required_u64,
 };
 
 /// Optional durable runtime services made available to model-visible tools.

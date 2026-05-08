@@ -400,7 +400,7 @@ impl From<ToolError> for ErrorEnvelope {
                 "tool_not_available",
                 message,
             ),
-            ToolError::PermissionDenied { message } => Self::new(
+            ToolError::PermissionDenied { message, .. } => Self::new(
                 ErrorCategory::Authorization,
                 ErrorSeverity::Error,
                 false,
