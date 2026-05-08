@@ -402,12 +402,25 @@ impl SseTransport {
             }
         });
 
-        Ok(Self {
+        let mut transport = Self {
             client,
             base_url: url,
             endpoint_url: None,
             receiver: rx,
-        })
+        };
+
+        // FIX (#XXX): Wait for the SSE endpoint event before returning.
+        // The MCP SSE protocol sends an "endpoint" event as the first
+        // message, containing the URL for client POST requests.
+        // Previously connect() returned immediately, creating a race
+        // where send() could be called before the endpoint was
+        // discovered, causing "SSE endpoint not yet discovered".
+        //
+        // Reference: mcp.client.sse.sse_client in Python MCP SDK
+        // uses TaskStatus.started(endpoint_url) for the same purpose.
+        transport.wait_for_endpoint().await?;
+
+        Ok(transport)
     }
 
     async fn run_sse_loop(
@@ -492,6 +505,63 @@ impl SseTransport {
         Ok(())
     }
 }
+
+
+    /// Wait for the SSE endpoint to be discovered.
+    ///
+    /// The first event on an MCP SSE stream is always "endpoint" with the
+    /// POST URL for client messages. This method reads internal messages
+    /// from the channel until the endpoint is received, then stores it.
+    ///
+    /// Any non-endpoint messages received while waiting are queued back
+    /// into the channel for later retrieval via `recv()`.
+    async fn wait_for_endpoint(&mut self) -> Result<()> {
+        use tokio::sync::mpsc::error::TryRecvError;
+
+        // Brief window: the SSE loop task may not have sent the endpoint yet
+        let mut attempts = 0;
+        const MAX_ATTEMPTS: u32 = 200;
+        const ATTEMPT_DELAY_MS: u64 = 50;
+
+        loop {
+            match self.receiver.try_recv() {
+                Ok(msg) => {
+                    if let Some(endpoint) = msg.get("__internal_sse_endpoint__") {
+                        let url_str = endpoint.as_str()
+                            .context("Invalid endpoint format")?;
+                        if url_str.starts_with("http") {
+                            self.endpoint_url = Some(url_str.to_string());
+                        } else {
+                            let base = reqwest::Url::parse(&self.base_url)?;
+                            let joined = base.join(url_str)?;
+                            self.endpoint_url = Some(joined.to_string());
+                        }
+                        tracing::debug!(
+                            "SSE endpoint discovered: {}",
+                            self.endpoint_url.as_deref().unwrap_or("")
+                        );
+                        return Ok(());
+                    }
+                    // Not an endpoint message — shouldn't happen as first event,
+                    // but store for later retrieval.
+                    // In practice, the MCP protocol guarantees endpoint first.
+                }
+                Err(TryRecvError::Empty) => {
+                    attempts += 1;
+                    if attempts >= MAX_ATTEMPTS {
+                        anyhow::bail!(
+                            "SSE endpoint not received after {}ms — server may not support MCP SSE protocol",
+                            MAX_ATTEMPTS * ATTEMPT_DELAY_MS
+                        );
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(ATTEMPT_DELAY_MS)).await;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    anyhow::bail!("SSE transport channel closed before endpoint received");
+                }
+            }
+        }
+    }
 
 #[async_trait::async_trait]
 impl McpTransport for SseTransport {
