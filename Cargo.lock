@@ -1173,10 +1173,12 @@ dependencies = [
  "deepseek-protocol",
  "deepseek-state",
  "deepseek-tools",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
  "tower-http",
+ "uuid",
 ]
 
 [[package]]

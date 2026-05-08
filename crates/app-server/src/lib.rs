@@ -1,8 +1,11 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -20,9 +23,10 @@ use deepseek_tools::{ToolCall, ToolRegistry};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, RwLock};
 use tower_http::cors::CorsLayer;
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct AppServerOptions {
@@ -36,6 +40,7 @@ struct AppState {
     config: Arc<RwLock<deepseek_config::ConfigToml>>,
     runtime: Arc<Mutex<Runtime>>,
     registry: ModelRegistry,
+    stdio_bridge: Arc<Mutex<Option<RuntimeBridge>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +94,23 @@ struct ThreadIdParams {
 struct ThreadMessageParams {
     thread_id: String,
     input: String,
+}
+
+#[derive(Debug)]
+struct RuntimeBridge {
+    base_url: String,
+    client: reqwest::Client,
+    auth_token: Option<String>,
+    child: Option<Child>,
+    last_seq_by_thread: HashMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnTerminalStatus {
+    Completed,
+    Failed,
+    Interrupted,
+    Canceled,
 }
 
 pub async fn run(options: AppServerOptions) -> Result<()> {
@@ -150,7 +172,14 @@ pub async fn run_stdio(config_path: Option<PathBuf>) -> Result<()> {
             continue;
         }
 
-        let response = match dispatch_stdio_request(&state, &request.method, request.params).await {
+        let response = match dispatch_stdio_request(
+            &state,
+            &mut writer,
+            &request.method,
+            request.params,
+        )
+        .await
+        {
             Ok(dispatch) => {
                 let encoded = jsonrpc_result(request.id, dispatch.result);
                 writer.write_all(encoded.to_string().as_bytes()).await?;
@@ -184,12 +213,11 @@ async fn thread_handler(
     State(state): State<AppState>,
     Json(req): Json<ThreadRequest>,
 ) -> Json<ThreadResponse> {
-    let mut runtime = state.runtime.lock().await;
-    match runtime.handle_thread(req).await {
+    match handle_thread_request(&state, req).await {
         Ok(res) => Json(res),
         Err(err) => Json(ThreadResponse {
             thread_id: "error".to_string(),
-            status: format!("error:{err}"),
+            status: format!("error:{}", err.message),
             thread: None,
             threads: Vec::new(),
             model: None,
@@ -294,7 +322,576 @@ fn build_state(config_path: Option<PathBuf>) -> Result<AppState> {
         config: Arc::new(RwLock::new(config)),
         runtime: Arc::new(Mutex::new(runtime)),
         registry,
+        stdio_bridge: Arc::new(Mutex::new(None)),
     })
+}
+
+async fn invalidate_stdio_bridge(state: &AppState) {
+    let mut bridge = state.stdio_bridge.lock().await;
+    *bridge = None;
+}
+
+impl RuntimeBridge {
+    async fn start(config_path: Option<&Path>) -> Result<Self> {
+        let port = reserve_runtime_port()?;
+        let auth_token = Uuid::new_v4().to_string();
+        let child = Self::runtime_command(config_path, port, &auth_token)?.spawn()?;
+        let mut bridge = Self {
+            base_url: format!("http://127.0.0.1:{port}"),
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()?,
+            auth_token: Some(auth_token),
+            child: Some(child),
+            last_seq_by_thread: HashMap::new(),
+        };
+        bridge.wait_until_ready().await?;
+        Ok(bridge)
+    }
+
+    fn runtime_command(config_path: Option<&Path>, port: u16, auth_token: &str) -> Result<Command> {
+        let current_exe = std::env::current_exe().ok();
+        let use_current_exe = current_exe
+            .as_ref()
+            .and_then(|path| path.file_stem())
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| !name.contains("app-server"));
+        let mut cmd = if use_current_exe {
+            Command::new(current_exe.context("failed to resolve current executable")?)
+        } else {
+            Command::new("deepseek")
+        };
+        if let Some(config) = config_path {
+            cmd.arg("--config").arg(config);
+        }
+        cmd.arg("serve")
+            .arg("--http")
+            .arg("--host")
+            .arg("127.0.0.1")
+            .arg("--port")
+            .arg(port.to_string())
+            .arg("--auth-token")
+            .arg(auth_token)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        Ok(cmd)
+    }
+
+    async fn wait_until_ready(&mut self) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Some(child) = self.child.as_mut()
+                && let Some(status) = child.try_wait()?
+            {
+                return Err(anyhow!(
+                    "runtime API exited before becoming ready (status {status})"
+                ));
+            }
+
+            match self
+                .client
+                .get(format!("{}/health", self.base_url))
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => return Ok(()),
+                _ if Instant::now() >= deadline => {
+                    return Err(anyhow!(
+                        "timed out waiting for runtime API at {}/health",
+                        self.base_url
+                    ));
+                }
+                _ => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+    }
+
+    fn authed(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.auth_token.as_deref() {
+            Some(token) => builder.bearer_auth(token),
+            None => builder,
+        }
+    }
+
+    async fn request_json(&self, builder: reqwest::RequestBuilder) -> Result<Value> {
+        let response = builder.send().await?;
+        let status = response.status();
+        let body = response.text().await?;
+        if !status.is_success() {
+            let detail = body.trim();
+            if detail.is_empty() {
+                anyhow::bail!("runtime API returned {status}");
+            }
+            anyhow::bail!("runtime API returned {status}: {detail}");
+        }
+        serde_json::from_str(&body).with_context(|| format!("invalid runtime API json: {body}"))
+    }
+
+    async fn create_thread(
+        &mut self,
+        model: Option<String>,
+        workspace: Option<PathBuf>,
+    ) -> Result<Value> {
+        let record = self
+            .request_json(
+                self.authed(self.client.post(format!("{}/v1/threads", self.base_url)))
+                    .json(&json!({
+                        "model": model,
+                        "workspace": workspace,
+                        "mode": "agent",
+                        "archived": false,
+                    })),
+            )
+            .await?;
+        let thread_id = extract_runtime_thread_id(&record)?;
+        self.last_seq_by_thread
+            .entry(thread_id.to_string())
+            .or_insert(0);
+        Ok(thread_record_result("started", &record))
+    }
+
+    async fn resume_thread(&mut self, thread_id: &str) -> Result<Value> {
+        let record = self
+            .request_json(
+                self.authed(
+                    self.client
+                        .post(format!("{}/v1/threads/{thread_id}/resume", self.base_url)),
+                ),
+            )
+            .await?;
+        self.last_seq_by_thread
+            .entry(thread_id.to_string())
+            .or_insert(0);
+        Ok(thread_record_result("resumed", &record))
+    }
+
+    async fn fork_thread(&mut self, thread_id: &str) -> Result<Value> {
+        let record = self
+            .request_json(
+                self.authed(
+                    self.client
+                        .post(format!("{}/v1/threads/{thread_id}/fork", self.base_url)),
+                ),
+            )
+            .await?;
+        let forked_id = extract_runtime_thread_id(&record)?;
+        self.last_seq_by_thread
+            .entry(forked_id.to_string())
+            .or_insert(0);
+        Ok(thread_record_result("forked", &record))
+    }
+
+    async fn read_thread(&self, thread_id: &str) -> Result<Value> {
+        let detail = self
+            .request_json(
+                self.authed(
+                    self.client
+                        .get(format!("{}/v1/threads/{thread_id}", self.base_url)),
+                ),
+            )
+            .await?;
+        let thread = detail.get("thread").cloned().unwrap_or(Value::Null);
+        Ok(json!({
+            "thread_id": thread_id,
+            "status": "ok",
+            "thread": thread,
+            "threads": [],
+            "model": detail.pointer("/thread/model").cloned().unwrap_or(Value::Null),
+            "model_provider": "deepseek",
+            "cwd": detail.pointer("/thread/workspace").cloned().unwrap_or(Value::Null),
+            "approval_policy": Value::Null,
+            "sandbox": Value::Null,
+            "events": [],
+            "data": detail,
+        }))
+    }
+
+    async fn list_threads(&self, include_archived: bool, limit: Option<usize>) -> Result<Value> {
+        let mut url = format!(
+            "{}/v1/threads?include_archived={}",
+            self.base_url, include_archived
+        );
+        if let Some(limit) = limit {
+            url.push_str(&format!("&limit={limit}"));
+        }
+        let threads = self.request_json(self.authed(self.client.get(url))).await?;
+        Ok(json!({
+            "thread_id": "list",
+            "status": "ok",
+            "thread": Value::Null,
+            "threads": threads,
+            "model": Value::Null,
+            "model_provider": Value::Null,
+            "cwd": Value::Null,
+            "approval_policy": Value::Null,
+            "sandbox": Value::Null,
+            "events": [],
+            "data": {},
+        }))
+    }
+
+    async fn update_thread(
+        &self,
+        thread_id: &str,
+        body: Value,
+        status: &'static str,
+    ) -> Result<Value> {
+        let record = self
+            .request_json(
+                self.authed(
+                    self.client
+                        .patch(format!("{}/v1/threads/{thread_id}", self.base_url)),
+                )
+                .json(&body),
+            )
+            .await?;
+        Ok(thread_record_result(status, &record))
+    }
+
+    async fn message_thread<W: AsyncWrite + Unpin>(
+        &mut self,
+        thread_id: &str,
+        input: &str,
+        writer: &mut W,
+    ) -> Result<Value> {
+        let turn = self
+            .request_json(
+                self.authed(
+                    self.client
+                        .post(format!("{}/v1/threads/{thread_id}/turns", self.base_url)),
+                )
+                .json(&json!({ "prompt": input })),
+            )
+            .await?;
+        let turn_id = turn
+            .pointer("/turn/id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("runtime API turn response missing turn.id"))?;
+        let response_id = format!("{thread_id}:{turn_id}");
+        emit_stdio_event(
+            writer,
+            json!({
+                "type": "response_start",
+                "response_id": response_id,
+            }),
+        )
+        .await?;
+
+        let since_seq = self.last_seq_by_thread.get(thread_id).copied().unwrap_or(0);
+        let stream_result = self
+            .stream_turn_events(thread_id, turn_id, &response_id, writer, since_seq)
+            .await;
+
+        let _ = emit_stdio_event(
+            writer,
+            json!({
+                "type": "response_end",
+                "response_id": response_id,
+            }),
+        )
+        .await;
+
+        let (last_seq, status, error) = stream_result?;
+        self.last_seq_by_thread
+            .insert(thread_id.to_string(), last_seq);
+
+        match status {
+            TurnTerminalStatus::Completed => Ok(json!({
+                "thread_id": thread_id,
+                "status": "accepted",
+                "thread": Value::Null,
+                "threads": [],
+                "model": Value::Null,
+                "model_provider": Value::Null,
+                "cwd": Value::Null,
+                "approval_policy": Value::Null,
+                "sandbox": Value::Null,
+                "events": [],
+                "data": { "turn_id": turn_id },
+            })),
+            TurnTerminalStatus::Interrupted => Err(anyhow!(
+                "{}",
+                error.unwrap_or_else(|| "turn interrupted".to_string())
+            )),
+            TurnTerminalStatus::Canceled => Err(anyhow!(
+                "{}",
+                error.unwrap_or_else(|| "turn canceled".to_string())
+            )),
+            TurnTerminalStatus::Failed => Err(anyhow!(
+                "{}",
+                error.unwrap_or_else(|| "turn failed".to_string())
+            )),
+        }
+    }
+
+    async fn stream_turn_events<W: AsyncWrite + Unpin>(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        response_id: &str,
+        writer: &mut W,
+        since_seq: u64,
+    ) -> Result<(u64, TurnTerminalStatus, Option<String>)> {
+        let mut response = self
+            .authed(self.client.get(format!(
+                "{}/v1/threads/{thread_id}/events?since_seq={since_seq}",
+                self.base_url
+            )))
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let mut buffer = Vec::new();
+        let mut last_seq = since_seq;
+        let mut tool_names_by_item: HashMap<String, String> = HashMap::new();
+
+        while let Some(chunk) = response.chunk().await? {
+            buffer.extend_from_slice(&chunk);
+            while let Some(frame_bytes) = take_sse_frame(&mut buffer) {
+                let Some((event_name, frame_data)) = parse_sse_frame(&frame_bytes) else {
+                    continue;
+                };
+                let envelope: Value = serde_json::from_str(&frame_data)
+                    .with_context(|| format!("invalid SSE json for {event_name}: {frame_data}"))?;
+                if let Some(seq) = envelope.get("seq").and_then(Value::as_u64) {
+                    last_seq = last_seq.max(seq);
+                }
+                if envelope.get("turn_id").and_then(Value::as_str) != Some(turn_id) {
+                    continue;
+                }
+                let payload = envelope.get("payload").cloned().unwrap_or(Value::Null);
+                match event_name.as_str() {
+                    "item.delta" => {
+                        let kind = payload
+                            .get("kind")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        if kind == "agent_message"
+                            && let Some(delta) = payload.get("delta").and_then(Value::as_str)
+                            && !delta.is_empty()
+                        {
+                            emit_stdio_event(
+                                writer,
+                                json!({
+                                    "type": "response_delta",
+                                    "response_id": response_id,
+                                    "delta": delta,
+                                }),
+                            )
+                            .await?;
+                        }
+                    }
+                    "item.started" => {
+                        let Some(tool) = payload.get("tool") else {
+                            continue;
+                        };
+                        let tool_name = tool
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("tool")
+                            .to_string();
+                        if let Some(item_id) = envelope.get("item_id").and_then(Value::as_str) {
+                            tool_names_by_item.insert(item_id.to_string(), tool_name.clone());
+                        }
+                        let arguments = tool.get("input").cloned().unwrap_or_else(|| json!({}));
+                        emit_stdio_event(
+                            writer,
+                            json!({
+                                "type": "tool_call_start",
+                                "response_id": response_id,
+                                "tool_name": tool_name,
+                                "arguments": arguments.clone(),
+                            }),
+                        )
+                        .await?;
+                        emit_stdio_event(
+                            writer,
+                            json!({
+                                "type": "tool_lifecycle",
+                                "response_id": response_id,
+                                "tool_name": tool.get("name").and_then(Value::as_str).unwrap_or("tool"),
+                                "phase": "start",
+                                "payload": arguments,
+                            }),
+                        )
+                        .await?;
+                    }
+                    "item.completed" | "item.failed" => {
+                        let Some(item) = payload.get("item") else {
+                            continue;
+                        };
+                        let kind = item.get("kind").and_then(Value::as_str).unwrap_or_default();
+                        if kind != "tool_call"
+                            && kind != "file_change"
+                            && kind != "command_execution"
+                        {
+                            continue;
+                        }
+                        let item_id = envelope
+                            .get("item_id")
+                            .and_then(Value::as_str)
+                            .or_else(|| item.get("id").and_then(Value::as_str))
+                            .unwrap_or_default();
+                        let tool_name = tool_names_by_item
+                            .remove(item_id)
+                            .unwrap_or_else(|| infer_tool_name(item));
+                        let output = item
+                            .get("detail")
+                            .and_then(Value::as_str)
+                            .or_else(|| item.get("summary").and_then(Value::as_str))
+                            .unwrap_or_default()
+                            .to_string();
+                        let success = event_name == "item.completed";
+                        emit_stdio_event(
+                            writer,
+                            json!({
+                                "type": "tool_call_result",
+                                "response_id": response_id,
+                                "tool_name": tool_name.clone(),
+                                "success": success,
+                                "output": output,
+                            }),
+                        )
+                        .await?;
+                        emit_stdio_event(
+                            writer,
+                            json!({
+                                "type": "tool_lifecycle",
+                                "response_id": response_id,
+                                "tool_name": tool_name,
+                                "phase": if success { "complete" } else { "error" },
+                                "payload": if success {
+                                    json!({ "output": output })
+                                } else {
+                                    json!({ "error": output })
+                                },
+                            }),
+                        )
+                        .await?;
+                    }
+                    "turn.completed" => {
+                        let turn = payload.get("turn").cloned().unwrap_or(Value::Null);
+                        let status = match turn.get("status").and_then(Value::as_str) {
+                            Some("completed") => TurnTerminalStatus::Completed,
+                            Some("interrupted") => TurnTerminalStatus::Interrupted,
+                            Some("canceled") => TurnTerminalStatus::Canceled,
+                            _ => TurnTerminalStatus::Failed,
+                        };
+                        let error = turn
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string);
+                        return Ok((last_seq, status, error));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Err(anyhow!(
+            "runtime event stream ended before turn.completed for {turn_id}"
+        ))
+    }
+}
+
+impl Drop for RuntimeBridge {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+#[cfg(test)]
+impl RuntimeBridge {
+    fn from_base_url_for_test(base_url: String) -> Self {
+        Self {
+            base_url,
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .expect("build reqwest test client"),
+            auth_token: None,
+            child: None,
+            last_seq_by_thread: HashMap::new(),
+        }
+    }
+}
+
+fn reserve_runtime_port() -> Result<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    Ok(listener.local_addr()?.port())
+}
+
+fn extract_runtime_thread_id(record: &Value) -> Result<&str> {
+    record
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("runtime API thread response missing id"))
+}
+
+fn thread_record_result(status: &str, record: &Value) -> Value {
+    let thread_id = record.get("id").and_then(Value::as_str).unwrap_or_default();
+    json!({
+        "thread_id": thread_id,
+        "status": status,
+        "thread": record,
+        "threads": [],
+        "model": record.get("model").cloned().unwrap_or(Value::Null),
+        "model_provider": "deepseek",
+        "cwd": record.get("workspace").cloned().unwrap_or(Value::Null),
+        "approval_policy": Value::Null,
+        "sandbox": Value::Null,
+        "events": [],
+        "data": record,
+    })
+}
+
+fn infer_tool_name(item: &Value) -> String {
+    item.get("summary")
+        .and_then(Value::as_str)
+        .and_then(|summary| summary.split(':').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("tool")
+        .to_string()
+}
+
+async fn emit_stdio_event<W: AsyncWrite + Unpin>(writer: &mut W, event: Value) -> Result<()> {
+    writer.write_all(event.to_string().as_bytes()).await?;
+    writer.write_all(b"\n").await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+fn take_sse_frame(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
+    if let Some(pos) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+        return Some(buffer.drain(..pos + 4).collect());
+    }
+    buffer
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|pos| buffer.drain(..pos + 2).collect())
+}
+
+fn parse_sse_frame(frame_bytes: &[u8]) -> Option<(String, String)> {
+    let text = String::from_utf8(frame_bytes.to_vec()).ok()?;
+    let mut event_name = None;
+    let mut data_lines = Vec::new();
+    for raw_line in text.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        if let Some(value) = line.strip_prefix("event:") {
+            event_name = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data_lines.push(value.trim_start().to_string());
+        }
+    }
+    match (event_name, data_lines.is_empty()) {
+        (Some(event), false) => Some((event, data_lines.join("\n"))),
+        _ => None,
+    }
 }
 
 fn params_or_object(params: Value) -> Value {
@@ -389,8 +986,57 @@ async fn handle_prompt_request(
         .map_err(|err| JsonRpcError::internal(err.to_string()))
 }
 
+async fn dispatch_stdio_thread_request<W: AsyncWrite + Unpin>(
+    state: &AppState,
+    writer: &mut W,
+    req: ThreadRequest,
+) -> std::result::Result<Value, JsonRpcError> {
+    let mut bridge_slot = state.stdio_bridge.lock().await;
+    if bridge_slot.is_none() {
+        let bridge = RuntimeBridge::start(state.config_path.as_deref())
+            .await
+            .map_err(|err| JsonRpcError::internal(err.to_string()))?;
+        *bridge_slot = Some(bridge);
+    }
+    let bridge = bridge_slot
+        .as_mut()
+        .ok_or_else(|| JsonRpcError::internal("failed to initialize runtime bridge"))?;
+    let result = match req {
+        ThreadRequest::Create { .. } => bridge.create_thread(None, None).await,
+        ThreadRequest::Start(params) => bridge.create_thread(params.model, params.cwd).await,
+        ThreadRequest::Resume(params) => bridge.resume_thread(&params.thread_id).await,
+        ThreadRequest::Fork(params) => bridge.fork_thread(&params.thread_id).await,
+        ThreadRequest::List(params) => {
+            bridge
+                .list_threads(params.include_archived, params.limit)
+                .await
+        }
+        ThreadRequest::Read(params) => bridge.read_thread(&params.thread_id).await,
+        ThreadRequest::SetName(params) => {
+            bridge
+                .update_thread(&params.thread_id, json!({ "title": params.name }), "ok")
+                .await
+        }
+        ThreadRequest::Archive { thread_id } => {
+            bridge
+                .update_thread(&thread_id, json!({ "archived": true }), "archived")
+                .await
+        }
+        ThreadRequest::Unarchive { thread_id } => {
+            bridge
+                .update_thread(&thread_id, json!({ "archived": false }), "unarchived")
+                .await
+        }
+        ThreadRequest::Message { thread_id, input } => {
+            bridge.message_thread(&thread_id, &input, writer).await
+        }
+    };
+    result.map_err(|err| JsonRpcError::internal(err.to_string()))
+}
+
 async fn dispatch_stdio_request(
     state: &AppState,
+    writer: &mut (impl AsyncWrite + Unpin),
     method: &str,
     params: Value,
 ) -> std::result::Result<StdioDispatchResult, JsonRpcError> {
@@ -457,10 +1103,8 @@ async fn dispatch_stdio_request(
         },
         "thread/request" => {
             let request: ThreadRequest = parse_params(params)?;
-            let response = handle_thread_request(state, request).await?;
             StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                result: dispatch_stdio_thread_request(state, writer, request).await?,
                 should_exit: false,
             }
         }
@@ -471,116 +1115,100 @@ async fn dispatch_stdio_request(
                 metadata: Value,
             }
             let parsed: CreateParams = parse_params(params_or_object(params))?;
-            let response = handle_thread_request(
-                state,
-                ThreadRequest::Create {
-                    metadata: parsed.metadata,
-                },
-            )
-            .await?;
             StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                result: dispatch_stdio_thread_request(
+                    state,
+                    writer,
+                    ThreadRequest::Create {
+                        metadata: parsed.metadata,
+                    },
+                )
+                .await?,
                 should_exit: false,
             }
         }
         "thread/start" => {
             let request = ThreadRequest::Start(parse_params(params_or_object(params))?);
-            let response = handle_thread_request(state, request).await?;
             StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                result: dispatch_stdio_thread_request(state, writer, request).await?,
                 should_exit: false,
             }
         }
         "thread/resume" => {
             let request = ThreadRequest::Resume(parse_params(params_or_object(params))?);
-            let response = handle_thread_request(state, request).await?;
             StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                result: dispatch_stdio_thread_request(state, writer, request).await?,
                 should_exit: false,
             }
         }
         "thread/fork" => {
             let request = ThreadRequest::Fork(parse_params(params_or_object(params))?);
-            let response = handle_thread_request(state, request).await?;
             StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                result: dispatch_stdio_thread_request(state, writer, request).await?,
                 should_exit: false,
             }
         }
         "thread/list" => {
             let request = ThreadRequest::List(parse_params(params_or_object(params))?);
-            let response = handle_thread_request(state, request).await?;
             StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                result: dispatch_stdio_thread_request(state, writer, request).await?,
                 should_exit: false,
             }
         }
         "thread/read" => {
             let request = ThreadRequest::Read(parse_params(params_or_object(params))?);
-            let response = handle_thread_request(state, request).await?;
             StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                result: dispatch_stdio_thread_request(state, writer, request).await?,
                 should_exit: false,
             }
         }
         "thread/set_name" | "thread/set-name" => {
             let request = ThreadRequest::SetName(parse_params(params_or_object(params))?);
-            let response = handle_thread_request(state, request).await?;
             StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                result: dispatch_stdio_thread_request(state, writer, request).await?,
                 should_exit: false,
             }
         }
         "thread/archive" => {
             let parsed: ThreadIdParams = parse_params(params_or_object(params))?;
-            let response = handle_thread_request(
-                state,
-                ThreadRequest::Archive {
-                    thread_id: parsed.thread_id,
-                },
-            )
-            .await?;
             StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                result: dispatch_stdio_thread_request(
+                    state,
+                    writer,
+                    ThreadRequest::Archive {
+                        thread_id: parsed.thread_id,
+                    },
+                )
+                .await?,
                 should_exit: false,
             }
         }
         "thread/unarchive" => {
             let parsed: ThreadIdParams = parse_params(params_or_object(params))?;
-            let response = handle_thread_request(
-                state,
-                ThreadRequest::Unarchive {
-                    thread_id: parsed.thread_id,
-                },
-            )
-            .await?;
             StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                result: dispatch_stdio_thread_request(
+                    state,
+                    writer,
+                    ThreadRequest::Unarchive {
+                        thread_id: parsed.thread_id,
+                    },
+                )
+                .await?,
                 should_exit: false,
             }
         }
         "thread/message" => {
             let parsed: ThreadMessageParams = parse_params(params_or_object(params))?;
-            let response = handle_thread_request(
-                state,
-                ThreadRequest::Message {
-                    thread_id: parsed.thread_id,
-                    input: parsed.input,
-                },
-            )
-            .await?;
             StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                result: dispatch_stdio_thread_request(
+                    state,
+                    writer,
+                    ThreadRequest::Message {
+                        thread_id: parsed.thread_id,
+                        input: parsed.input,
+                    },
+                )
+                .await?,
                 should_exit: false,
             }
         }
@@ -692,7 +1320,7 @@ async fn process_app_request(state: &AppState, req: AppRequest) -> AppResponse {
             data: json!({
                 "routes": ["/thread", "/app", "/prompt", "/tool", "/jobs", "/mcp/startup"],
                 "config": ["get", "set", "unset", "list"],
-                "events": ["response_start", "response_delta", "response_end", "tool_call_start", "tool_call_result", "mcp_startup_update", "mcp_startup_complete"],
+                "events": ["response_start", "response_delta", "response_end", "tool_call_start", "tool_call_result", "tool_lifecycle", "mcp_startup_update", "mcp_startup_complete"],
                 "transport": "stdio+http",
                 "config_path": state.config_path.as_ref().map(|p| p.display().to_string()),
             }),
@@ -714,6 +1342,7 @@ async fn process_app_request(state: &AppState, req: AppRequest) -> AppResponse {
             let snapshot = cfg.clone();
             drop(cfg);
             let _ = persist_config(state, snapshot).await;
+            invalidate_stdio_bridge(state).await;
             AppResponse {
                 ok,
                 data: json!({ "key": key, "value": value, "error": message }),
@@ -728,6 +1357,7 @@ async fn process_app_request(state: &AppState, req: AppRequest) -> AppResponse {
             let snapshot = cfg.clone();
             drop(cfg);
             let _ = persist_config(state, snapshot).await;
+            invalidate_stdio_bridge(state).await;
             AppResponse {
                 ok,
                 data: json!({ "key": key, "error": message }),
@@ -780,4 +1410,170 @@ async fn persist_config(state: &AppState, config: deepseek_config::ConfigToml) -
     let mut store = ConfigStore::load(state.config_path.clone())?;
     store.config = config;
     store.save()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::{Path as AxumPath, Query};
+    use axum::http::header;
+    use std::collections::HashMap;
+    use tokio::io::AsyncReadExt;
+
+    fn sse_frame(event: &str, payload: Value) -> String {
+        format!("event: {event}\ndata: {payload}\n\n")
+    }
+
+    #[tokio::test]
+    async fn message_thread_streams_stdio_events_before_returning() {
+        async fn create_turn(AxumPath(thread_id): AxumPath<String>) -> Json<Value> {
+            Json(json!({
+                "thread": { "id": thread_id },
+                "turn": { "id": "turn_test" },
+            }))
+        }
+
+        async fn thread_events(
+            AxumPath(thread_id): AxumPath<String>,
+            Query(query): Query<HashMap<String, String>>,
+        ) -> ([(header::HeaderName, &'static str); 1], String) {
+            assert_eq!(thread_id, "thr_test");
+            assert_eq!(query.get("since_seq").map(String::as_str), Some("0"));
+
+            let body = [
+                sse_frame(
+                    "item.delta",
+                    json!({
+                        "seq": 1,
+                        "turn_id": "turn_test",
+                        "payload": {
+                            "kind": "agent_message",
+                            "delta": "hello"
+                        }
+                    }),
+                ),
+                sse_frame(
+                    "item.started",
+                    json!({
+                        "seq": 2,
+                        "turn_id": "turn_test",
+                        "item_id": "tool_1",
+                        "payload": {
+                            "tool": {
+                                "name": "shell",
+                                "input": { "command": "pwd" }
+                            }
+                        }
+                    }),
+                ),
+                sse_frame(
+                    "item.completed",
+                    json!({
+                        "seq": 3,
+                        "turn_id": "turn_test",
+                        "item_id": "tool_1",
+                        "payload": {
+                            "item": {
+                                "kind": "tool_call",
+                                "summary": "shell: pwd",
+                                "detail": "/tmp"
+                            }
+                        }
+                    }),
+                ),
+                sse_frame(
+                    "turn.completed",
+                    json!({
+                        "seq": 4,
+                        "turn_id": "turn_test",
+                        "payload": {
+                            "turn": {
+                                "status": "completed"
+                            }
+                        }
+                    }),
+                ),
+            ]
+            .concat();
+
+            ([(header::CONTENT_TYPE, "text/event-stream")], body)
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let app = Router::new()
+            .route("/v1/threads/{thread_id}/turns", post(create_turn))
+            .route("/v1/threads/{thread_id}/events", get(thread_events));
+
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve test runtime");
+        });
+
+        let mut bridge = RuntimeBridge::from_base_url_for_test(format!("http://{addr}"));
+        let (mut reader, mut writer) = tokio::io::duplex(4096);
+
+        let result = bridge
+            .message_thread("thr_test", "hello", &mut writer)
+            .await
+            .expect("message_thread should succeed");
+        drop(writer);
+
+        let mut stdout = Vec::new();
+        reader
+            .read_to_end(&mut stdout)
+            .await
+            .expect("read stdio output");
+        server.abort();
+        let _ = server.await;
+
+        let lines: Vec<Value> = String::from_utf8(stdout)
+            .expect("utf8 output")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("json line"))
+            .collect();
+
+        assert_eq!(
+            result.get("status").and_then(Value::as_str),
+            Some("accepted")
+        );
+        assert_eq!(
+            result.pointer("/data/turn_id").and_then(Value::as_str),
+            Some("turn_test")
+        );
+        assert_eq!(bridge.last_seq_by_thread.get("thr_test"), Some(&4));
+
+        let event_types: Vec<&str> = lines
+            .iter()
+            .map(|line| {
+                line.get("type")
+                    .and_then(Value::as_str)
+                    .expect("event type")
+            })
+            .collect();
+        assert_eq!(
+            event_types,
+            vec![
+                "response_start",
+                "response_delta",
+                "tool_call_start",
+                "tool_lifecycle",
+                "tool_call_result",
+                "tool_lifecycle",
+                "response_end",
+            ]
+        );
+
+        assert_eq!(lines[1]["delta"], "hello");
+        assert_eq!(lines[2]["tool_name"], "shell");
+        assert_eq!(lines[3]["tool_name"], "shell");
+        assert_eq!(lines[3]["phase"], "start");
+        assert_eq!(lines[4]["tool_name"], "shell");
+        assert_eq!(lines[4]["success"], true);
+        assert_eq!(lines[5]["tool_name"], "shell");
+        assert_eq!(lines[5]["phase"], "complete");
+    }
 }

@@ -19,7 +19,9 @@ deepseek-mcp = { path = "../mcp", version = "0.8.28" }
 deepseek-protocol = { path = "../protocol", version = "0.8.28" }
 deepseek-state = { path = "../state", version = "0.8.28" }
 deepseek-tools = { path = "../tools", version = "0.8.28" }
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tower-http.workspace = true
+uuid.workspace = true
