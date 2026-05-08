@@ -71,7 +71,7 @@ pub enum Block {
     /// A bullet (`-`/`*`) or ordered (`1.`) list item with its prefix and body.
     ListItem { bullet: String, text: String },
     /// A line inside a fenced code block. Fences themselves are dropped.
-    Code { line: String },
+    Code { line: String, lang: Option<String> },
     /// A table row: cells split on `|`.
     TableRow(Vec<String>),
     /// A table separator row (`|---|---|`). Kept so the renderer can draw
@@ -92,6 +92,41 @@ pub struct ParsedMarkdown {
     blocks: Vec<Block>,
 }
 
+fn highlight_code_line(
+    line: &str,
+    language: Option<&str>,
+    code_style: Style,
+    comment_style: Style,
+    string_style: Style,
+    keyword_style: Style,
+) -> Vec<Span<'static>> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with("--") || trimmed.starts_with("/*") {
+        return vec![Span::styled(line.to_string(), comment_style)];
+    }
+    let keywords: &[&str] = match language {
+        Some("rust") | Some("rs") => &["fn","let","mut","if","else","for","while","loop","match","return","struct","enum","impl","trait","use","mod","pub","crate","self","async","await","move","ref","where","type","const","static","true","false","Some","None","Ok","Err"],
+        Some("python")|Some("py") => &["def","class","import","from","as","if","elif","else","for","while","return","yield","raise","try","except","finally","with","lambda","True","False","None","and","or","not","in","is","self","pass","break","continue"],
+        Some("go") => &["func","var","const","type","struct","interface","map","chan","if","else","for","range","switch","case","default","return","go","defer","select","package","import","true","false","nil"],
+        Some("javascript")|Some("js")|Some("typescript")|Some("ts") => &["const","let","var","function","async","await","return","if","else","for","while","switch","case","default","break","continue","class","extends","new","this","super","import","export","from","true","false","null","undefined","typeof","try","catch","finally","throw","of","in","yield"],
+        _ => &[],
+    };
+    let mut spans = Vec::new();
+    let mut rest = line;
+    while !rest.is_empty() {
+        if rest.starts_with('"') { if let Some(end) = rest[1..].find('"') { let end = end+2; spans.push(Span::styled(rest[..end].to_string(), string_style)); rest = &rest[end..]; continue; } }
+        if rest.starts_with('\'') && rest.len() > 2 { let end = if rest.as_bytes().get(1)==Some(&b'\\') { rest[3..].find('\'').map(|e|e+4).unwrap_or(rest.len()) } else { rest[1..].find('\'').map(|e|e+2).unwrap_or(rest.len()) }; spans.push(Span::styled(rest[..end].to_string(), string_style)); rest = &rest[end..]; continue; }
+        if rest.starts_with("/*") { if let Some(end)=rest.find("*/") { let end=end+2; spans.push(Span::styled(rest[..end].to_string(), comment_style)); rest=&rest[end..]; continue; } }
+        if let Some(ch)=rest.chars().next() { if ch.is_ascii_digit() { let end=rest.find(|c:char|!c.is_ascii_alphanumeric()&&c!='.'&&c!='_').unwrap_or(rest.len()); spans.push(Span::styled(rest[..end].to_string(), string_style)); rest=&rest[end..]; continue; } }
+        if rest.starts_with("//") || rest.starts_with('#') { spans.push(Span::styled(rest.to_string(), comment_style)); break; }
+        if !keywords.is_empty() { let mut matched=false; for kw in keywords { if rest.starts_with(*kw) { let kw_end=kw.len(); let next=rest[kw_end..].chars().next(); if next.map_or(true,|c|!c.is_alphanumeric()&&c!='_') { spans.push(Span::styled(rest[..kw_end].to_string(), keyword_style)); rest=&rest[kw_end..]; matched=true; break; } } } if matched { continue; } }
+        let next_idx=rest.find(|c:char|c=='"'||c=='\''||c=='/'||c=='#'||c.is_ascii_digit()).unwrap_or(rest.len()).max(1);
+        spans.push(Span::styled(rest[..next_idx].to_string(), code_style)); rest=&rest[next_idx..];
+    }
+    if spans.is_empty() { spans.push(Span::styled(line.to_string(), code_style)); }
+    spans
+}
+
 /// Parse markdown source into a width-independent block AST.
 ///
 /// This is a small line-oriented parser tuned for the patterns we render:
@@ -106,17 +141,26 @@ pub fn parse(content: &str) -> ParsedMarkdown {
 
     let mut blocks = Vec::new();
     let mut in_code_block = false;
+    let mut code_lang: Option<String> = None;
 
     for raw_line in content.lines() {
         let trimmed = raw_line.trim_start();
         if trimmed.starts_with("```") {
-            in_code_block = !in_code_block;
+            if in_code_block {
+                in_code_block = false;
+                code_lang = None;
+            } else {
+                in_code_block = true;
+                let lang = trimmed[3..].trim();
+                code_lang = if lang.is_empty() { None } else { Some(lang.to_string()) };
+            }
             continue;
         }
 
         if in_code_block {
             blocks.push(Block::Code {
                 line: raw_line.to_string(),
+                lang: code_lang.clone(),
             });
             continue;
         }
@@ -233,11 +277,21 @@ pub fn render_parsed(parsed: &ParsedMarkdown, width: u16, base_style: Style) -> 
                     base_style,
                 ));
             }
-            Block::Code { line } => {
+            Block::Code { line, lang } => {
                 let code_style = Style::default()
                     .fg(palette::DEEPSEEK_SKY)
                     .add_modifier(Modifier::ITALIC);
-                out.extend(render_wrapped_line(line, width, code_style, true));
+                if let Some(language) = lang {
+                    let comment_style = Style::default().fg(palette::TEXT_HINT).add_modifier(Modifier::ITALIC);
+                    let string_style = Style::default().fg(palette::DIFF_ADDED).add_modifier(Modifier::ITALIC);
+                    let keyword_style = Style::default().fg(palette::DEEPSEEK_BLUE).add_modifier(Modifier::BOLD);
+                    let spans = highlight_code_line(line, Some(language.as_str()), code_style, comment_style, string_style, keyword_style);
+                    let mut line_spans = vec![Span::raw("  ")];
+                    line_spans.extend(spans);
+                    out.push(Line::from(line_spans));
+                } else {
+                    out.extend(render_wrapped_line(line, width, code_style, true));
+                }
             }
             Block::Paragraph { text } => {
                 let link_style = Style::default()
@@ -838,7 +892,7 @@ mod tests {
         let code_lines: Vec<_> = blocks
             .iter()
             .filter_map(|b| match b {
-                Block::Code { line } => Some(line.as_str()),
+                Block::Code { line, .. } => Some(line.as_str()),
                 _ => None,
             })
             .collect();

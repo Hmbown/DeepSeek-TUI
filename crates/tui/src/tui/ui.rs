@@ -131,7 +131,7 @@ const WEB_CONFIG_POLL_MS: u64 = 16;
 // motion (~12 fps) instead of teleport-frames.
 const UI_STATUS_ANIMATION_MS: u64 = 80;
 const WORKSPACE_CONTEXT_REFRESH_SECS: u64 = 15;
-const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 100;
+const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 240;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 
 type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
@@ -3318,6 +3318,7 @@ fn ensure_streaming_thinking_active_entry(app: &mut App) -> usize {
         content: String::new(),
         streaming: true,
         duration_secs: None,
+        expanded: false,
     });
     app.streaming_thinking_active_entry = Some(entry_idx);
     app.bump_active_cell_revision();
