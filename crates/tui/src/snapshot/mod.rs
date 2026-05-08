@@ -39,6 +39,6 @@ pub mod repo;
 
 #[allow(unused_imports)]
 pub use paths::{snapshot_dir_for, snapshot_git_dir};
-pub use prune::{DEFAULT_MAX_AGE, prune_older_than};
+pub use prune::{DEFAULT_MAX_AGE, prune_older_than, prune_over_size};
 #[allow(unused_imports)]
 pub use repo::{Snapshot, SnapshotId, SnapshotRepo};

@@ -480,6 +480,130 @@ impl SnapshotRepo {
         Ok(())
     }
 
+    /// Keep only the `keep_count` newest snapshots, removing the rest.
+    ///
+    /// This is the fallback for same-second snapshots where age-based
+    /// pruning can't distinguish between entries. Strategy:
+    ///
+    /// 1. List all snapshots (newest-first).
+    /// 2. Rewrite the parent chain: make the `keep_count`th newest
+    ///    snapshot a root commit (no parent), severing the link to
+    ///    all older commits.
+    /// 3. Expire reflogs and run `gc --prune=now` to reclaim the
+    ///    orphaned older objects.
+    ///
+    /// Returns the number of snapshots removed.
+    pub fn prune_to_count(&self, keep_count: usize) -> io::Result<usize> {
+        let snapshots = self.list(usize::MAX)?;
+        if snapshots.len() <= keep_count {
+            return Ok(0);
+        }
+        let removed = snapshots.len() - keep_count;
+
+        // The oldest snapshot we want to keep is at index (keep_count - 1)
+        // in the newest-first list. We need to make it a root commit so
+        // that everything older becomes unreachable.
+        let cutoff = &snapshots[keep_count - 1];
+
+        // Read the cutoff commit's tree so we can re-commit it without a parent.
+        let tree_out = run_git(
+            &self.git_dir,
+            &self.work_tree,
+            &["rev-parse", &format!("{}^{{tree}}", cutoff.id.as_str())],
+        )?;
+        if !tree_out.status.success() {
+            return Err(io_other(format!(
+                "git rev-parse tree failed: {}",
+                String::from_utf8_lossy(&tree_out.stderr).trim()
+            )));
+        }
+        let tree_sha = String::from_utf8_lossy(&tree_out.stdout).trim().to_string();
+
+        // Create a new root commit with the same tree and message.
+        let commit = run_git(
+            &self.git_dir,
+            &self.work_tree,
+            &["commit-tree", &tree_sha, "-m", &cutoff.label],
+        )?;
+        if !commit.status.success() {
+            return Err(io_other(format!(
+                "git commit-tree failed: {}",
+                String::from_utf8_lossy(&commit.stderr).trim()
+            )));
+        }
+        let new_root_sha = String::from_utf8_lossy(&commit.stdout).trim().to_string();
+
+        // Now rebase the chain: for each snapshot from keep_count-2 down to 0
+        // (newer ones), re-commit with the previous as parent.
+        // This preserves the entire newest chain as a new linear history.
+        let mut prev_sha = new_root_sha.clone();
+        for idx in (0..keep_count - 1).rev() {
+            let snap = &snapshots[idx];
+            let snap_tree = run_git(
+                &self.git_dir,
+                &self.work_tree,
+                &["rev-parse", &format!("{}^{{tree}}", snap.id.as_str())],
+            )?;
+            if !snap_tree.status.success() {
+                return Err(io_other(format!(
+                    "git rev-parse tree failed: {}",
+                    String::from_utf8_lossy(&snap_tree.stderr).trim()
+                )));
+            }
+            let snap_tree_sha = String::from_utf8_lossy(&snap_tree.stdout)
+                .trim()
+                .to_string();
+
+            let new_commit = run_git(
+                &self.git_dir,
+                &self.work_tree,
+                &[
+                    "commit-tree",
+                    &snap_tree_sha,
+                    "-p",
+                    &prev_sha,
+                    "-m",
+                    &snap.label,
+                ],
+            )?;
+            if !new_commit.status.success() {
+                return Err(io_other(format!(
+                    "git commit-tree failed: {}",
+                    String::from_utf8_lossy(&new_commit.stderr).trim()
+                )));
+            }
+            prev_sha = String::from_utf8_lossy(&new_commit.stdout)
+                .trim()
+                .to_string();
+        }
+
+        // Point HEAD at the newest rewritten commit.
+        let update = run_git(
+            &self.git_dir,
+            &self.work_tree,
+            &["update-ref", "HEAD", &prev_sha],
+        )?;
+        if !update.status.success() {
+            return Err(io_other(format!(
+                "git update-ref failed: {}",
+                String::from_utf8_lossy(&update.stderr).trim()
+            )));
+        }
+
+        // Reclaim space from the orphaned older commits.
+        let _ = run_git(
+            &self.git_dir,
+            &self.work_tree,
+            &["reflog", "expire", "--expire=now", "--all"],
+        );
+        let _ = run_git(
+            &self.git_dir,
+            &self.work_tree,
+            &["gc", "--prune=now", "--quiet"],
+        );
+        Ok(removed)
+    }
+
     /// Return the side-repo's `.git` directory (for diagnostics).
     #[allow(dead_code)]
     pub fn git_dir(&self) -> &Path {
@@ -491,6 +615,42 @@ impl SnapshotRepo {
     pub fn work_tree(&self) -> &Path {
         &self.work_tree
     }
+
+    /// Calculate the total size of the `.git` snapshot directory in bytes.
+    ///
+    /// Walks the entire `.git` tree and sums up file sizes. This is the
+    /// authoritative metric for enforcing `max_size_mb` — it captures
+    /// loose objects, packfiles, index, refs, and any stale temp files.
+    ///
+    /// Returns 0 if the directory doesn't exist or can't be read.
+    pub fn total_size(&self) -> u64 {
+        dir_size_recursive(&self.git_dir)
+    }
+}
+
+/// Recursively sum file sizes in a directory.
+///
+/// Skips symlinks and entries we can't stat (permission errors, races).
+/// Returns 0 if the path doesn't exist or isn't a directory.
+fn dir_size_recursive(path: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    let mut total: u64 = 0;
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            total += dir_size_recursive(&entry.path());
+        } else {
+            total += meta.len();
+        }
+    }
+    total
 }
 
 fn write_builtin_excludes(git_dir: &Path) -> io::Result<()> {
@@ -992,5 +1152,74 @@ mod tests {
         assert!(is_home_directory(&home_canonical, Some(home)));
         assert!(!is_home_directory(&workspace_canonical, Some(home)));
         assert!(!is_home_directory(&home_canonical, None));
+    }
+
+    // ── total_size / dir_size_recursive tests (#1112) ────────────────
+
+    #[test]
+    fn total_size_returns_nonzero_after_snapshot() {
+        let tmp = tempdir().unwrap();
+        let (repo, _home) = make_repo(tmp.path());
+        std::fs::write(repo.work_tree().join("f.txt"), b"hello world").unwrap();
+        repo.snapshot("pre-turn:1").unwrap();
+
+        let size = repo.total_size();
+        assert!(size > 0, "expected nonzero .git size, got {size}");
+    }
+
+    #[test]
+    fn total_size_zero_for_fresh_repo() {
+        let tmp = tempdir().unwrap();
+        let (repo, _home) = make_repo(tmp.path());
+        // Fresh repo with no snapshots — .git exists but may have
+        // boilerplate (HEAD, config, etc). Size should be small.
+        let size = repo.total_size();
+        // Just verify it doesn't panic and returns a reasonable number.
+        // A bare git init is typically < 100 bytes of metadata.
+        assert!(size < 1024 * 1024, "fresh repo unexpectedly large: {size}");
+    }
+
+    #[test]
+    fn total_size_grows_with_more_snapshots() {
+        let tmp = tempdir().unwrap();
+        let (repo, _home) = make_repo(tmp.path());
+        std::fs::write(repo.work_tree().join("f.txt"), b"v0").unwrap();
+        repo.snapshot("turn:0").unwrap();
+        let size_after_1 = repo.total_size();
+
+        // Write more unique data to ensure growth.
+        for i in 1..=10 {
+            std::fs::write(
+                repo.work_tree().join(format!("file_{i}.txt")),
+                format!("unique content for snapshot {i} {}", "x".repeat(100)),
+            )
+            .unwrap();
+            repo.snapshot(&format!("turn:{i}")).unwrap();
+        }
+        let size_after_11 = repo.total_size();
+        assert!(
+            size_after_11 > size_after_1,
+            "expected growth: {size_after_1} -> {size_after_11}"
+        );
+    }
+
+    #[test]
+    fn dir_size_recursive_skips_symlinks() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("test_dir");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("real.txt"), b"real content").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
+
+        let size = dir_size_recursive(&dir);
+        // Should only count real.txt, not the symlink target again.
+        assert_eq!(size, 12); // "real content".len()
+    }
+
+    #[test]
+    fn dir_size_recursive_returns_zero_for_missing_path() {
+        let size = dir_size_recursive(std::path::Path::new("/nonexistent/path/xyz"));
+        assert_eq!(size, 0);
     }
 }

@@ -524,6 +524,28 @@ pub fn prune_workspace_snapshots(workspace: &Path, max_age: std::time::Duration)
     }
 }
 
+/// Prune snapshots exceeding `max_size_bytes` for `workspace`.
+///
+/// This is the hard safety net against unbounded snapshot growth (#1112).
+/// When the total `.git` directory size exceeds the budget, the oldest
+/// snapshots are dropped until it fits.
+///
+/// Always non-fatal — same contract as [`prune_workspace_snapshots`].
+pub fn prune_workspace_snapshots_by_size(workspace: &Path, max_size_bytes: u64) {
+    if max_size_bytes == 0 {
+        return;
+    }
+    match crate::snapshot::prune_over_size(workspace, max_size_bytes) {
+        Ok(0) => {}
+        Ok(n) => {
+            tracing::debug!(target: "snapshot", "size prune removed {n} snapshot(s)");
+        }
+        Err(e) => {
+            tracing::warn!(target: "snapshot", "size prune failed: {e}");
+        }
+    }
+}
+
 /// Create a new `SavedSession` from conversation state
 pub fn create_saved_session(
     messages: &[Message],

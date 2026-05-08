@@ -216,6 +216,12 @@ pub struct SnapshotsToml {
     pub enabled: bool,
     #[serde(default = "default_snapshot_max_age_days")]
     pub max_age_days: u64,
+    /// Hard upper limit on total snapshot directory size in MiB.
+    /// When exceeded the oldest snapshots are pruned at session start
+    /// until the directory fits within this budget. 0 means unlimited.
+    /// Default: 4096 (4 GiB).
+    #[serde(default = "default_snapshot_max_size_mb")]
+    pub max_size_mb: u64,
 }
 
 fn default_snapshots_enabled() -> bool {
@@ -226,11 +232,16 @@ fn default_snapshot_max_age_days() -> u64 {
     7
 }
 
+fn default_snapshot_max_size_mb() -> u64 {
+    4096
+}
+
 impl Default for SnapshotsToml {
     fn default() -> Self {
         Self {
             enabled: default_snapshots_enabled(),
             max_age_days: default_snapshot_max_age_days(),
+            max_size_mb: default_snapshot_max_size_mb(),
         }
     }
 }
@@ -2243,5 +2254,38 @@ mod tests {
         let resolved = ConfigToml::default().resolve_runtime_options_with_secrets(&cli, &secrets);
         assert_eq!(resolved.api_key.as_deref(), Some("cli-key"));
         assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Cli));
+    }
+
+    #[test]
+    fn snapshots_toml_defaults_include_max_size_mb() {
+        let snap = SnapshotsToml::default();
+        assert!(snap.enabled);
+        assert_eq!(snap.max_age_days, 7);
+        assert_eq!(snap.max_size_mb, 4096);
+    }
+
+    #[test]
+    fn snapshots_toml_parses_max_size_mb_from_toml() {
+        let toml_str = r#"
+            enabled = true
+            max_age_days = 14
+            max_size_mb = 512
+        "#;
+        let snap: SnapshotsToml = toml::from_str(toml_str).unwrap();
+        assert!(snap.enabled);
+        assert_eq!(snap.max_age_days, 14);
+        assert_eq!(snap.max_size_mb, 512);
+    }
+
+    #[test]
+    fn snapshots_toml_omitting_max_size_mb_uses_default() {
+        let toml_str = r#"
+            enabled = false
+            max_age_days = 3
+        "#;
+        let snap: SnapshotsToml = toml::from_str(toml_str).unwrap();
+        assert!(!snap.enabled);
+        assert_eq!(snap.max_age_days, 3);
+        assert_eq!(snap.max_size_mb, 4096, "should use default when omitted");
     }
 }

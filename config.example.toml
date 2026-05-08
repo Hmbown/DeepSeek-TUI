@@ -414,6 +414,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # [snapshots]
 # enabled = true        # Snapshot workspace pre/post each turn for /restore
 # max_age_days = 7      # Older snapshots pruned at session start
+# max_size_mb = 4096    # Hard limit: oldest snapshots pruned when exceeded (0 = unlimited)
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # LSP Diagnostics (post-edit) (#136)

@@ -446,6 +446,10 @@ fn default_snapshot_max_age_days() -> u64 {
     crate::snapshot::DEFAULT_MAX_AGE.as_secs() / (24 * 60 * 60)
 }
 
+fn default_snapshot_max_size_mb() -> u64 {
+    4096
+}
+
 /// Workspace side-git snapshot configuration (#137).
 #[derive(Debug, Clone, Deserialize)]
 pub struct SnapshotsConfig {
@@ -455,6 +459,12 @@ pub struct SnapshotsConfig {
     /// Prune side-git snapshots older than this many days at session boot.
     #[serde(default = "default_snapshot_max_age_days")]
     pub max_age_days: u64,
+    /// Hard upper limit on total snapshot directory size in MiB.
+    /// When exceeded the oldest snapshots are pruned at session start
+    /// until the directory fits within this budget. 0 means unlimited.
+    /// Default: 4096 (4 GiB).
+    #[serde(default = "default_snapshot_max_size_mb")]
+    pub max_size_mb: u64,
 }
 
 impl Default for SnapshotsConfig {
@@ -462,6 +472,7 @@ impl Default for SnapshotsConfig {
         Self {
             enabled: default_snapshots_enabled(),
             max_age_days: default_snapshot_max_age_days(),
+            max_size_mb: default_snapshot_max_size_mb(),
         }
     }
 }
@@ -484,6 +495,14 @@ impl SnapshotsConfig {
     #[must_use]
     pub fn max_age(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.max_age_days.saturating_mul(24 * 60 * 60))
+    }
+
+    /// Convert the `max_size_mb` config value to bytes.
+    ///
+    /// A value of 0 means "unlimited" and is returned as 0.
+    #[must_use]
+    pub fn max_size_bytes(&self) -> u64 {
+        self.max_size_mb.saturating_mul(1024 * 1024)
     }
 }
 
