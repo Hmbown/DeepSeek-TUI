@@ -860,6 +860,31 @@ impl ConfigView {
                 self.status = Some("Edit cancelled".to_string());
                 ViewAction::None
             }
+            KeyCode::Char('-') | KeyCode::Char('+') | KeyCode::Char('=')
+                if self
+                    .editing
+                    .as_ref()
+                    .is_some_and(|e| config_enum_values(&e.key).is_some()) =>
+            {
+                if let Some(edit) = self.editing.as_mut() {
+                    if let Some(values) = config_enum_values(&edit.key) {
+                        let current: String = edit.buffer.iter().collect();
+                        let pos = values
+                            .iter()
+                            .position(|v| v.eq_ignore_ascii_case(&current))
+                            .unwrap_or(0);
+                        let next = if key.code == KeyCode::Char('-') {
+                            pos.wrapping_sub(1) % values.len()
+                        } else {
+                            (pos + 1) % values.len()
+                        };
+                        edit.buffer = values[next].chars().collect();
+                        edit.cursor = edit.buffer.len();
+                        edit.select_all = false;
+                    }
+                }
+                ViewAction::None
+            }
             KeyCode::Enter => {
                 let Some(edit) = self.editing.take() else {
                     return ViewAction::None;
@@ -1000,28 +1025,112 @@ impl ConfigView {
 
         self.update_filter(|filter| filter.clear());
     }
+
+    /// Refresh row values from the current app/settings state without
+    /// resetting the selected index. Called by the ConfigUpdated handler
+    /// so the list stays in place while reflecting the latest values.
+    pub fn refresh_rows(&mut self, app: &App) {
+        let settings = Settings::load().unwrap_or_else(|_| Settings::default());
+        for row in &mut self.rows {
+            match row.key.as_str() {
+                "model" => row.value = app.model.clone(),
+                "default_model" => {
+                    row.value = settings
+                        .default_model
+                        .as_deref()
+                        .unwrap_or("(default)")
+                        .to_string();
+                }
+                "approval_mode" => row.value = app.approval_mode.label().to_string(),
+                "default_mode" => row.value = settings.default_mode.clone(),
+                "locale" => row.value = settings.locale.clone(),
+                "background_color" => {
+                    row.value = settings
+                        .background_color
+                        .clone()
+                        .unwrap_or_else(|| "(default)".to_string());
+                }
+                "calm_mode" => row.value = settings.calm_mode.to_string(),
+                "low_motion" => row.value = settings.low_motion.to_string(),
+                "show_thinking" => row.value = settings.show_thinking.to_string(),
+                "show_tool_details" => row.value = settings.show_tool_details.to_string(),
+                "transcript_spacing" => row.value = settings.transcript_spacing.clone(),
+                "composer_density" => row.value = settings.composer_density.clone(),
+                "composer_border" => row.value = settings.composer_border.to_string(),
+                "paste_burst_detection" => {
+                    row.value = settings.paste_burst_detection.to_string();
+                }
+                "sidebar_width" => row.value = settings.sidebar_width_percent.to_string(),
+                "sidebar_focus" => row.value = settings.sidebar_focus.clone(),
+                "auto_compact" => row.value = settings.auto_compact.to_string(),
+                "max_history" => row.value = settings.max_input_history.to_string(),
+                "mcp_config_path" => {
+                    row.value = app.mcp_config_path.display().to_string();
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
-fn config_hint_for_key(key: &str) -> &'static str {
+fn config_hint_for_key(locale: crate::localization::Locale, key: &str) -> &'static str {
+    use crate::localization::{MessageId, tr};
+    let id = match key {
+        "model" => MessageId::ConfigHintModel,
+        "default_model" => MessageId::ConfigHintDefaultModel,
+        "approval_mode" => MessageId::ConfigHintApprovalMode,
+        "auto_compact" => MessageId::ConfigHintAutoCompact,
+        "calm_mode" => MessageId::ConfigHintCalmMode,
+        "low_motion" => MessageId::ConfigHintLowMotion,
+        "show_thinking" => MessageId::ConfigHintShowThinking,
+        "show_tool_details" => MessageId::ConfigHintShowToolDetails,
+        "transcript_spacing" => MessageId::ConfigHintTranscriptSpacing,
+        "composer_density" => MessageId::ConfigHintComposerDensity,
+        "composer_border" => MessageId::ConfigHintComposerBorder,
+        "paste_burst_detection" => MessageId::ConfigHintPasteBurst,
+        "sidebar_width" => MessageId::ConfigHintSidebarWidth,
+        "sidebar_focus" => MessageId::ConfigHintSidebarFocus,
+        "locale" => MessageId::ConfigHintLocale,
+        "background_color" => MessageId::ConfigHintBackgroundColor,
+        "default_mode" => MessageId::ConfigHintDefaultMode,
+        "max_history" => MessageId::ConfigHintMaxHistory,
+        "mcp_config_path" => MessageId::ConfigHintMcpConfigPath,
+        _ => return "",
+    };
+    tr(locale, id)
+}
+
+/// Valid values for settings that accept a fixed set of options.
+/// Returns `None` for free-text settings.
+fn config_enum_values(key: &str) -> Option<&[&str]> {
     match key {
-        "model" => "deepseek-v4-pro | deepseek-v4-flash | deepseek-*",
-        "approval_mode" => "auto | suggest | never",
+        "approval_mode" => Some(&["auto", "suggest", "never"]),
+        "default_mode" => Some(&["agent", "plan", "yolo"]),
+        "locale" => Some(&["auto", "en", "ja", "zh-Hans", "pt-BR"]),
+        "composer_density" | "transcript_spacing" => {
+            Some(&["compact", "comfortable", "spacious"])
+        }
+        "sidebar_focus" => Some(&["auto", "plan", "todos", "tasks", "agents", "context"]),
         "auto_compact"
         | "calm_mode"
         | "low_motion"
         | "show_thinking"
         | "show_tool_details"
         | "composer_border"
-        | "paste_burst_detection" => "on/off, true/false, yes/no, 1/0",
-        "composer_density" | "transcript_spacing" => "compact | comfortable | spacious",
-        "locale" => "auto | en | ja | zh-Hans | pt-BR",
-        "background_color" => "#RRGGBB | default",
-        "default_mode" => "agent | plan | yolo",
-        "sidebar_width" => "10..=50",
-        "sidebar_focus" => "auto | plan | todos | tasks | agents",
-        "max_history" => "integer (0 allowed)",
-        "default_model" => "deepseek-v4-pro | deepseek-v4-flash | deepseek-* | none/default",
-        "mcp_config_path" => "path to mcp.json",
+        | "paste_burst_detection" => Some(&["true", "false"]),
+        _ => None,
+    }
+}
+
+/// A short example value for free-text settings, shown in the edit UI.
+fn config_example_value(key: &str) -> &str {
+    match key {
+        "model" => "deepseek-v4-pro",
+        "default_model" => "deepseek-v4-flash",
+        "background_color" => "#1A1B26",
+        "sidebar_width" => "20",
+        "max_history" => "1000",
+        "mcp_config_path" => "~/.deepseek/mcp.json",
         _ => "",
     }
 }
@@ -1118,6 +1227,36 @@ impl ModalView for ConfigView {
             }
             KeyCode::PageDown => {
                 self.move_selection(5);
+                ViewAction::None
+            }
+            KeyCode::Char('-') | KeyCode::Char('+') | KeyCode::Char('=')
+                if self.filter.is_empty() =>
+            {
+                if let Some(row_idx) = self.selected_row_index() {
+                    let row = &self.rows[row_idx];
+                    if let Some(values) = config_enum_values(&row.key) {
+                        let current = &row.value;
+                        let pos = values
+                            .iter()
+                            .position(|v| v.eq_ignore_ascii_case(current))
+                            .unwrap_or(0);
+                        let next = if key.code == KeyCode::Char('-') {
+                            pos.wrapping_sub(1) % values.len()
+                        } else {
+                            (pos + 1) % values.len()
+                        };
+                        let new_value = values[next].to_string();
+                        self.status = Some(format!(
+                            "{}: {} \u{2192} {}",
+                            row.key, current, new_value
+                        ));
+                        return ViewAction::Emit(ViewEvent::ConfigUpdated {
+                            key: row.key.clone(),
+                            value: new_value,
+                            persist: row.scope.persist(),
+                        });
+                    }
+                }
                 ViewAction::None
             }
             KeyCode::Backspace => {
@@ -1228,12 +1367,21 @@ impl ModalView for ConfigView {
             lines.push(Line::from(""));
             lines.push(render_config_editor_value_line(edit));
             lines.push(Line::from(""));
-            let hint = config_hint_for_key(&edit.key);
+            let hint = config_hint_for_key(self.locale, &edit.key);
             if !hint.is_empty() {
                 lines.push(Line::from(vec![
                     Span::styled("Hint: ", Style::default().fg(palette::TEXT_MUTED)),
                     Span::raw(hint),
                 ]));
+            }
+            if config_enum_values(&edit.key).is_none() {
+                let example = config_example_value(&edit.key);
+                if !example.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::styled("Example: ", Style::default().fg(palette::TEXT_MUTED)),
+                        Span::styled(example, Style::default().fg(palette::TEXT_DIM)),
+                    ]));
+                }
             }
             (
                 lines,
@@ -1243,7 +1391,7 @@ impl ModalView for ConfigView {
         } else {
             let content_height = usize::from(inner.height);
             let header_lines = 5usize;
-            let bottom_lines = 1usize;
+            let bottom_lines = 2usize; // +1 for the hint line
             let visible_rows = content_height
                 .saturating_sub(header_lines + bottom_lines)
                 .max(1);
@@ -1315,6 +1463,35 @@ impl ModalView for ConfigView {
                 }
             }
             *self.last_row_hitboxes.borrow_mut() = row_hitboxes;
+
+            // Show hint for the currently highlighted row
+            let hint = self
+                .rows
+                .get(self.selected)
+                .map(|row| config_hint_for_key(self.locale, &row.key))
+                .unwrap_or("");
+            if !hint.is_empty() {
+                let is_enum = self
+                    .rows
+                    .get(self.selected)
+                    .is_some_and(|row| config_enum_values(&row.key).is_some());
+                let mut spans = vec![
+                    Span::styled("  Hint: ", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(hint, Style::default().fg(palette::DEEPSEEK_SKY)),
+                ];
+                if is_enum {
+                    spans.push(Span::styled(
+                        "  [−/+]",
+                        Style::default().fg(palette::DEEPSEEK_SKY).add_modifier(ratatui::style::Modifier::BOLD),
+                    ));
+                }
+                lines.push(Line::from(spans));
+            } else {
+                lines.push(Line::from(vec![Span::styled(
+                    "  Hint: —",
+                    Style::default().fg(palette::TEXT_MUTED),
+                )]));
+            }
 
             if items.is_empty() {
                 let message = if self.filter.is_empty() {

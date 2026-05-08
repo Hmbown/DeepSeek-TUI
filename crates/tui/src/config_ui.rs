@@ -42,46 +42,88 @@ pub struct ConfigUiDocument {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct RuntimeSection {
-    #[schemars(title = "Current model")]
+    #[schemars(
+        title = "Current model",
+        description = "The model used for this session. Set to `auto` for automatic model selection based on request complexity."
+    )]
     pub model: String,
+    #[schemars(
+        description = "When tools are called, how approval is handled: auto (auto-approve), suggest (ask first), or never (deny tool use)."
+    )]
     pub approval_mode: ApprovalModeValue,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct SettingsSection {
+    #[schemars(
+        description = "Automatically compact long conversation context when approaching the token limit."
+    )]
     pub auto_compact: bool,
+    #[schemars(description = "Calm mode: more concise, less verbose output style.")]
     pub calm_mode: bool,
+    #[schemars(description = "Reduce terminal animations for a quieter feel.")]
     pub low_motion: bool,
+    #[schemars(description = "Enable fancy terminal animations (smooth scrolling, etc.).")]
     pub fancy_animations: bool,
+    #[schemars(
+        description = "Detect multi-line pastes to avoid accidentally submitting incomplete input."
+    )]
     pub paste_burst_detection: bool,
+    #[schemars(description = "Display the model's thinking/reasoning tokens in the transcript.")]
     pub show_thinking: bool,
+    #[schemars(description = "Show full tool-call input/output details instead of summaries.")]
     pub show_tool_details: bool,
+    #[schemars(description = "UI display language. Auto detects from the system locale.")]
     pub locale: UiLocale,
     #[schemars(
         title = "Background color",
-        description = "Main TUI background color as #RRGGBB"
+        description = "Main TUI background color as #RRGGBB hex string. Leave empty for terminal default."
     )]
     pub background_color: Option<String>,
+    #[schemars(description = "How dense the input area should be.")]
     pub composer_density: ComposerDensityValue,
+    #[schemars(description = "Draw a border around the composer input area.")]
     pub composer_border: bool,
+    #[schemars(description = "Spacing between consecutive transcript messages.")]
     pub transcript_spacing: TranscriptSpacingValue,
+    #[schemars(
+        description = "Which mode new sessions start in: Agent (autonomous with approvals), Plan (read-only investigation first), or Yolo (auto-approved)."
+    )]
     pub default_mode: DefaultModeValue,
-    #[schemars(range(min = 10, max = 50))]
+    #[schemars(
+        range(min = 10, max = 50),
+        description = "Sidebar panel width as a percentage of the terminal width."
+    )]
     pub sidebar_width: u16,
+    #[schemars(description = "Which sidebar panel to focus by default when opening.")]
     pub sidebar_focus: SidebarFocusValue,
-    #[schemars(range(min = 0))]
+    #[schemars(
+        range(min = 0),
+        description = "Maximum number of input history entries to keep. 0 means no limit."
+    )]
     pub max_history: usize,
+    #[schemars(description = "Currency used for session cost display.")]
     pub cost_currency: CostCurrencyValue,
+    #[schemars(
+        description = "Model to use for new sessions when not overridden. Leave empty for the built-in default."
+    )]
     pub default_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct ConfigSection {
+    #[schemars(description = "Filesystem path to the MCP server configuration file.")]
     pub mcp_config_path: String,
+    #[schemars(
+        description = "Model reasoning/thinking effort tier: Off (no thinking), Low, Medium, High, Auto, or Max (deepest reasoning)."
+    )]
     pub reasoning_effort: ReasoningEffortValue,
-    #[schemars(title = "Status line items")]
+    #[schemars(
+        title = "Status line items",
+        description = "Which status chips to show in the footer bar. Order is preserved."
+    )]
     pub status_items: Vec<StatusItemValue>,
 }
 

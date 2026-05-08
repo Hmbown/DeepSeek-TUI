@@ -375,6 +375,26 @@ pub enum MessageId {
     HomeYoloModeCaution,
     HomePlanModeTip,
     HomePlanModeChecklistTip,
+    // ── Config hint messages (displayed in /config when a row is highlighted) ──
+    ConfigHintModel,
+    ConfigHintDefaultModel,
+    ConfigHintApprovalMode,
+    ConfigHintAutoCompact,
+    ConfigHintCalmMode,
+    ConfigHintLowMotion,
+    ConfigHintShowThinking,
+    ConfigHintShowToolDetails,
+    ConfigHintTranscriptSpacing,
+    ConfigHintComposerDensity,
+    ConfigHintComposerBorder,
+    ConfigHintPasteBurst,
+    ConfigHintSidebarWidth,
+    ConfigHintSidebarFocus,
+    ConfigHintLocale,
+    ConfigHintBackgroundColor,
+    ConfigHintDefaultMode,
+    ConfigHintMaxHistory,
+    ConfigHintMcpConfigPath,
 }
 
 #[allow(dead_code)]
@@ -565,6 +585,25 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::HomeYoloModeCaution,
     MessageId::HomePlanModeTip,
     MessageId::HomePlanModeChecklistTip,
+    MessageId::ConfigHintModel,
+    MessageId::ConfigHintDefaultModel,
+    MessageId::ConfigHintApprovalMode,
+    MessageId::ConfigHintAutoCompact,
+    MessageId::ConfigHintCalmMode,
+    MessageId::ConfigHintLowMotion,
+    MessageId::ConfigHintShowThinking,
+    MessageId::ConfigHintShowToolDetails,
+    MessageId::ConfigHintTranscriptSpacing,
+    MessageId::ConfigHintComposerDensity,
+    MessageId::ConfigHintComposerBorder,
+    MessageId::ConfigHintPasteBurst,
+    MessageId::ConfigHintSidebarWidth,
+    MessageId::ConfigHintSidebarFocus,
+    MessageId::ConfigHintLocale,
+    MessageId::ConfigHintBackgroundColor,
+    MessageId::ConfigHintDefaultMode,
+    MessageId::ConfigHintMaxHistory,
+    MessageId::ConfigHintMcpConfigPath,
 ];
 
 pub fn tr(locale: Locale, id: MessageId) -> &'static str {
@@ -698,13 +737,13 @@ fn english(id: MessageId) -> &'static str {
         MessageId::ConfigFilteredSettings => "  Filtered settings",
         MessageId::ConfigShowing => "  Showing",
         MessageId::ConfigFooterDefault => {
-            " type=filter, Up/Down=select, Enter/e=edit, Esc/q=close "
+            " type=filter, Up/Down=select, -/+=cycle, Enter/e=edit, Esc/q=close "
         }
         MessageId::ConfigFooterScrollable => {
-            " type=filter, Up/Down=select, Enter/e=edit, PgUp/PgDn=scroll, Esc/q=close "
+            " type=filter, Up/Down=select, -/+=cycle, Enter/e=edit, PgUp/PgDn=scroll, Esc/q=close "
         }
         MessageId::ConfigFooterFiltered => {
-            " type=filter, Backspace=delete, Ctrl+U/Esc=clear, Enter=edit "
+            " type=filter, Backspace=delete, Ctrl+U/Esc=clear, -/+=cycle, Enter=edit "
         }
         MessageId::HelpTitle => "Help",
         MessageId::HelpFilterPlaceholder => "Type to filter",
@@ -953,6 +992,62 @@ fn english(id: MessageId) -> &'static str {
         MessageId::HomeYoloModeCaution => "  Be careful with destructive operations!",
         MessageId::HomePlanModeTip => "Plan mode - Design before implementing",
         MessageId::HomePlanModeChecklistTip => "  Use /plan to create structured checklists",
+        // ── Config hints ──
+        MessageId::ConfigHintModel => {
+            "The model used for this session. Set to \'auto\' for automatic selection based on request complexity."
+        }
+        MessageId::ConfigHintDefaultModel => {
+            "Default model for new sessions. Leave empty to use the built-in default."
+        }
+        MessageId::ConfigHintApprovalMode => {
+            "Controls tool-call approval: \'auto\' auto-approves, \'suggest\' asks first, \'never\' denies all tool use."
+        }
+        MessageId::ConfigHintAutoCompact => {
+            "Automatically compress conversation history when approaching the token limit."
+        }
+        MessageId::ConfigHintCalmMode => {
+            "Calm mode: the assistant gives shorter, more concise responses."
+        }
+        MessageId::ConfigHintLowMotion => "Reduce terminal animations for less visual noise.",
+        MessageId::ConfigHintShowThinking => {
+            "Display the model\'s internal reasoning tokens in the transcript."
+        }
+        MessageId::ConfigHintShowToolDetails => {
+            "Show full tool input/output instead of abbreviated summaries."
+        }
+        MessageId::ConfigHintTranscriptSpacing => {
+            "Vertical spacing between transcript messages: compact, comfortable, or spacious."
+        }
+        MessageId::ConfigHintComposerDensity => {
+            "Layout density of the input area: compact, comfortable, or spacious."
+        }
+        MessageId::ConfigHintComposerBorder => {
+            "Draw a visible border around the composer input area."
+        }
+        MessageId::ConfigHintPasteBurst => {
+            "Detect multi-line pastes to prevent accidentally submitting incomplete input."
+        }
+        MessageId::ConfigHintSidebarWidth => {
+            "Sidebar panel width as a percentage of terminal width (10–50)."
+        }
+        MessageId::ConfigHintSidebarFocus => {
+            "Default sidebar panel: auto, plan, todos, tasks, agents, or context."
+        }
+        MessageId::ConfigHintLocale => {
+            "UI display language. \'auto\' detects from the system locale."
+        }
+        MessageId::ConfigHintBackgroundColor => {
+            "TUI background color as #RRGGBB hex. Leave empty for terminal default."
+        }
+        MessageId::ConfigHintDefaultMode => {
+            "Default mode for new sessions: agent (autonomous with approvals), plan (plan before acting), or yolo (auto-approved)."
+        }
+        MessageId::ConfigHintMaxHistory => {
+            "Maximum number of input history entries. 0 means unlimited."
+        }
+        MessageId::ConfigHintMcpConfigPath => {
+            "Filesystem path to the MCP server configuration file."
+        }
     }
 }
 
@@ -982,13 +1077,13 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::ConfigFilteredSettings => "  絞り込み後の設定",
         MessageId::ConfigShowing => "  表示",
         MessageId::ConfigFooterDefault => {
-            " 入力=絞り込み, Up/Down=選択, Enter/e=編集, Esc/q=閉じる "
+            " 入力=絞り込み, Up/Down=選択, -/+=切替, Enter/e=編集, Esc/q=閉じる "
         }
         MessageId::ConfigFooterScrollable => {
-            " 入力=絞り込み, Up/Down=選択, Enter/e=編集, PgUp/PgDn=スクロール, Esc/q=閉じる "
+            " 入力=絞り込み, Up/Down=選択, -/+=切替, Enter/e=編集, PgUp/PgDn=スクロール, Esc/q=閉じる "
         }
         MessageId::ConfigFooterFiltered => {
-            " 入力=絞り込み, Backspace=削除, Ctrl+U/Esc=クリア, Enter=編集 "
+            " 入力=絞り込み, Backspace=削除, Ctrl+U/Esc=クリア, -/+=切替, Enter=編集 "
         }
         MessageId::HelpTitle => "ヘルプ",
         MessageId::HelpFilterPlaceholder => "入力して絞り込み",
@@ -1240,6 +1335,52 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::HomeYoloModeCaution => "  破壊的な操作には注意してください！",
         MessageId::HomePlanModeTip => "Plan モード - 実装前に設計",
         MessageId::HomePlanModeChecklistTip => "  /plan を使って構造化されたチェックリストを作成",
+        // ── 設定項目の説明 ──
+        MessageId::ConfigHintModel => {
+            "このセッションで使用するモデル。auto にするとリクエストの複雑さに応じて自動選択されます。"
+        }
+        MessageId::ConfigHintDefaultModel => {
+            "新規セッションのデフォルトモデル。空欄の場合は組み込みのデフォルトを使用。"
+        }
+        MessageId::ConfigHintApprovalMode => {
+            "ツール呼び出しの承認方法：auto 自動承認、suggest 都度確認、never ツール使用不可。"
+        }
+        MessageId::ConfigHintAutoCompact => {
+            "トークン上限に近づいたら会話履歴を自動圧縮し、コンテキスト容量を確保します。"
+        }
+        MessageId::ConfigHintCalmMode => "落ち着きモード：アシスタントの返答がより簡潔になります。",
+        MessageId::ConfigHintLowMotion => "端末アニメーションを抑え、視覚的なノイズを減らします。",
+        MessageId::ConfigHintShowThinking => {
+            "モデルの内部推論プロセス（思考トークン）を会話に表示します。"
+        }
+        MessageId::ConfigHintShowToolDetails => {
+            "ツール呼び出しの入出力を省略せずに全文表示します。"
+        }
+        MessageId::ConfigHintTranscriptSpacing => {
+            "メッセージ間の垂直スペース：compact 狭く、comfortable 標準、spacious 広く。"
+        }
+        MessageId::ConfigHintComposerDensity => {
+            "入力エリアのレイアウト密度：compact 狭く、comfortable 標準、spacious 広く。"
+        }
+        MessageId::ConfigHintComposerBorder => "入力エリアの周囲に枠線を描画します。",
+        MessageId::ConfigHintPasteBurst => {
+            "複数行の貼り付けを検出し、不完全な入力の誤送信を防ぎます。"
+        }
+        MessageId::ConfigHintSidebarWidth => {
+            "サイドバーの幅を端末幅に対するパーセンテージで指定（10～50）。"
+        }
+        MessageId::ConfigHintSidebarFocus => {
+            "デフォルトで開くサイドバーパネル：auto 自動、plan 計画、todos TODO、tasks タスク、agents サブエージェント、context コンテキスト。"
+        }
+        MessageId::ConfigHintLocale => "UI 表示言語。auto はシステムロケールから自動検出します。",
+        MessageId::ConfigHintBackgroundColor => {
+            "TUI 背景色（#RRGGBB 形式）。空欄または default で端末のデフォルトを使用。"
+        }
+        MessageId::ConfigHintDefaultMode => {
+            "新規セッションのデフォルトモード：agent 自律エージェント（承認あり）、plan 計画優先、yolo 完全自動。"
+        }
+        MessageId::ConfigHintMaxHistory => "入力履歴の最大保存数。0 は無制限。",
+        MessageId::ConfigHintMcpConfigPath => "MCP サーバー設定ファイルのファイルシステムパス。",
     })
 }
 
@@ -1259,12 +1400,12 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::ConfigNoMatchesPrefix => "  没有匹配设置: ",
         MessageId::ConfigFilteredSettings => "  已筛选设置",
         MessageId::ConfigShowing => "  显示",
-        MessageId::ConfigFooterDefault => " 输入=筛选, Up/Down=选择, Enter/e=编辑, Esc/q=关闭 ",
+        MessageId::ConfigFooterDefault => " 输入=筛选, Up/Down=选择, -/+=切换, Enter/e=编辑, Esc/q=关闭 ",
         MessageId::ConfigFooterScrollable => {
-            " 输入=筛选, Up/Down=选择, Enter/e=编辑, PgUp/PgDn=滚动, Esc/q=关闭 "
+            " 输入=筛选, Up/Down=选择, -/+=切换, Enter/e=编辑, PgUp/PgDn=滚动, Esc/q=关闭 "
         }
         MessageId::ConfigFooterFiltered => {
-            " 输入=筛选, Backspace=删除, Ctrl+U/Esc=清除, Enter=编辑 "
+            " 输入=筛选, Backspace=删除, Ctrl+U/Esc=清除, -/+=切换, Enter=编辑 "
         }
         MessageId::HelpTitle => "帮助",
         MessageId::HelpFilterPlaceholder => "输入以筛选",
@@ -1482,6 +1623,42 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::HomeYoloModeCaution => "  请小心破坏性操作！",
         MessageId::HomePlanModeTip => "Plan 模式 - 先设计再实现",
         MessageId::HomePlanModeChecklistTip => "  使用 /plan 创建结构化检查清单",
+        // ── 配置项说明 ──
+        MessageId::ConfigHintModel => {
+            "当前会话使用的模型。设为 auto 可由系统根据请求复杂度自动选择模型。"
+        }
+        MessageId::ConfigHintDefaultModel => "新会话的默认模型。留空则使用内置默认值。",
+        MessageId::ConfigHintApprovalMode => {
+            "工具调用审批策略：auto 自动批准，suggest 每次询问，never 拒绝工具调用。"
+        }
+        MessageId::ConfigHintAutoCompact => {
+            "当会话接近令牌上限时自动压缩对话历史，释放上下文空间。"
+        }
+        MessageId::ConfigHintCalmMode => "冷静模式：助手回复更简洁、直截了当。",
+        MessageId::ConfigHintLowMotion => "减少终端动画效果，降低视觉干扰。",
+        MessageId::ConfigHintShowThinking => "在对话中展示模型的内部推理过程（思考令牌）。",
+        MessageId::ConfigHintShowToolDetails => "显示工具调用的完整输入输出内容，而非缩略摘要。",
+        MessageId::ConfigHintTranscriptSpacing => {
+            "消息之间的垂直间距：compact 紧凑、comfortable 适中、spacious 宽松。"
+        }
+        MessageId::ConfigHintComposerDensity => {
+            "输入区域的布局密度：compact 紧凑、comfortable 适中、spacious 宽松。"
+        }
+        MessageId::ConfigHintComposerBorder => "是否在输入区域周围绘制可见边框。",
+        MessageId::ConfigHintPasteBurst => "检测多行粘贴，防止误触发送不完整的输入。",
+        MessageId::ConfigHintSidebarWidth => "侧边栏宽度占终端宽度的百分比（10～50）。",
+        MessageId::ConfigHintSidebarFocus => {
+            "侧边栏默认打开的面板：auto 自动、plan 计划、todos 待办、tasks 任务、agents 子代理、context 上下文。"
+        }
+        MessageId::ConfigHintLocale => "界面显示语言。auto 根据系统语言自动检测。",
+        MessageId::ConfigHintBackgroundColor => {
+            "TUI 背景色（#RRGGBB 格式）。留空或填 default 使用终端默认背景。"
+        }
+        MessageId::ConfigHintDefaultMode => {
+            "新会话的默认模式：agent 自主代理（需审批）、plan 先规划再执行、yolo 全自动。"
+        }
+        MessageId::ConfigHintMaxHistory => "输入历史的最大保存条数。0 表示不限制。",
+        MessageId::ConfigHintMcpConfigPath => "MCP 服务器配置文件的文件系统路径。",
     })
 }
 
@@ -1502,13 +1679,13 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::ConfigFilteredSettings => "  Configurações filtradas",
         MessageId::ConfigShowing => "  Mostrando",
         MessageId::ConfigFooterDefault => {
-            " digite=filtrar, Up/Down=selecionar, Enter/e=editar, Esc/q=fechar "
+            " digite=filtrar, Up/Down=selecionar, -/+=alternar, Enter/e=editar, Esc/q=fechar "
         }
         MessageId::ConfigFooterScrollable => {
-            " digite=filtrar, Up/Down=selecionar, Enter/e=editar, PgUp/PgDn=rolar, Esc/q=fechar "
+            " digite=filtrar, Up/Down=selecionar, -/+=alternar, Enter/e=editar, PgUp/PgDn=rolar, Esc/q=fechar "
         }
         MessageId::ConfigFooterFiltered => {
-            " digite=filtrar, Backspace=apagar, Ctrl+U/Esc=limpar, Enter=editar "
+            " digite=filtrar, Backspace=apagar, Ctrl+U/Esc=limpar, -/+=alternar, Enter=editar "
         }
         MessageId::HelpTitle => "Ajuda",
         MessageId::HelpFilterPlaceholder => "Digite para filtrar",
@@ -1782,6 +1959,62 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::HomeYoloModeCaution => "  Tenha cuidado com operações destrutivas!",
         MessageId::HomePlanModeTip => "Modo Plan - Planeje antes de implementar",
         MessageId::HomePlanModeChecklistTip => "  Use /plan para criar checklists estruturados",
+        // ── Dicas de configuração ──
+        MessageId::ConfigHintModel => {
+            "Modelo usado nesta sessão. Use \'auto\' para seleção automática (Pro ou Flash) conforme a complexidade."
+        }
+        MessageId::ConfigHintDefaultModel => {
+            "Modelo padrão para novas sessões. Deixe vazio para usar o padrão do sistema."
+        }
+        MessageId::ConfigHintApprovalMode => {
+            "Controle de aprovação de ferramentas: \'auto\' aprova tudo, \'suggest\' pergunta, \'never\' recusa."
+        }
+        MessageId::ConfigHintAutoCompact => {
+            "Compacta automaticamente o histórico ao se aproximar do limite de tokens."
+        }
+        MessageId::ConfigHintCalmMode => {
+            "Modo calmo: respostas mais curtas e diretas do assistente."
+        }
+        MessageId::ConfigHintLowMotion => "Reduz animações do terminal para menos ruído visual.",
+        MessageId::ConfigHintShowThinking => {
+            "Exibe os tokens de raciocínio interno do modelo na transcrição."
+        }
+        MessageId::ConfigHintShowToolDetails => {
+            "Mostra a entrada/saída completa das ferramentas em vez de resumos."
+        }
+        MessageId::ConfigHintTranscriptSpacing => {
+            "Espaçamento vertical entre mensagens: compact, comfortable ou spacious."
+        }
+        MessageId::ConfigHintComposerDensity => {
+            "Densidade do layout da área de entrada: compact, comfortable ou spacious."
+        }
+        MessageId::ConfigHintComposerBorder => {
+            "Desenha uma borda visível ao redor da área de entrada."
+        }
+        MessageId::ConfigHintPasteBurst => {
+            "Detecta colagens multilinha para evitar envios acidentais de entrada incompleta."
+        }
+        MessageId::ConfigHintSidebarWidth => {
+            "Largura do painel lateral em porcentagem da largura do terminal (10–50)."
+        }
+        MessageId::ConfigHintSidebarFocus => {
+            "Painel lateral padrão: auto, plan, todos, tasks, agents ou context."
+        }
+        MessageId::ConfigHintLocale => {
+            "Idioma da interface. \'auto\' detecta pelo locale do sistema."
+        }
+        MessageId::ConfigHintBackgroundColor => {
+            "Cor de fundo do TUI em #RRGGBB. Deixe vazio para o padrão do terminal."
+        }
+        MessageId::ConfigHintDefaultMode => {
+            "Modo padrão para novas sessões: agent (autônomo com aprovações), plan (planejar antes) ou yolo (automático)."
+        }
+        MessageId::ConfigHintMaxHistory => {
+            "Número máximo de entradas no histórico. 0 significa ilimitado."
+        }
+        MessageId::ConfigHintMcpConfigPath => {
+            "Caminho no sistema de arquivos para o arquivo de configuração do servidor MCP."
+        }
     })
 }
 
