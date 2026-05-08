@@ -197,7 +197,7 @@ impl HistoryCell {
                     render_cycle_boundary(content, width)
                 } else {
                     render_message(
-                        "Note",
+                        crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::ToolLabelNote),
                         system_label_style(),
                         system_body_style(),
                         content,
@@ -668,7 +668,7 @@ impl ExecCell {
             .as_deref()
             .or(Some(command_summary.as_str()));
         lines.push(render_tool_header_with_summary(
-            "Shell",
+            crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::ToolLabelShell),
             header_summary,
             tool_status_label(self.status),
             self.status,
@@ -759,7 +759,7 @@ impl ExploringCell {
         };
         let header_summary = exploring_header_summary(&self.entries);
         lines.push(render_tool_header_with_summary(
-            "Workspace",
+            crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::ToolLabelWorkspace),
             header_summary.as_deref(),
             if all_done { "done" } else { "running" },
             status,
@@ -811,7 +811,7 @@ impl PlanUpdateCell {
     pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         lines.push(render_tool_header(
-            "Plan",
+            crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::ToolLabelPlan),
             tool_status_label(self.status),
             self.status,
             None,
@@ -871,7 +871,7 @@ impl PatchSummaryCell {
     ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         lines.push(render_tool_header_with_summary(
-            "Patch",
+            crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::ToolLabelPatch),
             Some(&self.path),
             tool_status_label(self.status),
             self.status,
@@ -920,7 +920,7 @@ impl ReviewCell {
     ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         lines.push(render_tool_header(
-            "Review",
+            crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::ToolLabelReview),
             tool_status_label(self.status),
             self.status,
             None,
@@ -964,7 +964,7 @@ impl ReviewCell {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Issues",
+            crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::ToolLabelIssues),
             Style::default()
                 .fg(palette::DEEPSEEK_BLUE)
                 .add_modifier(Modifier::BOLD),
@@ -998,7 +998,7 @@ impl ReviewCell {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Suggestions",
+            crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::ToolLabelSuggestions),
             Style::default()
                 .fg(palette::DEEPSEEK_BLUE)
                 .add_modifier(Modifier::BOLD),
@@ -1050,7 +1050,7 @@ impl DiffPreviewCell {
         let mut lines = Vec::new();
         let diff_summary = diff_render::diff_summary_label(&self.diff);
         lines.push(render_tool_header_with_summary(
-            "Diff",
+            crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::ToolLabelDiff),
             diff_summary.as_deref(),
             "done",
             ToolStatus::Success,
@@ -1086,7 +1086,7 @@ impl McpToolCell {
     ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         lines.push(render_tool_header_with_summary(
-            "Tool",
+            crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::ToolLabelTool),
             Some(&self.tool),
             tool_status_label(self.status),
             self.status,
@@ -1132,7 +1132,7 @@ impl ViewImageCell {
     pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         let path = self.path.display().to_string();
         let mut lines = vec![render_tool_header_with_summary(
-            "Image",
+            crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::ToolLabelImage),
             Some(&path),
             "done",
             ToolStatus::Success,
@@ -1157,7 +1157,7 @@ impl WebSearchCell {
     pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         lines.push(render_tool_header_with_summary(
-            "Search",
+            crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::ToolLabelSearch),
             Some(&self.query),
             tool_status_label(self.status),
             self.status,
@@ -1294,7 +1294,7 @@ impl GenericToolCell {
             if output_looks_like_diff(output) {
                 let diff_summary = diff_render::diff_summary_label(output);
                 lines.push(render_tool_header_with_summary(
-                    "Diff",
+                    crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::ToolLabelDiff),
                     diff_summary.as_deref(),
                     tool_status_label(self.status),
                     self.status,
@@ -2674,9 +2674,9 @@ fn system_body_style() -> Style {
 fn error_label_text(severity: crate::error_taxonomy::ErrorSeverity) -> &'static str {
     match severity {
         crate::error_taxonomy::ErrorSeverity::Critical
-        | crate::error_taxonomy::ErrorSeverity::Error => "Error",
-        crate::error_taxonomy::ErrorSeverity::Warning => "Warn",
-        crate::error_taxonomy::ErrorSeverity::Info => "Info",
+        | crate::error_taxonomy::ErrorSeverity::Error => crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::ErrorLabelError),
+        crate::error_taxonomy::ErrorSeverity::Warning => crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::ErrorLabelWarn),
+        crate::error_taxonomy::ErrorSeverity::Info => crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::ErrorLabelInfo),
     }
 }
 

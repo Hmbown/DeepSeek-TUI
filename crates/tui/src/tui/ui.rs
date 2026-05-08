@@ -9,10 +9,9 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::{
     event::{
-        self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
-        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+        MouseEventKind, PopKeyboardEnhancementFlags,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -210,10 +209,6 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     if use_bracketed_paste {
         execute!(stdout, EnableBracketedPaste)?;
     }
-    // Enable focus events so the terminal reports FocusGained/FocusLost.
-    // Necessary for IME compositor re-activation on macOS when the user
-    // switches away (Cmd+Tab) and returns.
-    execute!(stdout, EnableFocusChange)?;
     // #442: opt into the Kitty keyboard protocol's escape-code
     // disambiguation so terminals that support it (Kitty, Ghostty,
     // Alacritty 0.13+, WezTerm, recent Konsole, recent xterm) report
@@ -227,7 +222,18 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     // release events that the existing key handlers would mis-route
     // as duplicate presses. Best-effort: failure to push is logged
     // and ignored so a quirky terminal can't block startup.
-    push_keyboard_enhancement_flags(&mut stdout);
+    if let Err(err) = execute!(
+        stdout,
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        )
+    ) {
+        tracing::debug!(
+            target: "kitty_keyboard",
+            ?err,
+            "PushKeyboardEnhancementFlags ignored (terminal lacks support)"
+        );
+    }
     let color_depth = palette::ColorDepth::detect();
     let palette_mode = palette::PaletteMode::detect();
     tracing::debug!(
@@ -237,7 +243,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     );
     let backend = ColorCompatBackend::new(stdout, color_depth, palette_mode);
     let mut terminal = Terminal::new(backend)?;
-    reset_terminal_viewport(&mut terminal)?;
+    terminal.clear()?;
     let event_broker = EventBroker::new();
 
     // Local mutable copy so runtime config flips (e.g. `/provider` switch)
@@ -274,7 +280,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                 }
             }
             Ok(None) => {
-                app.status_message = Some("No sessions found to resume".to_string());
+                app.status_message = Some(app.tr(crate::localization::MessageId::StatusNoSessions).to_string());
             }
             Err(e) => {
                 app.status_message = Some(format!("Failed to load session: {e}"));
@@ -413,7 +419,6 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     persistence_actor::persist(PersistRequest::Shutdown);
 
     let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
-    execute!(terminal.backend_mut(), DisableFocusChange)?;
     disable_raw_mode()?;
     if use_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -1470,7 +1475,7 @@ async fn run_event_loop(
             )?;
             event_broker.resume_events();
             terminal_paused_at = None;
-            app.status_message = Some("Terminal controls restored".to_string());
+            app.status_message = Some(app.tr(crate::localization::MessageId::StatusTerminalRestored).to_string());
             app.needs_redraw = true;
             force_terminal_repaint = true;
         }
@@ -1578,21 +1583,6 @@ async fn run_event_loop(
                 continue;
             }
 
-            // Re-push keyboard enhancement flags on focus-gain and force a
-            // full viewport reset before repainting. App-switching and
-            // interactive handoffs can leave the host terminal scrolled away
-            // from row 0; treating focus as a recapture point prevents the
-            // native scrollback gutter / blank-top-row failure mode from
-            // persisting after the user returns.
-            // On macOS, switching away (Cmd+Tab) and back can reset the
-            // terminal's keyboard mode, which breaks IME compositor state.
-            // Acknowledging FocusGained and re-pushing the flags restores
-            // the IME so CJK input methods work after a focus toggle.
-            if terminal_event_needs_viewport_recapture(&evt) {
-                push_keyboard_enhancement_flags(terminal.backend_mut());
-                force_terminal_repaint = true;
-                app.needs_redraw = true;
-            }
             if let Event::Resize(width, height) = evt {
                 tracing::debug!(
                     width,
@@ -1704,7 +1694,7 @@ async fn run_event_loop(
                     let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
                     shift_bypass_active = false;
                     app.push_status_toast(
-                        "Mouse capture restored",
+                        app.tr(crate::localization::MessageId::StatusMouseRestored),
                         StatusToastLevel::Info,
                         Some(2_000),
                     );
@@ -1950,7 +1940,7 @@ async fn run_event_loop(
                 if let Some(_state) = app.file_tree.as_mut() {
                     // File tree visible → hide it.
                     app.file_tree = None;
-                    app.status_message = Some("File tree closed".to_string());
+                    app.status_message = Some(app.tr(crate::localization::MessageId::StatusFileTreeClosed).to_string());
                 } else {
                     // Build the file tree from the current workspace.
                     let state = crate::tui::file_tree::FileTreeState::new(&app.workspace);
@@ -2047,7 +2037,7 @@ async fn run_event_loop(
                     }
                     KeyCode::Esc => {
                         app.file_tree = None;
-                        app.status_message = Some("File tree closed".to_string());
+                        app.status_message = Some(app.tr(crate::localization::MessageId::StatusFileTreeClosed).to_string());
                         app.needs_redraw = true;
                         continue;
                     }
@@ -2247,7 +2237,7 @@ async fn run_event_loop(
                         // engine's eventual TurnComplete event will overwrite
                         // with the real outcome ("interrupted").
                         app.runtime_turn_status = None;
-                        app.status_message = Some("Request cancelled".to_string());
+                        app.status_message = Some(app.tr(crate::localization::MessageId::StatusRequestCancelled).to_string());
                         app.disarm_quit();
                     } else if app.quit_is_armed() {
                         let _ = engine_handle.send(Op::Shutdown).await;
@@ -2307,12 +2297,12 @@ async fn run_event_loop(
                         // foreground turn.
                         app.finalize_active_cell_as_interrupted();
                         app.finalize_streaming_assistant_as_interrupted();
-                        app.status_message = Some("Request cancelled".to_string());
+                        app.status_message = Some(app.tr(crate::localization::MessageId::StatusRequestCancelled).to_string());
                     }
                     EscapeAction::DiscardQueuedDraft => {
                         app.backtrack.reset();
                         app.queued_draft = None;
-                        app.status_message = Some("Stopped editing queued message".to_string());
+                        app.status_message = Some(app.tr(crate::localization::MessageId::StatusStoppedEditingQueued).to_string());
                     }
                     EscapeAction::ClearInput => {
                         app.backtrack.reset();
@@ -2335,11 +2325,11 @@ async fn run_event_loop(
                             crate::tui::backtrack::EscEffect::None => {}
                             crate::tui::backtrack::EscEffect::Prime => {
                                 app.status_message =
-                                    Some("Press Esc again to backtrack".to_string());
+                                    Some(app.tr(crate::localization::MessageId::StatusPressEscAgain).to_string());
                                 app.needs_redraw = true;
                             }
                             crate::tui::backtrack::EscEffect::Cancel => {
-                                app.status_message = Some("Backtrack canceled".to_string());
+                                app.status_message = Some(app.tr(crate::localization::MessageId::StatusBacktrackCancelled).to_string());
                                 app.needs_redraw = true;
                             }
                             crate::tui::backtrack::EscEffect::OpenOverlay => {
@@ -2737,7 +2727,7 @@ async fn run_event_loop(
                             app.status_message = Some("Editor closed (no changes)".to_string());
                         }
                         Ok(super::external_editor::EditorOutcome::Cancelled) => {
-                            app.status_message = Some("Editor cancelled".to_string());
+                            app.status_message = Some(app.tr(crate::localization::MessageId::StatusEditorCancelled).to_string());
                         }
                         Err(err) => {
                             app.status_message = Some(format!("Editor error: {err}"));
@@ -2796,7 +2786,7 @@ async fn run_event_loop(
                     if app.input.is_empty() && app.view_stack.is_empty() {
                         if copy_focused_cell(app) {
                             app.push_status_toast(
-                                "Copied to clipboard",
+                                app.tr(crate::localization::MessageId::StatusCopiedToClipboard),
                                 StatusToastLevel::Info,
                                 Some(2_000),
                             );
@@ -4978,7 +4968,7 @@ async fn submit_or_steer_message(
                 ));
             } else {
                 app.push_status_toast(
-                    "Steering into current turn",
+                    app.tr(crate::localization::MessageId::StatusSteeringIntoTurn),
                     StatusToastLevel::Info,
                     Some(1_500),
                 );
@@ -5558,7 +5548,7 @@ async fn handle_view_events(
             ViewEvent::UserInputCancelled { tool_id } => {
                 let _ = engine_handle.cancel_user_input(tool_id).await;
                 app.add_message(HistoryCell::System {
-                    content: "User input cancelled".to_string(),
+                    content: app.tr(crate::localization::MessageId::StatusUserInputCancelled).to_string(),
                 });
             }
             ViewEvent::PlanPromptSelected { option } => {
@@ -5726,7 +5716,7 @@ async fn handle_view_events(
             }
             ViewEvent::BacktrackCancel => {
                 app.backtrack.reset();
-                app.status_message = Some("Backtrack canceled".to_string());
+                app.status_message = Some(app.tr(crate::localization::MessageId::StatusBacktrackCancelled).to_string());
                 app.needs_redraw = true;
             }
             ViewEvent::ContextMenuSelected { action } => {
@@ -5743,7 +5733,7 @@ async fn handle_view_events(
                 app.runtime_turn_status = None;
                 app.finalize_active_cell_as_interrupted();
                 app.finalize_streaming_assistant_as_interrupted();
-                app.status_message = Some("Request cancelled".to_string());
+                app.status_message = Some(app.tr(crate::localization::MessageId::StatusRequestCancelled).to_string());
             }
         }
     }
@@ -5804,7 +5794,7 @@ fn find_user_cell_index_from_tail(app: &App, depth: usize) -> Option<usize> {
 /// re-synced via `Op::SyncSession` so the next turn starts fresh.
 fn apply_backtrack(app: &mut App, depth: usize) {
     let Some(history_idx) = find_user_cell_index_from_tail(app, depth) else {
-        app.status_message = Some("Backtrack target no longer present".to_string());
+        app.status_message = Some(app.tr(crate::localization::MessageId::StatusBacktrackTargetGone).to_string());
         return;
     };
 
@@ -6031,7 +6021,7 @@ fn restore_recovered_retry_draft(app: &mut App, draft: QueuedMessage) {
     app.cursor_position = app.input.chars().count();
     app.queued_draft = Some(draft);
     app.status_message = Some(
-        "Recovered interrupted prompt as an editable draft; press Enter to retry.".to_string(),
+        app.tr(crate::localization::MessageId::StatusRecoveredInterrupted).to_string(),
     );
     app.needs_redraw = true;
 }
@@ -6206,7 +6196,6 @@ fn pause_terminal(
     // mode. Best-effort — terminals that didn't accept the flags
     // silently ignore the pop. Matches the shutdown and panic paths.
     let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
-    execute!(terminal.backend_mut(), DisableFocusChange)?;
     disable_raw_mode()?;
     if use_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -6236,8 +6225,6 @@ fn resume_terminal(
     if use_bracketed_paste {
         execute!(terminal.backend_mut(), EnableBracketedPaste)?;
     }
-    execute!(terminal.backend_mut(), EnableFocusChange)?;
-    push_keyboard_enhancement_flags(terminal.backend_mut());
     reset_terminal_viewport(terminal)?;
     Ok(())
 }
@@ -6251,23 +6238,6 @@ fn reset_terminal_viewport(terminal: &mut AppTerminal) -> Result<()> {
     terminal.backend_mut().flush()?;
     terminal.clear()?;
     Ok(())
-}
-
-fn push_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
-    if let Err(err) = execute!(
-        writer,
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-    ) {
-        tracing::debug!(
-            target: "kitty_keyboard",
-            ?err,
-            "PushKeyboardEnhancementFlags ignored (terminal lacks support)"
-        );
-    }
-}
-
-fn terminal_event_needs_viewport_recapture(evt: &Event) -> bool {
-    matches!(evt, Event::FocusGained)
 }
 
 fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
@@ -6571,7 +6541,7 @@ fn open_shell_control(app: &mut App) {
     }
 
     app.view_stack.push(ShellControlView::new());
-    app.status_message = Some("Shell control opened".to_string());
+    app.status_message = Some(app.tr(crate::localization::MessageId::StatusShellControlOpened).to_string());
 }
 
 fn request_foreground_shell_background(app: &mut App) {
@@ -6581,7 +6551,7 @@ fn request_foreground_shell_background(app: &mut App) {
     }
 
     let Some(shell_manager) = app.runtime_services.shell_manager.clone() else {
-        app.status_message = Some("Shell manager is not attached".to_string());
+        app.status_message = Some(app.tr(crate::localization::MessageId::StatusShellManagerNotAttached).to_string());
         return;
     };
 
@@ -6591,7 +6561,7 @@ fn request_foreground_shell_background(app: &mut App) {
             app.status_message = Some("Backgrounding current shell command...".to_string());
         }
         Err(_) => {
-            app.status_message = Some("Shell manager lock is poisoned".to_string());
+            app.status_message = Some(app.tr(crate::localization::MessageId::StatusShellManagerLockPoisoned).to_string());
         }
     }
 }
@@ -7517,17 +7487,17 @@ fn build_context_menu_entries(app: &App, mouse: MouseEvent) -> Vec<ContextMenuEn
 
     if selection_has_content(app) {
         entries.push(ContextMenuEntry {
-            label: "Copy selection".to_string(),
-            description: "write selected transcript text".to_string(),
+            label: app.tr(crate::localization::MessageId::CtxMenuCopySelection).to_string(),
+            description: app.tr(crate::localization::MessageId::CtxMenuDescCopySelection).to_string(),
             action: ContextMenuAction::CopySelection,
         });
         entries.push(ContextMenuEntry {
-            label: "Open selection".to_string(),
-            description: "show selected text in pager".to_string(),
+            label: app.tr(crate::localization::MessageId::CtxMenuOpenSelection).to_string(),
+            description: app.tr(crate::localization::MessageId::CtxMenuDescOpenSelection).to_string(),
             action: ContextMenuAction::OpenSelection,
         });
         entries.push(ContextMenuEntry {
-            label: "Clear selection".to_string(),
+            label: app.tr(crate::localization::MessageId::CtxMenuClearSelection).to_string(),
             description: String::new(),
             action: ContextMenuAction::ClearSelection,
         });
@@ -7547,31 +7517,31 @@ fn build_context_menu_entries(app: &App, mouse: MouseEvent) -> Vec<ContextMenuEn
             .map(|label| truncate_line_to_width(&label, 28))
             .unwrap_or_else(|| "message".to_string());
         entries.push(ContextMenuEntry {
-            label: "Open details".to_string(),
+            label: app.tr(crate::localization::MessageId::CtxMenuOpenDetails).to_string(),
             description: target,
             action: ContextMenuAction::OpenDetails { cell_index },
         });
         entries.push(ContextMenuEntry {
-            label: "Copy message".to_string(),
-            description: "write clicked transcript cell".to_string(),
+            label: app.tr(crate::localization::MessageId::CtxMenuCopyMessage).to_string(),
+            description: app.tr(crate::localization::MessageId::CtxMenuDescCopyMessage).to_string(),
             action: ContextMenuAction::CopyCell { cell_index },
         });
         entries.push(ContextMenuEntry {
-            label: "Open in editor".to_string(),
-            description: "open file:line in $EDITOR".to_string(),
+            label: app.tr(crate::localization::MessageId::CtxMenuOpenInEditor).to_string(),
+            description: app.tr(crate::localization::MessageId::CtxMenuDescOpenInEditor).to_string(),
             action: ContextMenuAction::OpenFileAtLine { cell_index },
         });
         // Hide/show cell toggle.
         if app.collapsed_cells.contains(&cell_index) {
             entries.push(ContextMenuEntry {
-                label: "Show cell".to_string(),
-                description: "unhide this transcript cell".to_string(),
+                label: app.tr(crate::localization::MessageId::CtxMenuShowCell).to_string(),
+                description: app.tr(crate::localization::MessageId::CtxMenuDescShowCell).to_string(),
                 action: ContextMenuAction::ShowCell { cell_index },
             });
         } else {
             entries.push(ContextMenuEntry {
-                label: "Hide cell".to_string(),
-                description: "collapse this transcript cell".to_string(),
+                label: app.tr(crate::localization::MessageId::CtxMenuHideCell).to_string(),
+                description: app.tr(crate::localization::MessageId::CtxMenuDescHideCell).to_string(),
                 action: ContextMenuAction::HideCell { cell_index },
             });
         }
@@ -7588,23 +7558,23 @@ fn build_context_menu_entries(app: &App, mouse: MouseEvent) -> Vec<ContextMenuEn
     }
 
     entries.push(ContextMenuEntry {
-        label: "Paste".to_string(),
-        description: "insert clipboard into composer".to_string(),
+        label: app.tr(crate::localization::MessageId::CtxMenuPaste).to_string(),
+        description: app.tr(crate::localization::MessageId::CtxMenuDescPaste).to_string(),
         action: ContextMenuAction::Paste,
     });
     entries.push(ContextMenuEntry {
-        label: "Command palette".to_string(),
-        description: "commands, skills, and tools".to_string(),
+        label: app.tr(crate::localization::MessageId::CtxMenuCommandPalette).to_string(),
+        description: app.tr(crate::localization::MessageId::CtxMenuDescCommandPalette).to_string(),
         action: ContextMenuAction::OpenCommandPalette,
     });
     entries.push(ContextMenuEntry {
-        label: "Context inspector".to_string(),
-        description: "active context and cache hints".to_string(),
+        label: app.tr(crate::localization::MessageId::CtxMenuContextInspector).to_string(),
+        description: app.tr(crate::localization::MessageId::CtxMenuDescContextInspector).to_string(),
         action: ContextMenuAction::OpenContextInspector,
     });
     entries.push(ContextMenuEntry {
-        label: "Help".to_string(),
-        description: "keybindings and commands".to_string(),
+        label: app.tr(crate::localization::MessageId::CtxMenuHelp).to_string(),
+        description: app.tr(crate::localization::MessageId::CtxMenuDescHelp).to_string(),
         action: ContextMenuAction::OpenHelp,
     });
 
@@ -7633,7 +7603,7 @@ fn handle_context_menu_action(app: &mut App, action: ContextMenuAction) {
         }
         ContextMenuAction::ClearSelection => {
             app.viewport.transcript_selection.clear();
-            app.status_message = Some("Selection cleared".to_string());
+            app.status_message = Some(app.tr(crate::localization::MessageId::StatusSelectionCleared).to_string());
         }
         ContextMenuAction::CopyCell { cell_index } => {
             copy_cell_to_clipboard(app, cell_index);
@@ -7676,18 +7646,18 @@ fn handle_context_menu_action(app: &mut App, action: ContextMenuAction) {
                 width,
             );
             if crate::tui::history::try_open_file_at_line(&text, &app.workspace) {
-                app.status_message = Some("Opened file in editor".to_string());
+                app.status_message = Some(app.tr(crate::localization::MessageId::StatusFileOpenedInEditor).to_string());
             } else {
-                app.status_message = Some("No file:line pattern found in selection".to_string());
+                app.status_message = Some(app.tr(crate::localization::MessageId::StatusNoFileLinePattern).to_string());
             }
         }
         ContextMenuAction::HideCell { cell_index } => {
             app.collapsed_cells.insert(cell_index);
-            app.status_message = Some("Cell hidden".to_string());
+            app.status_message = Some(app.tr(crate::localization::MessageId::StatusCellHidden).to_string());
         }
         ContextMenuAction::ShowCell { cell_index } => {
             app.collapsed_cells.remove(&cell_index);
-            app.status_message = Some("Cell shown".to_string());
+            app.status_message = Some(app.tr(crate::localization::MessageId::StatusCellShown).to_string());
         }
         ContextMenuAction::ShowAllHidden => {
             let count = app.collapsed_cells.len();
@@ -7756,9 +7726,9 @@ fn copy_active_selection(app: &mut App) {
     }
     if let Some(text) = selection_to_text(app).filter(|text| !text.is_empty()) {
         if app.clipboard.write_text(&text).is_ok() {
-            app.status_message = Some("Selection copied".to_string());
+            app.status_message = Some(app.tr(crate::localization::MessageId::StatusSelectionCopied).to_string());
         } else {
-            app.status_message = Some("Copy failed".to_string());
+            app.status_message = Some(app.tr(crate::localization::MessageId::StatusCopyFailed).to_string());
         }
     } else {
         app.viewport.transcript_selection.clear();
@@ -7805,7 +7775,7 @@ fn open_pager_for_selection(app: &mut App) -> bool {
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(80);
-    let pager = PagerView::from_text("Selection", &text, width.saturating_sub(2));
+    let pager = PagerView::from_text(app.tr(crate::localization::MessageId::PagerTitleSelection).to_string(), &text, width.saturating_sub(2));
     app.view_stack.push(pager);
     true
 }
@@ -7820,7 +7790,7 @@ fn open_pager_for_last_message(app: &mut App) -> bool {
         .map(|area| area.width)
         .unwrap_or(80);
     let text = history_cell_to_text(cell, width);
-    let pager = PagerView::from_text("Message", &text, width.saturating_sub(2));
+    let pager = PagerView::from_text(app.tr(crate::localization::MessageId::PagerTitleMessage).to_string(), &text, width.saturating_sub(2));
     app.view_stack.push(pager);
     true
 }
@@ -7876,7 +7846,7 @@ fn open_thinking_pager(app: &mut App) -> bool {
         .unwrap_or(80);
     let text = history_cell_to_text(cell, width);
     app.view_stack.push(PagerView::from_text(
-        "Thinking",
+        app.tr(crate::localization::MessageId::PagerTitleThinking).to_string(),
         &text,
         width.saturating_sub(2),
     ));
@@ -7965,14 +7935,14 @@ fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> bool {
         return false;
     };
     let title = match cell {
-        HistoryCell::User { .. } => "You".to_string(),
-        HistoryCell::Assistant { .. } => "Assistant".to_string(),
-        HistoryCell::System { .. } => "Note".to_string(),
-        HistoryCell::Error { .. } => "Error".to_string(),
-        HistoryCell::Thinking { .. } => "Reasoning".to_string(),
-        HistoryCell::Tool(_) => "Message".to_string(),
-        HistoryCell::SubAgent(_) => "Sub-agent".to_string(),
-        HistoryCell::ArchivedContext { .. } => "Archived Context".to_string(),
+        HistoryCell::User { .. } => app.tr(crate::localization::MessageId::PagerTitleYou).to_string(),
+        HistoryCell::Assistant { .. } => app.tr(crate::localization::MessageId::PagerTitleAssistant).to_string(),
+        HistoryCell::System { .. } => app.tr(crate::localization::MessageId::PagerTitleNote).to_string(),
+        HistoryCell::Error { .. } => app.tr(crate::localization::MessageId::PagerTitleError).to_string(),
+        HistoryCell::Thinking { .. } => app.tr(crate::localization::MessageId::PagerTitleReasoning).to_string(),
+        HistoryCell::Tool(_) => app.tr(crate::localization::MessageId::HclMessage).to_string(),
+        HistoryCell::SubAgent(_) => app.tr(crate::localization::MessageId::HclSubAgent).to_string(),
+        HistoryCell::ArchivedContext { .. } => app.tr(crate::localization::MessageId::HclArchivedContext).to_string(),
     };
     let width = app
         .viewport
@@ -8012,14 +7982,14 @@ fn copy_cell_to_clipboard(app: &mut App, cell_index: usize) -> bool {
         .unwrap_or(80);
     let text = history_cell_to_text(cell, width);
     if text.trim().is_empty() {
-        app.status_message = Some("Message is empty".to_string());
+        app.status_message = Some(app.tr(crate::localization::MessageId::StatusMessageEmpty).to_string());
         return false;
     }
     if app.clipboard.write_text(&text).is_ok() {
-        app.status_message = Some("Message copied".to_string());
+        app.status_message = Some(app.tr(crate::localization::MessageId::StatusMessageCopied).to_string());
         true
     } else {
-        app.status_message = Some("Copy failed".to_string());
+        app.status_message = Some(app.tr(crate::localization::MessageId::StatusCopyFailed).to_string());
         false
     }
 }

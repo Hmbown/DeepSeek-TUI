@@ -8,22 +8,6 @@ use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap};
 use crate::palette;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 
-const PLAN_OPTIONS: [(&str, &str); 4] = [
-    (
-        "Accept plan (Agent)",
-        "Start implementation in Agent mode with approvals",
-    ),
-    (
-        "Accept plan (YOLO)",
-        "Start implementation in YOLO mode (auto-approve)",
-    ),
-    ("Revise plan", "Ask follow-ups or request plan changes"),
-    (
-        "Exit Plan mode",
-        "Return to Agent mode without implementation",
-    ),
-];
-
 fn modal_block() -> Block<'static> {
     Block::default()
         .title(Line::from(vec![Span::styled(
@@ -92,9 +76,19 @@ fn push_option_lines(
     )));
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PlanPromptView {
     selected: usize,
+    locale: crate::localization::Locale,
+}
+
+impl Default for PlanPromptView {
+    fn default() -> Self {
+        Self {
+            selected: 0,
+            locale: crate::localization::Locale::ZhHans,
+        }
+    }
 }
 
 impl PlanPromptView {
@@ -102,8 +96,36 @@ impl PlanPromptView {
         Self::default()
     }
 
+    pub fn with_locale(locale: crate::localization::Locale) -> Self {
+        Self {
+            selected: 0,
+            locale,
+        }
+    }
+
+    fn plan_options(&self) -> [(&str, &str); 4] {
+        [
+            (
+                crate::localization::tr(self.locale, crate::localization::MessageId::UiAcceptPlanAgent),
+                crate::localization::tr(self.locale, crate::localization::MessageId::UiAcceptPlanAgentDesc),
+            ),
+            (
+                crate::localization::tr(self.locale, crate::localization::MessageId::UiAcceptPlanYolo),
+                crate::localization::tr(self.locale, crate::localization::MessageId::UiAcceptPlanYoloDesc),
+            ),
+            (
+                crate::localization::tr(self.locale, crate::localization::MessageId::UiRevisePlan),
+                crate::localization::tr(self.locale, crate::localization::MessageId::UiRevisePlanDesc),
+            ),
+            (
+                crate::localization::tr(self.locale, crate::localization::MessageId::UiExitPlan),
+                crate::localization::tr(self.locale, crate::localization::MessageId::UiExitPlanDesc),
+            ),
+        ]
+    }
+
     fn max_index(&self) -> usize {
-        PLAN_OPTIONS.len().saturating_sub(1)
+        self.plan_options().len().saturating_sub(1)
     }
 
     fn submit_selected(&self) -> ViewAction {
@@ -112,8 +134,8 @@ impl PlanPromptView {
         })
     }
 
-    fn submit_number(number: u32) -> ViewAction {
-        if (1..=u32::try_from(PLAN_OPTIONS.len()).unwrap_or(0)).contains(&number) {
+    fn submit_number(&self, number: u32) -> ViewAction {
+        if (1..=u32::try_from(self.plan_options().len()).unwrap_or(0)).contains(&number) {
             ViewAction::EmitAndClose(ViewEvent::PlanPromptSelected {
                 option: usize::try_from(number).unwrap_or(1),
             })
@@ -176,7 +198,7 @@ impl ModalView for PlanPromptView {
             }
             KeyCode::Char(ch) if ch.is_ascii_digit() => {
                 let number = ch.to_digit(10).unwrap_or(0);
-                Self::submit_number(number)
+                self.submit_number(number)
             }
             KeyCode::Enter => self.submit_selected(),
             KeyCode::Esc => ViewAction::EmitAndClose(ViewEvent::PlanPromptDismissed),
@@ -187,16 +209,16 @@ impl ModalView for PlanPromptView {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(vec![Span::styled(
-            "Action required",
+            crate::localization::tr(self.locale, crate::localization::MessageId::UiActionRequired),
             Style::default().fg(palette::DEEPSEEK_SKY).bold(),
         )]));
         lines.push(Line::from(vec![Span::styled(
-            "Choose what should happen after this plan.",
+            crate::localization::tr(self.locale, crate::localization::MessageId::UiChooseWhatNext),
             Style::default().fg(palette::TEXT_PRIMARY).bold(),
         )]));
         lines.push(Line::from(""));
 
-        for (idx, (label, description)) in PLAN_OPTIONS.iter().enumerate() {
+        for (idx, (label, description)) in self.plan_options().iter().enumerate() {
             let number = idx + 1;
             push_option_lines(&mut lines, self.selected == idx, number, label, description);
         }
@@ -207,13 +229,13 @@ impl ModalView for PlanPromptView {
                 "1-4 / a / y / r / q",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             ),
-            Span::styled(" quick pick", Style::default().fg(palette::TEXT_MUTED)),
+            Span::styled(crate::localization::tr(self.locale, crate::localization::MessageId::UiQuickPick), Style::default().fg(palette::TEXT_MUTED)),
             Span::raw("  "),
             Span::styled("Up/Down", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
             Span::styled(" move", Style::default().fg(palette::TEXT_MUTED)),
             Span::raw("  "),
             Span::styled("Enter", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
-            Span::styled(" confirm", Style::default().fg(palette::TEXT_MUTED)),
+            Span::styled(crate::localization::tr(self.locale, crate::localization::MessageId::UiEnterConfirm), Style::default().fg(palette::TEXT_MUTED)),
             Span::raw("  "),
             Span::styled("Esc", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
             Span::styled(" close", Style::default().fg(palette::TEXT_MUTED)),
@@ -269,8 +291,8 @@ mod tests {
     fn plan_prompt_calls_out_required_action_and_controls() {
         let rendered = render_view(&PlanPromptView::new(), 110, 36);
 
-        assert!(rendered.contains("Action required"));
-        assert!(rendered.contains("Choose what should happen after this plan."));
+        assert!(rendered.contains(crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::UiActionRequired)));
+        assert!(rendered.contains(crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::UiChooseWhatNext)));
         assert!(rendered.contains("1-4"));
         assert!(rendered.contains("Enter"));
     }
@@ -282,7 +304,7 @@ mod tests {
 
         let rendered = render_view(&view, 110, 36);
 
-        assert!(rendered.contains("> 2) Accept plan (YOLO)"));
-        assert!(rendered.contains("Start implementation in YOLO mode (auto-approve)"));
+        assert!(rendered.contains(crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::UiAcceptPlanYolo)));
+        assert!(rendered.contains(crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::UiAcceptPlanYoloDesc)));
     }
 }
