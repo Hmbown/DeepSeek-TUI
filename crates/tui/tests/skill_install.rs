@@ -61,6 +61,7 @@ fn allow_all_policy() -> NetworkPolicy {
         default: DecisionToml::Allow,
         allow: Vec::new(),
         deny: Vec::new(),
+        proxy: Vec::new(),
         audit: false,
     }
 }
@@ -70,6 +71,7 @@ fn deny_all_policy() -> NetworkPolicy {
         default: DecisionToml::Deny,
         allow: Vec::new(),
         deny: Vec::new(),
+        proxy: Vec::new(),
         audit: false,
     }
 }
@@ -79,6 +81,7 @@ fn prompt_all_policy() -> NetworkPolicy {
         default: DecisionToml::Prompt,
         allow: Vec::new(),
         deny: Vec::new(),
+        proxy: Vec::new(),
         audit: false,
     }
 }
