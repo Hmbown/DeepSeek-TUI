@@ -13,6 +13,7 @@
 //! Each persistence type implements [`SchemaMigration`]:
 //!
 //! ```ignore
+//! #[allow(dead_code)]
 //! pub struct SessionMigration;
 //!
 //! impl SchemaMigration for SessionMigration {
@@ -206,6 +207,7 @@ pub fn backup_before_migrate(path: &Path, domain: &str) -> PathBuf {
 /// 4. Wire `<Domain>Migration::migrate(...)` into the load function in
 ///    the owning module.
 pub mod registry {
+    #![allow(dead_code)]
     use super::{MigrationFn, SchemaMigration};
 
     /// Sessions: `~/.deepseek/sessions/<id>.json` and the latest
