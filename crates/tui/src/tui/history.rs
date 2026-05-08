@@ -1,5 +1,6 @@
 //! TUI rendering helpers for chat history and tool output.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -2142,7 +2143,9 @@ fn render_user_message(content: &str, width: u16) -> Vec<Line<'static>> {
         USER_GLYPH,
         user_label_style(),
         user_body_style(),
-        Style::default().fg(user_prompt_accent(cached_color_depth())),
+        Style::default()
+            .fg(user_prompt_accent(cached_color_depth()))
+            .add_modifier(Modifier::BOLD),
         Some(USER_RAIL),
         content,
         width,
@@ -2154,13 +2157,23 @@ fn render_message_with_rail(
     label_style: Style,
     body_style: Style,
     rail_style: Style,
-    rail_prefix: Option<&str>,
+    rail_prefix: Option<&'static str>,
     content: &str,
     width: u16,
 ) -> Vec<Line<'static>> {
     let prefix_width = UnicodeWidthStr::width(prefix);
-    let prefix_width_u16 = u16::try_from(prefix_width.saturating_add(2)).unwrap_or(u16::MAX);
+    let prefix_width_u16 = u16::try_from(prefix_width.saturating_add(1)).unwrap_or(u16::MAX);
     let content_width = usize::from(width.saturating_sub(prefix_width_u16).max(1));
+    let continuation_indent: Cow<'static, str> = match rail_prefix {
+        Some(rail) => Cow::Borrowed(rail),
+        None if prefix.is_empty() => Cow::Borrowed(""),
+        None => {
+            let mut s = String::with_capacity(prefix_width + 1);
+            s.push('\u{258F}');
+            s.extend(std::iter::repeat_n(' ', prefix_width));
+            Cow::Owned(s)
+        }
+    };
     let mut lines = Vec::new();
     let rendered = markdown_render::render_markdown(content, content_width as u16, body_style);
     for (idx, line) in rendered.into_iter().enumerate() {
@@ -2176,20 +2189,7 @@ fn render_message_with_rail(
             spans.extend(line.spans);
             lines.push(Line::from(spans));
         } else {
-            let indent = rail_prefix.map_or_else(
-                || {
-                    if prefix.is_empty() {
-                        String::new()
-                    } else {
-                        let mut s = String::with_capacity(prefix_width + 1);
-                        s.push('\u{258F}');
-                        s.extend(std::iter::repeat_n(' ', prefix_width));
-                        s
-                    }
-                },
-                str::to_string,
-            );
-            let mut spans = vec![Span::styled(indent, rail_style)];
+            let mut spans = vec![Span::styled(continuation_indent.clone(), rail_style)];
             spans.extend(line.spans);
             lines.push(Line::from(spans));
         }
@@ -3693,6 +3693,34 @@ mod tests {
             Some(user_prompt_accent(cached_color_depth())),
             "user continuation rail should keep the prompt visually grouped"
         );
+        assert!(
+            lines[1]
+                .spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD),
+            "user continuation rail should match the bold leading glyph"
+        );
+    }
+
+    #[test]
+    fn user_message_width_budget_matches_rendered_prefix() {
+        let cell = HistoryCell::User {
+            content: "abc def".to_string(),
+        };
+        let lines = cell.lines(9);
+
+        assert_eq!(
+            lines.len(),
+            1,
+            "prefix + separator + 7-column body should fill a 9-column line without wrapping"
+        );
+        let visible: String = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(visible, format!("{USER_GLYPH} abc def"));
     }
 
     #[test]
