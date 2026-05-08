@@ -8,9 +8,11 @@ use ratatui::layout::Rect;
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::budget::{BudgetOverrides, BudgetState, DailyCostCounter};
 use crate::compaction::CompactionConfig;
 use crate::config::{
-    ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, save_api_key,
+    ApiProvider, BudgetConfig, Config, DEFAULT_TEXT_MODEL, OnExceedStrategy, SavedCredential,
+    has_api_key, save_api_key,
 };
 use crate::config_ui::ConfigUiMode;
 use crate::core::coherence::CoherenceState;
@@ -620,6 +622,13 @@ pub struct SessionState {
     pub subagent_cost_event_seqs: HashSet<u64>,
     pub displayed_cost_high_water: f64,
     pub displayed_cost_high_water_cny: f64,
+    pub budget_state: BudgetState,
+    pub budget_overrides: BudgetOverrides,
+    pub daily_cost: DailyCostCounter,
+    pub budget_soft_fired_usd: bool,
+    pub budget_soft_fired_cny: bool,
+    pub budget_hard_fired_usd: bool,
+    pub budget_hard_fired_cny: bool,
     pub last_prompt_tokens: Option<u32>,
     pub last_completion_tokens: Option<u32>,
     pub last_prompt_cache_hit_tokens: Option<u32>,
@@ -640,6 +649,13 @@ impl Default for SessionState {
             subagent_cost_event_seqs: HashSet::new(),
             displayed_cost_high_water: 0.0,
             displayed_cost_high_water_cny: 0.0,
+            budget_state: BudgetState::default(),
+            budget_overrides: BudgetOverrides::default(),
+            daily_cost: DailyCostCounter::default(),
+            budget_soft_fired_usd: false,
+            budget_soft_fired_cny: false,
+            budget_hard_fired_usd: false,
+            budget_hard_fired_cny: false,
             last_prompt_tokens: None,
             last_completion_tokens: None,
             last_prompt_cache_hit_tokens: None,
@@ -729,6 +745,7 @@ pub struct App {
     pub show_tool_details: bool,
     pub ui_locale: Locale,
     pub cost_currency: CostCurrency,
+    pub budget_config: Option<BudgetConfig>,
     pub composer_density: ComposerDensity,
     pub composer_border: bool,
     pub transcript_spacing: TranscriptSpacing,
@@ -1238,6 +1255,15 @@ impl App {
         let cached_skills = Self::discover_cached_skills(&workspace);
 
         let input_history = crate::composer_history::load_history();
+        let budget_config = config.budget.clone();
+        let mut session = SessionState::default();
+        if budget_config
+            .as_ref()
+            .and_then(|cfg| cfg.daily_usd_hard)
+            .is_some()
+        {
+            session.daily_cost = DailyCostCounter::load_default();
+        }
         let (initial_input_text, initial_input_cursor) = match initial_input {
             // #451: pre-populate the composer when invoked via
             // `deepseek pr <N>` (or any future caller that wants to
@@ -1273,7 +1299,7 @@ impl App {
             },
             viewport: ViewportState::default(),
             goal: GoalState::default(),
-            session: SessionState::default(),
+            session,
             history: Vec::new(),
             history_version: 0,
             history_revisions: Vec::new(),
@@ -1311,6 +1337,7 @@ impl App {
             show_tool_details,
             ui_locale,
             cost_currency,
+            budget_config,
             composer_density,
             composer_border,
             transcript_spacing,
@@ -1629,6 +1656,8 @@ impl App {
         self.session.session_cost += estimate.usd;
         self.session.session_cost_cny += estimate.cny;
         self.refresh_displayed_cost_high_water();
+        self.accrue_daily_budget_cost(estimate);
+        self.check_budget_after_accrue();
     }
 
     /// Add `delta` to the running sub-agent cost and bump the displayed
@@ -1643,6 +1672,171 @@ impl App {
         self.session.subagent_cost += estimate.usd;
         self.session.subagent_cost_cny += estimate.cny;
         self.refresh_displayed_cost_high_water();
+        if self
+            .budget_config
+            .as_ref()
+            .is_some_and(|cfg| cfg.include_subagents)
+        {
+            self.accrue_daily_budget_cost(estimate);
+            self.check_budget_after_accrue();
+        }
+    }
+
+    fn accrue_daily_budget_cost(&mut self, estimate: CostEstimate) {
+        if self.budget_config.is_some() {
+            self.session.daily_cost.accrue(estimate.usd, estimate.cny);
+        }
+    }
+
+    pub fn check_budget_after_accrue(&mut self) {
+        let Some(config) = self.budget_config.clone() else {
+            return;
+        };
+        if self.session.budget_overrides.released {
+            return;
+        }
+
+        let usd = self.budget_total(CostCurrency::Usd, config.include_subagents);
+        let cny = self.budget_total(CostCurrency::Cny, config.include_subagents);
+        let soft_usd = self
+            .session
+            .budget_overrides
+            .session_usd_soft
+            .or(config.session_usd_soft);
+        let hard_usd = self
+            .session
+            .budget_overrides
+            .session_usd_hard
+            .or(config.session_usd_hard);
+
+        if self.crossed(usd, soft_usd, self.session.budget_soft_fired_usd) {
+            self.session.budget_soft_fired_usd = true;
+            self.emit_budget_soft_message(CostCurrency::Usd, usd, soft_usd.unwrap_or_default());
+        }
+        if self.crossed(
+            cny,
+            config.session_cny_soft,
+            self.session.budget_soft_fired_cny,
+        ) {
+            self.session.budget_soft_fired_cny = true;
+            self.emit_budget_soft_message(
+                CostCurrency::Cny,
+                cny,
+                config.session_cny_soft.unwrap_or_default(),
+            );
+        }
+
+        if self.crossed(usd, hard_usd, self.session.budget_hard_fired_usd) {
+            self.session.budget_hard_fired_usd = true;
+            self.apply_budget_hard(
+                CostCurrency::Usd,
+                usd,
+                hard_usd.unwrap_or_default(),
+                config.on_exceed,
+            );
+            return;
+        }
+        if self.crossed(
+            cny,
+            config.session_cny_hard,
+            self.session.budget_hard_fired_cny,
+        ) {
+            self.session.budget_hard_fired_cny = true;
+            self.apply_budget_hard(
+                CostCurrency::Cny,
+                cny,
+                config.session_cny_hard.unwrap_or_default(),
+                config.on_exceed,
+            );
+            return;
+        }
+        if self.crossed(
+            self.session.daily_cost.usd,
+            config.daily_usd_hard,
+            self.session.budget_hard_fired_usd,
+        ) {
+            self.session.budget_hard_fired_usd = true;
+            self.apply_budget_hard(
+                CostCurrency::Usd,
+                self.session.daily_cost.usd,
+                config.daily_usd_hard.unwrap_or_default(),
+                config.on_exceed,
+            );
+        }
+    }
+
+    fn budget_total(&self, currency: CostCurrency, include_subagents: bool) -> f64 {
+        let base = self.session_cost_for_currency(currency);
+        if include_subagents {
+            base + self.subagent_cost_for_currency(currency)
+        } else {
+            base
+        }
+    }
+
+    fn crossed(&self, current: f64, cap: Option<f64>, fired: bool) -> bool {
+        !fired && cap.is_some_and(|cap| cap > 0.0 && current >= cap)
+    }
+
+    fn emit_budget_soft_message(&mut self, currency: CostCurrency, current: f64, cap: f64) {
+        self.session.budget_state = BudgetState::SoftWarned;
+        self.add_message(HistoryCell::System {
+            content: format!(
+                "⚠ Soft budget {} reached (current {}). /budget to manage.",
+                crate::pricing::format_cost_amount(cap, currency),
+                crate::pricing::format_cost_amount(current, currency)
+            ),
+        });
+    }
+
+    fn apply_budget_hard(
+        &mut self,
+        currency: CostCurrency,
+        current: f64,
+        cap: f64,
+        strategy: OnExceedStrategy,
+    ) {
+        let reason = format!(
+            "Hard budget {} reached (current {}).",
+            crate::pricing::format_cost_amount(cap, currency),
+            crate::pricing::format_cost_amount(current, currency)
+        );
+        match strategy {
+            OnExceedStrategy::Pause => self.pause_for_budget(reason),
+            OnExceedStrategy::DowngradeToFlash => {
+                if self.auto_model || self.model != "deepseek-v4-flash" {
+                    let result = crate::commands::switch_model(self, "deepseek-v4-flash");
+                    if let Some(message) = result.message {
+                        self.add_message(HistoryCell::System {
+                            content: format!("{reason} {message}"),
+                        });
+                    }
+                    self.session.budget_hard_fired_usd = false;
+                    self.session.budget_hard_fired_cny = false;
+                } else {
+                    self.pause_for_budget(reason);
+                }
+            }
+            OnExceedStrategy::Stop => {
+                self.session.budget_state = BudgetState::Stopped;
+                self.add_message(HistoryCell::System {
+                    content: format!(
+                        "{reason} Budget strategy is stop; current turn will be cancelled."
+                    ),
+                });
+            }
+        }
+    }
+
+    fn pause_for_budget(&mut self, reason: String) {
+        self.session.budget_state = BudgetState::Paused {
+            reason: reason.clone(),
+        };
+        self.add_message(HistoryCell::System {
+            content: format!(
+                "{reason} Paused. Use /budget extend <usd>, /budget release, or /budget downgrade."
+            ),
+        });
     }
 
     /// Recompute the displayed cost high-water mark. Called any time a cost
@@ -4031,6 +4225,75 @@ mod tests {
         let app = App::new(test_options(false), &Config::default());
         assert!(app.history.is_empty());
         assert_eq!(app.history_version, 0);
+    }
+
+    #[test]
+    fn budget_soft_threshold_fires_once_on_rising_edge() {
+        let config = Config {
+            budget: Some(BudgetConfig {
+                session_usd_soft: Some(1.0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut app = App::new(test_options(false), &config);
+
+        app.accrue_session_cost_estimate(CostEstimate { usd: 1.1, cny: 0.0 });
+        app.accrue_session_cost_estimate(CostEstimate { usd: 0.1, cny: 0.0 });
+
+        let warnings = app
+            .history
+            .iter()
+            .filter(|cell| match cell {
+                HistoryCell::System { content } => content.contains("Soft budget"),
+                _ => false,
+            })
+            .count();
+        assert_eq!(warnings, 1);
+        assert_eq!(app.session.budget_state, BudgetState::SoftWarned);
+    }
+
+    #[test]
+    fn budget_hard_threshold_pauses_on_pause_strategy() {
+        let config = Config {
+            budget: Some(BudgetConfig {
+                session_usd_hard: Some(1.0),
+                on_exceed: OnExceedStrategy::Pause,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut app = App::new(test_options(false), &config);
+
+        app.accrue_session_cost_estimate(CostEstimate { usd: 1.0, cny: 0.0 });
+
+        assert!(matches!(
+            app.session.budget_state,
+            BudgetState::Paused { .. }
+        ));
+    }
+
+    #[test]
+    fn budget_downgrade_to_flash_switches_model_and_does_not_pause() {
+        let config = Config {
+            budget: Some(BudgetConfig {
+                session_usd_hard: Some(1.0),
+                on_exceed: OnExceedStrategy::DowngradeToFlash,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut options = test_options(false);
+        options.model = "deepseek-v4-pro".to_string();
+        let mut app = App::new(options, &config);
+
+        app.accrue_session_cost_estimate(CostEstimate { usd: 1.0, cny: 0.0 });
+
+        assert_eq!(app.model, "deepseek-v4-flash");
+        assert!(!matches!(
+            app.session.budget_state,
+            BudgetState::Paused { .. }
+        ));
     }
 
     #[test]

@@ -749,6 +749,45 @@ pub struct PerModelContextConfig {
     pub cycle_threshold: Option<usize>,
 }
 
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+pub struct BudgetConfig {
+    #[serde(default, deserialize_with = "zero_as_none")]
+    pub session_usd_soft: Option<f64>,
+    #[serde(default, deserialize_with = "zero_as_none")]
+    pub session_usd_hard: Option<f64>,
+    #[serde(default, deserialize_with = "zero_as_none")]
+    pub session_cny_soft: Option<f64>,
+    #[serde(default, deserialize_with = "zero_as_none")]
+    pub session_cny_hard: Option<f64>,
+    #[serde(default, deserialize_with = "zero_as_none")]
+    pub daily_usd_hard: Option<f64>,
+    #[serde(default)]
+    pub on_exceed: OnExceedStrategy,
+    #[serde(default = "default_budget_include_subagents")]
+    pub include_subagents: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OnExceedStrategy {
+    #[default]
+    Pause,
+    DowngradeToFlash,
+    Stop,
+}
+
+fn default_budget_include_subagents() -> bool {
+    true
+}
+
+fn zero_as_none<'de, D>(deserializer: D) -> std::result::Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<f64>::deserialize(deserializer)?;
+    Ok(value.filter(|v| *v > 0.0))
+}
+
 /// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
@@ -795,6 +834,8 @@ pub struct Config {
     pub max_subagents: Option<usize>,
     pub retry: Option<RetryConfig>,
     pub capacity: Option<CapacityConfig>,
+    #[serde(default)]
+    pub budget: Option<BudgetConfig>,
     pub features: Option<FeaturesToml>,
 
     /// TUI configuration (alternate screen, etc.)
@@ -2426,6 +2467,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         max_subagents: override_cfg.max_subagents.or(base.max_subagents),
         retry: override_cfg.retry.or(base.retry),
         capacity: override_cfg.capacity.or(base.capacity),
+        budget: override_cfg.budget.or(base.budget),
         tui: override_cfg.tui.or(base.tui),
         hooks: override_cfg.hooks.or(base.hooks),
         providers: merge_providers(base.providers, override_cfg.providers),

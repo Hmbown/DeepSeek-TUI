@@ -10,6 +10,9 @@ use deepseek_secrets::SecretSource;
 pub use deepseek_secrets::Secrets;
 use serde::{Deserialize, Serialize};
 
+pub mod budget;
+use budget::BudgetConfig;
+
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
@@ -177,6 +180,8 @@ pub struct ConfigToml {
     /// to a permissive default that mirrors pre-v0.7.0 behavior.
     #[serde(default)]
     pub network: Option<NetworkPolicyToml>,
+    #[serde(default)]
+    pub budget: Option<BudgetConfig>,
     /// Community skill installer settings (#140). Mirrors
     /// [`SkillsToml`] from the TUI side; the dispatcher consults
     /// `registry_url` when running `deepseek skill install`.

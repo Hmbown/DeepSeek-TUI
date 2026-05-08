@@ -5,6 +5,7 @@
 
 mod anchor;
 mod attachment;
+mod budget;
 mod config;
 mod core;
 mod cycle;
@@ -224,6 +225,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         aliases: &[],
         usage: "/memory [show|path|clear|edit|help]",
         description_id: MessageId::CmdMemoryDescription,
+    },
+    CommandInfo {
+        name: "budget",
+        aliases: &[],
+        usage: "/budget [set hard <usd>|set soft <usd>|extend <usd>|release|downgrade]",
+        description_id: MessageId::CmdCostDescription,
     },
     CommandInfo {
         name: "attach",
@@ -517,6 +524,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "home" | "stats" | "overview" => core::home_dashboard(app),
         "note" => note::note(app, arg),
         "memory" => memory::memory(app, arg),
+        "budget" => budget::budget(app, arg),
         "attach" | "image" | "media" => attachment::attach(app, arg),
         "task" | "tasks" => task::task(app, arg),
         "jobs" | "job" => jobs::jobs(app, arg),
@@ -625,6 +633,10 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
 /// Update a configuration value programmatically (used by interactive UI views).
 pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) -> CommandResult {
     config::set_config_value(app, key, value, persist)
+}
+
+pub(crate) fn switch_model(app: &mut App, model: &str) -> CommandResult {
+    core::model(app, Some(model))
 }
 
 /// Persist the user's chosen footer items to `~/.deepseek/config.toml` under
