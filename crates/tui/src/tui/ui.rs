@@ -3140,6 +3140,13 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
         updated.metadata.subagent_cost_usd = app.session.subagent_cost;
         updated.metadata.subagent_cost_cny = app.session.subagent_cost_cny;
         updated.context_references = app.session_context_references.clone();
+        updated.goal_state_json =
+            serde_json::to_string(&app.goal).ok();
+        updated.todos_json = app
+            .todos
+            .try_lock()
+            .ok()
+            .and_then(|todos| serde_json::to_string(&todos.snapshot().items).ok());
         updated
     } else {
         let mut session = create_saved_session_with_mode(
@@ -3155,6 +3162,13 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
         session.metadata.subagent_cost_usd = app.session.subagent_cost;
         session.metadata.subagent_cost_cny = app.session.subagent_cost_cny;
         session.context_references = app.session_context_references.clone();
+        session.goal_state_json =
+            serde_json::to_string(&app.goal).ok();
+        session.todos_json = app
+            .todos
+            .try_lock()
+            .ok()
+            .and_then(|todos| serde_json::to_string(&todos.snapshot().items).ok());
         session
     }
 }
@@ -6243,6 +6257,24 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     app.session.last_prompt_cache_miss_tokens = None;
     app.session.last_reasoning_replay_tokens = None;
     app.session.turn_cache_history.clear();
+
+    // Restore persisted goal state and todos so auto-continue can
+    // pick up where it left off after a restart/crash.
+    if let Some(ref json) = session.goal_state_json {
+        if let Ok(goal) = serde_json::from_str::<crate::tui::app::GoalState>(json) {
+            app.goal = goal;
+        }
+    }
+    if let Some(ref json) = session.todos_json {
+        if let Ok(items) =
+            serde_json::from_str::<Vec<crate::tools::todo::TodoItem>>(json)
+        {
+            if let Ok(mut todos) = app.todos.try_lock() {
+                *todos = crate::tools::todo::TodoList::from_items(items);
+            }
+        }
+    }
+
     app.current_session_id = Some(session.metadata.id.clone());
     app.workspace_context = None;
     app.workspace_context_refreshed_at = None;
@@ -6257,6 +6289,29 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     } else {
         false
     };
+
+    // If the restored session has auto-continue enabled and incomplete
+    // todos, queue a continuation message so the agent picks up where
+    // it left off without user intervention.
+    if app.goal.auto_continue && app.pending_todo_count() > 0 {
+        let obj_hint = app
+            .goal
+            .goal_objective
+            .as_deref()
+            .map(|obj| format!(" for \"{obj}\""))
+            .unwrap_or_default();
+        app.status_message = Some(format!(
+            "Session restored — resuming auto-continue{obj_hint} (turn #{}, {} todo(s) remaining).",
+            app.goal.auto_continue_turn_count,
+            app.pending_todo_count()
+        ));
+        let recap = app.recap_text();
+        let msg = format!(
+            "Continue working on the remaining todo items.\n\n{recap}"
+        );
+        app.queued_messages.push_back(QueuedMessage::new(msg, None));
+    }
+
     app.scroll_to_bottom();
     recovered
 }

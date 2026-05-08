@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ratatui::layout::Rect;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -603,7 +604,7 @@ impl Default for ViewportState {
 /// Goal mode state (#397). Also hosts auto-continue (#goals):
 /// when enabled, the agent autonomously keeps pushing turns until
 /// all todos are completed or the user interrupts.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct GoalState {
     pub goal_objective: Option<String>,
     pub goal_token_budget: Option<u32>,
@@ -625,6 +626,74 @@ pub struct GoalState {
     /// How many consecutive turns the model produced no tool calls
     /// (idle chatter instead of doing work).
     pub idle_streak: u32,
+}
+
+impl Default for GoalState {
+    fn default() -> Self {
+        Self {
+            goal_objective: None,
+            goal_token_budget: None,
+            goal_started_at: None,
+            auto_continue: false,
+            auto_continue_turn_count: 0,
+            prev_pending_count: None,
+            stuck_streak: 0,
+            idle_streak: 0,
+        }
+    }
+}
+
+impl Serialize for GoalState {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = s.serialize_struct("GoalState", 8)?;
+        state.serialize_field("goal_objective", &self.goal_objective)?;
+        state.serialize_field("goal_token_budget", &self.goal_token_budget)?;
+        // Instant is not serializable; store elapsed seconds instead.
+        let elapsed_secs = self.goal_started_at.map(|t| t.elapsed().as_secs());
+        state.serialize_field("goal_started_elapsed_secs", &elapsed_secs)?;
+        state.serialize_field("auto_continue", &self.auto_continue)?;
+        state.serialize_field("auto_continue_turn_count", &self.auto_continue_turn_count)?;
+        state.serialize_field("prev_pending_count", &self.prev_pending_count)?;
+        state.serialize_field("stuck_streak", &self.stuck_streak)?;
+        state.serialize_field("idle_streak", &self.idle_streak)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for GoalState {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Helper {
+            goal_objective: Option<String>,
+            goal_token_budget: Option<u32>,
+            goal_started_elapsed_secs: Option<u64>,
+            auto_continue: bool,
+            #[serde(default)]
+            auto_continue_turn_count: u32,
+            #[serde(default)]
+            prev_pending_count: Option<usize>,
+            #[serde(default)]
+            stuck_streak: u32,
+            #[serde(default)]
+            idle_streak: u32,
+        }
+        let h = Helper::deserialize(d)?;
+        Ok(GoalState {
+            goal_objective: h.goal_objective,
+            goal_token_budget: h.goal_token_budget,
+            goal_started_at: h.goal_started_elapsed_secs.map(|secs| {
+                Instant::now()
+                    .checked_sub(Duration::from_secs(secs))
+                    .unwrap_or_else(Instant::now)
+            }),
+            auto_continue: h.auto_continue,
+            auto_continue_turn_count: h.auto_continue_turn_count,
+            prev_pending_count: h.prev_pending_count,
+            stuck_streak: h.stuck_streak,
+            idle_streak: h.idle_streak,
+        })
+    }
 }
 
 /// Auto-continue stops if the pending todo count hasn't changed for this
