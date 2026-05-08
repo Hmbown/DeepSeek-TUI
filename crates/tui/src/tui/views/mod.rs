@@ -12,6 +12,7 @@ use crate::tui::app::App;
 use crate::tui::approval::{ElevationOption, ReviewDecision};
 use crate::tui::history::{HistoryCell, SubAgentCell, summarize_tool_output};
 use crate::tui::widgets::agent_card::AgentLifecycle;
+use unicode_width::UnicodeWidthStr;
 
 pub mod status_picker;
 
@@ -1378,10 +1379,25 @@ impl ModalView for ConfigView {
             lines.push(Line::from(""));
             let hint = config_hint_for_key(self.locale, &edit.key);
             if !hint.is_empty() {
-                lines.push(Line::from(vec![
-                    Span::styled("Hint: ", Style::default().fg(palette::TEXT_MUTED)),
-                    Span::raw(hint),
-                ]));
+                let label = "Hint: ";
+                let indent = "      ";
+                let available = inner.width as usize;
+                let wrap_width = available.saturating_sub(indent.width());
+                if wrap_width > 0 {
+                    let wrapped = wrap_text(hint, wrap_width);
+                    for (i, chunk) in wrapped.iter().enumerate() {
+                        let prefix = if i == 0 { label } else { indent };
+                        lines.push(Line::from(vec![
+                            Span::styled(prefix, Style::default().fg(palette::TEXT_MUTED)),
+                            Span::raw(chunk.clone()),
+                        ]));
+                    }
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::styled(label, Style::default().fg(palette::TEXT_MUTED)),
+                        Span::raw(hint),
+                    ]));
+                }
             }
             if config_enum_values(&edit.key).is_none() {
                 let example = config_example_value(&edit.key);
@@ -1484,17 +1500,40 @@ impl ModalView for ConfigView {
                     .rows
                     .get(self.selected)
                     .is_some_and(|row| config_enum_values(&row.key).is_some());
-                let mut spans = vec![
-                    Span::styled("  Hint: ", Style::default().fg(palette::TEXT_MUTED)),
-                    Span::styled(hint, Style::default().fg(palette::DEEPSEEK_SKY)),
-                ];
-                if is_enum {
-                    spans.push(Span::styled(
-                        "  [−/+]",
-                        Style::default().fg(palette::DEEPSEEK_SKY).add_modifier(ratatui::style::Modifier::BOLD),
-                    ));
+                let label = "  Hint: ";
+                let indent = "         ";
+                let suffix = if is_enum { "  [−/+]" } else { "" };
+                let available = inner.width as usize;
+                let wrap_width = available.saturating_sub(indent.width());
+                if wrap_width > 0 {
+                    let wrapped = wrap_text(hint, wrap_width);
+                    for (i, chunk) in wrapped.iter().enumerate() {
+                        let prefix = if i == 0 { label } else { indent };
+                        let mut spans = vec![
+                            Span::styled(prefix, Style::default().fg(palette::TEXT_MUTED)),
+                            Span::styled(chunk.clone(), Style::default().fg(palette::DEEPSEEK_SKY)),
+                        ];
+                        if i == wrapped.len() - 1 && !suffix.is_empty() {
+                            spans.push(Span::styled(
+                                suffix,
+                                Style::default().fg(palette::DEEPSEEK_SKY).add_modifier(ratatui::style::Modifier::BOLD),
+                            ));
+                        }
+                        lines.push(Line::from(spans));
+                    }
+                } else {
+                    let mut spans = vec![
+                        Span::styled(label, Style::default().fg(palette::TEXT_MUTED)),
+                        Span::styled(hint, Style::default().fg(palette::DEEPSEEK_SKY)),
+                    ];
+                    if !suffix.is_empty() {
+                        spans.push(Span::styled(
+                            suffix,
+                            Style::default().fg(palette::DEEPSEEK_SKY).add_modifier(ratatui::style::Modifier::BOLD),
+                        ));
+                    }
+                    lines.push(Line::from(spans));
                 }
-                lines.push(Line::from(spans));
             } else {
                 lines.push(Line::from(vec![Span::styled(
                     "  Hint: —",
@@ -2034,6 +2073,46 @@ fn truncate_view_text(text: &str, max_chars: usize) -> String {
         Some((idx, _)) => text[..idx].to_string(),
         None => text.to_string(),
     }
+}
+
+/// Word-wrap text to fit within `max_width` display columns.
+/// Splits on whitespace boundaries using unicode_width for CJK support.
+fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+
+    for word in text.split_whitespace() {
+        let word_width = word.width();
+        let additional = if current.is_empty() {
+            word_width
+        } else {
+            word_width + 1
+        };
+        if current_width + additional > max_width && !current.is_empty() {
+            lines.push(current);
+            current = word.to_string();
+            current_width = word_width;
+        } else {
+            if !current.is_empty() {
+                current.push(' ');
+                current_width += 1;
+            }
+            current.push_str(word);
+            current_width += word_width;
+        }
+    }
+
+    if current.is_empty() {
+        lines.push(String::new());
+    } else {
+        lines.push(current);
+    }
+
+    lines
 }
 
 #[cfg(test)]
