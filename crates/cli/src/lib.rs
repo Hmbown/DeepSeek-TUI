@@ -84,7 +84,7 @@ struct Cli {
     api_key: Option<String>,
     #[arg(long)]
     base_url: Option<String>,
-    #[arg(long = "no-alt-screen")]
+    #[arg(long = "no-alt-screen", hide = true)]
     no_alt_screen: bool,
     #[arg(long = "mouse-capture", conflicts_with = "no_mouse_capture")]
     mouse_capture: bool,
@@ -1356,9 +1356,9 @@ fn build_tui_command(
     if let Some(profile) = cli.profile.as_ref() {
         cmd.arg("--profile").arg(profile);
     }
-    if cli.no_alt_screen {
-        cmd.arg("--no-alt-screen");
-    }
+    // Accepted for older scripts, but no longer forwarded: the interactive TUI
+    // always owns the alternate screen to avoid host scrollback hijacking.
+    let _ = cli.no_alt_screen;
     if cli.mouse_capture {
         cmd.arg("--mouse-capture");
     }
@@ -2569,7 +2569,6 @@ mod tests {
             "--api-key",
             "--approval-policy",
             "--sandbox-mode",
-            "--no-alt-screen",
             "--mouse-capture",
             "--no-mouse-capture",
             "--skip-onboarding",

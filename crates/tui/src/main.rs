@@ -145,8 +145,9 @@ struct Cli {
     #[arg(short = 'c', long = "continue")]
     continue_session: bool,
 
-    /// Disable the alternate screen buffer (inline mode)
-    #[arg(long = "no-alt-screen")]
+    /// Deprecated compatibility flag; the interactive TUI always owns the
+    /// alternate screen so terminal scrollback cannot hijack the viewport.
+    #[arg(long = "no-alt-screen", hide = true)]
     no_alt_screen: bool,
 
     /// Enable TUI mouse capture for internal scrolling and transcript selection
@@ -3623,23 +3624,8 @@ fn parse_sandbox_policy(
     }
 }
 
-fn should_use_alt_screen(cli: &Cli, config: &Config) -> bool {
-    if cli.no_alt_screen {
-        return false;
-    }
-
-    let mode = config
-        .tui
-        .as_ref()
-        .and_then(|tui| tui.alternate_screen.as_deref())
-        .unwrap_or("auto")
-        .to_ascii_lowercase();
-
-    match mode.as_str() {
-        "always" => true,
-        "never" => false,
-        _ => true,
-    }
+fn should_use_alt_screen(_cli: &Cli, _config: &Config) -> bool {
+    true
 }
 
 fn should_use_mouse_capture(cli: &Cli, config: &Config, use_alt_screen: bool) -> bool {
@@ -4590,15 +4576,15 @@ mod terminal_mode_tests {
     }
 
     #[test]
-    fn no_alt_screen_flag_disables_alternate_screen() {
+    fn no_alt_screen_flag_is_accepted_but_keeps_alternate_screen() {
         let cli = parse_cli(&["deepseek", "--no-alt-screen"]);
         let config = Config::default();
 
-        assert!(!should_use_alt_screen(&cli, &config));
+        assert!(should_use_alt_screen(&cli, &config));
     }
 
     #[test]
-    fn config_can_disable_alternate_screen() {
+    fn config_never_is_accepted_but_keeps_alternate_screen() {
         let cli = parse_cli(&["deepseek"]);
         let config = Config {
             tui: Some(crate::config::TuiConfig {
@@ -4612,7 +4598,7 @@ mod terminal_mode_tests {
             ..Config::default()
         };
 
-        assert!(!should_use_alt_screen(&cli, &config));
+        assert!(should_use_alt_screen(&cli, &config));
     }
 
     #[test]

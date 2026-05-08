@@ -46,8 +46,14 @@ fn terminal_origin_reset_resets_scroll_region_origin_and_clears() {
         "must reset scroll margins and origin mode before repaint"
     );
     assert!(
-        TERMINAL_ORIGIN_RESET.ends_with(b"\x1b[H\x1b[2J"),
+        TERMINAL_ORIGIN_RESET.ends_with(b"\x1b[H\x1b[2J\x1b[3J"),
         "must home the cursor and clear the viewport"
+    );
+    assert!(
+        TERMINAL_ORIGIN_RESET
+            .windows(b"\x1b[3J".len())
+            .any(|sequence| sequence == b"\x1b[3J"),
+        "must erase saved scrollback when reclaiming the viewport"
     );
 }
 
