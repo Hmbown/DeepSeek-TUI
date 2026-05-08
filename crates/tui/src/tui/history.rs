@@ -37,7 +37,7 @@ const USER_GLYPH: &str = "\u{258C}"; // ▌
 /// User-message continuation rail. Matches the wider user glyph so multi-line
 /// prompts read larger than reasoning/tool rails in terminal constraints.
 const USER_RAIL: &str = "\u{258C} "; // ▌ + space
-const USER_PROMPT_ACCENT_RGB: Color = Color::Rgb(112, 0, 0);
+const USER_PROMPT_ACCENT_RGB: Color = palette::DEEPSEEK_RED;
 /// Visual marker for the assistant role. Solid bullet that pulses at 2s
 /// cycle while the response is streaming, holds full brightness when idle.
 const ASSISTANT_GLYPH: &str = "\u{25CF}"; // ●
@@ -3696,10 +3696,10 @@ mod tests {
     }
 
     #[test]
-    fn user_prompt_accent_keeps_requested_rgb_on_truecolor() {
+    fn user_prompt_accent_keeps_readable_red_on_truecolor() {
         assert_eq!(
             user_prompt_accent(palette::ColorDepth::TrueColor),
-            USER_PROMPT_ACCENT_RGB
+            palette::DEEPSEEK_RED
         );
     }
 
