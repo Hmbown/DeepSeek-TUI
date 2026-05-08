@@ -2361,12 +2361,12 @@ async fn run_event_loop(
                 {
                     app.mention_menu_selected = app.mention_menu_selected.saturating_sub(1);
                 }
-                KeyCode::Up
-                    if key.modifiers.is_empty()
-                        && slash_menu_open
-                        && app.slash_menu_selected > 0 =>
-                {
-                    app.slash_menu_selected = app.slash_menu_selected.saturating_sub(1);
+                KeyCode::Up if key.modifiers.is_empty() && slash_menu_open => {
+                    if app.slash_menu_selected == 0 {
+                        app.slash_menu_selected = slash_menu_entries.len().saturating_sub(1);
+                    } else {
+                        app.slash_menu_selected -= 1;
+                    }
                 }
                 KeyCode::Up
                     if key.modifiers.is_empty()
@@ -2409,8 +2409,8 @@ async fn run_event_loop(
                         .min(mention_menu_entries.len().saturating_sub(1));
                 }
                 KeyCode::Down if key.modifiers.is_empty() && slash_menu_open => {
-                    app.slash_menu_selected = (app.slash_menu_selected + 1)
-                        .min(slash_menu_entries.len().saturating_sub(1));
+                    app.slash_menu_selected =
+                        (app.slash_menu_selected + 1) % slash_menu_entries.len();
                 }
                 KeyCode::Down
                     if key.modifiers.is_empty()
