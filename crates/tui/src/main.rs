@@ -4213,6 +4213,7 @@ async fn run_exec_agent(
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
         network_policy,
         snapshots_enabled: config.snapshots_config().enabled,
+        snapshots_max_size_bytes: config.snapshots_config().max_size_bytes(),
         lsp_config,
         runtime_services: crate::tools::spec::RuntimeToolServices::default(),
         subagent_model_overrides: config.subagent_model_overrides(),

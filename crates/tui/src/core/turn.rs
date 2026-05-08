@@ -132,8 +132,8 @@ fn add_optional_usage(total: Option<u32>, delta: Option<u32>) -> Option<u32> {
 ///
 /// Returns the snapshot SHA on success, `None` on any error. Errors are
 /// logged at WARN; the turn loop must not block on this.
-pub fn pre_turn_snapshot(workspace: &Path, turn_seq: u64) -> Option<String> {
-    snapshot_with_label(workspace, &format!("pre-turn:{turn_seq}"))
+pub fn pre_turn_snapshot(workspace: &Path, turn_seq: u64, max_size_bytes: u64) -> Option<String> {
+    snapshot_with_label(workspace, &format!("pre-turn:{turn_seq}"), max_size_bytes)
 }
 
 /// Take a `tool:<call_id>` workspace snapshot, taken before executing a
@@ -145,19 +145,38 @@ pub fn pre_turn_snapshot(workspace: &Path, turn_seq: u64) -> Option<String> {
 /// Returns the snapshot SHA on success, `None` on any error. Errors are
 /// logged at WARN and are non-fatal.
 pub fn pre_tool_snapshot(workspace: &Path, call_id: &str) -> Option<String> {
-    snapshot_with_label(workspace, &format!("tool:{call_id}"))
+    snapshot_with_label(workspace, &format!("tool:{call_id}"), 0)
 }
 
 /// Take a `post-turn:<seq>` workspace snapshot. Same failure model as
 /// [`pre_turn_snapshot`].
-pub fn post_turn_snapshot(workspace: &Path, turn_seq: u64) -> Option<String> {
-    snapshot_with_label(workspace, &format!("post-turn:{turn_seq}"))
+pub fn post_turn_snapshot(workspace: &Path, turn_seq: u64, max_size_bytes: u64) -> Option<String> {
+    snapshot_with_label(workspace, &format!("post-turn:{turn_seq}"), max_size_bytes)
 }
 
-fn snapshot_with_label(workspace: &Path, label: &str) -> Option<String> {
+fn snapshot_with_label(workspace: &Path, label: &str, max_size_bytes: u64) -> Option<String> {
     match SnapshotRepo::open_or_init(workspace) {
         Ok(repo) => match repo.snapshot(label) {
-            Ok(id) => Some(id.0),
+            Ok(id) => {
+                // Mid-session size guard (#1112): after each snapshot,
+                // check if the .git directory exceeds the budget and prune
+                // if needed. This prevents unbounded growth during
+                // long-running sessions.
+                if max_size_bytes > 0 {
+                    match repo.prune_to_budget(max_size_bytes) {
+                        Ok(0) => {}
+                        Ok(n) => tracing::debug!(
+                            target: "snapshot",
+                            "mid-session prune removed {n} snapshot(s) to stay within {max_size_bytes} bytes"
+                        ),
+                        Err(e) => tracing::warn!(
+                            target: "snapshot",
+                            "mid-session size prune failed: {e}"
+                        ),
+                    }
+                }
+                Some(id.0)
+            }
             Err(e) => {
                 tracing::warn!(target: "snapshot", "snapshot '{label}' failed: {e}");
                 None

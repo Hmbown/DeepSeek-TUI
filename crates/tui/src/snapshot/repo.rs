@@ -626,6 +626,58 @@ impl SnapshotRepo {
     pub fn total_size(&self) -> u64 {
         dir_size_recursive(&self.git_dir)
     }
+
+    /// Prune snapshots until the `.git` directory fits within `max_size_bytes`.
+    ///
+    /// This is the mid-session guard called after each snapshot to prevent
+    /// unbounded growth during long-running sessions (#1112). Uses the same
+    /// logarithmic convergence strategy as `prune::prune_over_size` but
+    /// operates on `&self` to avoid re-opening the repo.
+    ///
+    /// Returns the number of snapshots removed. Non-fatal: errors are
+    /// returned but callers should log-and-continue.
+    pub fn prune_to_budget(&self, max_size_bytes: u64) -> io::Result<usize> {
+        if max_size_bytes == 0 {
+            return Ok(0); // 0 = unlimited
+        }
+        let mut total_removed: usize = 0;
+        // Cap iterations to avoid runaway loops in pathological cases.
+        for _ in 0..20 {
+            let current = self.total_size();
+            if current <= max_size_bytes {
+                break;
+            }
+            let snapshots = self.list(usize::MAX)?;
+            if snapshots.len() <= 1 {
+                break; // Keep at least one snapshot.
+            }
+            let oldest = snapshots.last().unwrap();
+            let newest = snapshots.first().unwrap();
+            let age_span = newest.timestamp.saturating_sub(oldest.timestamp);
+            let removed = if age_span == 0 {
+                // Same-second: use count-based pruning.
+                let keep = (snapshots.len() / 2).max(1);
+                self.prune_to_count(keep)?
+            } else {
+                // Drop oldest half by age.
+                let mid_ts = oldest.timestamp + age_span / 2;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                let max_age_secs = (now - mid_ts).max(0) as u64;
+                self.prune_older_than(std::time::Duration::from_secs(max_age_secs))?
+            };
+            total_removed += removed;
+            if removed == 0 {
+                break;
+            }
+        }
+        if total_removed > 0 {
+            let _ = self.prune_unreachable_objects();
+        }
+        Ok(total_removed)
+    }
 }
 
 /// Recursively sum file sizes in a directory.
@@ -638,15 +690,22 @@ fn dir_size_recursive(path: &Path) -> u64 {
     };
     let mut total: u64 = 0;
     for entry in entries.flatten() {
-        let Ok(meta) = entry.metadata() else {
+        // Use file_type() instead of metadata() — file_type() reads from
+        // the OS dirent (d_type) and does NOT follow symlinks, so
+        // is_symlink() actually works. metadata() follows the link and
+        // returns the target's info, making is_symlink() always false.
+        let Ok(ft) = entry.file_type() else {
             continue;
         };
-        if meta.is_symlink() {
+        if ft.is_symlink() {
             continue;
         }
-        if meta.is_dir() {
+        if ft.is_dir() {
             total += dir_size_recursive(&entry.path());
-        } else {
+        } else if ft.is_file() {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
             total += meta.len();
         }
     }
@@ -1215,6 +1274,60 @@ mod tests {
         let size = dir_size_recursive(&dir);
         // Should only count real.txt, not the symlink target again.
         assert_eq!(size, 12); // "real content".len()
+    }
+
+    /// Regression test: symlinks must not be double-counted.
+    ///
+    /// Previously `dir_size_recursive` used `entry.metadata()` which
+    /// follows symlinks, making `is_symlink()` always false. The target
+    /// file's size was counted once for the real entry and again for the
+    /// symlink entry. This test creates a large file, symlinks it twice,
+    /// and verifies the total is only the real file's size.
+    #[test]
+    #[cfg(unix)]
+    fn dir_size_recursive_does_not_double_count_symlink_targets() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("test_dir");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 10 KiB of 'x' — big enough that double-counting is obvious.
+        let payload = "x".repeat(10 * 1024);
+        std::fs::write(dir.join("big.bin"), &payload).unwrap();
+
+        // Two symlinks pointing at the same file.
+        std::os::unix::fs::symlink(dir.join("big.bin"), dir.join("link_a.bin")).unwrap();
+        std::os::unix::fs::symlink(dir.join("big.bin"), dir.join("link_b.bin")).unwrap();
+
+        let size = dir_size_recursive(&dir);
+        assert_eq!(
+            size,
+            payload.len() as u64,
+            "symlink targets must be counted exactly once, got {size} instead of {}",
+            payload.len()
+        );
+    }
+
+    /// Regression test: directory symlinks must not cause infinite
+    /// recursion or double-counting of contained files.
+    #[test]
+    #[cfg(unix)]
+    fn dir_size_recursive_skips_directory_symlinks() {
+        let tmp = tempdir().unwrap();
+        let real_dir = tmp.path().join("real_dir");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        std::fs::write(real_dir.join("file.txt"), b"hello").unwrap(); // 5 bytes
+
+        // Symlink to the directory itself.
+        let link_dir = tmp.path().join("link_dir");
+        std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+
+        let size = dir_size_recursive(tmp.path());
+        // Must count real_dir/file.txt (5 bytes) only once.
+        // If the dir symlink were followed, we'd get 10.
+        assert_eq!(
+            size, 5,
+            "directory symlinks must not be followed, got {size}"
+        );
     }
 
     #[test]

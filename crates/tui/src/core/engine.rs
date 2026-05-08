@@ -128,6 +128,10 @@ pub struct EngineConfig {
     pub network_policy: Option<crate::network_policy::NetworkPolicyDecider>,
     /// Whether to take side-git workspace snapshots before/after each turn.
     pub snapshots_enabled: bool,
+    /// Hard size cap for the snapshot `.git` directory (bytes).
+    /// 0 = unlimited. Used for mid-session pruning to prevent
+    /// unbounded growth during long-running sessions (#1112).
+    pub snapshots_max_size_bytes: u64,
     /// Post-edit LSP diagnostics injection (#136). When `None`, the engine
     /// constructs a disabled manager so the field is always present.
     pub lsp_config: Option<crate::lsp::LspConfig>,
@@ -177,6 +181,7 @@ impl Default for EngineConfig {
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy: None,
             snapshots_enabled: true,
+            snapshots_max_size_bytes: 0,
             lsp_config: None,
             runtime_services: RuntimeToolServices::default(),
             subagent_model_overrides: HashMap::new(),
@@ -898,8 +903,11 @@ impl Engine {
         if self.config.snapshots_enabled {
             let pre_workspace = self.session.workspace.clone();
             let pre_seq = self.turn_counter;
-            let _ = tokio::task::spawn_blocking(move || pre_turn_snapshot(&pre_workspace, pre_seq))
-                .await;
+            let max_size = self.config.snapshots_max_size_bytes;
+            let _ = tokio::task::spawn_blocking(move || {
+                pre_turn_snapshot(&pre_workspace, pre_seq, max_size)
+            })
+            .await;
         }
 
         // Emit turn started event
@@ -1125,8 +1133,9 @@ impl Engine {
         if self.config.snapshots_enabled {
             let post_workspace = self.session.workspace.clone();
             let post_seq = self.turn_counter;
+            let max_size = self.config.snapshots_max_size_bytes;
             crate::utils::spawn_blocking_supervised("post-turn-snapshot", move || {
-                post_turn_snapshot(&post_workspace, post_seq);
+                post_turn_snapshot(&post_workspace, post_seq, max_size);
             });
         }
     }
