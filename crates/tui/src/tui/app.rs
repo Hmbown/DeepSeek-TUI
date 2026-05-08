@@ -26,7 +26,7 @@ use crate::settings::Settings;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::shell::new_shared_shell_manager;
 use crate::tools::spec::RuntimeToolServices;
-use crate::tools::subagent::SubAgentResult;
+use crate::tools::subagent::{SubAgentResult, SubAgentStatus};
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::approval::ApprovalMode;
@@ -3726,10 +3726,30 @@ impl App {
             }
         }
 
-        // Active sub-agents
+        // Active sub-agents (with per-model breakdown)
         let agent_count = crate::tui::subagent_routing::running_agent_count(self);
         if agent_count > 0 {
-            lines.push(format!("**Active sub-agents**: {agent_count}"));
+            // Count by model name for cost visibility.
+            let mut model_counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            for agent in &self.subagent_cache {
+                if matches!(agent.status, SubAgentStatus::Running) {
+                    let label = if agent.model.is_empty() {
+                        "default"
+                    } else {
+                        agent.model.as_str()
+                    };
+                    *model_counts.entry(label.to_string()).or_insert(0) += 1;
+                }
+            }
+            let breakdown: Vec<String> = model_counts
+                .iter()
+                .map(|(model, count)| format!("{count}×{model}"))
+                .collect();
+            lines.push(format!(
+                "**Active sub-agents**: {agent_count} ({})",
+                breakdown.join(", ")
+            ));
             lines.push(String::new());
         }
 
