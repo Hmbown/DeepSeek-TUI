@@ -264,8 +264,11 @@ enum Commands {
 
 #[derive(Args, Debug, Clone)]
 struct ExecArgs {
-    /// Prompt to send to the model
-    prompt: String,
+    /// Prompt to send to the model. Multiple tokens are joined with spaces,
+    /// so bare words (`deepseek exec hello world`) work the same as a
+    /// single quoted string (`deepseek exec "hello world"`).
+    #[arg(required = true, num_args = 1..)]
+    prompt: Vec<String>,
     /// Override model for this run
     #[arg(long)]
     model: Option<String>,
@@ -663,10 +666,11 @@ async fn main() -> Result<()> {
                         |value| value.clamp(1, MAX_SUBAGENTS),
                     );
                     let auto_mode = args.auto || cli.yolo;
+                    let prompt = args.prompt.join(" ");
                     run_exec_agent(
                         &config,
                         &model,
-                        &args.prompt,
+                        &prompt,
                         workspace,
                         max_subagents,
                         true,
@@ -675,9 +679,9 @@ async fn main() -> Result<()> {
                     )
                     .await
                 } else if args.json {
-                    run_one_shot_json(&config, &model, &args.prompt).await
+                    run_one_shot_json(&config, &model, &args.prompt.join(" ")).await
                 } else {
-                    run_one_shot(&config, &model, &args.prompt).await
+                    run_one_shot(&config, &model, &args.prompt.join(" ")).await
                 }
             }
             Commands::Review(args) => {
@@ -4555,6 +4559,46 @@ mod doctor_endpoint_tests {
         assert!(text.contains("/v1/models"));
         assert!(text.contains("/v1/chat/completions"));
         assert!(!text.contains("api.deepseeki.com"));
+    }
+}
+
+#[cfg(test)]
+mod exec_args_tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse_cli(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).expect("CLI args should parse")
+    }
+
+    #[test]
+    fn exec_single_token_prompt() {
+        let cli = parse_cli(&["deepseek", "exec", "hello"]);
+        let Commands::Exec(args) = cli.command.unwrap() else {
+            panic!("expected Exec");
+        };
+        assert_eq!(args.prompt.join(" "), "hello");
+    }
+
+    #[test]
+    fn exec_multi_token_prompt_joins_with_space() {
+        // Simulates Windows shell splitting a quoted "hello world" into
+        // separate argv tokens before the binary receives them.
+        let cli = parse_cli(&["deepseek", "exec", "hello", "world"]);
+        let Commands::Exec(args) = cli.command.unwrap() else {
+            panic!("expected Exec");
+        };
+        assert_eq!(args.prompt.join(" "), "hello world");
+    }
+
+    #[test]
+    fn exec_flags_before_prompt_are_parsed_correctly() {
+        let cli = parse_cli(&["deepseek", "exec", "--auto", "hello", "world"]);
+        let Commands::Exec(args) = cli.command.unwrap() else {
+            panic!("expected Exec");
+        };
+        assert!(args.auto);
+        assert_eq!(args.prompt.join(" "), "hello world");
     }
 }
 
