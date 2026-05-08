@@ -616,7 +616,19 @@ pub struct GoalState {
     /// How many auto-continue turns have been dispatched in the current
     /// session. Reset when auto_continue is toggled off.
     pub auto_continue_turn_count: u32,
+    /// Pending todo count from the PREVIOUS auto-continue turn. Used for
+    /// stuck detection: if this value doesn't change for
+    /// STUCK_THRESHOLD consecutive turns, auto-continue stops.
+    pub prev_pending_count: Option<usize>,
+    /// How many consecutive turns the pending count has been unchanged.
+    pub stuck_streak: u32,
 }
+
+/// Auto-continue stops if the pending todo count hasn't changed for this
+/// many consecutive turns.
+pub const STUCK_THRESHOLD: u32 = 3;
+/// Auto-continue stops after this many turns regardless of progress.
+pub const MAX_AUTO_CONTINUE_TURNS: u32 = 50;
 
 /// Session cost and token telemetry state.
 #[derive(Debug, Clone)]

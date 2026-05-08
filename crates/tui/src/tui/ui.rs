@@ -89,6 +89,7 @@ use super::active_cell::ActiveCell;
 use super::app::{
     App, AppAction, AppMode, OnboardingState, QueuedMessage, ReasoningEffort, SidebarFocus,
     StatusToastLevel, SubmitDisposition, TaskPanelEntry, ToolDetailRecord, TuiOptions,
+    MAX_AUTO_CONTINUE_TURNS, STUCK_THRESHOLD,
 };
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
@@ -1035,7 +1036,57 @@ async fn run_event_loop(
                                 let recap = app.recap_text();
                                 let incomplete = app.pending_todo_count();
 
-                                if incomplete > 0 {
+                                // Safety: enforce token budget if set.
+                                let budget_exceeded = app
+                                    .goal
+                                    .goal_token_budget
+                                    .is_some_and(|budget| {
+                                        app.session.total_conversation_tokens
+                                            >= budget
+                                    });
+
+                                // Safety: detect stuck state (no progress
+                                // after N consecutive turns).
+                                let stuck = if let Some(prev) =
+                                    app.goal.prev_pending_count
+                                    && prev == incomplete
+                                {
+                                    app.goal.stuck_streak += 1;
+                                    app.goal.stuck_streak
+                                        >= STUCK_THRESHOLD
+                                } else {
+                                    app.goal.stuck_streak = 0;
+                                    false
+                                };
+                                app.goal.prev_pending_count = Some(incomplete);
+
+                                // Safety: enforce max turn limit.
+                                let turn_limit =
+                                    app.goal.auto_continue_turn_count
+                                        >= MAX_AUTO_CONTINUE_TURNS;
+
+                                let stop_reason: Option<String> = if incomplete == 0 {
+                                    Some("All todos completed".to_string())
+                                } else if budget_exceeded {
+                                    Some("Token budget exhausted".to_string())
+                                } else if stuck {
+                                    Some(format!(
+                                        "No progress after {STUCK_THRESHOLD} turns"
+                                    ))
+                                } else if turn_limit {
+                                    Some(format!(
+                                        "Reached max auto-continue turns ({MAX_AUTO_CONTINUE_TURNS})"
+                                    ))
+                                } else {
+                                    None
+                                };
+
+                                if let Some(reason) = stop_reason {
+                                    app.status_message = Some(format!(
+                                        "Auto-continue finished: {reason}.",
+                                    ));
+                                    app.goal.auto_continue = false;
+                                } else {
                                     let msg = format!(
                                         "Continue working on the remaining todo items.\n\n{recap}"
                                     );
@@ -1045,13 +1096,7 @@ async fn run_event_loop(
                                         "Auto-continue turn #{} ({incomplete} todo(s) remaining)",
                                         app.goal.auto_continue_turn_count
                                     ));
-                            } else {
-                                app.status_message = Some(
-                                    "All todos completed — auto-continue finished."
-                                        .to_string(),
-                                );
-                                app.goal.auto_continue = false;
-                            }
+                                }
                             }
                         }
 
