@@ -631,6 +631,10 @@ pub struct GoalState {
     /// truly achieved. If the model confirms (no new todos added),
     /// auto-continue stops. If it adds more todos, we continue.
     pub completion_confirmation_pending: bool,
+    /// Conversation context snapshot captured at goal-set time so the
+    /// model can re-orient after many auto-continue turns. Includes the
+    /// goal objective, initial transcript state, and workspace info.
+    pub goal_context: Option<String>,
 }
 
 impl Default for GoalState {
@@ -645,6 +649,7 @@ impl Default for GoalState {
             stuck_streak: 0,
             idle_streak: 0,
             completion_confirmation_pending: false,
+            goal_context: None,
         }
     }
 }
@@ -652,7 +657,7 @@ impl Default for GoalState {
 impl Serialize for GoalState {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = s.serialize_struct("GoalState", 9)?;
+        let mut state = s.serialize_struct("GoalState", 10)?;
         state.serialize_field("goal_objective", &self.goal_objective)?;
         state.serialize_field("goal_token_budget", &self.goal_token_budget)?;
         // Instant is not serializable; store elapsed seconds instead.
@@ -664,6 +669,7 @@ impl Serialize for GoalState {
         state.serialize_field("stuck_streak", &self.stuck_streak)?;
         state.serialize_field("idle_streak", &self.idle_streak)?;
         state.serialize_field("completion_confirmation_pending", &self.completion_confirmation_pending)?;
+        state.serialize_field("goal_context", &self.goal_context)?;
         state.end()
     }
 }
@@ -686,6 +692,8 @@ impl<'de> Deserialize<'de> for GoalState {
             idle_streak: u32,
             #[serde(default)]
             completion_confirmation_pending: bool,
+            #[serde(default)]
+            goal_context: Option<String>,
         }
         let h = Helper::deserialize(d)?;
         Ok(GoalState {
@@ -702,6 +710,7 @@ impl<'de> Deserialize<'de> for GoalState {
             stuck_streak: h.stuck_streak,
             idle_streak: h.idle_streak,
             completion_confirmation_pending: h.completion_confirmation_pending,
+            goal_context: h.goal_context,
         })
     }
 }

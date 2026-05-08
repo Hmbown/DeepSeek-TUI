@@ -58,6 +58,12 @@ pub fn goal(app: &mut App, arg: Option<&str>) -> CommandResult {
             app.goal.stuck_streak = 0;
             app.goal.idle_streak = 0;
             app.goal.completion_confirmation_pending = false;
+            // Capture current conversation context so the model
+            // can re-orient after many auto-continue turns.
+            app.goal.goal_context = Some(format!(
+                "Goal: {objective}\n\nContext at goal-set time:\n{}",
+                app.recap_text()
+            ));
             let budget_str = budget
                 .map(|b| format!(" (budget: {b} tokens)"))
                 .unwrap_or_default();

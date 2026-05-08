@@ -1173,8 +1173,33 @@ async fn run_event_loop(
                                         app.goal.auto_continue_turn_count
                                     ));
                                 } else {
+                                    // Include the goal context so the model
+                                    // can re-orient across many turns.
+                                    let goal_context_block = app
+                                        .goal
+                                        .goal_context
+                                        .as_deref()
+                                        .map(|ctx| {
+                                            format!(
+                                                "\n\n## Goal Context (from /goal set time)\n\n{ctx}"
+                                            )
+                                        })
+                                        .unwrap_or_default();
+                                    let decomposition_hint =
+                                        if let Some(prev) =
+                                            app.goal.prev_pending_count
+                                            && incomplete < prev
+                                        {
+                                            // Todo was just completed:
+                                            // prompt to split next tasks.
+                                            "\n\nProgress made. Review the Goal Context above and split the \
+                                             next set of tasks from the remaining goal. \
+                                             Add them with checklist_add."
+                                        } else {
+                                            ""
+                                        };
                                     let msg = format!(
-                                        "Continue working on the remaining todo items.\n\n{recap}"
+                                        "Continue working on the remaining todo items.\n\n{recap}{goal_context_block}{decomposition_hint}"
                                     );
                                     app.queued_messages.push_back(QueuedMessage::new(msg, None));
                                     app.goal.auto_continue_turn_count += 1;
