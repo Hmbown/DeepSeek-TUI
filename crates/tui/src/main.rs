@@ -3977,10 +3977,7 @@ async fn run_interactive(
         // it fits. This runs *before* the time-based prune so that a
         // bloated directory doesn't waste time expiring already-removed
         // entries.
-        session_manager::prune_workspace_snapshots_by_size(
-            &workspace,
-            snapshots.max_size_bytes(),
-        );
+        session_manager::prune_workspace_snapshots_by_size(&workspace, snapshots.max_size_bytes());
         // Then: age-based prune (7-day default).
         session_manager::prune_workspace_snapshots(&workspace, snapshots.max_age());
     }
