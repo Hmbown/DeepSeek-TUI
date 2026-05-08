@@ -4111,6 +4111,21 @@ api_key = "old-openrouter-key"
     }
 
     #[test]
+    fn deepseek_cn_legacy_alias_routes_to_beta_endpoint() {
+        let config = Config {
+            provider: Some("deepseek-cn".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(config.api_provider(), ApiProvider::DeepseekCN);
+        assert_eq!(
+            config.deepseek_base_url(),
+            DEFAULT_DEEPSEEK_BASE_URL,
+            "deepseek-cn legacy alias must use the beta endpoint, not https://api.deepseek.com"
+        );
+    }
+
+    #[test]
     fn explicit_deepseek_base_url_overrides_beta_default() {
         let config = Config {
             base_url: Some("https://api.deepseek.com".to_string()),
