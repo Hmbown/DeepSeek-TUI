@@ -2352,7 +2352,7 @@ async fn run_event_loop(
                     app.scroll_up(app.viewport.last_transcript_visible.max(3));
                 }
                 KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
-                    app.scroll_up(3);
+                    app.scroll_up(10);
                 }
                 KeyCode::Up
                     if key.modifiers.is_empty()
@@ -2398,7 +2398,7 @@ async fn run_event_loop(
                     app.scroll_down(app.viewport.last_transcript_visible.max(3));
                 }
                 KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
-                    app.scroll_down(3);
+                    app.scroll_down(10);
                 }
                 KeyCode::Down if key.modifiers.is_empty() && mention_menu_open => {
                     app.mention_menu_selected = (app.mention_menu_selected + 1)
@@ -3464,13 +3464,28 @@ fn handle_composer_history_arrow(
         return false;
     }
 
+    // Ctrl+Up/Down navigates composer history.
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Up => {
+                app.history_up();
+                return true;
+            }
+            KeyCode::Down => {
+                app.history_down();
+                return true;
+            }
+            _ => return false,
+        }
+    }
+    // Plain Up/Down scrolls the transcript.
     match key.code {
         KeyCode::Up => {
-            app.history_up();
+            app.scroll_up(5);
             true
         }
         KeyCode::Down => {
-            app.history_down();
+            app.scroll_down(5);
             true
         }
         _ => false,
