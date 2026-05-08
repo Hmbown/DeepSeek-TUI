@@ -41,7 +41,11 @@ const PACK_IGNORED_DIRS: &[&str] = &[
     "__pycache__",
     "dist",
     "build",
+    "target",
+    ".idea",
+    ".vscode",
     ".pytest_cache",
+    ".DS_Store",
 ];
 
 // === Errors ===
@@ -274,6 +278,8 @@ fn is_config_file(path: &str) -> bool {
             | "dockerfile"
             | "compose.yaml"
             | "compose.yml"
+            | "docker-compose.yaml"
+            | "docker-compose.yml"
             | "makefile"
     ) || lower.ends_with(".config.js")
         || lower.ends_with(".config.ts")
@@ -304,6 +310,9 @@ fn is_source_file(path: &str) -> bool {
                 | "rb"
                 | "php"
                 | "swift"
+                | "sql"
+                | "sh"
+                | "bash"
         )
     )
 }
