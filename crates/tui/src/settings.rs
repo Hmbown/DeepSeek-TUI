@@ -184,7 +184,7 @@ pub struct Settings {
     pub show_thinking: bool,
     /// Show detailed tool output
     pub show_tool_details: bool,
-    /// UI locale: auto, en, ja, zh-Hans, pt-BR
+    /// UI locale: auto, en, ja, zh-Hans, zh-Hant, pt-BR
     pub locale: String,
     /// Optional main TUI background color as a 6-digit hex RGB value.
     pub background_color: Option<String>,
@@ -358,7 +358,7 @@ impl Settings {
             "locale" | "language" => {
                 let Some(locale) = normalize_configured_locale(value) else {
                     anyhow::bail!(
-                        "Failed to update setting: invalid locale '{value}'. Expected: auto, en, ja, zh-Hans, pt-BR."
+                        "Failed to update setting: invalid locale '{value}'. Expected: auto, en, ja, zh-Hans, zh-Hant, pt-BR."
                     );
                 };
                 self.locale = locale.to_string();
@@ -554,7 +554,7 @@ impl Settings {
             ("show_tool_details", "Show detailed tool output: on/off"),
             (
                 "locale",
-                "UI locale and default model language: auto, en, ja, zh-Hans, pt-BR",
+                "UI locale and default model language: auto, en, ja, zh-Hans, zh-Hant, pt-BR",
             ),
             (
                 "background_color",
@@ -737,6 +737,11 @@ mod tests {
         settings.set("language", "pt-PT").expect("set pt fallback");
         assert_eq!(settings.locale, "pt-BR");
 
+        settings
+            .set("locale", "zh_TW.UTF-8")
+            .expect("set traditional chinese");
+        assert_eq!(settings.locale, "zh-Hant");
+
         let err = settings
             .set("locale", "ar")
             .expect_err("Arabic is planned, not shipped");
@@ -798,6 +803,16 @@ mod tests {
         assert!(
             zh.contains("配置文件"),
             "chinese config label missing:\n{zh}"
+        );
+
+        let zh_hant = settings.display(crate::localization::Locale::ZhHant);
+        assert!(
+            zh_hant.contains("設定"),
+            "traditional chinese header missing:\n{zh_hant}"
+        );
+        assert!(
+            zh_hant.contains("設定檔"),
+            "traditional chinese config label missing:\n{zh_hant}"
         );
     }
 

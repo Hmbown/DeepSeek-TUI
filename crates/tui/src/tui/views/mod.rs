@@ -1014,7 +1014,7 @@ fn config_hint_for_key(key: &str) -> &'static str {
         | "composer_border"
         | "paste_burst_detection" => "on/off, true/false, yes/no, 1/0",
         "composer_density" | "transcript_spacing" => "compact | comfortable | spacious",
-        "locale" => "auto | en | ja | zh-Hans | pt-BR",
+        "locale" => "auto | en | ja | zh-Hans | zh-Hant | pt-BR",
         "background_color" => "#RRGGBB | default",
         "default_mode" => "agent | plan | yolo",
         "sidebar_width" => "10..=50",
