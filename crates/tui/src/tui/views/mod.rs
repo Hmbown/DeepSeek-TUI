@@ -878,7 +878,7 @@ impl ConfigView {
                             .position(|v| v.eq_ignore_ascii_case(&current))
                             .unwrap_or(0);
                         let next = if key.code == KeyCode::Char('-') {
-                            pos.wrapping_sub(1) % values.len()
+                            pos.wrapping_sub(1).rem_euclid(values.len())
                         } else {
                             (pos + 1) % values.len()
                         };
@@ -1250,7 +1250,7 @@ impl ModalView for ConfigView {
                             .position(|v| v.eq_ignore_ascii_case(current))
                             .unwrap_or(0);
                         let next = if key.code == KeyCode::Char('-') {
-                            pos.wrapping_sub(1) % values.len()
+                            pos.wrapping_sub(1).rem_euclid(values.len())
                         } else {
                             (pos + 1) % values.len()
                         };
