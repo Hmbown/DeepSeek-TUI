@@ -95,21 +95,22 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
               <div className="p-6 min-w-0">
                 <h3 className="font-display text-lg mb-2">国内 API 访问</h3>
                 <p className="text-sm text-ink-soft leading-[1.9] tracking-wide mb-3">
-                  默认 <code className="inline">https://api.deepseek.com</code> 在国内通常可直连。
-                  网络不通时，通过自定义 <code className="inline">base_url</code> 或环境变量
-                  <code className="inline">DEEPSEEK_BASE_URL</code> 切换至替代节点：
+                  DeepSeek 服务器位于中国境内，
+                  <code className="inline">https://api.deepseek.com</code>{" "}
+                  是
+                  <a href="https://api-docs.deepseek.com/" className="body-link">官方唯一域名</a>，
+                  国内可直连——无需替代节点。设置 API key：
                 </p>
                 <pre className="code-block text-[0.78rem]">
-{`# ~/.deepseek/config.toml
-[api]
-base_url = "https://<你的节点>"
+{`# 推荐：环境变量
+export DEEPSEEK_API_KEY=sk-...
 
-# 或环境变量（推荐，便于临时切换）：
-#   export DEEPSEEK_BASE_URL=https://<你的节点>`}
+# 或保存到配置文件
+deepseek auth set --provider deepseek --api-key sk-...`}
                 </pre>
                 <p className="text-sm text-ink-soft leading-[1.9] tracking-wide mt-3">
-                  API key 通过 <code className="inline">deepseek auth set --provider deepseek</code>{" "}
-                  保存，或设 <code className="inline">DEEPSEEK_API_KEY</code> 环境变量。
+                  如有自建反向代理或私有镜像，可通过{" "}
+                  <code className="inline">DEEPSEEK_BASE_URL</code> 覆盖默认地址。
                 </p>
               </div>
             </div>
