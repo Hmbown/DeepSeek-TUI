@@ -284,7 +284,7 @@ async fn run_rlm_turn_impl(
                 }
             };
 
-            add_prompt_cache_usage(&mut total_usage, &response.usage);
+            super::add_usage_with_prompt_cache(&mut total_usage, &response.usage);
 
             let response_text = extract_text_blocks(&response.content);
             last_response_text = response_text.clone();
@@ -505,7 +505,7 @@ async fn run_rlm_turn_impl(
     // Fold bridge usage (children + nested sub_rlm) into totals.
     let bridge_usage = usage_handle.lock().await;
     let mut final_usage = result.usage.clone();
-    add_prompt_cache_usage(&mut final_usage, &bridge_usage);
+    super::add_usage_with_prompt_cache(&mut final_usage, &bridge_usage);
     drop(bridge_usage);
 
     repl.shutdown().await;
@@ -519,26 +519,6 @@ async fn run_rlm_turn_impl(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn add_prompt_cache_usage(total: &mut Usage, delta: &Usage) {
-    total.input_tokens = total.input_tokens.saturating_add(delta.input_tokens);
-    total.output_tokens = total.output_tokens.saturating_add(delta.output_tokens);
-    total.prompt_cache_hit_tokens =
-        add_optional_usage(total.prompt_cache_hit_tokens, delta.prompt_cache_hit_tokens);
-    total.prompt_cache_miss_tokens = add_optional_usage(
-        total.prompt_cache_miss_tokens,
-        delta.prompt_cache_miss_tokens,
-    );
-}
-
-fn add_optional_usage(total: Option<u32>, delta: Option<u32>) -> Option<u32> {
-    match (total, delta) {
-        (Some(total), Some(delta)) => Some(total.saturating_add(delta)),
-        (None, Some(delta)) => Some(delta),
-        (Some(total), None) => Some(total),
-        (None, None) => None,
-    }
-}
 
 fn write_context_file(prompt: &str) -> std::io::Result<PathBuf> {
     let dir = std::env::temp_dir().join("deepseek_rlm_ctx");
@@ -976,31 +956,6 @@ mod tests {
     fn metadata_msg_role_is_user() {
         let msg = build_metadata_message("test", None, 0, None, None);
         assert_eq!(msg.role, "user");
-    }
-
-    #[test]
-    fn add_prompt_cache_usage_preserves_cache_counts() {
-        let mut total = Usage {
-            input_tokens: 100,
-            output_tokens: 10,
-            prompt_cache_hit_tokens: Some(80),
-            prompt_cache_miss_tokens: Some(20),
-            ..Usage::default()
-        };
-        let delta = Usage {
-            input_tokens: 50,
-            output_tokens: 5,
-            prompt_cache_hit_tokens: Some(30),
-            prompt_cache_miss_tokens: Some(20),
-            ..Usage::default()
-        };
-
-        add_prompt_cache_usage(&mut total, &delta);
-
-        assert_eq!(total.input_tokens, 150);
-        assert_eq!(total.output_tokens, 15);
-        assert_eq!(total.prompt_cache_hit_tokens, Some(110));
-        assert_eq!(total.prompt_cache_miss_tokens, Some(40));
     }
 
     #[test]

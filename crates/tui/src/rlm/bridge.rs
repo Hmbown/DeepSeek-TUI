@@ -145,7 +145,7 @@ impl RlmBridge {
 
         {
             let mut u = self.usage.lock().await;
-            add_prompt_cache_usage(&mut u, &response.usage);
+            super::add_usage_with_prompt_cache(&mut u, &response.usage);
         }
 
         SingleResp { text, error: None }
@@ -208,7 +208,7 @@ impl RlmBridge {
 
         {
             let mut u = self.usage.lock().await;
-            add_prompt_cache_usage(&mut u, &result.usage);
+            super::add_usage_with_prompt_cache(&mut u, &result.usage);
         }
 
         SingleResp {
@@ -246,26 +246,6 @@ fn batch_guard(prompt_count: usize) -> Option<BatchResp> {
         });
     }
     None
-}
-
-fn add_prompt_cache_usage(total: &mut Usage, delta: &Usage) {
-    total.input_tokens = total.input_tokens.saturating_add(delta.input_tokens);
-    total.output_tokens = total.output_tokens.saturating_add(delta.output_tokens);
-    total.prompt_cache_hit_tokens =
-        add_optional_usage(total.prompt_cache_hit_tokens, delta.prompt_cache_hit_tokens);
-    total.prompt_cache_miss_tokens = add_optional_usage(
-        total.prompt_cache_miss_tokens,
-        delta.prompt_cache_miss_tokens,
-    );
-}
-
-fn add_optional_usage(total: Option<u32>, delta: Option<u32>) -> Option<u32> {
-    match (total, delta) {
-        (Some(total), Some(delta)) => Some(total.saturating_add(delta)),
-        (None, Some(delta)) => Some(delta),
-        (Some(total), None) => Some(total),
-        (None, None) => None,
-    }
 }
 
 impl RpcDispatcher for RlmBridge {
