@@ -731,6 +731,23 @@ fn link_style() -> Style {
 /// Hard-wrap a code line at `width` display columns, preserving all
 /// whitespace (including leading indentation). Unlike [`wrap_text`], this
 /// does not split on word boundaries — code indentation is semantic.
+/// Display-column width of a single character for the purposes of terminal
+/// line-wrap calculations.
+///
+/// `UnicodeWidthChar::width` returns `None` for control characters, which
+/// includes `\t`. A tab advances to the next 8-column tab stop, so we model
+/// it as 8 columns here (a safe over-estimate that avoids terminal overflow).
+/// Other control characters are counted as 1 column.
+fn char_display_width(ch: char, col: usize) -> usize {
+    match ch {
+        '\t' => 8 - (col % 8), // advance to next 8-column tab stop
+        _ => ch.width().unwrap_or(1),
+    }
+}
+
+/// Hard-wrap a code line at `width` display columns, preserving all
+/// whitespace (including leading indentation). Unlike [`wrap_text`], this
+/// does not split on word boundaries — code indentation is semantic.
 fn wrap_code_line(line: &str, width: usize) -> Vec<String> {
     if width == 0 || line.is_empty() {
         return vec![line.to_string()];
@@ -740,7 +757,7 @@ fn wrap_code_line(line: &str, width: usize) -> Vec<String> {
     let mut current_width = 0usize;
 
     for ch in line.chars() {
-        let ch_width = ch.width().unwrap_or(0);
+        let ch_width = char_display_width(ch, current_width);
         if current_width + ch_width > width && !current.is_empty() {
             chunks.push(current);
             current = String::new();
@@ -916,6 +933,35 @@ mod tests {
 
         // Empty line produces one empty chunk.
         assert_eq!(wrap_code_line("", 80), vec![""]);
+    }
+
+    #[test]
+    fn wrap_code_line_tab_counts_toward_width() {
+        // tab (8 cols) + "xy" (2 cols) = 10 ≤ 10 — fits on one line.
+        let chunks = wrap_code_line("\txy", 10);
+        assert_eq!(chunks, vec!["\txy"], "tab + 2 chars fits in width 10");
+
+        // tab (8 cols) + "x" (1 col) = 9 ≤ 9 — "x" fits; "y" overflows.
+        let chunks = wrap_code_line("\txy", 9);
+        assert_eq!(chunks[0], "\tx", "tab + first char fits exactly");
+        assert_eq!(chunks[1], "y", "second char wraps");
+
+        // tab alone (8 cols) fits in width 8; the next "x" overflows.
+        let chunks = wrap_code_line("\tx", 8);
+        assert_eq!(chunks[0], "\t");
+        assert_eq!(chunks[1], "x");
+    }
+
+    #[test]
+    fn char_display_width_tab_uses_tab_stop() {
+        // At column 0 a tab fills to column 8.
+        assert_eq!(char_display_width('\t', 0), 8);
+        // At column 4 a tab fills to column 8 (4 remaining).
+        assert_eq!(char_display_width('\t', 4), 4);
+        // At column 8 a tab fills to the next stop at 16 (8 columns).
+        assert_eq!(char_display_width('\t', 8), 8);
+        // Regular ASCII is 1.
+        assert_eq!(char_display_width('a', 0), 1);
     }
 
     #[test]
