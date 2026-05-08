@@ -566,10 +566,10 @@ impl CommandPaletteView {
 
     fn format_section_label(section: PaletteSection, count: usize) -> Line<'static> {
         let title = match section {
-            PaletteSection::Command => "Commands",
-            PaletteSection::Skill => "Skills",
-            PaletteSection::Tool => "Tools",
-            PaletteSection::Mcp => "MCP",
+            PaletteSection::Command => crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::PalSectionCommands),
+            PaletteSection::Skill => crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::PalSectionSkills),
+            PaletteSection::Tool => crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::PalSectionTools),
+            PaletteSection::Mcp => crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::PalSectionMcp),
         };
         Line::from(vec![Span::styled(
             format!("  {title} ({count})  "),
@@ -685,9 +685,9 @@ impl ModalView for CommandPaletteView {
 
         let mut lines = Vec::new();
         let query_label = if self.query.is_empty() {
-            "Type to filter".to_string()
+            crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::PalTypeToFilter).to_string()
         } else {
-            format!("Filter: {}", self.query)
+            format!("{}{}", crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::PalFilterPrefix), self.query)
         };
         lines.push(Line::from(Span::styled(
             query_label,
@@ -782,9 +782,9 @@ impl ModalView for CommandPaletteView {
         let block = modal_block()
             .title(" Command Palette ")
             .title_bottom(Line::from(vec![
-                Span::styled(" ↑/↓/j/k move  ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled("Enter run/open  ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled("Esc close", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::PalFooterMove), Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::PalFooterRun), Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::PalFooterClose), Style::default().fg(palette::TEXT_MUTED)),
             ]));
 
         Paragraph::new(lines)

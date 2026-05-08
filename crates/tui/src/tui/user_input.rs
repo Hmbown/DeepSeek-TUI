@@ -94,10 +94,19 @@ pub struct UserInputView {
     mode: InputMode,
     other_input: String,
     answers: Vec<UserInputAnswer>,
+    locale: crate::localization::Locale,
 }
 
 impl UserInputView {
     pub fn new(tool_id: impl Into<String>, request: UserInputRequest) -> Self {
+        Self::with_locale(tool_id, request, crate::localization::Locale::ZhHans)
+    }
+
+    pub fn with_locale(
+        tool_id: impl Into<String>,
+        request: UserInputRequest,
+        locale: crate::localization::Locale,
+    ) -> Self {
         Self {
             tool_id: tool_id.into(),
             request,
@@ -106,6 +115,7 @@ impl UserInputView {
             mode: InputMode::Selecting,
             other_input: String::new(),
             answers: Vec::new(),
+            locale,
         }
     }
 
@@ -210,7 +220,7 @@ impl UserInputView {
                 let question = self.current_question();
                 let answer = UserInputAnswer {
                     id: question.id.clone(),
-                    label: "Other".to_string(),
+                    label: crate::localization::tr(self.locale, crate::localization::MessageId::UiOther).to_string(),
                     value: self.other_input.trim().to_string(),
                 };
                 self.advance_question(answer)
@@ -266,7 +276,7 @@ impl ModalView for UserInputView {
 
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(vec![Span::styled(
-            "Action required",
+            crate::localization::tr(self.locale, crate::localization::MessageId::UiActionRequired),
             Style::default().fg(palette::DEEPSEEK_SKY).bold(),
         )]));
         lines.push(Line::from(vec![
@@ -303,15 +313,15 @@ impl ModalView for UserInputView {
             &mut lines,
             self.selected == other_index,
             other_number,
-            "Other".to_string(),
-            "Type a custom response".to_string(),
+            crate::localization::tr(self.locale, crate::localization::MessageId::UiOther).to_string(),
+            crate::localization::tr(self.locale, crate::localization::MessageId::UiTypeCustomResponse).to_string(),
         );
 
         if self.mode == InputMode::OtherInput {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::styled(
-                    "> Custom response:",
+                    format!("> {}:", crate::localization::tr(self.locale, crate::localization::MessageId::UiCustomResponse)),
                     Style::default().fg(palette::TEXT_PRIMARY).bold(),
                 ),
                 Span::raw(" "),
@@ -330,7 +340,7 @@ impl ModalView for UserInputView {
         if self.mode == InputMode::OtherInput {
             lines.push(Line::from(vec![
                 Span::styled("Enter", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
-                Span::styled(" submit", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(crate::localization::tr(self.locale, crate::localization::MessageId::UiEnterSubmit), Style::default().fg(palette::TEXT_MUTED)),
                 Span::raw("  "),
                 Span::styled("Esc", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
                 Span::styled(" back", Style::default().fg(palette::TEXT_MUTED)),
@@ -338,13 +348,13 @@ impl ModalView for UserInputView {
         } else {
             lines.push(Line::from(vec![
                 Span::styled("1-4", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
-                Span::styled(" quick pick", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(crate::localization::tr(self.locale, crate::localization::MessageId::UiQuickPick), Style::default().fg(palette::TEXT_MUTED)),
                 Span::raw("  "),
                 Span::styled("Up/Down", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
                 Span::styled(" move", Style::default().fg(palette::TEXT_MUTED)),
                 Span::raw("  "),
                 Span::styled("Enter", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
-                Span::styled(" confirm", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(crate::localization::tr(self.locale, crate::localization::MessageId::UiEnterConfirm), Style::default().fg(palette::TEXT_MUTED)),
                 Span::raw("  "),
                 Span::styled("Esc", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
                 Span::styled(" cancel", Style::default().fg(palette::TEXT_MUTED)),
@@ -425,10 +435,10 @@ mod tests {
     fn user_input_modal_calls_out_required_action_and_controls() {
         let rendered = render_view(&sample_view(), 110, 36);
 
-        assert!(rendered.contains("Action required"));
+        assert!(rendered.contains(crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::UiActionRequired)));
         assert!(rendered.contains("Question 1 of 1"));
         assert!(rendered.contains("1-4"));
-        assert!(rendered.contains("quick pick"));
+        assert!(rendered.contains(crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::UiQuickPick).trim()));
     }
 
     #[test]
@@ -440,9 +450,9 @@ mod tests {
 
         let rendered = render_view(&view, 110, 36);
 
-        assert!(rendered.contains("Custom response"));
+        assert!(rendered.contains(crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::UiCustomResponse)));
         assert!(rendered.contains("Need one more pass"));
         assert!(rendered.contains("Enter"));
-        assert!(rendered.contains("submit"));
+        assert!(rendered.contains(crate::localization::tr(crate::localization::Locale::ZhHans, crate::localization::MessageId::UiEnterSubmit).trim()));
     }
 }

@@ -375,6 +375,192 @@ pub enum MessageId {
     HomeYoloModeCaution,
     HomePlanModeTip,
     HomePlanModeChecklistTip,
+    // === v0.8.18 zh-ext: context inspector ===
+    CtxInspSessionContext,
+    CtxInspSystemPromptStructure,
+    CtxInspReferences,
+    CtxInspRecentTools,
+    // === v0.8.18 zh-ext: history cell type labels ===
+    HclMessage,
+    HclSubAgent,
+    HclArchivedContext,
+    // === v0.8.18 zh-ext: composer panel ===
+    ComposerLabelDraft,
+    ComposerLabelComposer,
+    ComposerHintSend,
+    ComposerHintQueue,
+    ComposerHintSteering,
+    ComposerHintQueued,
+    ComposerHintOffline,
+    // === v0.8.18 zh-ext: tool category labels ===
+    TcSafe,
+    TcFileWrite,
+    TcShell,
+    TcNetwork,
+    TcMcpRead,
+    TcMcpAction,
+    TcUnknown,
+    // === v0.8.18 zh-ext: onboarding + elevation ===
+    ElvNetwork,
+    ElvWriteAccess,
+    ElvFullAccess,
+    ElvAbort,
+    TrustTitle,
+    TrustPrompt,
+    TrustInjectionWarning,
+    TrustRecordNote,
+    TrustPressHint,
+    TipsTitle,
+    TipsLine1,
+    TipsLine2,
+    TipsLine3,
+    TipsLine4,
+    TipsLine5,
+    OnboardingTitle,
+    StepCounter,
+    // === v0.8.18 zh-ext-2: status messages ===
+    StatusTerminalRestored,
+    StatusMouseRestored,
+    StatusFileTreeClosed,
+    StatusRequestCancelled,
+    StatusStoppedEditingQueued,
+    StatusPressEscAgain,
+    StatusBacktrackCancelled,
+    StatusEditorCancelled,
+    StatusCopiedToClipboard,
+    StatusContextInspector,
+    StatusSteeringIntoTurn,
+    StatusUserInputCancelled,
+    StatusBacktrackTargetGone,
+    StatusShellControlOpened,
+    StatusShellManagerNotAttached,
+    StatusShellManagerLockPoisoned,
+    StatusSelectionCleared,
+    StatusFileOpenedInEditor,
+    StatusNoFileLinePattern,
+    StatusCellHidden,
+    StatusCellShown,
+    StatusSelectionCopied,
+    StatusCopyFailed,
+    StatusMessageEmpty,
+    StatusMessageCopied,
+    StatusRecoveredInterrupted,
+    StatusNoSessions,
+    StatusFailedToLoadSession,
+    StatusRestoredQueued,
+    StatusFailedToRestoreQueue,
+    // === v0.8.18 zh-ext-2: context menu ===
+    CtxMenuCopySelection,
+    CtxMenuOpenSelection,
+    CtxMenuClearSelection,
+    CtxMenuOpenDetails,
+    CtxMenuCopyMessage,
+    CtxMenuOpenInEditor,
+    CtxMenuShowCell,
+    CtxMenuHideCell,
+    CtxMenuPaste,
+    CtxMenuCommandPalette,
+    CtxMenuContextInspector,
+    CtxMenuHelp,
+    CtxMenuDescCopySelection,
+    CtxMenuDescOpenSelection,
+    CtxMenuDescOpenDetails,
+    CtxMenuDescCopyMessage,
+    CtxMenuDescOpenInEditor,
+    CtxMenuDescShowCell,
+    CtxMenuDescHideCell,
+    CtxMenuDescPaste,
+    CtxMenuDescCommandPalette,
+    CtxMenuDescContextInspector,
+    CtxMenuDescHelp,
+    // === v0.8.18 zh-ext-2: tool type labels ===
+    ToolLabelNote,
+    ToolLabelShell,
+    ToolLabelWorkspace,
+    ToolLabelPlan,
+    ToolLabelPatch,
+    ToolLabelReview,
+    ToolLabelIssues,
+    ToolLabelSuggestions,
+    ToolLabelDiff,
+    ToolLabelTool,
+    ToolLabelImage,
+    ToolLabelSearch,
+    // === v0.8.18 zh-ext-2: error severity labels ===
+    ErrorLabelCritical,
+    ErrorLabelError,
+    ErrorLabelWarn,
+    ErrorLabelInfo,
+    // === v0.8.18 zh-ext-2: command palette ===
+    PalSectionCommands,
+    PalSectionSkills,
+    PalSectionTools,
+    PalSectionMcp,
+    PalTypeToFilter,
+    PalFilterPrefix,
+    PalFooterMove,
+    PalFooterRun,
+    PalFooterClose,
+    // === v0.8.18 zh-ext-2: pager titles ===
+    PagerTitleSelection,
+    PagerTitleMessage,
+    PagerTitleThinking,
+    PagerTitleAssistant,
+    PagerTitleYou,
+    PagerTitleNote,
+    PagerTitleError,
+    PagerTitleReasoning,
+    PagerTitleSpillover,
+    PagerDetailsHidden,
+    PagerAltVForDetails,
+    // === v0.8.18 zh-ext-2: user input / plan prompt ===
+    UiActionRequired,
+    UiQuestionNofM,
+    UiOther,
+    UiTypeCustomResponse,
+    UiCustomResponse,
+    UiEnterSubmit,
+    UiEnterConfirm,
+    UiQuickPick,
+    UiChooseWhatNext,
+    UiAcceptPlanAgent,
+    UiAcceptPlanYolo,
+    UiAcceptPlanAgentDesc,
+    UiAcceptPlanYoloDesc,
+    UiRevisePlan,
+    UiRevisePlanDesc,
+    UiExitPlan,
+    UiExitPlanDesc,
+    UiNoOutput,
+    UiCtrlBShellControls,
+    UiStartedByYou,
+    UiRlmRunning,
+    UiNoSystemPrompt,
+    UiSingleTextBlob,
+    UiStablePrefix,
+    UiWorkingSetMarker,
+    UiNoReferences,
+    UiNoToolActivity,
+    // === v0.8.18 zh-ext-2: misc ===
+    MiscQueueForNextTurn,
+    MiscMemoryAppended,
+    MiscMemoryFailed,
+    MiscResumeHint,
+    MiscNoSummary,
+    MiscNone,
+    MiscContextLabel,
+    MiscVia,
+    MiscSourceLabel,
+    MiscTimeLabel,
+    MiscFileLabel,
+    MiscTargetLabel,
+    MiscSummaryLabel,
+    MiscDone,
+    MiscLive,
+    MiscIssue,
+    MiscNext,
+    MiscRunning,
+    MiscFailed,
 }
 
 #[allow(dead_code)]
@@ -565,6 +751,179 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::HomeYoloModeCaution,
     MessageId::HomePlanModeTip,
     MessageId::HomePlanModeChecklistTip,
+    MessageId::CtxInspSessionContext,
+    MessageId::CtxInspSystemPromptStructure,
+    MessageId::CtxInspReferences,
+    MessageId::CtxInspRecentTools,
+    MessageId::HclMessage,
+    MessageId::HclSubAgent,
+    MessageId::HclArchivedContext,
+    MessageId::ComposerLabelDraft,
+    MessageId::ComposerLabelComposer,
+    MessageId::ComposerHintSend,
+    MessageId::ComposerHintQueue,
+    MessageId::ComposerHintSteering,
+    MessageId::ComposerHintQueued,
+    MessageId::ComposerHintOffline,
+    MessageId::TcSafe,
+    MessageId::TcFileWrite,
+    MessageId::TcShell,
+    MessageId::TcNetwork,
+    MessageId::TcMcpRead,
+    MessageId::TcMcpAction,
+    MessageId::TcUnknown,
+    MessageId::ElvNetwork,
+    MessageId::ElvWriteAccess,
+    MessageId::ElvFullAccess,
+    MessageId::ElvAbort,
+    MessageId::TrustTitle,
+    MessageId::TrustPrompt,
+    MessageId::TrustInjectionWarning,
+    MessageId::TrustRecordNote,
+    MessageId::TrustPressHint,
+    MessageId::TipsTitle,
+    MessageId::TipsLine1,
+    MessageId::TipsLine2,
+    MessageId::TipsLine3,
+    MessageId::TipsLine4,
+    MessageId::TipsLine5,
+    MessageId::OnboardingTitle,
+    MessageId::StepCounter,
+    MessageId::StatusTerminalRestored,
+    MessageId::StatusMouseRestored,
+    MessageId::StatusFileTreeClosed,
+    MessageId::StatusRequestCancelled,
+    MessageId::StatusStoppedEditingQueued,
+    MessageId::StatusPressEscAgain,
+    MessageId::StatusBacktrackCancelled,
+    MessageId::StatusEditorCancelled,
+    MessageId::StatusCopiedToClipboard,
+    MessageId::StatusContextInspector,
+    MessageId::StatusSteeringIntoTurn,
+    MessageId::StatusUserInputCancelled,
+    MessageId::StatusBacktrackTargetGone,
+    MessageId::StatusShellControlOpened,
+    MessageId::StatusShellManagerNotAttached,
+    MessageId::StatusShellManagerLockPoisoned,
+    MessageId::StatusSelectionCleared,
+    MessageId::StatusFileOpenedInEditor,
+    MessageId::StatusNoFileLinePattern,
+    MessageId::StatusCellHidden,
+    MessageId::StatusCellShown,
+    MessageId::StatusSelectionCopied,
+    MessageId::StatusCopyFailed,
+    MessageId::StatusMessageEmpty,
+    MessageId::StatusMessageCopied,
+    MessageId::StatusRecoveredInterrupted,
+    MessageId::StatusNoSessions,
+    MessageId::StatusFailedToLoadSession,
+    MessageId::StatusRestoredQueued,
+    MessageId::StatusFailedToRestoreQueue,
+    MessageId::CtxMenuCopySelection,
+    MessageId::CtxMenuOpenSelection,
+    MessageId::CtxMenuClearSelection,
+    MessageId::CtxMenuOpenDetails,
+    MessageId::CtxMenuCopyMessage,
+    MessageId::CtxMenuOpenInEditor,
+    MessageId::CtxMenuShowCell,
+    MessageId::CtxMenuHideCell,
+    MessageId::CtxMenuPaste,
+    MessageId::CtxMenuCommandPalette,
+    MessageId::CtxMenuContextInspector,
+    MessageId::CtxMenuHelp,
+    MessageId::CtxMenuDescCopySelection,
+    MessageId::CtxMenuDescOpenSelection,
+    MessageId::CtxMenuDescOpenDetails,
+    MessageId::CtxMenuDescCopyMessage,
+    MessageId::CtxMenuDescOpenInEditor,
+    MessageId::CtxMenuDescShowCell,
+    MessageId::CtxMenuDescHideCell,
+    MessageId::CtxMenuDescPaste,
+    MessageId::CtxMenuDescCommandPalette,
+    MessageId::CtxMenuDescContextInspector,
+    MessageId::CtxMenuDescHelp,
+    MessageId::ToolLabelNote,
+    MessageId::ToolLabelShell,
+    MessageId::ToolLabelWorkspace,
+    MessageId::ToolLabelPlan,
+    MessageId::ToolLabelPatch,
+    MessageId::ToolLabelReview,
+    MessageId::ToolLabelIssues,
+    MessageId::ToolLabelSuggestions,
+    MessageId::ToolLabelDiff,
+    MessageId::ToolLabelTool,
+    MessageId::ToolLabelImage,
+    MessageId::ToolLabelSearch,
+    MessageId::ErrorLabelCritical,
+    MessageId::ErrorLabelError,
+    MessageId::ErrorLabelWarn,
+    MessageId::ErrorLabelInfo,
+    MessageId::PalSectionCommands,
+    MessageId::PalSectionSkills,
+    MessageId::PalSectionTools,
+    MessageId::PalSectionMcp,
+    MessageId::PalTypeToFilter,
+    MessageId::PalFilterPrefix,
+    MessageId::PalFooterMove,
+    MessageId::PalFooterRun,
+    MessageId::PalFooterClose,
+    MessageId::PagerTitleSelection,
+    MessageId::PagerTitleMessage,
+    MessageId::PagerTitleThinking,
+    MessageId::PagerTitleAssistant,
+    MessageId::PagerTitleYou,
+    MessageId::PagerTitleNote,
+    MessageId::PagerTitleError,
+    MessageId::PagerTitleReasoning,
+    MessageId::PagerTitleSpillover,
+    MessageId::PagerDetailsHidden,
+    MessageId::PagerAltVForDetails,
+    MessageId::UiActionRequired,
+    MessageId::UiQuestionNofM,
+    MessageId::UiOther,
+    MessageId::UiTypeCustomResponse,
+    MessageId::UiCustomResponse,
+    MessageId::UiEnterSubmit,
+    MessageId::UiEnterConfirm,
+    MessageId::UiQuickPick,
+    MessageId::UiChooseWhatNext,
+    MessageId::UiAcceptPlanAgent,
+    MessageId::UiAcceptPlanYolo,
+    MessageId::UiAcceptPlanAgentDesc,
+    MessageId::UiAcceptPlanYoloDesc,
+    MessageId::UiRevisePlan,
+    MessageId::UiRevisePlanDesc,
+    MessageId::UiExitPlan,
+    MessageId::UiExitPlanDesc,
+    MessageId::UiNoOutput,
+    MessageId::UiCtrlBShellControls,
+    MessageId::UiStartedByYou,
+    MessageId::UiRlmRunning,
+    MessageId::UiNoSystemPrompt,
+    MessageId::UiSingleTextBlob,
+    MessageId::UiStablePrefix,
+    MessageId::UiWorkingSetMarker,
+    MessageId::UiNoReferences,
+    MessageId::UiNoToolActivity,
+    MessageId::MiscQueueForNextTurn,
+    MessageId::MiscMemoryAppended,
+    MessageId::MiscMemoryFailed,
+    MessageId::MiscResumeHint,
+    MessageId::MiscNoSummary,
+    MessageId::MiscNone,
+    MessageId::MiscContextLabel,
+    MessageId::MiscVia,
+    MessageId::MiscSourceLabel,
+    MessageId::MiscTimeLabel,
+    MessageId::MiscFileLabel,
+    MessageId::MiscTargetLabel,
+    MessageId::MiscSummaryLabel,
+    MessageId::MiscDone,
+    MessageId::MiscLive,
+    MessageId::MiscIssue,
+    MessageId::MiscNext,
+    MessageId::MiscRunning,
+    MessageId::MiscFailed,
 ];
 
 pub fn tr(locale: Locale, id: MessageId) -> &'static str {
@@ -953,7 +1312,315 @@ fn english(id: MessageId) -> &'static str {
         MessageId::HomeYoloModeCaution => "  Be careful with destructive operations!",
         MessageId::HomePlanModeTip => "Plan mode - Design before implementing",
         MessageId::HomePlanModeChecklistTip => "  Use /plan to create structured checklists",
-    }
+        MessageId::CtxInspSessionContext => "Session Context",
+        MessageId::CtxInspSystemPromptStructure => "System Prompt Structure",
+        MessageId::CtxInspReferences => "References",
+        MessageId::CtxInspRecentTools => "Recent Tools",
+        MessageId::HclMessage => "Message",
+        MessageId::HclSubAgent => "Sub-agent",
+        MessageId::HclArchivedContext => "Archived Context",
+        MessageId::ComposerLabelDraft => "Draft",
+        MessageId::ComposerLabelComposer => "Composer",
+        MessageId::ComposerHintSend => "↵ send ({count} queued)",
+        MessageId::ComposerHintQueue => "↵ queue ({count} waiting)",
+        MessageId::ComposerHintSteering => "↵ steering (Ctrl+Enter)",
+        MessageId::ComposerHintQueued => "↵ queued (Ctrl+Enter to steer)",
+        MessageId::ComposerHintOffline => "↵ offline queue",
+        MessageId::TcSafe => "Safe",
+        MessageId::TcFileWrite => "File Write",
+        MessageId::TcShell => "Shell Command",
+        MessageId::TcNetwork => "Network",
+        MessageId::TcMcpRead => "MCP Read",
+        MessageId::TcMcpAction => "MCP Action",
+        MessageId::TcUnknown => "Unknown",
+        MessageId::ElvNetwork => "Allow outbound network",
+        MessageId::ElvWriteAccess => "Allow extra write access",
+        MessageId::ElvFullAccess => "Full access (filesystem + network)",
+        MessageId::ElvAbort => "Abort",
+        MessageId::TrustTitle => "Trust Workspace",
+        MessageId::TrustPrompt => "Do you trust the contents of this directory?",
+        MessageId::TrustInjectionWarning => "Working with untrusted contents comes with higher risk of prompt injection.",
+        MessageId::TrustRecordNote => "Trusting this directory records it in global config and enables trusted workspace mode.",
+        MessageId::TrustPressHint => "Press {key1} to trust and continue, {key2} to quit",
+        MessageId::TipsTitle => "Start Simple",
+        MessageId::TipsLine1 => "Write the task in plain language. Use /help or Ctrl+K when you want a command.",
+        MessageId::TipsLine2 => "The bottom composer is multi-line: Enter sends, Alt+Enter or Ctrl+J adds a new line.",
+        MessageId::TipsLine3 => "Switch modes only when the job changes: Plan for review-first work, Agent for execution, YOLO when you want auto-approval.",
+        MessageId::TipsLine4 => "Ctrl+R resumes earlier sessions, and Esc backs out of the current draft or overlay.",
+        MessageId::TipsLine5 => "Press Enter to open the workspace",
+        MessageId::OnboardingTitle => " DeepSeek TUI ",
+        MessageId::StepCounter => " Step {step}/{total} ",
+    
+        MessageId::StatusTerminalRestored => "Terminal Restored",
+
+        MessageId::StatusMouseRestored => "Mouse Restored",
+
+        MessageId::StatusFileTreeClosed => "File Tree Closed",
+
+        MessageId::StatusRequestCancelled => "Request Cancelled",
+
+        MessageId::StatusStoppedEditingQueued => "Stopped Editing, Queued",
+
+        MessageId::StatusPressEscAgain => "Press Esc Again",
+
+        MessageId::StatusBacktrackCancelled => "Backtrack Cancelled",
+
+        MessageId::StatusEditorCancelled => "Editor Cancelled",
+
+        MessageId::StatusCopiedToClipboard => "Copied to Clipboard",
+
+        MessageId::StatusContextInspector => "Context Inspector",
+
+        MessageId::StatusSteeringIntoTurn => "Steering Into Turn",
+
+        MessageId::StatusUserInputCancelled => "User Input Cancelled",
+
+        MessageId::StatusBacktrackTargetGone => "Backtrack Target Gone",
+
+        MessageId::StatusShellControlOpened => "Shell Control Opened",
+
+        MessageId::StatusShellManagerNotAttached => "Shell Manager Not Attached",
+
+        MessageId::StatusShellManagerLockPoisoned => "Shell Manager Lock Poisoned",
+
+        MessageId::StatusSelectionCleared => "Selection Cleared",
+
+        MessageId::StatusFileOpenedInEditor => "File Opened in Editor",
+
+        MessageId::StatusNoFileLinePattern => "No File Line Pattern",
+
+        MessageId::StatusCellHidden => "Cell Hidden",
+
+        MessageId::StatusCellShown => "Cell Shown",
+
+        MessageId::StatusSelectionCopied => "Selection Copied",
+
+        MessageId::StatusCopyFailed => "Copy Failed",
+
+        MessageId::StatusMessageEmpty => "Message Empty",
+
+        MessageId::StatusMessageCopied => "Message Copied",
+
+        MessageId::StatusRecoveredInterrupted => "Recovered Interrupted",
+
+        MessageId::StatusNoSessions => "No Sessions",
+
+        MessageId::StatusFailedToLoadSession => "Failed to Load Session",
+
+        MessageId::StatusRestoredQueued => "Restored Queued",
+
+        MessageId::StatusFailedToRestoreQueue => "Failed to Restore Queue",
+
+        MessageId::CtxMenuCopySelection => "Copy Selection",
+
+        MessageId::CtxMenuOpenSelection => "Open Selection",
+
+        MessageId::CtxMenuClearSelection => "Clear Selection",
+
+        MessageId::CtxMenuOpenDetails => "Open Details",
+
+        MessageId::CtxMenuCopyMessage => "Copy Message",
+
+        MessageId::CtxMenuOpenInEditor => "Open in Editor",
+
+        MessageId::CtxMenuShowCell => "Show Cell",
+
+        MessageId::CtxMenuHideCell => "Hide Cell",
+
+        MessageId::CtxMenuPaste => "Paste",
+
+        MessageId::CtxMenuCommandPalette => "Command Palette",
+
+        MessageId::CtxMenuContextInspector => "Context Inspector",
+
+        MessageId::CtxMenuHelp => "Help",
+
+        MessageId::CtxMenuDescCopySelection => "Copy selection to clipboard",
+
+        MessageId::CtxMenuDescOpenSelection => "Open selected item",
+
+        MessageId::CtxMenuDescOpenDetails => "Open details view",
+
+        MessageId::CtxMenuDescCopyMessage => "Copy message text",
+
+        MessageId::CtxMenuDescOpenInEditor => "Open in external editor",
+
+        MessageId::CtxMenuDescShowCell => "Show hidden cell",
+
+        MessageId::CtxMenuDescHideCell => "Hide cell",
+
+        MessageId::CtxMenuDescPaste => "Paste from clipboard",
+
+        MessageId::CtxMenuDescCommandPalette => "Open command palette",
+
+        MessageId::CtxMenuDescContextInspector => "Open context inspector",
+
+        MessageId::CtxMenuDescHelp => "Open help panel",
+
+        MessageId::ToolLabelNote => "Note",
+
+        MessageId::ToolLabelShell => "Shell",
+
+        MessageId::ToolLabelWorkspace => "Workspace",
+
+        MessageId::ToolLabelPlan => "Plan",
+
+        MessageId::ToolLabelPatch => "Patch",
+
+        MessageId::ToolLabelReview => "Review",
+
+        MessageId::ToolLabelIssues => "Issues",
+
+        MessageId::ToolLabelSuggestions => "Suggestions",
+
+        MessageId::ToolLabelDiff => "Diff",
+
+        MessageId::ToolLabelTool => "Tool",
+
+        MessageId::ToolLabelImage => "Image",
+
+        MessageId::ToolLabelSearch => "Search",
+
+        MessageId::ErrorLabelCritical => "Critical",
+
+        MessageId::ErrorLabelError => "Error",
+
+        MessageId::ErrorLabelWarn => "Warn",
+
+        MessageId::ErrorLabelInfo => "Info",
+
+        MessageId::PalSectionCommands => "Commands",
+
+        MessageId::PalSectionSkills => "Skills",
+
+        MessageId::PalSectionTools => "Tools",
+
+        MessageId::PalSectionMcp => "MCP",
+
+        MessageId::PalTypeToFilter => "Type to Filter",
+
+        MessageId::PalFilterPrefix => "Filter Prefix",
+
+        MessageId::PalFooterMove => "Move",
+
+        MessageId::PalFooterRun => "Run",
+
+        MessageId::PalFooterClose => "Close",
+
+        MessageId::PagerTitleSelection => "Selection",
+
+        MessageId::PagerTitleMessage => "Message",
+
+        MessageId::PagerTitleThinking => "Thinking",
+
+        MessageId::PagerTitleAssistant => "Assistant",
+
+        MessageId::PagerTitleYou => "You",
+
+        MessageId::PagerTitleNote => "Note",
+
+        MessageId::PagerTitleError => "Error",
+
+        MessageId::PagerTitleReasoning => "Reasoning",
+
+        MessageId::PagerTitleSpillover => "Spillover",
+
+        MessageId::PagerDetailsHidden => "details hidden",
+
+        MessageId::PagerAltVForDetails => "Alt+V for details",
+
+        MessageId::UiActionRequired => "Action Required",
+
+        MessageId::UiQuestionNofM => "Question N of M",
+
+        MessageId::UiOther => "Other",
+
+        MessageId::UiTypeCustomResponse => "Type Custom Response",
+
+        MessageId::UiCustomResponse => "Custom Response",
+
+        MessageId::UiEnterSubmit => "Enter to Submit",
+
+        MessageId::UiEnterConfirm => "Enter to Confirm",
+
+        MessageId::UiQuickPick => "Quick Pick",
+
+        MessageId::UiChooseWhatNext => "Choose What Next",
+
+        MessageId::UiAcceptPlanAgent => "Accept Plan (Agent)",
+
+        MessageId::UiAcceptPlanYolo => "Accept Plan (Yolo)",
+
+        MessageId::UiAcceptPlanAgentDesc => "Accept plan with agent approval",
+
+        MessageId::UiAcceptPlanYoloDesc => "Accept plan without confirmation",
+
+        MessageId::UiRevisePlan => "Revise Plan",
+
+        MessageId::UiRevisePlanDesc => "Revise the current plan",
+
+        MessageId::UiExitPlan => "Exit Plan",
+
+        MessageId::UiExitPlanDesc => "Exit without applying plan",
+
+        MessageId::UiNoOutput => "No Output",
+
+        MessageId::UiCtrlBShellControls => "Ctrl+B: Shell Controls",
+
+        MessageId::UiStartedByYou => "Started by You",
+
+        MessageId::UiRlmRunning => "Running",
+
+        MessageId::UiNoSystemPrompt => "No System Prompt",
+
+        MessageId::UiSingleTextBlob => "Single Text Blob",
+
+        MessageId::UiStablePrefix => "Stable",
+
+        MessageId::UiWorkingSetMarker => "Working Set",
+
+        MessageId::UiNoReferences => "No References",
+
+        MessageId::UiNoToolActivity => "No Tool Activity",
+
+        MessageId::MiscQueueForNextTurn => "Queue for Next Turn",
+
+        MessageId::MiscMemoryAppended => "Memory Appended",
+
+        MessageId::MiscMemoryFailed => "Memory Failed",
+
+        MessageId::MiscResumeHint => "Resume Hint",
+
+        MessageId::MiscNoSummary => "No Summary",
+
+        MessageId::MiscNone => "None",
+
+        MessageId::MiscContextLabel => "Context",
+
+        MessageId::MiscVia => "via",
+
+        MessageId::MiscSourceLabel => "Source",
+
+        MessageId::MiscTimeLabel => "Time",
+
+        MessageId::MiscFileLabel => "File",
+
+        MessageId::MiscTargetLabel => "Target",
+
+        MessageId::MiscSummaryLabel => "Summary",
+
+        MessageId::MiscDone => "Done",
+
+        MessageId::MiscLive => "Live",
+
+        MessageId::MiscIssue => "Issue",
+
+        MessageId::MiscNext => "Next",
+
+        MessageId::MiscRunning => "Running",
+
+        MessageId::MiscFailed => "Failed",
+}
 }
 
 fn translation(locale: Locale, id: MessageId) -> Option<&'static str> {
@@ -1240,6 +1907,10 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::HomeYoloModeCaution => "  破壊的な操作には注意してください！",
         MessageId::HomePlanModeTip => "Plan モード - 実装前に設計",
         MessageId::HomePlanModeChecklistTip => "  /plan を使って構造化されたチェックリストを作成",
+        MessageId::PagerDetailsHidden => "詳細を非表示",
+        MessageId::PagerAltVForDetails => "Alt+Vで詳細",
+
+        _ => return None,
     })
 }
 
@@ -1482,7 +2153,316 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::HomeYoloModeCaution => "  请小心破坏性操作！",
         MessageId::HomePlanModeTip => "Plan 模式 - 先设计再实现",
         MessageId::HomePlanModeChecklistTip => "  使用 /plan 创建结构化检查清单",
-    })
+        // === v0.8.18 zh-ext new translations ===
+        MessageId::CtxInspSessionContext => "会话上下文",
+        MessageId::CtxInspSystemPromptStructure => "系统提示词结构",
+        MessageId::CtxInspReferences => "引用文件",
+        MessageId::CtxInspRecentTools => "最近工具",
+        MessageId::HclMessage => "消息",
+        MessageId::HclSubAgent => "子代理",
+        MessageId::HclArchivedContext => "归档上下文",
+        MessageId::ComposerLabelDraft => "草稿",
+        MessageId::ComposerLabelComposer => "输入框",
+        MessageId::ComposerHintSend => "↵ 发送（{count} 条排队）",
+        MessageId::ComposerHintQueue => "↵ 排队（{count} 条等待）",
+        MessageId::ComposerHintSteering => "↵ 引导（Ctrl+Enter）",
+        MessageId::ComposerHintQueued => "↵ 已排队（Ctrl+Enter 引导）",
+        MessageId::ComposerHintOffline => "↵ 离线队列",
+        MessageId::TcSafe => "安全",
+        MessageId::TcFileWrite => "文件写入",
+        MessageId::TcShell => "Shell 命令",
+        MessageId::TcNetwork => "网络",
+        MessageId::TcMcpRead => "MCP 读取",
+        MessageId::TcMcpAction => "MCP 操作",
+        MessageId::TcUnknown => "未知",
+        MessageId::ElvNetwork => "允许出站网络",
+        MessageId::ElvWriteAccess => "允许额外写入权限",
+        MessageId::ElvFullAccess => "完全访问（文件系统 + 网络）",
+        MessageId::ElvAbort => "中止",
+        MessageId::TrustTitle => "信任工作区",
+        MessageId::TrustPrompt => "你信任此目录的内容吗？",
+        MessageId::TrustInjectionWarning => "处理不受信任的内容会增加提示注入的风险。",
+        MessageId::TrustRecordNote => "信任此目录会将其记录到全局配置中并启用受信任的工作区模式。",
+        MessageId::TrustPressHint => "按 {key1} 信任并继续，按 {key2} 退出",
+        MessageId::TipsTitle => "快速入门",
+        MessageId::TipsLine1 => "用自然语言描述任务。需要命令时使用 /help 或 Ctrl+K。",
+        MessageId::TipsLine2 => "底部输入框支持多行：Enter 发送，Alt+Enter 或 Ctrl+J 添加新行。",
+        MessageId::TipsLine3 => "仅在任务类型变化时切换模式：Plan 用于先审查后执行，Agent 用于执行，YOLO 用于自动批准。",
+        MessageId::TipsLine4 => "Ctrl+R 恢复之前的会话，Esc 退出当前草稿或覆盖层。",
+        MessageId::TipsLine5 => "按 Enter 打开工作区",
+        MessageId::OnboardingTitle => " DeepSeek TUI ",
+        MessageId::StepCounter => " 第 {step}/{total} 步 ",
+    
+        MessageId::StatusTerminalRestored => "终端已恢复",
+
+        MessageId::StatusMouseRestored => "鼠标已恢复",
+
+        MessageId::StatusFileTreeClosed => "文件树已关闭",
+
+        MessageId::StatusRequestCancelled => "请求已取消",
+
+        MessageId::StatusStoppedEditingQueued => "排队停止编辑",
+
+        MessageId::StatusPressEscAgain => "再按 Esc",
+
+        MessageId::StatusBacktrackCancelled => "回溯已取消",
+
+        MessageId::StatusEditorCancelled => "编辑器已取消",
+
+        MessageId::StatusCopiedToClipboard => "已复制到剪贴板",
+
+        MessageId::StatusContextInspector => "上下文检查器",
+
+        MessageId::StatusSteeringIntoTurn => "进入转向",
+
+        MessageId::StatusUserInputCancelled => "用户输入已取消",
+
+        MessageId::StatusBacktrackTargetGone => "回溯目标已消失",
+
+        MessageId::StatusShellControlOpened => "Shell 控制已打开",
+
+        MessageId::StatusShellManagerNotAttached => "Shell 管理器未连接",
+
+        MessageId::StatusShellManagerLockPoisoned => "Shell 管理器锁定异常",
+
+        MessageId::StatusSelectionCleared => "选择已清除",
+
+        MessageId::StatusFileOpenedInEditor => "文件已在编辑器中打开",
+
+        MessageId::StatusNoFileLinePattern => "无文件行匹配模式",
+
+        MessageId::StatusCellHidden => "单元格已隐藏",
+
+        MessageId::StatusCellShown => "单元格已显示",
+
+        MessageId::StatusSelectionCopied => "选择已复制",
+
+        MessageId::StatusCopyFailed => "复制失败",
+
+        MessageId::StatusMessageEmpty => "消息为空",
+
+        MessageId::StatusMessageCopied => "消息已复制",
+
+        MessageId::StatusRecoveredInterrupted => "已恢复中断",
+
+        MessageId::StatusNoSessions => "无会话",
+
+        MessageId::StatusFailedToLoadSession => "加载会话失败",
+
+        MessageId::StatusRestoredQueued => "排队恢复",
+
+        MessageId::StatusFailedToRestoreQueue => "恢复队列失败",
+
+        MessageId::CtxMenuCopySelection => "复制选择",
+
+        MessageId::CtxMenuOpenSelection => "打开选择",
+
+        MessageId::CtxMenuClearSelection => "清除选择",
+
+        MessageId::CtxMenuOpenDetails => "打开详情",
+
+        MessageId::CtxMenuCopyMessage => "复制消息",
+
+        MessageId::CtxMenuOpenInEditor => "在编辑器中打开",
+
+        MessageId::CtxMenuShowCell => "显示单元格",
+
+        MessageId::CtxMenuHideCell => "隐藏单元格",
+
+        MessageId::CtxMenuPaste => "粘贴",
+
+        MessageId::CtxMenuCommandPalette => "命令面板",
+
+        MessageId::CtxMenuContextInspector => "上下文检查器",
+
+        MessageId::CtxMenuHelp => "帮助",
+
+        MessageId::CtxMenuDescCopySelection => "复制选中内容",
+
+        MessageId::CtxMenuDescOpenSelection => "打开选中内容",
+
+        MessageId::CtxMenuDescOpenDetails => "打开详情",
+
+        MessageId::CtxMenuDescCopyMessage => "复制消息",
+
+        MessageId::CtxMenuDescOpenInEditor => "在编辑器中打开",
+
+        MessageId::CtxMenuDescShowCell => "显示单元格",
+
+        MessageId::CtxMenuDescHideCell => "隐藏单元格",
+
+        MessageId::CtxMenuDescPaste => "粘贴",
+
+        MessageId::CtxMenuDescCommandPalette => "命令面板",
+
+        MessageId::CtxMenuDescContextInspector => "上下文检查器",
+
+        MessageId::CtxMenuDescHelp => "帮助",
+
+        MessageId::ToolLabelNote => "笔记",
+
+        MessageId::ToolLabelShell => "Shell",
+
+        MessageId::ToolLabelWorkspace => "工作区",
+
+        MessageId::ToolLabelPlan => "计划",
+
+        MessageId::ToolLabelPatch => "补丁",
+
+        MessageId::ToolLabelReview => "审查",
+
+        MessageId::ToolLabelIssues => "问题",
+
+        MessageId::ToolLabelSuggestions => "建议",
+
+        MessageId::ToolLabelDiff => "差异",
+
+        MessageId::ToolLabelTool => "工具",
+
+        MessageId::ToolLabelImage => "图像",
+
+        MessageId::ToolLabelSearch => "搜索",
+
+        MessageId::ErrorLabelCritical => "严重",
+
+        MessageId::ErrorLabelError => "错误",
+
+        MessageId::ErrorLabelWarn => "警告",
+
+        MessageId::ErrorLabelInfo => "信息",
+
+        MessageId::PalSectionCommands => "命令",
+
+        MessageId::PalSectionSkills => "技能",
+
+        MessageId::PalSectionTools => "工具",
+
+        MessageId::PalSectionMcp => "MCP",
+
+        MessageId::PalTypeToFilter => "输入以筛选",
+
+        MessageId::PalFilterPrefix => "筛选前缀",
+
+        MessageId::PalFooterMove => "移动",
+
+        MessageId::PalFooterRun => "运行",
+
+        MessageId::PalFooterClose => "关闭",
+
+        MessageId::PagerTitleSelection => "选择",
+
+        MessageId::PagerTitleMessage => "消息",
+
+        MessageId::PagerTitleThinking => "思考",
+
+        MessageId::PagerTitleAssistant => "助手",
+
+        MessageId::PagerTitleYou => "你",
+
+        MessageId::PagerTitleNote => "笔记",
+
+        MessageId::PagerTitleError => "错误",
+
+        MessageId::PagerTitleReasoning => "推理",
+
+        MessageId::PagerTitleSpillover => "溢出",
+
+        MessageId::PagerDetailsHidden => "详情已隐藏",
+
+        MessageId::PagerAltVForDetails => "Alt+V 查看详情",
+
+        MessageId::UiActionRequired => "需要操作",
+
+        MessageId::UiQuestionNofM => "问题 N/M",
+
+        MessageId::UiOther => "其他",
+
+        MessageId::UiTypeCustomResponse => "输入自定义响应",
+
+        MessageId::UiCustomResponse => "自定义响应",
+
+        MessageId::UiEnterSubmit => "回车提交",
+
+        MessageId::UiEnterConfirm => "回车确认",
+
+        MessageId::UiQuickPick => "快速选择",
+
+        MessageId::UiChooseWhatNext => "选择下一步",
+
+        MessageId::UiAcceptPlanAgent => "接受计划（代理）",
+
+        MessageId::UiAcceptPlanYolo => "接受计划（Yolo）",
+
+        MessageId::UiAcceptPlanAgentDesc => "以代理模式接受计划",
+
+        MessageId::UiAcceptPlanYoloDesc => "以 Yolo 模式接受计划",
+
+        MessageId::UiRevisePlan => "修改计划",
+
+        MessageId::UiRevisePlanDesc => "修改当前计划",
+
+        MessageId::UiExitPlan => "退出计划",
+
+        MessageId::UiExitPlanDesc => "退出当前计划",
+
+        MessageId::UiNoOutput => "无输出",
+
+        MessageId::UiCtrlBShellControls => "Ctrl+B Shell 控制",
+
+        MessageId::UiStartedByYou => "由你启动",
+
+        MessageId::UiRlmRunning => "RLM 运行中",
+
+        MessageId::UiNoSystemPrompt => "无系统提示",
+
+        MessageId::UiSingleTextBlob => "单文本块",
+
+        MessageId::UiStablePrefix => "稳定前缀",
+
+        MessageId::UiWorkingSetMarker => "工作集标记",
+
+        MessageId::UiNoReferences => "无引用",
+
+        MessageId::UiNoToolActivity => "无工具活动",
+
+        MessageId::MiscQueueForNextTurn => "排队等待下一轮",
+
+        MessageId::MiscMemoryAppended => "记忆已追加",
+
+        MessageId::MiscMemoryFailed => "记忆失败",
+
+        MessageId::MiscResumeHint => "恢复提示",
+
+        MessageId::MiscNoSummary => "无摘要",
+
+        MessageId::MiscNone => "无",
+
+        MessageId::MiscContextLabel => "上下文",
+
+        MessageId::MiscVia => "通过",
+
+        MessageId::MiscSourceLabel => "来源",
+
+        MessageId::MiscTimeLabel => "时间",
+
+        MessageId::MiscFileLabel => "文件",
+
+        MessageId::MiscTargetLabel => "目标",
+
+        MessageId::MiscSummaryLabel => "摘要",
+
+        MessageId::MiscDone => "完成",
+
+        MessageId::MiscLive => "实时",
+
+        MessageId::MiscIssue => "问题",
+
+        MessageId::MiscNext => "下一个",
+
+        MessageId::MiscRunning => "运行中",
+
+        MessageId::MiscFailed => "失败",
+})
 }
 
 fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
@@ -1782,6 +2762,10 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::HomeYoloModeCaution => "  Tenha cuidado com operações destrutivas!",
         MessageId::HomePlanModeTip => "Modo Plan - Planeje antes de implementar",
         MessageId::HomePlanModeChecklistTip => "  Use /plan para criar checklists estruturados",
+        MessageId::PagerDetailsHidden => "detalhes ocultos",
+        MessageId::PagerAltVForDetails => "Alt+V para detalhes",
+
+        _ => return None,
     })
 }
 
