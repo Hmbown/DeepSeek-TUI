@@ -65,6 +65,11 @@ impl Engine {
             .with_user_input_tool()
             .with_parallel_tool();
 
+        #[cfg(feature = "deepmap")]
+        {
+            builder = builder.with_deepmap_tools();
+        }
+
         if self.config.features.enabled(Feature::ApplyPatch) && mode != AppMode::Plan {
             builder = builder.with_patch_tools();
         }
