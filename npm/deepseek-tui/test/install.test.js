@@ -29,7 +29,7 @@ test("install failure hint explains release base override for blocked GitHub dow
   try {
     const error = Object.assign(
       new Error(
-        "fetch https://github.com/Hmbown/DeepSeek-TUI/releases/download/v0.8.18/deepseek-artifacts-sha256.txt failed after 5 attempts:\ngetaddrinfo ENOTFOUND github.com",
+        "fetch https://github.com/Hmbown/DeepSeek-TUI/releases/download/v0.8.19/deepseek-artifacts-sha256.txt failed after 5 attempts:\ngetaddrinfo ENOTFOUND github.com",
       ),
       { code: "ENOTFOUND" },
     );

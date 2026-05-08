@@ -24,7 +24,7 @@ Use a pinned release tag for reproducible installs:
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
   -v ~/.deepseek:/home/deepseek/.deepseek \
-  ghcr.io/hmbown/deepseek-tui:v0.8.18
+  ghcr.io/hmbown/deepseek-tui:v0.8.20
 ```
 
 ## Local build

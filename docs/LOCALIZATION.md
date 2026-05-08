@@ -37,9 +37,10 @@ Fallback:
 
 - Missing or unsupported configured locales fall back to English.
 - `auto` falls back to English when no supported environment locale is detected.
-- The resolved locale is included in the system prompt and used as the default
-  natural language for V4 reasoning and replies. Users can still switch
-  languages mid-session by writing in a different language.
+- The resolved locale is included in the system prompt as the fallback natural
+  language for V4 reasoning and replies. The latest user message takes priority,
+  including for `reasoning_content`, so a Chinese turn should remain Chinese
+  even when the resolved locale is English.
 
 ## Planned Global South QA Matrix
 

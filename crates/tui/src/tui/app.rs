@@ -39,7 +39,6 @@ use crate::tui::selection::TranscriptSelection;
 use crate::tui::streaming::StreamingState;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
-use crate::utils::is_chinese_system_locale;
 
 // === Types ===
 
@@ -915,6 +914,8 @@ pub struct App {
     pub runtime_turn_id: Option<String>,
     /// Current runtime turn status (if known).
     pub runtime_turn_status: Option<String>,
+    /// When the UI accepted a user message but has not observed `TurnStarted` yet.
+    pub dispatch_started_at: Option<Instant>,
 
     /// Cached git context snapshot for the footer.
     pub workspace_context: Option<String>,
@@ -1123,19 +1124,7 @@ impl App {
             initial_input,
         } = options;
 
-        // If no provider is explicitly configured AND the system locale
-        // indicates Chinese (zh-*), suggest DeepseekCN (official api.deepseek.com preset)
-        // as the appropriate default.
-        let provider = if config.provider.is_none() && is_chinese_system_locale() {
-            let cn_base_url = crate::config::DEFAULT_DEEPSEEKCN_BASE_URL.to_string();
-            // Store the suggested base URL in config so the first API call
-            // uses the CN endpoint. We mutate a clone to avoid writing.
-            let mut config = config.clone();
-            config.base_url = Some(cn_base_url);
-            config.api_provider()
-        } else {
-            config.api_provider()
-        };
+        let provider = config.api_provider();
 
         // Check if API key exists
         let needs_api_key = !has_api_key(config);
@@ -1424,6 +1413,7 @@ impl App {
             cumulative_turn_duration: std::time::Duration::ZERO,
             runtime_turn_id: None,
             runtime_turn_status: None,
+            dispatch_started_at: None,
             workspace_context: None,
             workspace_context_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
             workspace_context_refreshed_at: None,
@@ -2981,34 +2971,9 @@ impl App {
         self.needs_redraw = true;
     }
 
-    // === Vim composer mode helpers ===
-
-    /// Move the cursor to the start of the current logical line (vim `0`).
-    pub fn vim_move_line_start(&mut self) {
-        let text = self.input.clone();
-        let cursor_byte = byte_index_at_char(&text, self.cursor_position);
-        // Walk backward until we find a newline or the start of the string.
-        let line_start_byte = text[..cursor_byte].rfind('\n').map_or(0, |idx| idx + 1);
-        self.cursor_position = char_count(&text[..line_start_byte]);
-        self.needs_redraw = true;
-    }
-
-    /// Move the cursor to the end of the current logical line (vim `$`).
-    pub fn vim_move_line_end(&mut self) {
-        let text = self.input.clone();
-        let cursor_byte = byte_index_at_char(&text, self.cursor_position);
-        // Walk forward to the next newline or end-of-string.
-        let line_end_char = text[cursor_byte..].find('\n').map_or_else(
-            || char_count(&text),
-            |rel| char_count(&text[..cursor_byte + rel]),
-        );
-        self.cursor_position = line_end_char;
-        self.needs_redraw = true;
-    }
-
-    /// Move forward one word (vim `w`).  Skips over the current word then any
-    /// trailing whitespace to land on the first character of the next word.
-    pub fn vim_move_word_forward(&mut self) {
+    /// Move forward one word. Skips over the current word then any trailing
+    /// whitespace to land on the first character of the next word.
+    pub fn move_cursor_word_forward(&mut self) {
         let text = self.input.clone();
         let total = char_count(&text);
         let mut pos = self.cursor_position;
@@ -3037,9 +3002,9 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Move backward one word (vim `b`).  Skips leading whitespace then the
-    /// preceding word to land on its first character.
-    pub fn vim_move_word_backward(&mut self) {
+    /// Move backward one word. Skips leading whitespace then the preceding
+    /// word to land on its first character.
+    pub fn move_cursor_word_backward(&mut self) {
         let text = self.input.clone();
         let mut pos = self.cursor_position;
         if pos == 0 {
@@ -3067,6 +3032,43 @@ impl App {
         }
         self.cursor_position = pos;
         self.needs_redraw = true;
+    }
+
+    // === Vim composer mode helpers ===
+
+    /// Move the cursor to the start of the current logical line (vim `0`).
+    pub fn vim_move_line_start(&mut self) {
+        let text = self.input.clone();
+        let cursor_byte = byte_index_at_char(&text, self.cursor_position);
+        // Walk backward until we find a newline or the start of the string.
+        let line_start_byte = text[..cursor_byte].rfind('\n').map_or(0, |idx| idx + 1);
+        self.cursor_position = char_count(&text[..line_start_byte]);
+        self.needs_redraw = true;
+    }
+
+    /// Move the cursor to the end of the current logical line (vim `$`).
+    pub fn vim_move_line_end(&mut self) {
+        let text = self.input.clone();
+        let cursor_byte = byte_index_at_char(&text, self.cursor_position);
+        // Walk forward to the next newline or end-of-string.
+        let line_end_char = text[cursor_byte..].find('\n').map_or_else(
+            || char_count(&text),
+            |rel| char_count(&text[..cursor_byte + rel]),
+        );
+        self.cursor_position = line_end_char;
+        self.needs_redraw = true;
+    }
+
+    /// Move forward one word (vim `w`).  Skips over the current word then any
+    /// trailing whitespace to land on the first character of the next word.
+    pub fn vim_move_word_forward(&mut self) {
+        self.move_cursor_word_forward();
+    }
+
+    /// Move backward one word (vim `b`).  Skips leading whitespace then the
+    /// preceding word to land on its first character.
+    pub fn vim_move_word_backward(&mut self) {
+        self.move_cursor_word_backward();
     }
 
     /// Delete the character under the cursor (vim `x`).
@@ -4311,6 +4313,22 @@ mod tests {
         assert!(app.input.is_empty());
         assert_eq!(app.cursor_position, 0);
         assert!(app.history_index.is_none());
+    }
+
+    #[test]
+    fn word_cursor_helpers_move_by_whitespace_delimited_words() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "alpha beta  gamma".to_string();
+        app.cursor_position = 0;
+
+        app.move_cursor_word_forward();
+        assert_eq!(app.cursor_position, "alpha ".chars().count());
+
+        app.move_cursor_word_forward();
+        assert_eq!(app.cursor_position, "alpha beta  ".chars().count());
+
+        app.move_cursor_word_backward();
+        assert_eq!(app.cursor_position, "alpha ".chars().count());
     }
 
     #[test]

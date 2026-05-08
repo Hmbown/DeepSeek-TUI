@@ -680,8 +680,8 @@ mod tests {
     fn package_version_is_current_hotfix_release() {
         assert_eq!(
             env!("CARGO_PKG_VERSION"),
-            "0.8.18",
-            "0.8.18 release branch must report the release version before publishing"
+            "0.8.20",
+            "0.8.20 release branch must report the release version before publishing"
         );
     }
 
@@ -837,6 +837,24 @@ mod tests {
                  internal reasoning, not just the visible reply, follows the user's language"
             );
         }
+    }
+
+    #[test]
+    fn language_mirroring_prioritizes_latest_user_message_over_locale_default() {
+        let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
+        assert!(
+            prompt.contains("latest user message first"),
+            "the language directive must choose the turn language from the user message before \
+             falling back to the environment locale"
+        );
+        assert!(
+            prompt.contains("even when the `lang` field in `## Environment` is `en`"),
+            "Chinese user text must override an English resolved locale for reasoning_content"
+        );
+        assert!(
+            prompt.contains("Use the `lang` field only when"),
+            "environment locale should be an ambiguity fallback, not the primary language source"
+        );
     }
 
     /// #358: rlm guidance was reframed from "first-class" to "specialty

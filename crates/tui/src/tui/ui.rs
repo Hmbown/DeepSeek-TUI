@@ -9,9 +9,10 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::{
     event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-        MouseEventKind, PopKeyboardEnhancementFlags,
+        self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -127,6 +128,7 @@ const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
 const UI_IDLE_POLL_MS: u64 = 48;
 const UI_ACTIVE_POLL_MS: u64 = 24;
 const WEB_CONFIG_POLL_MS: u64 = 16;
+const DISPATCH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
 // Forced repaint cadence while a turn is live (model loading, compacting,
 // sub-agents running). Drives the footer water-spout animation as well as
 // the per-tool spinner pulse — keep this fast enough that the spout reads as
@@ -137,7 +139,7 @@ const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 100;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 
 type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
-const TERMINAL_ORIGIN_RESET: &[u8] = b"\x1b[r\x1b[?6l\x1b[H\x1b[2J";
+const TERMINAL_ORIGIN_RESET: &[u8] = b"\x1b[r\x1b[?6l\x1b[H\x1b[2J\x1b[3J";
 
 /// Run the interactive TUI event loop.
 ///
@@ -212,6 +214,10 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     if use_bracketed_paste {
         execute!(stdout, EnableBracketedPaste)?;
     }
+    // Enable focus events so the terminal reports FocusGained/FocusLost.
+    // Necessary for IME compositor re-activation on macOS when the user
+    // switches away (Cmd+Tab) and returns.
+    execute!(stdout, EnableFocusChange)?;
     // #442: opt into the Kitty keyboard protocol's escape-code
     // disambiguation so terminals that support it (Kitty, Ghostty,
     // Alacritty 0.13+, WezTerm, recent Konsole, recent xterm) report
@@ -225,18 +231,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     // release events that the existing key handlers would mis-route
     // as duplicate presses. Best-effort: failure to push is logged
     // and ignored so a quirky terminal can't block startup.
-    if let Err(err) = execute!(
-        stdout,
-        crossterm::event::PushKeyboardEnhancementFlags(
-            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-        )
-    ) {
-        tracing::debug!(
-            target: "kitty_keyboard",
-            ?err,
-            "PushKeyboardEnhancementFlags ignored (terminal lacks support)"
-        );
-    }
+    push_keyboard_enhancement_flags(&mut stdout);
     let color_depth = palette::ColorDepth::detect();
     let palette_mode = palette::PaletteMode::detect();
     tracing::debug!(
@@ -246,7 +241,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     );
     let backend = ColorCompatBackend::new(stdout, color_depth, palette_mode);
     let mut terminal = Terminal::new(backend)?;
-    terminal.clear()?;
+    reset_terminal_viewport(&mut terminal)?;
     let event_broker = EventBroker::new();
 
     // Local mutable copy so runtime config flips (e.g. `/provider` switch)
@@ -422,6 +417,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     persistence_actor::persist(PersistRequest::Shutdown);
 
     let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    execute!(terminal.backend_mut(), DisableFocusChange)?;
     disable_raw_mode()?;
     if use_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -857,6 +853,7 @@ async fn run_event_loop(
                     EngineEvent::TurnStarted { turn_id } => {
                         app.is_loading = true;
                         app.offline_mode = false;
+                        app.dispatch_started_at = None;
                         current_streaming_text.clear();
                         app.streaming_state.reset();
                         app.streaming_message_index = None;
@@ -896,6 +893,7 @@ async fn run_event_loop(
                             app.flush_active_cell();
                         }
                         app.is_loading = false;
+                        app.dispatch_started_at = None;
                         app.offline_mode = false;
                         app.streaming_state.reset();
                         // Capture elapsed before clearing turn_started_at so
@@ -1452,6 +1450,9 @@ async fn run_event_loop(
         }
 
         let has_running_agents = running_agent_count(app) > 0;
+        if reconcile_turn_liveness(app, Instant::now(), has_running_agents) {
+            app.needs_redraw = true;
+        }
         if (app.is_loading || has_running_agents || app.is_compacting)
             && last_status_frame.elapsed()
                 >= Duration::from_millis(status_animation_interval_ms(app))
@@ -1587,6 +1588,21 @@ async fn run_event_loop(
                 continue;
             }
 
+            // Re-push keyboard enhancement flags on focus-gain and force a
+            // full viewport reset before repainting. App-switching and
+            // interactive handoffs can leave the host terminal scrolled away
+            // from row 0; treating focus as a recapture point prevents the
+            // native scrollback gutter / blank-top-row failure mode from
+            // persisting after the user returns.
+            // On macOS, switching away (Cmd+Tab) and back can reset the
+            // terminal's keyboard mode, which breaks IME compositor state.
+            // Acknowledging FocusGained and re-pushing the flags restores
+            // the IME so CJK input methods work after a focus toggle.
+            if terminal_event_needs_viewport_recapture(&evt) {
+                push_keyboard_enhancement_flags(terminal.backend_mut());
+                force_terminal_repaint = true;
+                app.needs_redraw = true;
+            }
             if let Event::Resize(width, height) = evt {
                 tracing::debug!(
                     width,
@@ -2233,6 +2249,7 @@ async fn run_event_loop(
                     if app.is_loading {
                         engine_handle.cancel();
                         app.is_loading = false;
+                        app.dispatch_started_at = None;
                         app.streaming_state.reset();
                         // Optimistically clear the turn-in-progress flag so
                         // the footer wave animation halts immediately —
@@ -2285,6 +2302,7 @@ async fn run_event_loop(
                         app.backtrack.reset();
                         engine_handle.cancel();
                         app.is_loading = false;
+                        app.dispatch_started_at = None;
                         app.streaming_state.reset();
                         // Optimistically halt the wave + working label —
                         // engine's TurnComplete will resync with the real
@@ -2355,12 +2373,8 @@ async fn run_event_loop(
                 {
                     app.mention_menu_selected = app.mention_menu_selected.saturating_sub(1);
                 }
-                KeyCode::Up
-                    if key.modifiers.is_empty()
-                        && slash_menu_open
-                        && app.slash_menu_selected > 0 =>
-                {
-                    app.slash_menu_selected = app.slash_menu_selected.saturating_sub(1);
+                KeyCode::Up if key.modifiers.is_empty() && slash_menu_open => {
+                    select_previous_slash_menu_entry(app, slash_menu_entries.len());
                 }
                 KeyCode::Up
                     if key.modifiers.is_empty()
@@ -2403,8 +2417,7 @@ async fn run_event_loop(
                         .min(mention_menu_entries.len().saturating_sub(1));
                 }
                 KeyCode::Down if key.modifiers.is_empty() && slash_menu_open => {
-                    app.slash_menu_selected = (app.slash_menu_selected + 1)
-                        .min(slash_menu_entries.len().saturating_sub(1));
+                    select_next_slash_menu_entry(app, slash_menu_entries.len());
                 }
                 KeyCode::Down
                     if key.modifiers.is_empty()
@@ -2671,8 +2684,14 @@ async fn run_event_loop(
                     app.delete_char_forward();
                 }
                 KeyCode::Delete => {}
+                KeyCode::Left if is_word_cursor_modifier(key.modifiers) => {
+                    app.move_cursor_word_backward();
+                }
                 KeyCode::Left => {
                     app.move_cursor_left();
+                }
+                KeyCode::Right if is_word_cursor_modifier(key.modifiers) => {
+                    app.move_cursor_word_forward();
                 }
                 KeyCode::Right => {
                     app.move_cursor_right();
@@ -2740,22 +2759,12 @@ async fn run_event_loop(
                     app.needs_redraw = true;
                 }
                 KeyCode::Up => {
-                    if key.modifiers.contains(KeyModifiers::CONTROL) {
-                        app.history_up();
-                    } else if should_scroll_with_arrows(app) {
-                        app.scroll_up(1);
-                    } else {
-                        app.history_up();
-                    }
+                    let _ =
+                        handle_composer_history_arrow(app, key, slash_menu_open, mention_menu_open);
                 }
                 KeyCode::Down => {
-                    if key.modifiers.contains(KeyModifiers::CONTROL) {
-                        app.history_down();
-                    } else if should_scroll_with_arrows(app) {
-                        app.scroll_down(1);
-                    } else {
-                        app.history_down();
-                    }
+                    let _ =
+                        handle_composer_history_arrow(app, key, slash_menu_open, mention_menu_open);
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.clear_input_recoverable();
@@ -3070,6 +3079,46 @@ fn queued_session_to_ui(msg: QueuedSessionMessage) -> QueuedMessage {
     }
 }
 
+fn reconcile_turn_liveness(app: &mut App, now: Instant, has_running_agents: bool) -> bool {
+    if app.is_loading
+        && app.runtime_turn_status.is_none()
+        && !has_running_agents
+        && !app.is_compacting
+        && app.dispatch_started_at.is_some_and(|started| {
+            now.saturating_duration_since(started) > DISPATCH_WATCHDOG_TIMEOUT
+        })
+    {
+        app.is_loading = false;
+        app.dispatch_started_at = None;
+        app.push_status_toast(
+            "Turn dispatch timed out; the engine may have stopped. Please try again.",
+            StatusToastLevel::Error,
+            None,
+        );
+        return true;
+    }
+
+    if app.is_loading
+        && matches!(
+            app.runtime_turn_status.as_deref(),
+            Some("completed" | "interrupted" | "failed")
+        )
+        && !has_running_agents
+        && !app.is_compacting
+    {
+        app.is_loading = false;
+        app.dispatch_started_at = None;
+        app.push_status_toast(
+            "Recovered from an inconsistent busy state.",
+            StatusToastLevel::Warning,
+            None,
+        );
+        return true;
+    }
+
+    false
+}
+
 /// Translate an `EngineEvent::Error` into UI state updates.
 ///
 /// The engine's `recoverable` flag (mirrored on `ErrorEnvelope`) decides
@@ -3111,6 +3160,7 @@ pub(crate) fn apply_engine_error_to_app(
         severity,
     });
     app.is_loading = false;
+    app.dispatch_started_at = None;
     if matches!(
         envelope.category,
         crate::error_taxonomy::ErrorCategory::Authentication
@@ -3482,6 +3532,52 @@ fn next_escape_action(app: &App, slash_menu_open: bool) -> EscapeAction {
     }
 }
 
+fn select_previous_slash_menu_entry(app: &mut App, entry_count: usize) {
+    if entry_count == 0 {
+        return;
+    }
+    let selected = app.slash_menu_selected.min(entry_count.saturating_sub(1));
+    app.slash_menu_selected = (selected + entry_count - 1) % entry_count;
+}
+
+fn select_next_slash_menu_entry(app: &mut App, entry_count: usize) {
+    if entry_count == 0 {
+        return;
+    }
+    let selected = app.slash_menu_selected.min(entry_count.saturating_sub(1));
+    app.slash_menu_selected = (selected + 1) % entry_count;
+}
+
+fn handle_composer_history_arrow(
+    app: &mut App,
+    key: KeyEvent,
+    slash_menu_open: bool,
+    mention_menu_open: bool,
+) -> bool {
+    if slash_menu_open || mention_menu_open {
+        return false;
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SUPER) {
+        return false;
+    }
+
+    match key.code {
+        KeyCode::Up => {
+            app.history_up();
+            true
+        }
+        KeyCode::Down => {
+            app.history_down();
+            true
+        }
+        _ => false,
+    }
+}
+
+fn is_word_cursor_modifier(modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::ALT)
+}
+
 fn is_composer_newline_key(key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Char('j') => key.modifiers.contains(KeyModifiers::CONTROL),
@@ -3664,8 +3760,11 @@ async fn dispatch_user_message(
     }
 
     // Set immediately to prevent double-dispatch before TurnStarted event arrives.
+    let dispatch_started_at = Instant::now();
     app.is_loading = true;
-    app.last_send_at = Some(Instant::now());
+    app.dispatch_started_at = Some(dispatch_started_at);
+    app.runtime_turn_status = None;
+    app.last_send_at = Some(dispatch_started_at);
 
     let cwd = std::env::current_dir().ok();
     let references = crate::tui::file_mention::context_references_from_input(
@@ -3783,6 +3882,7 @@ async fn dispatch_user_message(
         .await
     {
         app.is_loading = false;
+        app.dispatch_started_at = None;
         app.last_send_at = None;
         return Err(err);
     }
@@ -5779,6 +5879,14 @@ async fn handle_view_events(
             ViewEvent::BacktrackConfirm => {
                 if let Some(depth) = app.backtrack.confirm() {
                     apply_backtrack(app, depth);
+                    let _ = engine_handle
+                        .send(Op::SyncSession {
+                            messages: app.api_messages.clone(),
+                            system_prompt: app.system_prompt.clone(),
+                            model: app.model.clone(),
+                            workspace: app.workspace.clone(),
+                        })
+                        .await;
                 }
             }
             ViewEvent::BacktrackCancel => {
@@ -5796,6 +5904,7 @@ async fn handle_view_events(
                 app.backtrack.reset();
                 engine_handle.cancel();
                 app.is_loading = false;
+                app.dispatch_started_at = None;
                 app.streaming_state.reset();
                 app.runtime_turn_status = None;
                 app.finalize_active_cell_as_interrupted();
@@ -6263,6 +6372,7 @@ fn pause_terminal(
     // mode. Best-effort — terminals that didn't accept the flags
     // silently ignore the pop. Matches the shutdown and panic paths.
     let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    execute!(terminal.backend_mut(), DisableFocusChange)?;
     disable_raw_mode()?;
     if use_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -6292,6 +6402,8 @@ fn resume_terminal(
     if use_bracketed_paste {
         execute!(terminal.backend_mut(), EnableBracketedPaste)?;
     }
+    execute!(terminal.backend_mut(), EnableFocusChange)?;
+    push_keyboard_enhancement_flags(terminal.backend_mut());
     reset_terminal_viewport(terminal)?;
     Ok(())
 }
@@ -6300,11 +6412,30 @@ fn reset_terminal_viewport(terminal: &mut AppTerminal) -> Result<()> {
     // Reset scroll margins and origin mode before clearing. Some interactive
     // child processes leave DECSTBM/DECOM behind; if ratatui's diff renderer
     // then writes "row 0", terminals can place it relative to the leaked
-    // scroll region and the whole viewport appears shifted down.
+    // scroll region and the whole viewport appears shifted down. CSI 3J also
+    // erases saved scrollback so a focus/resize recapture cannot leave the
+    // host terminal's scrollbar above the live TUI.
     terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
     terminal.backend_mut().flush()?;
     terminal.clear()?;
     Ok(())
+}
+
+fn push_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
+    if let Err(err) = execute!(
+        writer,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    ) {
+        tracing::debug!(
+            target: "kitty_keyboard",
+            ?err,
+            "PushKeyboardEnhancementFlags ignored (terminal lacks support)"
+        );
+    }
+}
+
+fn terminal_event_needs_viewport_recapture(evt: &Event) -> bool {
+    matches!(evt, Event::FocusGained)
 }
 
 fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
@@ -8216,14 +8347,6 @@ fn is_ctrl_h_backspace(key: &KeyEvent) -> bool {
         && key.modifiers.contains(KeyModifiers::CONTROL)
         && !key.modifiers.contains(KeyModifiers::ALT)
         && !key.modifiers.contains(KeyModifiers::SUPER)
-}
-
-fn should_scroll_with_arrows(app: &App) -> bool {
-    // When the composer is empty (or only whitespace), Up/Down arrows
-    // scroll the transcript. When the composer has text, they navigate
-    // composer history so the user can recall previous prompts.
-    // Cmd+Up / Alt+Up always scroll regardless, handled upstream.
-    app.input.trim().is_empty()
 }
 
 fn extract_reasoning_header(text: &str) -> Option<String> {

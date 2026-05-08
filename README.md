@@ -225,11 +225,21 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## What's New In v0.8.18
+## What's New In v0.8.20
 
-A focused follow-up release for TUI/runtime/install polish.
+A hotfix release for Chinese reasoning language, DeepSeek endpoint defaults,
+and the v0.8.18 TUI/runtime/install polish.
 [Full changelog](CHANGELOG.md).
 
+- **Chinese reasoning stays Chinese** - when the latest user message is in
+  Simplified Chinese, V4 `reasoning_content` and the final reply are prompted
+  to stay in Simplified Chinese even on an English system locale.
+- **DeepSeek beta endpoint stays default worldwide** - Chinese locales and
+  legacy `deepseek-cn` configs now use `https://api.deepseek.com/beta`, so
+  strict tool mode and other beta-gated features remain available.
+- **`deepseek-cn` is legacy-only** - it is no longer advertised as a separate
+  provider. Existing configs still parse it as a backwards-compatible alias for
+  `deepseek`.
 - **Plain `deepseek` starts fresh** - opening a second terminal in the same
   folder now creates a new session instead of silently re-entering the same
   interrupted checkpoint. Use `deepseek --continue` when you want recovery.
@@ -352,7 +362,7 @@ Key environment variables:
 | `DEEPSEEK_HTTP_HEADERS` | Optional custom model request headers, e.g. `X-Model-Provider-Id=your-model-provider` |
 | `DEEPSEEK_MODEL` | Default model |
 | `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` | Stream idle timeout in seconds, default `300`, clamped to `1..=3600` |
-| `DEEPSEEK_PROVIDER` | `deepseek` (default), `deepseek-cn`, `nvidia-nim`, `openai`, `openrouter`, `novita`, `fireworks`, `sglang`, `vllm`, `ollama` |
+| `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `openai`, `openrouter`, `novita`, `fireworks`, `sglang`, `vllm`, `ollama` |
 | `DEEPSEEK_PROFILE` | Config profile name |
 | `DEEPSEEK_MEMORY` | Set to `on` to enable user memory |
 | `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
@@ -364,7 +374,7 @@ Key environment variables:
 | `NO_ANIMATIONS=1` | Force accessibility mode at startup |
 | `SSL_CERT_FILE` | Custom CA bundle for corporate proxies |
 
-Set `locale` in `settings.toml`, use `/config locale zh-Hans`, or rely on `LC_ALL`/`LANG` to choose UI chrome and the default natural language sent to V4 models. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [docs/MCP.md](docs/MCP.md).
+Set `locale` in `settings.toml`, use `/config locale zh-Hans`, or rely on `LC_ALL`/`LANG` to choose UI chrome and the fallback language sent to V4 models. The latest user message still wins for natural-language reasoning and replies, so Chinese user turns stay Chinese even on an English system locale. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [docs/MCP.md](docs/MCP.md).
 
 ---
 
@@ -434,6 +444,9 @@ Full Changelog: [CHANGELOG.md](CHANGELOG.md).
 
 ## Thanks
 
+- **[DeepSeek](https://github.com/deepseek-ai)** — thank you for the models and support that power every turn. 感谢 DeepSeek 提供模型与支持，让每一次交互成为可能。
+- **[DataWhale](https://github.com/datawhalechina)** 🐋 — thank you for your support and for welcoming us into the Whale Brother family. 感谢 DataWhale 的支持，并欢迎我们加入“鲸兄弟”大家庭。
+
 This project ships with help from a growing community of contributors:
 
 - **[merchloubna70-dot](https://github.com/merchloubna70-dot)** — 28 PRs spanning features, fixes, and VS Code extension scaffolding (#645–#681)
@@ -477,7 +490,7 @@ This project ships with help from a growing community of contributors:
 - **[Duducoco](https://github.com/Duducoco)** and **[AlphaGogoo](https://github.com/AlphaGogoo)** — skills slash-menu and `/skills` coverage fix (#1068, #1083)
 - **[ArronAI007](https://github.com/ArronAI007)** — window-resize artifact fix for macOS Terminal.app and ConHost (#993)
 - **[THINKER-ONLY](https://github.com/THINKER-ONLY)** — OpenRouter and custom-endpoint model-ID preservation (#1066)
-- **[Jefsky](https://github.com/Jefsky)** — `deepseek-cn` official endpoint default (#1079, #1084)
+- **[Jefsky](https://github.com/Jefsky)** — DeepSeek endpoint correction report (#1079, #1084)
 - **[wlon](https://github.com/wlon)** — NVIDIA NIM provider API-key preference diagnosis (#1081)
 
 ---

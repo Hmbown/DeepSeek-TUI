@@ -20,9 +20,24 @@ FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-slim-bookworm AS builder
 ARG TARGETPLATFORM
 ARG TARGETARCH
 ARG BUILDPLATFORM
+ARG DEEPSEEK_BUILD_SHA
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libdbus-1-dev \
+ENV CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    PKG_CONFIG_ALLOW_CROSS=1 \
+    PKG_CONFIG_LIBDIR_aarch64_unknown_linux_gnu=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig \
+    DEEPSEEK_BUILD_SHA=${DEEPSEEK_BUILD_SHA}
+
+RUN if [ "${TARGETARCH}" = "arm64" ] && [ "${BUILDPLATFORM}" != "${TARGETPLATFORM}" ]; then \
+      dpkg --add-architecture arm64; \
+    fi \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+      pkg-config libdbus-1-dev \
+    && if [ "${TARGETARCH}" = "arm64" ] && [ "${BUILDPLATFORM}" != "${TARGETPLATFORM}" ]; then \
+      apt-get install -y --no-install-recommends \
+        gcc-aarch64-linux-gnu libc6-dev-arm64-cross libdbus-1-dev:arm64; \
+    fi \
     && rm -rf /var/lib/apt/lists/*
 
 # Translate Docker platform into Rust target triple.

@@ -192,10 +192,12 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## v0.8.18 新功能
+## v0.8.20 新功能
 
-面向 TUI、运行时和安装体验的跟进版本。[完整更新日志](CHANGELOG.md)。
+面向中文思考语言、端点默认值、TUI、运行时和安装体验的热修复版本。[完整更新日志](CHANGELOG.md)。
 
+- **中文思考保持中文** —— 当最新用户消息是简体中文时，即使系统 locale
+  是英文，V4 的 `reasoning_content` 和最终回复也会被提示保持简体中文。
 - **直接运行 `deepseek` 会启动新会话** —— 同一目录开第二个终端时，不再静默进入
   同一个中断检查点；需要恢复时请显式使用 `deepseek --continue`。
 - **Docker 成为受支持安装方式** —— 发布流程会推送
@@ -288,7 +290,7 @@ deepseek update                                # 检查并应用二进制更新
 | `NO_ANIMATIONS=1` | 启动时强制无障碍模式 |
 | `SSL_CERT_FILE` | 企业代理的自定义 CA 包 |
 
-UI 语言与模型输出语言相互独立——在 `config.toml` 中设置 `locale`、使用 `/config locale zh-Hans`、或依赖 `LC_ALL`/`LANG`。详见 [docs/LOCALIZATION.md](docs/LOCALIZATION.md) 和 [docs/CONFIGURATION.md](docs/CONFIGURATION.md)。
+`locale` 会控制界面语言，并作为模型自然语言的兜底设置；最新用户消息的语言优先级更高。也就是说，即使系统 locale 是英文，用户用中文提问时，V4 的 `reasoning_content` 和最终回复也应该使用中文。可在 `config.toml` 中设置 `locale`、使用 `/config locale zh-Hans`、或依赖 `LC_ALL`/`LANG`。详见 [docs/LOCALIZATION.md](docs/LOCALIZATION.md) 和 [docs/CONFIGURATION.md](docs/CONFIGURATION.md)。
 
 ### 切换为中文界面
 

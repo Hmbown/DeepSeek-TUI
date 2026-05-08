@@ -42,9 +42,13 @@ pub const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 pub const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
 pub const DEFAULT_OLLAMA_MODEL: &str = "deepseek-coder:1.3b";
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
-/// Official DeepSeek API host per <https://api-docs.deepseek.com/> (`deepseek-cn` preset defaults here).
-/// Legacy typo hostname `api.deepseeki.com` remains recognized in URL heuristics for backward compatibility.
-pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = "https://api.deepseek.com";
+/// Legacy `deepseek-cn` provider alias.
+///
+/// DeepSeek's official API host is the same worldwide. Keep this alias for
+/// old configs, but route it through the normal beta-enabled DeepSeek default.
+/// Legacy typo hostname `api.deepseeki.com` remains recognized in URL
+/// heuristics for backward compatibility.
+pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = DEFAULT_DEEPSEEK_BASE_URL;
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
     "deepseek-v4-pro",
@@ -111,7 +115,7 @@ impl ApiProvider {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Deepseek => "DeepSeek",
-            Self::DeepseekCN => "DeepSeek (中国)",
+            Self::DeepseekCN => "DeepSeek (legacy alias)",
             Self::NvidiaNim => "NVIDIA NIM",
             Self::Openai => "OpenAI-compatible",
             Self::Openrouter => "OpenRouter",
@@ -128,7 +132,6 @@ impl ApiProvider {
     pub fn all() -> &'static [Self] {
         &[
             Self::Deepseek,
-            Self::DeepseekCN,
             Self::NvidiaNim,
             Self::Openai,
             Self::Openrouter,
@@ -923,6 +926,10 @@ pub struct NetworkPolicyToml {
     /// Hosts that are always denied. Deny entries win over allow entries.
     #[serde(default)]
     pub deny: Vec<String>,
+    /// Hostnames whose DNS may resolve to fake-IP/private proxy ranges in an
+    /// explicitly trusted proxy setup. Literal IP URLs remain blocked.
+    #[serde(default)]
+    pub proxy: Vec<String>,
     /// Whether to record one audit-log line per outbound network call.
     #[serde(default = "default_network_audit")]
     pub audit: bool,
@@ -942,6 +949,7 @@ impl Default for NetworkPolicyToml {
             default: default_network_decision(),
             allow: Vec::new(),
             deny: Vec::new(),
+            proxy: Vec::new(),
             audit: default_network_audit(),
         }
     }
@@ -956,6 +964,7 @@ impl NetworkPolicyToml {
             default: crate::network_policy::Decision::parse(&self.default).into(),
             allow: self.allow,
             deny: self.deny,
+            proxy: self.proxy,
             audit: self.audit,
         }
     }
@@ -3142,6 +3151,23 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn network_policy_toml_maps_proxy_hosts_to_runtime_policy() {
+        let policy: NetworkPolicyToml = toml::from_str(
+            r#"
+            default = "allow"
+            proxy = ["github.com", ".githubusercontent.com"]
+            "#,
+        )
+        .expect("network policy toml");
+
+        let runtime = policy.into_runtime();
+
+        assert_eq!(runtime.proxy, ["github.com", ".githubusercontent.com"]);
+        assert!(runtime.trusts_proxy_fakeip_host("github.com"));
+        assert!(runtime.trusts_proxy_fakeip_host("raw.githubusercontent.com"));
+    }
 
     struct EnvGuard {
         home: Option<OsString>,

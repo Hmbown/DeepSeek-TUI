@@ -34,6 +34,30 @@ fn format_resume_hint_omits_missing_session_id() {
 }
 
 #[test]
+fn focus_gained_forces_terminal_viewport_recapture() {
+    assert!(terminal_event_needs_viewport_recapture(&Event::FocusGained));
+    assert!(!terminal_event_needs_viewport_recapture(&Event::FocusLost));
+}
+
+#[test]
+fn terminal_origin_reset_resets_scroll_region_origin_and_clears() {
+    assert!(
+        TERMINAL_ORIGIN_RESET.starts_with(b"\x1b[r\x1b[?6l"),
+        "must reset scroll margins and origin mode before repaint"
+    );
+    assert!(
+        TERMINAL_ORIGIN_RESET.ends_with(b"\x1b[H\x1b[2J\x1b[3J"),
+        "must home the cursor and clear the viewport"
+    );
+    assert!(
+        TERMINAL_ORIGIN_RESET
+            .windows(b"\x1b[3J".len())
+            .any(|sequence| sequence == b"\x1b[3J"),
+        "must erase saved scrollback when reclaiming the viewport"
+    );
+}
+
+#[test]
 fn composer_newline_shortcuts_do_not_steal_ctrl_enter() {
     assert!(is_composer_newline_key(KeyEvent::new(
         KeyCode::Char('j'),
@@ -59,6 +83,17 @@ fn composer_newline_shortcuts_do_not_steal_ctrl_enter() {
         KeyCode::Enter,
         KeyModifiers::CONTROL | KeyModifiers::SHIFT,
     )));
+}
+
+#[test]
+fn word_cursor_modifier_accepts_control_and_alt() {
+    assert!(is_word_cursor_modifier(KeyModifiers::CONTROL));
+    assert!(is_word_cursor_modifier(KeyModifiers::ALT));
+    assert!(is_word_cursor_modifier(
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT
+    ));
+    assert!(!is_word_cursor_modifier(KeyModifiers::NONE));
+    assert!(!is_word_cursor_modifier(KeyModifiers::SHIFT));
 }
 
 #[test]
@@ -1039,6 +1074,61 @@ async fn dispatch_user_message_failed_send_clears_loading_state() {
         "failed dispatch must not leave the composer in a permanent busy state"
     );
     assert!(app.last_send_at.is_none());
+    assert!(app.dispatch_started_at.is_none());
+}
+
+#[test]
+fn turn_liveness_watchdog_clears_stale_dispatch() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.dispatch_started_at =
+        Some(Instant::now() - DISPATCH_WATCHDOG_TIMEOUT - Duration::from_millis(1));
+
+    let recovered = reconcile_turn_liveness(&mut app, Instant::now(), false);
+
+    assert!(recovered);
+    assert!(!app.is_loading);
+    assert!(app.dispatch_started_at.is_none());
+    let toast = app.status_toasts.back().expect("watchdog toast");
+    assert_eq!(toast.level, StatusToastLevel::Error);
+    assert!(toast.text.contains("Turn dispatch timed out"));
+}
+
+#[test]
+fn turn_liveness_reconciles_completed_busy_state() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.runtime_turn_status = Some("completed".to_string());
+    app.dispatch_started_at = Some(Instant::now());
+
+    let recovered = reconcile_turn_liveness(&mut app, Instant::now(), false);
+
+    assert!(recovered);
+    assert!(!app.is_loading);
+    assert!(app.dispatch_started_at.is_none());
+    let toast = app.status_toasts.back().expect("reconciliation toast");
+    assert_eq!(toast.level, StatusToastLevel::Warning);
+    assert!(
+        toast
+            .text
+            .contains("Recovered from an inconsistent busy state")
+    );
+}
+
+#[test]
+fn turn_liveness_leaves_active_turn_running() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.runtime_turn_status = Some("in_progress".to_string());
+    app.dispatch_started_at =
+        Some(Instant::now() - DISPATCH_WATCHDOG_TIMEOUT - Duration::from_secs(10));
+
+    let recovered = reconcile_turn_liveness(&mut app, Instant::now(), false);
+
+    assert!(!recovered);
+    assert!(app.is_loading);
+    assert!(app.dispatch_started_at.is_some());
+    assert!(app.status_toasts.is_empty());
 }
 
 #[test]
@@ -1682,6 +1772,24 @@ fn test_esc_closes_slash_menu_before_other_actions() {
 }
 
 #[test]
+fn history_arrow_does_not_steal_open_menus() {
+    let mut app = create_test_app();
+    app.input_history.push("previous prompt".to_string());
+    app.input = "/".to_string();
+    app.cursor_position = 1;
+
+    assert!(!handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        true,
+        false,
+    ));
+
+    assert_eq!(app.input, "/");
+    assert!(app.history_index.is_none());
+}
+
+#[test]
 fn test_ctrl_c_cancels_streaming_sets_status() {
     let mut app = create_test_app();
     app.is_loading = true;
@@ -1777,6 +1885,39 @@ fn visible_slash_menu_entries_excludes_removed_commands() {
     assert!(entries.iter().any(|entry| entry.name == "/links"));
     assert!(!entries.iter().any(|entry| entry.name == "/set"));
     assert!(!entries.iter().any(|entry| entry.name == "/deepseek"));
+}
+
+#[test]
+fn slash_menu_up_wraps_from_first_to_last() {
+    let mut app = create_test_app();
+    app.input = "/".to_string();
+    app.cursor_position = 1;
+    app.input_history.push("previous prompt".to_string());
+
+    let entries = visible_slash_menu_entries(&app, 128);
+    assert!(entries.len() > 1);
+
+    app.slash_menu_selected = 0;
+    select_previous_slash_menu_entry(&mut app, entries.len());
+
+    assert_eq!(app.slash_menu_selected, entries.len() - 1);
+    assert_eq!(app.input, "/");
+}
+
+#[test]
+fn slash_menu_down_wraps_from_last_to_first() {
+    let mut app = create_test_app();
+    app.input = "/".to_string();
+    app.cursor_position = 1;
+
+    let entries = visible_slash_menu_entries(&app, 128);
+    assert!(entries.len() > 1);
+
+    app.slash_menu_selected = entries.len() - 1;
+    select_next_slash_menu_entry(&mut app, entries.len());
+
+    assert_eq!(app.slash_menu_selected, 0);
+    assert_eq!(app.input, "/");
 }
 
 #[test]
@@ -3788,35 +3929,55 @@ fn checklist_write_renders_dedicated_card() {
     );
 }
 
-// ---- scroll_with_arrows ----
+// ---- composer arrow history ----
 
 #[test]
-fn scroll_with_arrows_returns_true_when_input_empty() {
-    let app = create_test_app();
-    assert!(
-        super::should_scroll_with_arrows(&app),
-        "empty composer: Up/Down should scroll transcript"
-    );
+fn history_arrow_handles_empty_input() {
+    let mut app = create_test_app();
+    app.input_history.push("previous prompt".to_string());
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
+    assert_eq!(app.input, "previous prompt");
 }
 
 #[test]
-fn scroll_with_arrows_returns_true_when_input_only_whitespace() {
+fn history_arrow_handles_whitespace_input() {
     let mut app = create_test_app();
     app.input = "   ".to_string();
-    assert!(
-        super::should_scroll_with_arrows(&app),
-        "whitespace-only composer: Up/Down should scroll transcript"
-    );
+    app.cursor_position = app.input.chars().count();
+    app.input_history.push("previous prompt".to_string());
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
+    assert_eq!(app.input, "previous prompt");
 }
 
 #[test]
-fn scroll_with_arrows_returns_false_when_input_has_text() {
+fn history_arrow_handles_nonempty_input() {
     let mut app = create_test_app();
     app.input = "hello".to_string();
-    assert!(
-        !super::should_scroll_with_arrows(&app),
-        "text in composer: Up/Down should navigate history"
-    );
+    app.cursor_position = app.input.chars().count();
+    app.input_history.push("previous prompt".to_string());
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
+    assert_eq!(app.input, "previous prompt");
 }
 
 #[test]

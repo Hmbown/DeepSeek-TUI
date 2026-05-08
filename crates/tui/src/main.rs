@@ -110,8 +110,8 @@ struct Cli {
     feature_toggles: FeatureToggles,
 
     /// Send a one-shot prompt (non-interactive)
-    #[arg(short, long)]
-    prompt: Option<String>,
+    #[arg(short, long, value_name = "PROMPT", num_args = 1..)]
+    prompt: Vec<String>,
 
     /// YOLO mode: enable agent tools + shell execution
     #[arg(long)]
@@ -145,8 +145,9 @@ struct Cli {
     #[arg(short = 'c', long = "continue")]
     continue_session: bool,
 
-    /// Disable the alternate screen buffer (inline mode)
-    #[arg(long = "no-alt-screen")]
+    /// Deprecated compatibility flag; the interactive TUI always owns the
+    /// alternate screen so terminal scrollback cannot hijack the viewport.
+    #[arg(long = "no-alt-screen", hide = true)]
     no_alt_screen: bool,
 
     /// Enable TUI mouse capture for internal scrolling and transcript selection
@@ -264,7 +265,13 @@ enum Commands {
 #[derive(Args, Debug, Clone)]
 struct ExecArgs {
     /// Prompt to send to the model
-    prompt: String,
+    #[arg(
+        value_name = "PROMPT",
+        required = true,
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
+    prompt: Vec<String>,
     /// Override model for this run
     #[arg(long)]
     model: Option<String>,
@@ -274,6 +281,10 @@ struct ExecArgs {
     /// Emit machine-readable JSON output
     #[arg(long, default_value_t = false)]
     json: bool,
+}
+
+fn join_prompt_parts(parts: &[String]) -> String {
+    parts.join(" ")
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -653,6 +664,7 @@ async fn main() -> Result<()> {
                     .model
                     .or_else(|| config.default_text_model.clone())
                     .unwrap_or_else(|| config.default_model());
+                let prompt = join_prompt_parts(&args.prompt);
                 if args.auto || cli.yolo {
                     let workspace = cli.workspace.clone().unwrap_or_else(|| {
                         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
@@ -665,7 +677,7 @@ async fn main() -> Result<()> {
                     run_exec_agent(
                         &config,
                         &model,
-                        &args.prompt,
+                        &prompt,
                         workspace,
                         max_subagents,
                         true,
@@ -674,9 +686,9 @@ async fn main() -> Result<()> {
                     )
                     .await
                 } else if args.json {
-                    run_one_shot_json(&config, &model, &args.prompt).await
+                    run_one_shot_json(&config, &model, &prompt).await
                 } else {
-                    run_one_shot(&config, &model, &args.prompt).await
+                    run_one_shot(&config, &model, &prompt).await
                 }
             }
             Commands::Review(args) => {
@@ -764,7 +776,8 @@ async fn main() -> Result<()> {
 
     // One-shot prompt mode
     let config = load_config_from_cli(&cli)?;
-    if let Some(prompt) = cli.prompt {
+    if !cli.prompt.is_empty() {
+        let prompt = join_prompt_parts(&cli.prompt);
         let model = config.default_model();
         return run_one_shot(&config, &model, &prompt).await;
     }
@@ -2458,7 +2471,7 @@ fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
                 && !target.base_url.contains("api.deepseeki.com") =>
         {
             lines.push(
-                "If you are in mainland China, set `provider = \"deepseek-cn\"` or `base_url = \"https://api.deepseek.com\"` in ~/.deepseek/config.toml, then rerun `deepseek doctor`."
+                "If this is a custom DeepSeek-compatible endpoint, set its HTTPS base URL in ~/.deepseek/config.toml and rerun `deepseek doctor`."
                     .to_string(),
             );
         }
@@ -3623,23 +3636,8 @@ fn parse_sandbox_policy(
     }
 }
 
-fn should_use_alt_screen(cli: &Cli, config: &Config) -> bool {
-    if cli.no_alt_screen {
-        return false;
-    }
-
-    let mode = config
-        .tui
-        .as_ref()
-        .and_then(|tui| tui.alternate_screen.as_deref())
-        .unwrap_or("auto")
-        .to_ascii_lowercase();
-
-    match mode.as_str() {
-        "always" => true,
-        "never" => false,
-        _ => true,
-    }
+fn should_use_alt_screen(_cli: &Cli, _config: &Config) -> bool {
+    true
 }
 
 fn should_use_mouse_capture(cli: &Cli, config: &Config, use_alt_screen: bool) -> bool {
@@ -4420,7 +4418,7 @@ mod doctor_endpoint_tests {
     }
 
     #[test]
-    fn doctor_api_target_reports_deepseek_cn_endpoint() {
+    fn doctor_api_target_routes_deepseek_cn_alias_to_beta_endpoint() {
         let config = Config {
             provider: Some("deepseek-cn".to_string()),
             ..Default::default()
@@ -4430,6 +4428,7 @@ mod doctor_endpoint_tests {
 
         assert_eq!(target.provider, "deepseek-cn");
         assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEKCN_BASE_URL);
+        assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEK_BASE_URL);
         assert_eq!(target.model, crate::config::DEFAULT_TEXT_MODEL);
     }
 
@@ -4480,7 +4479,7 @@ mod doctor_endpoint_tests {
     }
 
     #[test]
-    fn strict_tool_mode_doctor_warns_for_deepseek_cn_default_endpoint() {
+    fn strict_tool_mode_doctor_accepts_deepseek_cn_alias_default_endpoint() {
         let config = Config {
             provider: Some("deepseek-cn".to_string()),
             strict_tool_mode: Some(true),
@@ -4489,12 +4488,10 @@ mod doctor_endpoint_tests {
 
         let status = doctor_strict_tool_mode_status(&config);
 
-        assert_eq!(status.status, "fallback_non_beta");
-        assert!(!status.function_strict_sent);
-        assert_eq!(
-            status.recommended_base_url.as_deref(),
-            Some(crate::config::DEFAULT_DEEPSEEK_BASE_URL)
-        );
+        assert_eq!(status.status, "ready");
+        assert!(status.function_strict_sent);
+        assert!(status.message.contains("beta endpoint"));
+        assert!(status.recommended_base_url.is_none());
     }
 
     #[test]
@@ -4548,13 +4545,14 @@ mod doctor_endpoint_tests {
     }
 
     #[test]
-    fn timeout_recovery_points_global_deepseek_users_to_cn_endpoint() {
+    fn timeout_recovery_keeps_default_deepseek_users_on_default_endpoint() {
         let config = Config::default();
 
         let text = doctor_timeout_recovery_lines(&config).join("\n");
 
         assert!(text.contains("api.deepseek.com"));
-        assert!(text.contains("provider = \"deepseek-cn\""));
+        assert!(text.contains("custom DeepSeek-compatible endpoint"));
+        assert!(!text.contains("provider = \"deepseek-cn\""));
         assert!(text.contains("deepseek doctor --json"));
     }
 
@@ -4583,6 +4581,34 @@ mod terminal_mode_tests {
     }
 
     #[test]
+    fn prompt_flag_accepts_split_prompt_words_for_windows_cmd_shims() {
+        let cli = parse_cli(&["deepseek", "-p", "hello", "world"]);
+
+        assert_eq!(cli.prompt, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn exec_accepts_split_prompt_words_for_windows_cmd_shims() {
+        let cli = parse_cli(&["deepseek", "exec", "hello", "world"]);
+        let Some(Commands::Exec(args)) = cli.command else {
+            panic!("expected exec command");
+        };
+
+        assert_eq!(args.prompt, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn exec_keeps_flags_before_split_prompt_words() {
+        let cli = parse_cli(&["deepseek", "exec", "--json", "hello", "world"]);
+        let Some(Commands::Exec(args)) = cli.command else {
+            panic!("expected exec command");
+        };
+
+        assert!(args.json);
+        assert_eq!(args.prompt, vec!["hello", "world"]);
+    }
+
+    #[test]
     fn alternate_screen_defaults_on_in_auto_mode() {
         let cli = parse_cli(&["deepseek"]);
         let config = Config::default();
@@ -4591,15 +4617,15 @@ mod terminal_mode_tests {
     }
 
     #[test]
-    fn no_alt_screen_flag_disables_alternate_screen() {
+    fn no_alt_screen_flag_is_accepted_but_keeps_alternate_screen() {
         let cli = parse_cli(&["deepseek", "--no-alt-screen"]);
         let config = Config::default();
 
-        assert!(!should_use_alt_screen(&cli, &config));
+        assert!(should_use_alt_screen(&cli, &config));
     }
 
     #[test]
-    fn config_can_disable_alternate_screen() {
+    fn config_never_is_accepted_but_keeps_alternate_screen() {
         let cli = parse_cli(&["deepseek"]);
         let config = Config {
             tui: Some(crate::config::TuiConfig {
@@ -4613,7 +4639,7 @@ mod terminal_mode_tests {
             ..Config::default()
         };
 
-        assert!(!should_use_alt_screen(&cli, &config));
+        assert!(should_use_alt_screen(&cli, &config));
     }
 
     #[test]

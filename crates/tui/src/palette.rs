@@ -119,6 +119,8 @@ pub const TEXT_REASONING: Color = Color::Rgb(211, 170, 112); // #D3AA70
 pub const TEXT_PRIMARY: Color = TEXT_BODY;
 pub const TEXT_MUTED: Color = TEXT_SECONDARY;
 pub const TEXT_DIM: Color = TEXT_HINT;
+pub const USER_BODY: Color = Color::Rgb(74, 222, 128); // #4ADE80 green
+pub const LIGHT_USER_BODY: Color = Color::Rgb(21, 128, 61); // #15803D green
 
 // New semantic colors for UI theming
 pub const BORDER_COLOR: Color =
@@ -349,6 +351,8 @@ pub fn adapt_fg_for_palette_mode(color: Color, _bg: Color, mode: PaletteMode) ->
         Color::Rgb(159, 18, 57)
     } else if color == DIFF_ADDED {
         Color::Rgb(22, 101, 52)
+    } else if color == USER_BODY {
+        LIGHT_USER_BODY
     } else {
         color
     }

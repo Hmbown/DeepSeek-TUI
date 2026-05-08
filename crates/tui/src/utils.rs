@@ -402,24 +402,6 @@ pub fn display_path_with_home(path: &Path, home: Option<&Path>) -> String {
     path.display().to_string()
 }
 
-/// Check whether the system locale is Chinese (zh-*).
-///
-/// Reads `LC_ALL`, `LC_MESSAGES`, and `LANG` environment variables.
-/// Used by the first-run flow to suggest `DeepseekCN` as the default
-/// provider for users in China.
-#[must_use]
-pub fn is_chinese_system_locale() -> bool {
-    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-        if let Ok(value) = std::env::var(key) {
-            let normalized = value.split('.').next().unwrap_or(&value).replace('_', "-");
-            if normalized.to_ascii_lowercase().starts_with("zh") {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// Estimate the total character count across message content blocks.
 #[must_use]
 pub fn estimate_message_chars(messages: &[Message]) -> usize {

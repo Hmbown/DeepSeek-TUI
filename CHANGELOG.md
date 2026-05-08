@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.20] - 2026-05-08
+
+### Fixed
+- **Chinese reasoning stays Chinese** - restore the #588 language contract after
+  the deterministic environment prompt regressed it. The latest user message now
+  chooses the natural language for both `reasoning_content` and the final reply;
+  the resolved `lang` field is only a fallback when the user turn is ambiguous.
+
+## [0.8.19] - 2026-05-08
+
+### Fixed
+- **DeepSeek beta endpoint stays default for Chinese locales** - the legacy
+  `deepseek-cn` runtime path no longer routes users to the non-beta
+  `https://api.deepseek.com` base URL. It is now a backwards-compatible alias
+  for the normal `deepseek` provider default, `https://api.deepseek.com/beta`,
+  so strict tool mode and other beta-gated features stay available worldwide.
+- **Provider docs stop advertising `deepseek-cn` as a separate provider** -
+  runtime docs now describe it only as a legacy config alias. DeepSeek uses the
+  same official host worldwide; users with private mirrors should set
+  `base_url` explicitly.
+
 ## [0.8.18] - 2026-05-07
 
 This is the v0.8.17 follow-up release: a tighter TUI/runtime/install pass with
