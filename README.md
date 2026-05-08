@@ -292,9 +292,11 @@ deepseek update                                  # check for and apply binary up
 Docker images are published to GHCR for release builds:
 
 ```bash
+docker volume create deepseek-tui-home
+
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v ~/.deepseek:/home/deepseek/.deepseek \
+  -v deepseek-tui-home:/home/deepseek/.deepseek \
   ghcr.io/hmbown/deepseek-tui:latest
 ```
 
