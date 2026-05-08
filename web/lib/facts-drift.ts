@@ -71,9 +71,12 @@ function deriveProvidersFromConfig(cfg: string): ProviderFact[] {
   const enumBlock = cfg.match(/pub enum ApiProvider \{([\s\S]*?)\}/);
   if (!enumBlock) return [];
   const variants = [...enumBlock[1].matchAll(/^\s*(\w+)\s*,\s*$/gm)].map((m) => m[1]);
+  // Match what the published CLI binary's `--provider` flag accepts
+  // (ProviderArg in crates/cli/src/lib.rs). DeepseekCN exists in the
+  // legacy tui ApiProvider enum but is not wired through ProviderKind,
+  // so the binary rejects it — keep it out of the docs. Issue #1104.
   const labelMap: Record<string, ProviderFact> = {
     Deepseek: { id: "deepseek", label: "DeepSeek", env: "DEEPSEEK_API_KEY" },
-    DeepseekCN: { id: "deepseek-cn", label: "DeepSeek (CN)", env: "DEEPSEEK_API_KEY" },
     NvidiaNim: { id: "nvidia-nim", label: "NVIDIA NIM", env: "NVIDIA_API_KEY" },
     Openai: { id: "openai", label: "OpenAI", env: "OPENAI_API_KEY" },
     Openrouter: { id: "openrouter", label: "OpenRouter", env: "OPENROUTER_API_KEY" },
