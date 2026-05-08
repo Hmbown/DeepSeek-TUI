@@ -92,15 +92,14 @@ struct Cli {
     no_mouse_capture: bool,
     #[arg(long = "skip-onboarding")]
     skip_onboarding: bool,
-    #[arg(
-        short = 'p',
-        long = "prompt",
-        value_name = "PROMPT",
-        conflicts_with = "prompt"
-    )]
+    #[arg(short = 'p', long = "prompt", value_name = "PROMPT")]
     prompt_flag: Option<String>,
-    #[arg(value_name = "PROMPT")]
-    prompt: Option<String>,
+    #[arg(
+        value_name = "PROMPT",
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
+    prompt: Vec<String>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -513,7 +512,17 @@ fn run() -> Result<()> {
         None => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             let mut forwarded = Vec::new();
-            if let Some(prompt) = cli.prompt_flag.clone().or_else(|| cli.prompt.clone()) {
+            let prompt = cli.prompt_flag.iter().chain(cli.prompt.iter()).fold(
+                String::new(),
+                |mut acc, part| {
+                    if !acc.is_empty() {
+                        acc.push(' ');
+                    }
+                    acc.push_str(part);
+                    acc
+                },
+            );
+            if !prompt.is_empty() {
                 forwarded.push("--prompt".to_string());
                 forwarded.push(prompt);
             }
@@ -2533,7 +2542,31 @@ mod tests {
         let cli = parse_ok(&["deepseek", "-p", "Reply with exactly OK."]);
 
         assert_eq!(cli.prompt_flag.as_deref(), Some("Reply with exactly OK."));
-        assert_eq!(cli.prompt, None);
+        assert!(cli.prompt.is_empty());
+    }
+
+    #[test]
+    fn parses_split_top_level_prompt_words_for_windows_cmd_shims() {
+        let cli = parse_ok(&["deepseek", "hello", "world"]);
+
+        assert_eq!(cli.prompt, vec!["hello", "world"]);
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn prompt_flag_keeps_split_tail_words_for_windows_cmd_shims() {
+        let cli = parse_ok(&["deepseek", "-p", "hello", "world"]);
+
+        assert_eq!(cli.prompt_flag.as_deref(), Some("hello"));
+        assert_eq!(cli.prompt, vec!["world"]);
+    }
+
+    #[test]
+    fn known_subcommands_still_parse_before_prompt_tail() {
+        let cli = parse_ok(&["deepseek", "doctor"]);
+
+        assert!(cli.prompt.is_empty());
+        assert!(matches!(cli.command, Some(Commands::Doctor(_))));
     }
 
     #[test]

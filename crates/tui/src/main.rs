@@ -110,8 +110,8 @@ struct Cli {
     feature_toggles: FeatureToggles,
 
     /// Send a one-shot prompt (non-interactive)
-    #[arg(short, long)]
-    prompt: Option<String>,
+    #[arg(short, long, value_name = "PROMPT", num_args = 1..)]
+    prompt: Vec<String>,
 
     /// YOLO mode: enable agent tools + shell execution
     #[arg(long)]
@@ -265,7 +265,13 @@ enum Commands {
 #[derive(Args, Debug, Clone)]
 struct ExecArgs {
     /// Prompt to send to the model
-    prompt: String,
+    #[arg(
+        value_name = "PROMPT",
+        required = true,
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
+    prompt: Vec<String>,
     /// Override model for this run
     #[arg(long)]
     model: Option<String>,
@@ -275,6 +281,10 @@ struct ExecArgs {
     /// Emit machine-readable JSON output
     #[arg(long, default_value_t = false)]
     json: bool,
+}
+
+fn join_prompt_parts(parts: &[String]) -> String {
+    parts.join(" ")
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -654,6 +664,7 @@ async fn main() -> Result<()> {
                     .model
                     .or_else(|| config.default_text_model.clone())
                     .unwrap_or_else(|| config.default_model());
+                let prompt = join_prompt_parts(&args.prompt);
                 if args.auto || cli.yolo {
                     let workspace = cli.workspace.clone().unwrap_or_else(|| {
                         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
@@ -666,7 +677,7 @@ async fn main() -> Result<()> {
                     run_exec_agent(
                         &config,
                         &model,
-                        &args.prompt,
+                        &prompt,
                         workspace,
                         max_subagents,
                         true,
@@ -675,9 +686,9 @@ async fn main() -> Result<()> {
                     )
                     .await
                 } else if args.json {
-                    run_one_shot_json(&config, &model, &args.prompt).await
+                    run_one_shot_json(&config, &model, &prompt).await
                 } else {
-                    run_one_shot(&config, &model, &args.prompt).await
+                    run_one_shot(&config, &model, &prompt).await
                 }
             }
             Commands::Review(args) => {
@@ -765,7 +776,8 @@ async fn main() -> Result<()> {
 
     // One-shot prompt mode
     let config = load_config_from_cli(&cli)?;
-    if let Some(prompt) = cli.prompt {
+    if !cli.prompt.is_empty() {
+        let prompt = join_prompt_parts(&cli.prompt);
         let model = config.default_model();
         return run_one_shot(&config, &model, &prompt).await;
     }
@@ -4565,6 +4577,34 @@ mod terminal_mode_tests {
 
     fn parse_cli(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("CLI args should parse")
+    }
+
+    #[test]
+    fn prompt_flag_accepts_split_prompt_words_for_windows_cmd_shims() {
+        let cli = parse_cli(&["deepseek", "-p", "hello", "world"]);
+
+        assert_eq!(cli.prompt, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn exec_accepts_split_prompt_words_for_windows_cmd_shims() {
+        let cli = parse_cli(&["deepseek", "exec", "hello", "world"]);
+        let Some(Commands::Exec(args)) = cli.command else {
+            panic!("expected exec command");
+        };
+
+        assert_eq!(args.prompt, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn exec_keeps_flags_before_split_prompt_words() {
+        let cli = parse_cli(&["deepseek", "exec", "--json", "hello", "world"]);
+        let Some(Commands::Exec(args)) = cli.command else {
+            panic!("expected exec command");
+        };
+
+        assert!(args.json);
+        assert_eq!(args.prompt, vec!["hello", "world"]);
     }
 
     #[test]
