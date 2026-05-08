@@ -1,0 +1,26 @@
+{
+  "_comment": "Example MCP server configuration for DeepSeek TUI. Copy to ~/.deepseek/mcp.json for global use, or .deepseek/mcp.json for per-workspace servers.",
+  "timeouts": {
+    "connect_timeout": 10,
+    "execute_timeout": 60,
+    "read_timeout": 120
+  },
+  "mcpServers": {
+    "claude-mem": {
+      "_comment": "Cross-session memory and search from Claude Code sessions",
+      "command": "bash",
+      "args": [
+        "-c",
+        "exec bun \"$(~/.deepseek/mcp-resolve.sh claude-mem scripts/mcp-server.cjs)\""
+      ]
+    },
+    "context-mode": {
+      "_comment": "Sandboxed execution, FTS5 knowledge base, context savings",
+      "command": "bash",
+      "args": [
+        "-c",
+        "exec node \"$(~/.deepseek/mcp-resolve.sh context-mode start.mjs)\""
+      ]
+    }
+  }
+}

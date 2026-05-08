@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -657,7 +657,7 @@ impl McpConnection {
             "id": init_id,
             "method": "initialize",
             "params": {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": "2025-03-26",
                 "clientInfo": {
                     "name": "deepseek-tui",
                     "version": env!("CARGO_PKG_VERSION")
@@ -971,6 +971,7 @@ pub struct McpPool {
     connections: HashMap<String, McpConnection>,
     config: McpConfig,
     network_policy: Option<NetworkPolicyDecider>,
+    workspace_dir: Option<PathBuf>,
 }
 
 impl McpPool {
@@ -980,6 +981,7 @@ impl McpPool {
             connections: HashMap::new(),
             config,
             network_policy: None,
+            workspace_dir: None,
         }
     }
 
@@ -996,10 +998,53 @@ impl McpPool {
         Ok(Self::new(config))
     }
 
+    /// Override or set an environment variable on a specific server's config.
+    /// The value is only set if the key does not already exist in the server's
+    /// env map, preserving any explicit user-configured values.
+    #[allow(dead_code)]
+    pub fn with_server_env(mut self, server_name: &str, key: &str, value: &str) -> Self {
+        if let Some(server) = self.config.servers.get_mut(server_name) {
+            server
+                .env
+                .entry(key.to_string())
+                .or_insert_with(|| value.to_string());
+        }
+        self
+    }
+
     /// Attach a per-domain network policy (#135). When set, HTTP/SSE
     /// transports are gated through it; STDIO transports are unaffected.
     pub fn with_network_policy(mut self, policy: NetworkPolicyDecider) -> Self {
         self.network_policy = Some(policy);
+        self
+    }
+
+    /// Merge global config (~/.deepseek/mcp.json) with workspace config.
+    /// Workspace entries override global entries with the same server name,
+    /// and workspace timeouts override global timeouts.
+    /// Global config is only read when HOME is set and the file exists;
+    /// a missing file is fine, but parse errors are propagated.
+    pub fn from_workspace_config(workspace_config_path: &std::path::Path) -> Result<Self> {
+        let mut merged = if let Some(home) = dirs::home_dir() {
+            let global_path = home.join(".deepseek").join("mcp.json");
+            load_config(&global_path)?
+        } else {
+            McpConfig::default()
+        };
+        let workspace_cfg = load_config(workspace_config_path)?;
+        // workspace overrides global for same-named servers
+        for (name, server) in workspace_cfg.servers {
+            merged.servers.insert(name, server);
+        }
+        // workspace timeouts override global timeouts
+        merged.timeouts = workspace_cfg.timeouts;
+        Ok(Self::new(merged))
+    }
+
+    /// Set the workspace directory, used to inject CONTEXT_MODE_PROJECT_DIR
+    /// for context-mode MCP connections.
+    pub fn with_workspace(mut self, workspace: PathBuf) -> Self {
+        self.workspace_dir = Some(workspace);
         self
     }
 
@@ -1019,12 +1064,22 @@ impl McpPool {
 
         self.connections.remove(server_name);
 
-        let server_config = self
+        let mut server_config = self
             .config
             .servers
             .get(server_name)
             .ok_or_else(|| anyhow::anyhow!("Failed to find MCP server: {server_name}"))?
             .clone();
+
+        // Inject workspace directory for context-mode connections
+        if server_name == "context-mode"
+            && let Some(ref workspace) = self.workspace_dir
+        {
+            server_config
+                .env
+                .entry("CONTEXT_MODE_PROJECT_DIR".to_string())
+                .or_insert_with(|| workspace.display().to_string());
+        }
 
         if !server_config.is_enabled() {
             anyhow::bail!("Failed to connect MCP server '{server_name}': server is disabled");
@@ -2099,7 +2154,78 @@ mod tests {
         let still_alive = unsafe { libc::kill(pid as i32, 0) } == 0;
         assert!(
             !still_alive,
-            "child {pid} survived StdioTransport::shutdown — SIGTERM not delivered"
+            "child {pid} survived StdioTransport::shutdown \u{2014} SIGTERM not delivered"
         );
+    }
+
+    // ── Helper ──────────────────────────────────────────────────────
+
+    fn make_server(command: &str, args: &[&str]) -> McpServerConfig {
+        McpServerConfig {
+            command: Some(command.to_string()),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            env: HashMap::new(),
+            url: None,
+            connect_timeout: None,
+            execute_timeout: None,
+            read_timeout: None,
+            disabled: false,
+            enabled: true,
+            required: false,
+            enabled_tools: Vec::new(),
+            disabled_tools: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_workspace_overrides_global() {
+        // from_workspace_config reads ~/.deepseek/mcp.json which varies per
+        // machine, so this tests the merge logic in isolation.
+
+        let mut global = McpConfig::default();
+        global.servers.insert(
+            "claude-mem".to_string(),
+            make_server("bun", &["global-mem.cjs"]),
+        );
+        global.servers.insert(
+            "shared".to_string(),
+            make_server("node", &["global-shared.js"]),
+        );
+
+        let mut workspace = McpConfig::default();
+        workspace.servers.insert(
+            "context-mode".to_string(),
+            make_server("node", &["workspace-ctx.mjs"]),
+        );
+        workspace.servers.insert(
+            "shared".to_string(),
+            make_server("node", &["workspace-shared.js"]),
+        );
+
+        // Merge (same logic as from_workspace_config)
+        for (name, server) in workspace.servers {
+            global.servers.insert(name, server);
+        }
+
+        assert_eq!(global.servers.len(), 3);
+        assert!(global.servers.contains_key("claude-mem"));
+        assert!(global.servers.contains_key("context-mode"));
+        assert!(global.servers.contains_key("shared"));
+        // workspace override wins
+        assert_eq!(global.servers["shared"].args, vec!["workspace-shared.js"]);
+    }
+
+    #[test]
+    fn test_load_config_parses_minimal_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_config = dir.path().join("mcp.json");
+        std::fs::write(
+            &ws_config,
+            r#"{"servers": {"test": {"command": "echo", "args": ["hi"]}}}"#,
+        )
+        .unwrap();
+
+        let pool = McpPool::from_config_path(&ws_config).unwrap();
+        assert!(pool.config.servers.contains_key("test"));
     }
 }
