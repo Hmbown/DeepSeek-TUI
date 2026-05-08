@@ -526,7 +526,7 @@ pub enum StatusItem {
     Cache,
     /// Context-window utilisation percent ("48%").
     ContextPercent,
-    /// Current git branch name (placeholder until wired).
+    /// Current git branch name.
     GitBranch,
     /// Elapsed time of the most recent tool call (placeholder until wired).
     LastToolElapsed,
@@ -604,7 +604,7 @@ impl StatusItem {
             StatusItem::ReasoningReplay => "thinking tokens replayed each turn",
             StatusItem::Cache => "% of prompt served from cache",
             StatusItem::ContextPercent => "tokens used / model context window",
-            StatusItem::GitBranch => "current branch (placeholder)",
+            StatusItem::GitBranch => "current workspace branch",
             StatusItem::LastToolElapsed => "ms of the most recent tool call (placeholder)",
             StatusItem::RateLimit => "remaining requests in the budget (placeholder)",
         }

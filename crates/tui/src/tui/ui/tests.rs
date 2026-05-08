@@ -3840,6 +3840,27 @@ fn render_footer_from_drops_only_unselected_clusters() {
     );
 }
 
+#[test]
+fn render_footer_from_git_branch_item_renders_workspace_branch() {
+    let repo = init_git_repo();
+    let checkout = Command::new("git")
+        .args(["checkout", "-b", "feature/statusline"])
+        .current_dir(repo.path())
+        .output()
+        .expect("git checkout should run");
+    assert!(
+        checkout.status.success(),
+        "git checkout failed: {}",
+        String::from_utf8_lossy(&checkout.stderr)
+    );
+
+    let mut app = create_test_app();
+    app.workspace = repo.path().to_path_buf();
+
+    let props = render_footer_from(&app, &[crate::config::StatusItem::GitBranch], None);
+    assert_eq!(spans_text(&props.cache), "feature/statusline");
+}
+
 /// Regression for issue #244: visible session spend must not decrease.
 /// Sub-agent token usage events arrive out of order and may be reconciled
 /// later (cache adjustments, provisional → final swap). The displayed total

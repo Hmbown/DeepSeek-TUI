@@ -6872,7 +6872,8 @@ fn render_footer_from(
     for item in items {
         let chip = match *item {
             S::ContextPercent => footer_context_percent_spans(app),
-            S::GitBranch | S::LastToolElapsed | S::RateLimit => Vec::new(),
+            S::GitBranch => footer_git_branch_spans(app),
+            S::LastToolElapsed | S::RateLimit => Vec::new(),
             _ => continue,
         };
         if chip.is_empty() {
@@ -6895,6 +6896,16 @@ fn render_footer_from(
     }
 
     props
+}
+
+fn footer_git_branch_spans(app: &App) -> Vec<Span<'static>> {
+    let Some(branch) = workspace_git_branch(&app.workspace) else {
+        return Vec::new();
+    };
+    vec![Span::styled(
+        branch,
+        Style::default().fg(app.ui_theme.text_muted),
+    )]
 }
 
 /// Spans for the "context %" footer chip. Mirrors the header colour ramp so
