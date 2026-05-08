@@ -14,6 +14,7 @@ pub fn goal(app: &mut App, arg: Option<&str>) -> CommandResult {
             app.goal.auto_continue = false;
             app.goal.prev_pending_count = None;
             app.goal.stuck_streak = 0;
+            app.goal.idle_streak = 0;
             CommandResult::message("Goal cleared.")
         }
         Some("auto") => {
@@ -21,6 +22,7 @@ pub fn goal(app: &mut App, arg: Option<&str>) -> CommandResult {
             app.goal.auto_continue_turn_count = 0;
             app.goal.prev_pending_count = None;
             app.goal.stuck_streak = 0;
+            app.goal.idle_streak = 0;
             let objective_hint = app
                 .goal
                 .goal_objective
@@ -52,6 +54,7 @@ pub fn goal(app: &mut App, arg: Option<&str>) -> CommandResult {
             app.goal.auto_continue_turn_count = 0;
             app.goal.prev_pending_count = None;
             app.goal.stuck_streak = 0;
+            app.goal.idle_streak = 0;
             let budget_str = budget
                 .map(|b| format!(" (budget: {b} tokens)"))
                 .unwrap_or_default();

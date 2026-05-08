@@ -89,7 +89,7 @@ use super::active_cell::ActiveCell;
 use super::app::{
     App, AppAction, AppMode, OnboardingState, QueuedMessage, ReasoningEffort, SidebarFocus,
     StatusToastLevel, SubmitDisposition, TaskPanelEntry, ToolDetailRecord, TuiOptions,
-    MAX_AUTO_CONTINUE_TURNS, STUCK_THRESHOLD,
+    MAX_AUTO_CONTINUE_TURNS, STUCK_THRESHOLD, IDLE_TURN_THRESHOLD,
 };
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
@@ -1060,26 +1060,65 @@ async fn run_event_loop(
                                 };
                                 app.goal.prev_pending_count = Some(incomplete);
 
-                                // Safety: enforce max turn limit.
-                                let turn_limit =
-                                    app.goal.auto_continue_turn_count
-                                        >= MAX_AUTO_CONTINUE_TURNS;
-
-                                let stop_reason: Option<String> = if incomplete == 0 {
-                                    Some("All todos completed".to_string())
-                                } else if budget_exceeded {
-                                    Some("Token budget exhausted".to_string())
-                                } else if stuck {
-                                    Some(format!(
-                                        "No progress after {STUCK_THRESHOLD} turns"
-                                    ))
-                                } else if turn_limit {
-                                    Some(format!(
-                                        "Reached max auto-continue turns ({MAX_AUTO_CONTINUE_TURNS})"
-                                    ))
+                                // Safety: detect idle turns (model
+                                // chatted without using any tools).
+                                let last_turn_had_tools = app
+                                    .api_messages
+                                    .iter()
+                                    .rev()
+                                    .find(|msg| msg.role == "assistant")
+                                    .map(|msg| {
+                                        msg.content.iter().any(|block| {
+                                            matches!(
+                                                block,
+                                                ContentBlock::ToolUse { .. }
+                                            )
+                                        })
+                                    })
+                                    .unwrap_or(false);
+                                if incomplete > 0 && !last_turn_had_tools
+                                {
+                                    app.goal.idle_streak += 1;
                                 } else {
-                                    None
-                                };
+                                    app.goal.idle_streak = 0;
+                                }
+
+                                // Safety: enforce max turn limit (0 =
+                                // unlimited).
+                                let turn_limit =
+                                    MAX_AUTO_CONTINUE_TURNS > 0
+                                        && app.goal.auto_continue_turn_count
+                                            >= MAX_AUTO_CONTINUE_TURNS;
+
+                                let stop_reason: Option<String> =
+                                    if incomplete == 0 {
+                                        Some(
+                                            "All todos completed"
+                                                .to_string(),
+                                        )
+                                    } else if budget_exceeded {
+                                        Some(
+                                            "Token budget exhausted"
+                                                .to_string(),
+                                        )
+                                    } else if stuck {
+                                        Some(format!(
+                                            "No progress after {STUCK_THRESHOLD} turns"
+                                        ))
+                                    } else if app.goal.idle_streak
+                                        >= IDLE_TURN_THRESHOLD
+                                    {
+                                        Some(format!(
+                                            "{} consecutive idle turns (no tool calls)",
+                                            app.goal.idle_streak
+                                        ))
+                                    } else if turn_limit {
+                                        Some(format!(
+                                            "Reached max auto-continue turns ({MAX_AUTO_CONTINUE_TURNS})"
+                                        ))
+                                    } else {
+                                        None
+                                    };
 
                                 if let Some(reason) = stop_reason {
                                     app.status_message = Some(format!(

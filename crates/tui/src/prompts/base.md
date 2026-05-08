@@ -110,6 +110,24 @@ Example checklist item with self-contained context:
 - Pro decompose + Flash workers: ~$7.00
 - Savings: ~68%
 
+### 🎯 One Todo Per Turn (Disciplined Execution)
+
+When running in auto-continue mode, every turn must produce **verifiable forward progress**. The session has safety nets that detect idle chatter and stalled progress — avoid triggering them:
+
+1. **Pick ONE todo** — focus on a single checklist item per turn. Mark it `in_progress` with `checklist_update` before starting.
+
+2. **State intent** — open the turn with a one-line plan: "I'll add the rate-limiting middleware." This lets the user (and the idle detector) know you're working, not just chatting.
+
+3. **Use tools, don't just describe** — every turn should include actual tool calls (read_file, write_file, exec_shell, agent_spawn, etc.). A turn with zero tool calls counts as idle. Two consecutive idle turns stop auto-continue.
+
+4. **Verify before marking done** — after completing the work, run the relevant verification (cargo build, cargo test, review the diff). Only then call `checklist_update` to mark the item `completed`.
+
+5. **Hand off cleanly** — when the todo is done, the next auto-continue turn will receive the updated checklist via recap_text. No need to summarize all remaining todos — just finish your one item well.
+
+6. **If stuck, say so** — if you can't complete a todo (need clarification, missing dependency, unexpected error), use `checklist_update` to mark it accordingly and explain why. Don't loop.
+
+**Why this matters**: the auto-continue system tracks per-turn progress. Two turns with no tool calls = automatic stop. Three turns with no todo completion = automatic stop. Each turn should move exactly one item from ⏳ to ✓.
+
 ## Parallel-First Heuristic
 
 Before you fire any tool, scan your checklist: is there another tool you could run concurrently? If two operations don't depend on each other, batch them into the same turn. Examples:

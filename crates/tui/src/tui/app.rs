@@ -622,13 +622,20 @@ pub struct GoalState {
     pub prev_pending_count: Option<usize>,
     /// How many consecutive turns the pending count has been unchanged.
     pub stuck_streak: u32,
+    /// How many consecutive turns the model produced no tool calls
+    /// (idle chatter instead of doing work).
+    pub idle_streak: u32,
 }
 
 /// Auto-continue stops if the pending todo count hasn't changed for this
 /// many consecutive turns.
 pub const STUCK_THRESHOLD: u32 = 3;
 /// Auto-continue stops after this many turns regardless of progress.
-pub const MAX_AUTO_CONTINUE_TURNS: u32 = 50;
+/// Set to 0 to disable the turn limit entirely.
+pub const MAX_AUTO_CONTINUE_TURNS: u32 = 0;
+/// Auto-continue stops if the model produces this many consecutive turns
+/// with no tool calls (idle chatter instead of work).
+pub const IDLE_TURN_THRESHOLD: u32 = 2;
 
 /// Session cost and token telemetry state.
 #[derive(Debug, Clone)]
