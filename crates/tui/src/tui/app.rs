@@ -616,7 +616,26 @@ pub struct GoalState {
     /// How many auto-continue turns have been dispatched in the current
     /// session. Reset when auto_continue is toggled off.
     pub auto_continue_turn_count: u32,
+    /// Pending todo count from the PREVIOUS auto-continue turn. Used for
+    /// stuck detection: if this value doesn't change for
+    /// STUCK_THRESHOLD consecutive turns, auto-continue stops.
+    pub prev_pending_count: Option<usize>,
+    /// How many consecutive turns the pending count has been unchanged.
+    pub stuck_streak: u32,
+    /// How many consecutive turns the model produced no tool calls
+    /// (idle chatter instead of doing work).
+    pub idle_streak: u32,
 }
+
+/// Auto-continue stops if the pending todo count hasn't changed for this
+/// many consecutive turns.
+pub const STUCK_THRESHOLD: u32 = 3;
+/// Auto-continue stops after this many turns regardless of progress.
+/// Set to 0 to disable the turn limit entirely.
+pub const MAX_AUTO_CONTINUE_TURNS: u32 = 0;
+/// Auto-continue stops if the model produces this many consecutive turns
+/// with no tool calls (idle chatter instead of work).
+pub const IDLE_TURN_THRESHOLD: u32 = 2;
 
 /// Session cost and token telemetry state.
 #[derive(Debug, Clone)]
@@ -3543,6 +3562,129 @@ impl App {
 
     pub fn pop_queued_message(&mut self) -> Option<QueuedMessage> {
         self.queued_messages.pop_front()
+    }
+
+    /// Generate a structured recap of the current session state: goal,
+    /// todos with status, recent transcript summary, and pending work.
+    /// Used by `/recap` and embedded in auto-continue messages so the
+    /// model can re-orient without replaying the full transcript.
+    pub fn recap_text(&self) -> String {
+        let mut lines: Vec<String> = Vec::new();
+
+        // Goal
+        if let Some(ref obj) = self.goal.goal_objective {
+            let elapsed = self
+                .goal
+                .goal_started_at
+                .map(|t| {
+                    let secs = t.elapsed().as_secs();
+                    if secs >= 3600 {
+                        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+                    } else if secs >= 60 {
+                        format!("{}m {}s", secs / 60, secs % 60)
+                    } else {
+                        format!("{}s", secs)
+                    }
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            lines.push(format!("**Goal**: \"{obj}\" — elapsed: {elapsed}"));
+            if let Some(budget) = self.goal.goal_token_budget {
+                let used = self.session.total_conversation_tokens;
+                let pct = if budget > 0 {
+                    (used as f64 / budget as f64 * 100.0).min(100.0)
+                } else {
+                    0.0
+                };
+                lines.push(format!("**Token budget**: {used}/{budget} ({pct:.0}%)"));
+            }
+            let auto = if self.goal.auto_continue {
+                format!(
+                    "on (turn #{})",
+                    self.goal.auto_continue_turn_count
+                )
+            } else {
+                "off".to_string()
+            };
+            lines.push(format!("**Auto-continue**: {auto}"));
+            lines.push(String::new());
+        }
+
+        // Todos
+        if let Ok(todos) = self.todos.try_lock() {
+            let snap = todos.snapshot();
+            if !snap.items.is_empty() {
+                lines.push("### Todos".to_string());
+                for item in &snap.items {
+                    let mark = match item.status {
+                        crate::tools::todo::TodoStatus::Completed => "✓",
+                        crate::tools::todo::TodoStatus::InProgress => "⏳",
+                        crate::tools::todo::TodoStatus::Pending => "○",
+                    };
+                    lines.push(format!("- [{mark}] {}", item.content));
+                }
+                lines.push(String::new());
+            }
+        }
+
+        // Last assistant summary (most recent assistant cell)
+        if let Some(last_assistant) = self
+            .history
+            .iter()
+            .rev()
+            .find(|cell| matches!(cell, HistoryCell::Assistant { .. }))
+        {
+            if let HistoryCell::Assistant { content, .. } = last_assistant {
+                // Truncate to ~500 chars for the recap
+                let summary = if content.len() > 500 {
+                    format!("{}…", &content[..500])
+                } else {
+                    content.clone()
+                };
+                lines.push("### Last Response".to_string());
+                lines.push(summary);
+                lines.push(String::new());
+            }
+        }
+
+        // Active sub-agents
+        let agent_count = crate::tui::subagent_routing::running_agent_count(self);
+        if agent_count > 0 {
+            lines.push(format!("**Active sub-agents**: {agent_count}"));
+            lines.push(String::new());
+        }
+
+        // Auto-continue status
+        if self.goal.auto_continue {
+            let pending = self.pending_todo_count();
+            if pending > 0 {
+                lines.push(format!(
+                    "**Status**: {} todo item(s) remaining. Continue working on them. Use checklist_write to update progress.",
+                    pending
+                ));
+            }
+        }
+
+        lines.join("\n")
+    }
+
+    /// Count pending (non-completed) todo items.
+    pub fn pending_todo_count(&self) -> usize {
+        self.todos
+            .try_lock()
+            .map(|todos| {
+                todos
+                    .snapshot()
+                    .items
+                    .iter()
+                    .filter(|item| {
+                        !matches!(
+                            item.status,
+                            crate::tools::todo::TodoStatus::Completed
+                        )
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
     pub fn remove_queued_message(&mut self, index: usize) -> Option<QueuedMessage> {
