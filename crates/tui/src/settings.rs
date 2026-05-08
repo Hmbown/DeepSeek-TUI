@@ -469,7 +469,7 @@ impl Settings {
 
                 let Some(model) = normalize_default_model(trimmed) else {
                     anyhow::bail!(
-                        "Failed to update setting: invalid model '{value}'. Expected: auto, a DeepSeek model ID (for example deepseek-v4-pro, deepseek-v4-flash), or none/default."
+                        "Failed to update setting: invalid model '{value}'. Expected: auto, a DeepSeek or provider-native model ID, or none/default."
                     );
                 };
                 self.default_model = Some(model);
@@ -582,7 +582,7 @@ impl Settings {
             ("max_history", "Max input history entries"),
             (
                 "default_model",
-                "Default model: auto or any DeepSeek model ID (e.g. deepseek-v4-pro)",
+                "Default model: auto or any DeepSeek/provider-native model ID",
             ),
         ]
     }
@@ -590,11 +590,28 @@ impl Settings {
 
 fn normalize_default_model(value: &str) -> Option<String> {
     let trimmed = value.trim();
-    if trimmed.eq_ignore_ascii_case("auto") {
-        Some("auto".to_string())
-    } else {
-        normalize_model_name(trimmed)
+    if trimmed.is_empty()
+        || matches!(
+            trimmed.to_ascii_lowercase().as_str(),
+            "none" | "default" | "(default)"
+        )
+    {
+        return None;
     }
+    if trimmed.eq_ignore_ascii_case("auto") {
+        return Some("auto".to_string());
+    }
+    if let Some(normalized) = normalize_model_name(trimmed) {
+        return Some(normalized);
+    }
+    is_provider_native_model_id(trimmed).then(|| trimmed.to_string())
+}
+
+fn is_provider_native_model_id(model: &str) -> bool {
+    model.chars().any(|ch| ch.is_ascii_alphanumeric())
+        && model
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '/'))
 }
 
 /// Parse a boolean value from various formats
@@ -781,6 +798,47 @@ mod tests {
             .set("cost_currency", "eur")
             .expect_err("unsupported currency");
         assert!(err.to_string().contains("invalid cost currency"));
+    }
+
+    #[test]
+    fn default_model_accepts_provider_native_ids() {
+        let mut settings = Settings::default();
+
+        settings
+            .set("default_model", " meta/llama-3.1-405b-instruct ")
+            .expect("hosted provider model IDs should persist");
+        assert_eq!(
+            settings.default_model.as_deref(),
+            Some("meta/llama-3.1-405b-instruct")
+        );
+
+        settings
+            .set("default_model", "ft:gpt-4o-mini:org:custom:suffix")
+            .expect("OpenAI-compatible fine-tuned IDs should persist");
+        assert_eq!(
+            settings.default_model.as_deref(),
+            Some("ft:gpt-4o-mini:org:custom:suffix")
+        );
+    }
+
+    #[test]
+    fn default_model_still_normalizes_deepseek_aliases_and_rejects_unsafe_ids() {
+        let mut settings = Settings::default();
+
+        settings
+            .set("default_model", "deepseek-v4pro")
+            .expect("compact DeepSeek alias should normalize");
+        assert_eq!(settings.default_model.as_deref(), Some("deepseek-v4-pro"));
+
+        let err = settings
+            .set("default_model", "meta/llama 3")
+            .expect_err("model IDs with spaces should fail");
+        assert!(err.to_string().contains("invalid model"));
+
+        settings
+            .set("default_model", "default")
+            .expect("default should reset");
+        assert_eq!(settings.default_model, None);
     }
 
     #[test]

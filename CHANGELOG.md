@@ -12,7 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fetches live model IDs from the configured provider, falls back to
   provider-specific defaults when discovery fails, maps short DeepSeek IDs to
   provider-specific IDs for `/model <id>`, and sizes the picker columns to keep
-  long provider model names and thinking-effort labels readable.
+  long provider model names and thinking-effort labels readable. Provider-native
+  IDs selected from a live catalog are now accepted by settings persistence so
+  they survive restart.
 
 ## [0.8.20] - 2026-05-08
 

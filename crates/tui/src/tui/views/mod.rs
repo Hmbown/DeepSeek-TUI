@@ -1020,7 +1020,7 @@ fn config_hint_for_key(key: &str) -> &'static str {
         "sidebar_width" => "10..=50",
         "sidebar_focus" => "auto | plan | todos | tasks | agents",
         "max_history" => "integer (0 allowed)",
-        "default_model" => "deepseek-v4-pro | deepseek-v4-flash | deepseek-* | none/default",
+        "default_model" => "auto | deepseek-v4-pro | provider/model-id | none/default",
         "mcp_config_path" => "path to mcp.json",
         _ => "",
     }

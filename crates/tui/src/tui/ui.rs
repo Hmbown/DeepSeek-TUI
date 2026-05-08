@@ -4063,13 +4063,23 @@ async fn apply_model_picker_choice(
     let mut persist_warning: Option<String> = None;
     match crate::settings::Settings::load() {
         Ok(mut settings) => {
+            let mut settings_changed = false;
             if model_changed {
-                let _ = settings.set("default_model", &model);
+                match settings.set("default_model", &model) {
+                    Ok(()) => settings_changed = true,
+                    Err(err) => persist_warning = Some(format!("(model not persisted: {err})")),
+                }
             }
             if effort_changed {
-                let _ = settings.set("reasoning_effort", effort.as_setting());
+                match settings.set("reasoning_effort", effort.as_setting()) {
+                    Ok(()) => settings_changed = true,
+                    Err(err) if persist_warning.is_none() => {
+                        persist_warning = Some(format!("(thinking not persisted: {err})"));
+                    }
+                    Err(_) => {}
+                }
             }
-            if let Err(err) = settings.save() {
+            if settings_changed && let Err(err) = settings.save() {
                 persist_warning = Some(format!("(not persisted: {err})"));
             }
         }
