@@ -871,22 +871,22 @@ impl ConfigView {
                     .as_ref()
                     .is_some_and(|e| config_enum_values(&e.key).is_some() && !e.dirty) =>
             {
-                if let Some(edit) = self.editing.as_mut() {
-                    if let Some(values) = config_enum_values(&edit.key) {
-                        let current: String = edit.buffer.iter().collect();
-                        let pos = values
-                            .iter()
-                            .position(|v| v.eq_ignore_ascii_case(&current))
-                            .unwrap_or(0);
-                        let next = if key.code == KeyCode::Char('-') {
-                            pos.wrapping_sub(1).rem_euclid(values.len())
-                        } else {
-                            (pos + 1) % values.len()
-                        };
-                        edit.buffer = values[next].chars().collect();
-                        edit.cursor = edit.buffer.len();
-                        edit.select_all = false;
-                    }
+                if let Some(edit) = self.editing.as_mut()
+                    && let Some(values) = config_enum_values(&edit.key)
+                {
+                    let current: String = edit.buffer.iter().collect();
+                    let pos = values
+                        .iter()
+                        .position(|v| v.eq_ignore_ascii_case(&current))
+                        .unwrap_or(0);
+                    let next = if key.code == KeyCode::Char('-') {
+                        pos.wrapping_sub(1).rem_euclid(values.len())
+                    } else {
+                        (pos + 1) % values.len()
+                    };
+                    edit.buffer = values[next].chars().collect();
+                    edit.cursor = edit.buffer.len();
+                    edit.select_all = false;
                 }
                 ViewAction::None
             }
