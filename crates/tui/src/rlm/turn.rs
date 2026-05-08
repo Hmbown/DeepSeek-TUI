@@ -516,6 +516,16 @@ async fn run_rlm_turn_impl(
     final_usage.output_tokens = final_usage
         .output_tokens
         .saturating_add(bridge_usage.output_tokens);
+    final_usage.prompt_cache_hit_tokens = add_opt_usage(
+        final_usage.prompt_cache_hit_tokens,
+        bridge_usage.prompt_cache_hit_tokens,
+    );
+    final_usage.prompt_cache_miss_tokens = add_opt_usage(
+        final_usage.prompt_cache_miss_tokens,
+        bridge_usage.prompt_cache_miss_tokens,
+    );
+    final_usage.reasoning_tokens =
+        add_opt_usage(final_usage.reasoning_tokens, bridge_usage.reasoning_tokens);
     drop(bridge_usage);
 
     repl.shutdown().await;
@@ -529,6 +539,14 @@ async fn run_rlm_turn_impl(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn add_opt_usage(a: Option<u32>, b: Option<u32>) -> Option<u32> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.saturating_add(y)),
+        (Some(x), None) | (None, Some(x)) => Some(x),
+        (None, None) => None,
+    }
+}
 
 fn write_context_file(prompt: &str) -> std::io::Result<PathBuf> {
     let dir = std::env::temp_dir().join("deepseek_rlm_ctx");
