@@ -626,6 +626,11 @@ pub struct GoalState {
     /// How many consecutive turns the model produced no tool calls
     /// (idle chatter instead of doing work).
     pub idle_streak: u32,
+    /// When todos reach zero, we don't stop immediately. Instead we
+    /// send one confirmation turn asking the model whether the goal is
+    /// truly achieved. If the model confirms (no new todos added),
+    /// auto-continue stops. If it adds more todos, we continue.
+    pub completion_confirmation_pending: bool,
 }
 
 impl Default for GoalState {
@@ -639,6 +644,7 @@ impl Default for GoalState {
             prev_pending_count: None,
             stuck_streak: 0,
             idle_streak: 0,
+            completion_confirmation_pending: false,
         }
     }
 }
@@ -646,7 +652,7 @@ impl Default for GoalState {
 impl Serialize for GoalState {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = s.serialize_struct("GoalState", 8)?;
+        let mut state = s.serialize_struct("GoalState", 9)?;
         state.serialize_field("goal_objective", &self.goal_objective)?;
         state.serialize_field("goal_token_budget", &self.goal_token_budget)?;
         // Instant is not serializable; store elapsed seconds instead.
@@ -657,6 +663,7 @@ impl Serialize for GoalState {
         state.serialize_field("prev_pending_count", &self.prev_pending_count)?;
         state.serialize_field("stuck_streak", &self.stuck_streak)?;
         state.serialize_field("idle_streak", &self.idle_streak)?;
+        state.serialize_field("completion_confirmation_pending", &self.completion_confirmation_pending)?;
         state.end()
     }
 }
@@ -677,6 +684,8 @@ impl<'de> Deserialize<'de> for GoalState {
             stuck_streak: u32,
             #[serde(default)]
             idle_streak: u32,
+            #[serde(default)]
+            completion_confirmation_pending: bool,
         }
         let h = Helper::deserialize(d)?;
         Ok(GoalState {
@@ -692,6 +701,7 @@ impl<'de> Deserialize<'de> for GoalState {
             prev_pending_count: h.prev_pending_count,
             stuck_streak: h.stuck_streak,
             idle_streak: h.idle_streak,
+            completion_confirmation_pending: h.completion_confirmation_pending,
         })
     }
 }

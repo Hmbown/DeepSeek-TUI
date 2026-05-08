@@ -1090,12 +1090,34 @@ async fn run_event_loop(
                                         && app.goal.auto_continue_turn_count
                                             >= MAX_AUTO_CONTINUE_TURNS;
 
+                                // When todos reach zero, don't stop
+                                // immediately. Send one confirmation
+                                // turn so the model can decide whether
+                                // the goal is truly achieved or needs
+                                // more checklist items.
                                 let stop_reason: Option<String> =
                                     if incomplete == 0 {
-                                        Some(
-                                            "All todos completed"
-                                                .to_string(),
-                                        )
+                                        if app.goal.completion_confirmation_pending {
+                                            // Model already got a chance
+                                            // to add more todos and
+                                            // didn't — goal is done.
+                                            Some("Goal achieved — all todos completed and confirmed".to_string())
+                                        } else {
+                                            // First time hitting zero:
+                                            // ask for confirmation.
+                                            app.goal.completion_confirmation_pending = true;
+                                            None // Don't stop yet
+                                        }
+                                    } else {
+                                        // Model added more todos — reset
+                                        // confirmation flag.
+                                        app.goal.completion_confirmation_pending = false;
+                                        None
+                                    };
+
+                                let stop_reason: Option<String> =
+                                    if let Some(reason) = stop_reason {
+                                        Some(reason)
                                     } else if budget_exceeded {
                                         Some(
                                             "Token budget exhausted"
@@ -1125,6 +1147,23 @@ async fn run_event_loop(
                                         "Auto-continue finished: {reason}.",
                                     ));
                                     app.goal.auto_continue = false;
+                                    app.goal.completion_confirmation_pending = false;
+                                } else if app.goal.completion_confirmation_pending {
+                                    // All todos done but goal may not
+                                    // be achieved. Ask the model:
+                                    // "Are we done? Add more items
+                                    // if not."
+                                    let msg = format!(
+                                        "All checklist items are completed. Review the goal and recent work below.\n\
+                                         If the goal is achieved, confirm completion. If more work is needed, \
+                                         add new items with checklist_add.\n\n{recap}"
+                                    );
+                                    app.queued_messages.push_back(QueuedMessage::new(msg, None));
+                                    app.goal.auto_continue_turn_count += 1;
+                                    app.status_message = Some(format!(
+                                        "Auto-continue turn #{} — confirming goal completion",
+                                        app.goal.auto_continue_turn_count
+                                    ));
                                 } else {
                                     let msg = format!(
                                         "Continue working on the remaining todo items.\n\n{recap}"
