@@ -622,6 +622,21 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
         );
     }
 
+    // Check for eval/exec as the primary command - these can enable dynamic code execution
+    if let Some(primary) = extract_primary_command(command) {
+        let primary_lower = primary.to_lowercase();
+        if primary_lower == "eval" || primary_lower == "exec" {
+            return SafetyAnalysis::dangerous(
+                command,
+                vec![format!(
+                    "Command uses '{}' which can enable dynamic code execution",
+                    primary_lower
+                )],
+                vec!["Avoid using eval/exec in commands".to_string()],
+            );
+        }
+    }
+
     // Check for dangerous patterns first
     for (pattern, reason) in DANGEROUS_PATTERNS {
         if command_lower.contains(&pattern.to_lowercase()) {
@@ -985,6 +1000,32 @@ mod tests {
             evaluator,
             SafetyLevel::Dangerous,
             "running an evaluator script should not be classified as dangerous"
+        );
+    }
+
+    #[test]
+    fn test_eval_exec_as_primary_command_is_blocked() {
+        // eval and exec as the primary command should be blocked
+        // because they can enable dynamic code execution
+        assert_eq!(
+            analyze_command("eval $USER_INPUT").level,
+            SafetyLevel::Dangerous,
+            "eval as primary command should be blocked"
+        );
+        assert_eq!(
+            analyze_command("exec bash -c 'rm -rf /'").level,
+            SafetyLevel::Dangerous,
+            "exec as primary command should be blocked"
+        );
+        assert_eq!(
+            analyze_command("exec>file").level,
+            SafetyLevel::Dangerous,
+            "exec with redirection should be blocked"
+        );
+        assert_eq!(
+            analyze_command("EXEC ./script.sh").level,
+            SafetyLevel::Dangerous,
+            "EXEC uppercase should also be blocked"
         );
     }
 
