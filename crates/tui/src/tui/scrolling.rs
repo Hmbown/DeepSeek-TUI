@@ -227,7 +227,7 @@ impl MouseScrollState {
             .is_some_and(|last| now.duration_since(last) < Duration::from_millis(35));
         self.last_event_at = Some(now);
 
-        let lines_per_tick = if is_trackpad { 1 } else { 6 };
+        let lines_per_tick = if is_trackpad { 1 } else { 4 };
         self.pending_lines += direction.sign() * lines_per_tick;
 
         let delta = self.pending_lines;
