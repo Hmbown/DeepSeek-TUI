@@ -282,7 +282,7 @@ deepseek resume <SESSION_ID>                     # resume a specific session by 
 deepseek fork <SESSION_ID>                       # fork a session at a chosen turn
 deepseek serve --http                            # HTTP/SSE API server
 deepseek serve --acp                             # ACP stdio adapter for Zed/custom agents
-deepseek pr <N>                                  # fetch PR and pre-seed review prompt
+deepseek run pr <N>                              # fetch PR and pre-seed review prompt
 deepseek mcp list                                # list configured MCP servers
 deepseek mcp validate                            # validate MCP config/connectivity
 deepseek mcp-server                              # run dispatcher MCP stdio server
