@@ -130,9 +130,9 @@ const UI_ACTIVE_POLL_MS: u64 = 24;
 const WEB_CONFIG_POLL_MS: u64 = 16;
 const DISPATCH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
 // Forced repaint cadence while a turn is live (model loading, compacting,
-// sub-agents running). Drives the footer water-spout animation as well as
-// the per-tool spinner pulse — keep this fast enough that the spout reads as
-// motion (~12 fps) instead of teleport-frames.
+// sub-agents running). Drives the per-tool spinner pulse — keep this fast
+// enough that the spinner reads as motion (~12 fps) instead of
+// teleport-frames.
 const UI_STATUS_ANIMATION_MS: u64 = 80;
 const WORKSPACE_CONTEXT_REFRESH_SECS: u64 = 15;
 const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 100;
@@ -6567,13 +6567,6 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
             .unwrap_or_else(|| crate::tui::widgets::footer_working_label(dot_frame, app.ui_locale));
         props.state_color = palette::DEEPSEEK_SKY;
 
-        // Spout drift: only animate when low_motion is off. The textual
-        // `working...` pulse stays even in low-motion mode so the user still
-        // sees that something is happening.
-        if !app.low_motion {
-            let strip_frame = now_ms;
-            props.working_strip_frame = Some(strip_frame);
-        }
     } else if props.state_label == "ready"
         && let Some(label) = selected_detail_footer_label(app)
     {

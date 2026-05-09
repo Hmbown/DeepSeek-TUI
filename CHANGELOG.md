@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Footer water-spout animation removed (#1315)** — the animated Unicode block-
+  character wave in the footer spacer has been removed. The gap between the left
+  status line and right-hand chips is now plain whitespace. The ASCII dot-pulse
+  `working...` text label on the left side is retained as the sole in-flight
+  status indicator. Thanks **FuDesign2008**.
+
 ## [0.8.24] - 2026-05-09
 
 A bugfix + refactor release picking up the backlog after the v0.8.23 security
