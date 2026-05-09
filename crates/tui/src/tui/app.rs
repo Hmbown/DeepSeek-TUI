@@ -1169,6 +1169,7 @@ impl App {
             .provider_models
             .as_ref()
             .and_then(|m| m.get(provider.as_str()).cloned())
+            .or(settings.default_model.clone())
             .unwrap_or(model);
         let auto_model = model.trim().eq_ignore_ascii_case("auto");
         let threshold_model = if auto_model {
