@@ -64,23 +64,33 @@ pub struct ModelPickerView {
     /// True when the active model is one we don't list — we still show it
     /// so the picker doesn't quietly forget the user's chosen IDs.
     show_custom_model_row: bool,
+    /// When true, hide DeepSeek-specific model rows (pass-through providers
+    /// like openai don't support them).
+    hide_deepseek_models: bool,
 }
 
 impl ModelPickerView {
     #[must_use]
     pub fn new(app: &App) -> Self {
+        let hide_deepseek_models =
+            crate::config::provider_passes_model_through(app.api_provider);
         let initial_model = if app.auto_model {
             "auto".to_string()
         } else {
             app.model.clone()
         };
-        let mut selected_model_idx = PICKER_MODELS
+        // On pass-through providers, only show "auto" and the custom row.
+        let visible_models: Vec<&str> = if hide_deepseek_models {
+            vec!["auto"]
+        } else {
+            PICKER_MODELS.iter().map(|(id, _)| *id).collect()
+        };
+        let mut selected_model_idx = visible_models
             .iter()
-            .position(|(id, _)| *id == initial_model);
+            .position(|id| *id == initial_model);
         let show_custom_model_row = selected_model_idx.is_none();
         if show_custom_model_row {
-            // Custom row sits at the end; precompute its index.
-            selected_model_idx = Some(PICKER_MODELS.len());
+            selected_model_idx = Some(visible_models.len());
         }
         let selected_model_idx = selected_model_idx.unwrap_or(0);
 
@@ -102,21 +112,33 @@ impl ModelPickerView {
             selected_effort_idx,
             focus: Pane::Model,
             show_custom_model_row,
+            hide_deepseek_models,
+        }
+    }
+
+    fn visible_model_ids(&self) -> Vec<&'static str> {
+        if self.hide_deepseek_models {
+            vec!["auto"]
+        } else {
+            PICKER_MODELS.iter().map(|(id, _)| *id).collect()
         }
     }
 
     fn model_row_count(&self) -> usize {
-        PICKER_MODELS.len() + if self.show_custom_model_row { 1 } else { 0 }
+        self.visible_model_ids().len() + if self.show_custom_model_row { 1 } else { 0 }
     }
 
     /// Resolve the currently highlighted model row to a model id. If the
     /// custom row is selected we return the original model from the App so
     /// "Apply" doesn't blow away an unrecognised id.
     fn resolved_model(&self) -> String {
-        if self.show_custom_model_row && self.selected_model_idx == PICKER_MODELS.len() {
+        let visible = self.visible_model_ids();
+        if self.show_custom_model_row && self.selected_model_idx == visible.len() {
             self.initial_model.clone()
+        } else if self.selected_model_idx < visible.len() {
+            visible[self.selected_model_idx].to_string()
         } else {
-            PICKER_MODELS[self.selected_model_idx].0.to_string()
+            self.initial_model.clone()
         }
     }
 
@@ -305,10 +327,14 @@ impl ModalView for ModelPickerView {
             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
             .split(inner);
 
-        let mut model_rows: Vec<(String, String)> = PICKER_MODELS
-            .iter()
-            .map(|(id, hint)| ((*id).to_string(), (*hint).to_string()))
-            .collect();
+        let mut model_rows: Vec<(String, String)> = if self.hide_deepseek_models {
+            vec![("auto".to_string(), "select per turn".to_string())]
+        } else {
+            PICKER_MODELS
+                .iter()
+                .map(|(id, hint)| ((*id).to_string(), (*hint).to_string()))
+                .collect()
+        };
         if self.show_custom_model_row {
             model_rows.push((self.initial_model.clone(), "current (custom)".to_string()));
         }

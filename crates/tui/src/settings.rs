@@ -211,8 +211,13 @@ pub struct Settings {
     pub cost_currency: String,
     /// Maximum number of input history entries to save
     pub max_input_history: usize,
+    /// Default provider override (e.g. "deepseek", "openai").
+    pub default_provider: Option<String>,
     /// Default model to use
     pub default_model: Option<String>,
+    /// Per-provider model overrides. Key is provider name (e.g. "openai"),
+    /// value is the model id. Takes precedence over `default_model`.
+    pub provider_models: Option<std::collections::HashMap<String, String>>,
 }
 
 impl Default for Settings {
@@ -247,7 +252,9 @@ impl Default for Settings {
             context_panel: false,
             cost_currency: "usd".to_string(),
             max_input_history: 100,
+            default_provider: None,
             default_model: None,
+            provider_models: None,
         }
     }
 }
@@ -585,6 +592,13 @@ impl Settings {
                 "Default model: auto or any DeepSeek model ID (e.g. deepseek-v4-pro)",
             ),
         ]
+    }
+
+    /// Persist the model for a specific provider.
+    pub fn set_model_for_provider(&mut self, provider: &str, model: &str) {
+        self.provider_models
+            .get_or_insert_with(std::collections::HashMap::new)
+            .insert(provider.to_string(), model.to_string());
     }
 }
 

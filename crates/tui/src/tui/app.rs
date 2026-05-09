@@ -1123,13 +1123,20 @@ impl App {
             initial_input,
         } = options;
 
-        let provider = config.api_provider();
+        let mut provider = config.api_provider();
 
         // Check if API key exists
         let needs_api_key = !has_api_key(config);
         let api_key_env_only = crate::config::active_provider_uses_env_only_api_key(config);
         let was_onboarded = crate::tui::onboarding::is_onboarded();
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
+
+        // Let settings override the config provider so runtime switches survive restarts.
+        if let Some(ref provider_str) = settings.default_provider {
+            if let Some(parsed) = ApiProvider::parse(provider_str) {
+                provider = parsed;
+            }
+        }
         let auto_compact = settings.auto_compact;
         let calm_mode = settings.calm_mode;
         let low_motion = settings.low_motion;
@@ -1158,7 +1165,11 @@ impl App {
         {
             ui_theme = ui_theme.with_background_color(background);
         }
-        let model = settings.default_model.clone().unwrap_or(model);
+        let model = settings
+            .provider_models
+            .as_ref()
+            .and_then(|m| m.get(provider.as_str()).cloned())
+            .unwrap_or(model);
         let auto_model = model.trim().eq_ignore_ascii_case("auto");
         let threshold_model = if auto_model {
             DEFAULT_TEXT_MODEL
