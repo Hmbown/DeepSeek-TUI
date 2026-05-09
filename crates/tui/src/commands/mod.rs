@@ -720,6 +720,13 @@ pub fn get_command_info(name: &str) -> Option<&'static CommandInfo> {
 /// Get all command names matching a prefix, including both built-in
 /// static commands and user-defined commands, formatted as `/name`.
 pub fn all_command_names_matching(prefix: &str) -> Vec<String> {
+    all_command_names_matching_for_workspace(prefix, None)
+}
+
+pub fn all_command_names_matching_for_workspace(
+    prefix: &str,
+    workspace: Option<&std::path::Path>,
+) -> Vec<String> {
     let prefix = prefix.strip_prefix('/').unwrap_or(prefix).to_lowercase();
     let mut result: Vec<String> = COMMANDS
         .iter()
@@ -730,7 +737,9 @@ pub fn all_command_names_matching(prefix: &str) -> Vec<String> {
         .collect();
 
     // Add user-defined commands
-    result.extend(user_commands::user_commands_matching(&prefix));
+    result.extend(user_commands::user_commands_matching_for_workspace(
+        &prefix, workspace,
+    ));
 
     result.sort();
     result.dedup();
