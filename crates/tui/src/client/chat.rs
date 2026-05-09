@@ -1082,8 +1082,7 @@ fn build_chat_messages_with_reasoning(
             // Tool-call messages with empty thinking still need a placeholder
             // (DeepSeek 400s without it), but text-only assistant messages
             // simply omit the field when there's nothing to replay.
-            let mut has_reasoning =
-                include_reasoning && !reasoning_content.trim().is_empty();
+            let mut has_reasoning = include_reasoning && !reasoning_content.trim().is_empty();
             if include_reasoning && has_tool_calls && !has_reasoning {
                 logging::warn(
                     "Substituting placeholder reasoning_content for DeepSeek tool-call assistant message",
