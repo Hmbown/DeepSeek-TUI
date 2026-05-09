@@ -31,8 +31,11 @@ fn format_resume_hint_omits_missing_session_id() {
 }
 
 #[test]
-fn focus_gained_forces_terminal_viewport_recapture() {
-    assert!(terminal_event_needs_viewport_recapture(&Event::FocusGained));
+fn focus_gained_forces_terminal_viewport_recapture_only_where_enabled() {
+    assert_eq!(
+        terminal_event_needs_viewport_recapture(&Event::FocusGained),
+        cfg!(target_os = "macos")
+    );
     assert!(!terminal_event_needs_viewport_recapture(&Event::FocusLost));
 }
 

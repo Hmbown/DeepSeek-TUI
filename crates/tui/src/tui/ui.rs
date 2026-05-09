@@ -214,10 +214,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     if use_bracketed_paste {
         execute!(stdout, EnableBracketedPaste)?;
     }
-    // Enable focus events so the terminal reports FocusGained/FocusLost.
-    // Necessary for IME compositor re-activation on macOS when the user
-    // switches away (Cmd+Tab) and returns.
-    execute!(stdout, EnableFocusChange)?;
+    enable_focus_change_if_supported(&mut stdout)?;
     // #442: opt into the Kitty keyboard protocol's escape-code
     // disambiguation so terminals that support it (Kitty, Ghostty,
     // Alacritty 0.13+, WezTerm, recent Konsole, recent xterm) report
@@ -417,7 +414,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     persistence_actor::persist(PersistRequest::Shutdown);
 
     let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
-    execute!(terminal.backend_mut(), DisableFocusChange)?;
+    disable_focus_change_if_supported(terminal.backend_mut())?;
     disable_raw_mode()?;
     if use_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -6381,7 +6378,7 @@ fn pause_terminal(
     // mode. Best-effort — terminals that didn't accept the flags
     // silently ignore the pop. Matches the shutdown and panic paths.
     let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
-    execute!(terminal.backend_mut(), DisableFocusChange)?;
+    disable_focus_change_if_supported(terminal.backend_mut())?;
     disable_raw_mode()?;
     if use_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -6411,7 +6408,7 @@ fn resume_terminal(
     if use_bracketed_paste {
         execute!(terminal.backend_mut(), EnableBracketedPaste)?;
     }
-    execute!(terminal.backend_mut(), EnableFocusChange)?;
+    enable_focus_change_if_supported(terminal.backend_mut())?;
     push_keyboard_enhancement_flags(terminal.backend_mut());
     reset_terminal_viewport(terminal)?;
     Ok(())
@@ -6443,8 +6440,30 @@ fn push_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
     }
 }
 
+fn should_enable_focus_change_events() -> bool {
+    cfg!(target_os = "macos")
+}
+
+fn enable_focus_change_if_supported<W: Write>(writer: &mut W) -> Result<()> {
+    if should_enable_focus_change_events() {
+        // Necessary for IME compositor re-activation on macOS when the user
+        // switches away (Cmd+Tab) and returns. Keep this platform-gated:
+        // Windows terminals can emit repeated FocusGained events during
+        // startup/onboarding, and each recapture path clears the viewport.
+        execute!(writer, EnableFocusChange)?;
+    }
+    Ok(())
+}
+
+fn disable_focus_change_if_supported<W: Write>(writer: &mut W) -> Result<()> {
+    if should_enable_focus_change_events() {
+        execute!(writer, DisableFocusChange)?;
+    }
+    Ok(())
+}
+
 fn terminal_event_needs_viewport_recapture(evt: &Event) -> bool {
-    matches!(evt, Event::FocusGained)
+    should_enable_focus_change_events() && matches!(evt, Event::FocusGained)
 }
 
 fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
