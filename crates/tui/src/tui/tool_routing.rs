@@ -173,7 +173,10 @@ pub(super) fn handle_tool_call_started(
                 summary,
                 status: ToolStatus::Running,
                 error: None,
-                output: None,
+                diff: input
+                    .get("patch")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
             })),
         );
         return;
@@ -490,13 +493,41 @@ pub(super) fn handle_tool_call_complete(
                 patch.status = status;
                 match result.as_ref() {
                     Ok(tool_result) => {
-                        // Store full output for diff rendering.
-                        patch.output = Some(tool_result.content.clone());
                         if let Ok(json) =
                             serde_json::from_str::<serde_json::Value>(&tool_result.content)
                             && let Some(message) = json.get("message").and_then(|v| v.as_str())
                         {
                             patch.summary = message.to_string();
+                        }
+                        // Replace input patch with actual git diff of
+                        // touched files when available.
+                        if let Some(touched) = serde_json::from_str::<serde_json::Value>(
+                            &tool_result.content,
+                        )
+                        .ok()
+                        .and_then(|j| j.get("touched_files").cloned())
+                        .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+                        .filter(|files| !files.is_empty())
+                        {
+                            let mut diffs = String::new();
+                            for file in &touched {
+                                if let Ok(diff) =
+                                    std::process::Command::new("git")
+                                        .args(["diff", "--", file])
+                                        .output()
+                                {
+                                    let text = String::from_utf8_lossy(&diff.stdout);
+                                    if !text.is_empty() {
+                                        if !diffs.is_empty() {
+                                            diffs.push('\n');
+                                        }
+                                        diffs.push_str(&text);
+                                    }
+                                }
+                            }
+                            if !diffs.is_empty() {
+                                patch.diff = Some(diffs);
+                            }
                         }
                     }
                     Err(err) => {

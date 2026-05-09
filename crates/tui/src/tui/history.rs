@@ -860,9 +860,9 @@ pub struct PatchSummaryCell {
     pub summary: String,
     pub status: ToolStatus,
     pub error: Option<String>,
-    /// Full tool output, used for diff rendering when it contains
-    /// a unified diff payload (e.g. from `apply_patch`).
-    pub output: Option<String>,
+    /// Unified diff content for inline rendering — extracted from
+    /// the patch input or tool result by the routing layer.
+    pub diff: Option<String>,
 }
 
 impl PatchSummaryCell {
@@ -882,12 +882,12 @@ impl PatchSummaryCell {
             low_motion,
         ));
 
-        // If the output contains a unified diff, render it inline
-        // matching Claude Code's update/patch display style.
-        if let Some(ref output) = self.output
-            && output_looks_like_diff(output)
+        // If we have a unified diff, render it inline matching
+        // Claude Code's update/patch display style.
+        if let Some(ref diff) = self.diff
+            && output_looks_like_diff(diff)
         {
-            let diff_summary = diff_render::diff_summary_label(output);
+            let diff_summary = diff_render::diff_summary_label(diff);
             lines.push(render_tool_header_with_summary(
                 "Diff",
                 diff_summary.as_deref(),
@@ -896,7 +896,7 @@ impl PatchSummaryCell {
                 None,
                 low_motion,
             ));
-            lines.extend(diff_render::render_diff(output, width));
+            lines.extend(diff_render::render_diff(diff, width));
         } else {
             lines.extend(render_compact_kv(
                 "file",
