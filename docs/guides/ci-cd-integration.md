@@ -310,10 +310,16 @@ git commit -q -m "initial" --allow-empty
 
 ### 2. Sync Skills
 
-If skills were installed at build time as root, copy them to the runtime user:
+If skills were installed at build time as root and the container runs as a
+different user, copy them to the runtime user's home. Skip this step if running
+as root (source and destination are identical):
 
 ```bash
-cp -r /root/.agents/skills ~/.agents/skills
+# Only needed when runtime user != root
+if [ "$(id -u)" -ne 0 ] && [ -d /root/.agents/skills ]; then
+  mkdir -p ~/.agents/skills
+  cp -r /root/.agents/skills/* ~/.agents/skills/
+fi
 ```
 
 ### 3. Write Config
