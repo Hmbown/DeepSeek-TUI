@@ -188,7 +188,6 @@ fn selection_to_text_copies_rendered_transcript_block() {
             content: "copy thinking".to_string(),
             streaming: false,
             duration_secs: Some(1.0),
-            expanded: false,
         },
         HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
             name: "exec_shell".to_string(),
@@ -3439,7 +3438,6 @@ fn new_thinking_block_drains_pending_tail_from_previous_block() {
     assert!(matches!(
         active.entries()[second_idx],
         HistoryCell::Thinking {
-            streaming: true,
             ..
         }
     ));
