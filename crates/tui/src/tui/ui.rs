@@ -1046,8 +1046,28 @@ async fn run_event_loop(
                                     });
 
                                 // Safety: detect stuck state (no progress
-                                // after N consecutive turns).
-                                let stuck = if let Some(prev) =
+                                // after N consecutive turns). Skip if any
+                                // todo is in_progress — the model IS
+                                // actively working on something.
+                                let has_in_progress = app
+                                    .todos
+                                    .try_lock()
+                                    .map(|todos| {
+                                        todos.snapshot().items.iter().any(
+                                            |item| {
+                                                matches!(
+                                                    item.status,
+                                                    crate::tools::todo::TodoStatus::InProgress
+                                                )
+                                            },
+                                        )
+                                    })
+                                    .unwrap_or(false);
+                                let stuck = if has_in_progress {
+                                    // Model is working — reset streak.
+                                    app.goal.stuck_streak = 0;
+                                    false
+                                } else if let Some(prev) =
                                     app.goal.prev_pending_count
                                     && prev == incomplete
                                 {
@@ -1143,9 +1163,16 @@ async fn run_event_loop(
                                     };
 
                                 if let Some(reason) = stop_reason {
-                                    app.status_message = Some(format!(
+                                    let status = format!(
                                         "Auto-continue finished: {reason}.",
-                                    ));
+                                    );
+                                    app.status_message = Some(status.clone());
+                                    // Also push the stop reason into the
+                                    // transcript so the user can see why.
+                                    app.history.push(HistoryCell::System {
+                                        content: format!("⏹ {status}"),
+                                    });
+                                    app.mark_history_updated();
                                     app.goal.auto_continue = false;
                                     app.goal.completion_confirmation_pending = false;
                                 } else if app.goal.completion_confirmation_pending {

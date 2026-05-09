@@ -717,13 +717,13 @@ impl<'de> Deserialize<'de> for GoalState {
 
 /// Auto-continue stops if the pending todo count hasn't changed for this
 /// many consecutive turns.
-pub const STUCK_THRESHOLD: u32 = 3;
+pub const STUCK_THRESHOLD: u32 = 5;
 /// Auto-continue stops after this many turns regardless of progress.
 /// Set to 0 to disable the turn limit entirely.
 pub const MAX_AUTO_CONTINUE_TURNS: u32 = 0;
 /// Auto-continue stops if the model produces this many consecutive turns
 /// with no tool calls (idle chatter instead of work).
-pub const IDLE_TURN_THRESHOLD: u32 = 2;
+pub const IDLE_TURN_THRESHOLD: u32 = 3;
 
 /// Session cost and token telemetry state.
 #[derive(Debug, Clone)]
