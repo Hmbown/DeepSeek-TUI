@@ -3695,18 +3695,28 @@ impl App {
     }
 
     pub fn clear_todos(&mut self) -> bool {
-        // Clear the todo list (the sidebar checklist). Uses try_lock so the
-        // UI thread doesn't block if the engine briefly holds the mutex
-        // during tool execution; the caller can retry or show a busy message.
-        let todos_cleared = if let Ok(mut todos) = self.todos.try_lock() {
-            todos.clear();
-            true
-        } else {
-            false
+        // Clear the todo list (the sidebar checklist). Retry with try_lock
+        // so /clear always resets todos even when the engine briefly holds
+        // the mutex during tool execution.
+        let todos_cleared = {
+            let mut cleared = false;
+            for _ in 0..100 {
+                if let Ok(mut todos) = self.todos.try_lock() {
+                    todos.clear();
+                    cleared = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            cleared
         };
         // Also clear the plan state — /clear means a full reset.
-        if let Ok(mut plan) = self.plan_state.try_lock() {
-            *plan = crate::tools::plan::PlanState::default();
+        for _ in 0..100 {
+            if let Ok(mut plan) = self.plan_state.try_lock() {
+                *plan = crate::tools::plan::PlanState::default();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         todos_cleared
     }
@@ -3911,6 +3921,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
+    use crate::tools::todo::TodoStatus;
     use crate::tui::clipboard::PastedImage;
 
     fn test_options(yolo: bool) -> TuiOptions {
@@ -4059,6 +4070,24 @@ mod tests {
         let app = App::new(test_options(false), &Config::default());
         assert!(app.history.is_empty());
         assert_eq!(app.history_version, 0);
+    }
+
+    #[test]
+    fn clear_todos_resets_todos_list() {
+        let mut app = App::new(test_options(false), &Config::default());
+
+        // Seed some todos.
+        {
+            let mut todos = app.todos.try_lock().expect("todos lock");
+            todos.add("buy milk".to_string(), TodoStatus::Pending);
+            todos.add("write code".to_string(), TodoStatus::InProgress);
+            assert_eq!(todos.snapshot().items.len(), 2);
+        }
+
+        assert!(app.clear_todos());
+
+        let todos = app.todos.try_lock().expect("todos lock");
+        assert!(todos.snapshot().items.is_empty());
     }
 
     #[test]
