@@ -598,22 +598,6 @@ pub enum ToolCell {
 }
 
 impl ToolCell {
-    /// Return the current status of this tool cell.
-    pub fn status(&self) -> ToolStatus {
-        match self {
-            ToolCell::Exec(cell) => cell.status,
-            ToolCell::Exploring(_) => ToolStatus::Success,
-            ToolCell::PlanUpdate(_) => ToolStatus::Success,
-            ToolCell::PatchSummary(cell) => cell.status,
-            ToolCell::Review(cell) => cell.status,
-            ToolCell::DiffPreview(_) => ToolStatus::Success,
-            ToolCell::Mcp(cell) => cell.status,
-            ToolCell::ViewImage(_) => ToolStatus::Success,
-            ToolCell::WebSearch(_) => ToolStatus::Success,
-            ToolCell::Generic(cell) => cell.status,
-        }
-    }
-
     /// Render the tool cell into lines.
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
         self.lines_with_motion(width, false)
