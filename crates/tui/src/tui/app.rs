@@ -3694,6 +3694,9 @@ impl App {
     pub fn clear_todos(&mut self) -> bool {
         if let Ok(mut plan) = self.plan_state.try_lock() {
             *plan = crate::tools::plan::PlanState::default();
+            if let Ok(mut todos) = self.todos.try_lock() {
+                todos.clear();
+            }
             return true;
         }
         false
@@ -4074,6 +4077,31 @@ mod tests {
             .try_lock()
             .expect("plan lock should be available");
         assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn clear_todos_resets_todo_list() {
+        use crate::tools::todo::TodoStatus;
+
+        let mut app = App::new(test_options(false), &Config::default());
+
+        {
+            let mut todos = app
+                .todos
+                .try_lock()
+                .expect("todos lock should be available");
+            todos.add("task one".to_string(), TodoStatus::Pending);
+            todos.add("task two".to_string(), TodoStatus::InProgress);
+            assert_eq!(todos.snapshot().items.len(), 2);
+        }
+
+        assert!(app.clear_todos());
+
+        let todos = app
+            .todos
+            .try_lock()
+            .expect("todos lock should be available");
+        assert!(todos.snapshot().items.is_empty());
     }
 
     #[test]
