@@ -3692,11 +3692,16 @@ impl App {
     }
 
     pub fn clear_todos(&mut self) -> bool {
+        let mut cleared = false;
         if let Ok(mut plan) = self.plan_state.try_lock() {
             *plan = crate::tools::plan::PlanState::default();
-            return true;
+            cleared = true;
         }
-        false
+        if let Ok(mut todos) = self.todos.try_lock() {
+            todos.clear();
+            cleared = true;
+        }
+        cleared
     }
 
     pub fn update_model_compaction_budget(&mut self) {
@@ -4049,7 +4054,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_todos_resets_plan_state() {
+    fn clear_todos_resets_plan_and_todo_state() {
         let mut app = App::new(test_options(false), &Config::default());
 
         {
@@ -4066,6 +4071,17 @@ mod tests {
             });
             assert!(!plan.is_empty());
         }
+        {
+            let mut todos = app
+                .todos
+                .try_lock()
+                .expect("todo lock should be available");
+            todos.add(
+                "test todo".to_string(),
+                crate::tools::todo::TodoStatus::Pending,
+            );
+            assert!(!todos.snapshot().items.is_empty());
+        }
 
         assert!(app.clear_todos());
 
@@ -4074,6 +4090,11 @@ mod tests {
             .try_lock()
             .expect("plan lock should be available");
         assert!(plan.is_empty());
+        let todos = app
+            .todos
+            .try_lock()
+            .expect("todo lock should be available");
+        assert!(todos.snapshot().items.is_empty());
     }
 
     #[test]
