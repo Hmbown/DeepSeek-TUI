@@ -3694,6 +3694,12 @@ impl App {
                 "off".to_string()
             };
             lines.push(format!("**Auto-continue**: {auto}"));
+            if self.goal.goal_context.is_some() {
+                lines.push(
+                    "**Goal context**: captured — use /goal context to view"
+                        .to_string(),
+                );
+            }
             lines.push(String::new());
         }
 

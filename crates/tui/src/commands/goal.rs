@@ -36,6 +36,16 @@ pub fn goal(app: &mut App, arg: Option<&str>) -> CommandResult {
                  until all checklist items are completed. Use /goal stop to disable."
             ))
         }
+        Some("context") | Some("ctx") => {
+            match &app.goal.goal_context {
+                Some(ctx) => CommandResult::message(format!(
+                    "Goal Context:\n\n{ctx}"
+                )),
+                None => CommandResult::message(
+                    "No goal context. Set a goal with /goal <objective> to capture context."
+                ),
+            }
+        }
         Some("stop") => {
             app.goal.auto_continue = false;
             let turn_count = app.goal.auto_continue_turn_count;
@@ -104,8 +114,13 @@ pub fn goal(app: &mut App, arg: Option<&str>) -> CommandResult {
                 } else {
                     String::new()
                 };
+                let context_hint = if app.goal.goal_context.is_some() {
+                    "\n/goal context — view the full goal context snapshot"
+                } else {
+                    ""
+                };
                 CommandResult::message(format!(
-                    "Goal: \"{obj}\" — elapsed: {elapsed}{budget_str}{auto_str}"
+                    "Goal: \"{obj}\" — elapsed: {elapsed}{budget_str}{auto_str}{context_hint}"
                 ))
             } else {
                 CommandResult::message(
