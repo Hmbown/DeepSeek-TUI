@@ -1893,6 +1893,9 @@ fn apply_env_overrides(config: &mut Config) {
     }
     if let Ok(value) = std::env::var("DEEPSEEK_BASE_URL") {
         match config.api_provider() {
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+                config.base_url = Some(value);
+            }
             ApiProvider::NvidiaNim => {
                 config
                     .providers
@@ -1907,8 +1910,47 @@ fn apply_env_overrides(config: &mut Config) {
                     .openai
                     .base_url = Some(value);
             }
-            _ => {
-                config.base_url = Some(value);
+            ApiProvider::Openrouter => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .openrouter
+                    .base_url = Some(value);
+            }
+            ApiProvider::Novita => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .novita
+                    .base_url = Some(value);
+            }
+            ApiProvider::Fireworks => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .fireworks
+                    .base_url = Some(value);
+            }
+            ApiProvider::Sglang => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .sglang
+                    .base_url = Some(value);
+            }
+            ApiProvider::Vllm => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .vllm
+                    .base_url = Some(value);
+            }
+            ApiProvider::Ollama => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .ollama
+                    .base_url = Some(value);
             }
         }
     }
@@ -4729,6 +4771,41 @@ model = "qwen2.5-coder:7b"
         assert_eq!(config.api_provider(), ApiProvider::Ollama);
         assert_eq!(config.default_model(), "qwen2.5-coder:7b");
         assert_eq!(config.deepseek_base_url(), "http://127.0.0.1:11434/v1");
+        Ok(())
+    }
+
+    #[test]
+    fn deepseek_base_url_env_scopes_to_self_hosted_providers() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-self-hosted-base-url-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "ollama");
+            env::set_var("DEEPSEEK_BASE_URL", "http://ollama.remote:11434/v1");
+        }
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Ollama);
+        assert_eq!(config.deepseek_base_url(), "http://ollama.remote:11434/v1");
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "vllm");
+            env::set_var("DEEPSEEK_BASE_URL", "http://vllm.remote:8000/v1");
+        }
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Vllm);
+        assert_eq!(config.deepseek_base_url(), "http://vllm.remote:8000/v1");
         Ok(())
     }
 
