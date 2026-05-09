@@ -1378,7 +1378,7 @@ impl GenericToolCell {
         // `checklist_update` always do on a successful match — render
         // only the changed item plus a `M/N · pct%` summary instead of
         // dumping the full list every time. The full list is still
-        // reachable via Alt+V on the tool detail record. This keeps the
+        // reachable via (ctrl+o) on the tool detail record. This keeps the
         // transcript scannable in long sessions.
         if matches!(mode, RenderMode::Live)
             && let Some(change) = parse_update_prefix(output)
@@ -1578,7 +1578,7 @@ fn parse_update_prefix(output: &str) -> Option<ChecklistChange> {
 /// Render a compact one-line state-change card for `todo_update` /
 /// `checklist_update` calls (#403). Shows the changed item's marker,
 /// title, and old → new status, with a `M/N · pct%` progress summary
-/// in the header. The full list is still available via Alt+V on the
+/// in the header. The full list is still available via (ctrl+o) on the
 /// detail record.
 fn render_checklist_change_card(
     name: &str,
@@ -1648,7 +1648,7 @@ fn render_checklist_change_card(
     lines.push(render_card_detail_line_single(
         None,
         &format!(
-            "{} item{} (Alt+V for full list)",
+            "{} item{} (ctrl+o to expand)",
             snapshot.total,
             if snapshot.total == 1 { "" } else { "s" }
         ),
@@ -1735,7 +1735,7 @@ fn render_checklist_card(
     if omitted > 0 {
         lines.push(render_card_detail_line_single(
             None,
-            &format!("+{omitted} more (Alt+V for full list)"),
+            &format!("+{omitted} more (ctrl+o to expand)"),
             Style::default().fg(palette::TEXT_DIM),
         ));
     }
@@ -3415,7 +3415,7 @@ mod tests {
             "should not show other items: {change_line:?}"
         );
 
-        // The summary line carries the count + Alt+V hint.
+        // The summary line carries the count + (ctrl+o) hint.
         let summary_line: String = lines
             .last()
             .unwrap()
@@ -3424,7 +3424,7 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(summary_line.contains("3 items"), "{summary_line:?}");
-        assert!(summary_line.contains("Alt+V"), "{summary_line:?}");
+        assert!(summary_line.contains("(ctrl+o)"), "{summary_line:?}");
     }
 
     #[test]
