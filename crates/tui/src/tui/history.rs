@@ -39,7 +39,7 @@ const USER_GLYPH: &str = "\u{258E}"; // ▎
 const ASSISTANT_GLYPH: &str = "\u{25CF}"; // ●
 /// Claude Code-style pipe rail for tool content lines. Used by
 /// `render_card_detail_line` and output rendering inside tool blocks.
-const TOOL_CONTENT_RAIL: &str = "│ ";
+const TOOL_CONTENT_RAIL: &str = "| ";
 /// Reasoning header opener. Replaces the spinner glyph on thinking cells —
 /// reasoning is a slow exhale, not a tool spin.
 const REASONING_OPENER: &str = "\u{2026}"; // …
