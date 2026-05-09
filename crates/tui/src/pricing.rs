@@ -158,6 +158,12 @@ pub fn calculate_turn_cost_estimate(
     })
 }
 
+/// Calculate cost without cache-hit/miss breakdown.
+///
+/// Without usage-level cache telemetry, all input tokens are charged at
+/// the cache-miss rate (worst-case estimate). Prefer
+/// `calculate_turn_cost_from_usage_with_pricing` when the provider
+/// reports `prompt_cache_hit_tokens`.
 fn calculate_turn_cost_with_pricing(
     pricing: CurrencyPricing,
     input_tokens: u32,
