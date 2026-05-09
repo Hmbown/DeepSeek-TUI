@@ -42,6 +42,7 @@ mod lsp;
 mod mcp;
 mod mcp_server;
 mod memory;
+mod memory_loop;
 mod models;
 mod network_policy;
 mod palette;
