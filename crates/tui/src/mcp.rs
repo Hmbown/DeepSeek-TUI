@@ -1735,7 +1735,6 @@ impl McpPool {
             });
         }
 
-        api_tools.sort_by(|a, b| a.name.cmp(&b.name));
         api_tools
     }
 
@@ -2500,7 +2499,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_pool_tool_exports_are_sorted_by_final_api_name() {
+    fn mcp_pool_tool_exports_sort_only_regular_mcp_block() {
         let mut config = McpConfig::default();
         config
             .servers
@@ -2510,10 +2509,19 @@ mod tests {
             .insert("aserver".to_string(), test_server_config());
 
         let mut pool = McpPool::new(config);
-        pool.connections.insert(
-            "zserver".to_string(),
-            test_connection("zserver", vec![test_tool("zeta"), test_tool("alpha")]),
-        );
+        let mut zserver = test_connection("zserver", vec![test_tool("zeta"), test_tool("alpha")]);
+        zserver.resources.push(McpResource {
+            uri: "file:///tmp/example".to_string(),
+            name: "Example".to_string(),
+            description: None,
+            mime_type: None,
+        });
+        zserver.prompts.push(McpPrompt {
+            name: "summarize".to_string(),
+            description: None,
+            arguments: Vec::new(),
+        });
+        pool.connections.insert("zserver".to_string(), zserver);
         pool.connections.insert(
             "aserver".to_string(),
             test_connection("aserver", vec![test_tool("middle")]),
@@ -2535,9 +2543,19 @@ mod tests {
             .into_iter()
             .map(|tool| tool.name)
             .collect();
-        let mut sorted_api_tool_names = api_tool_names.clone();
-        sorted_api_tool_names.sort();
-        assert_eq!(api_tool_names, sorted_api_tool_names);
+        assert_eq!(
+            api_tool_names,
+            vec![
+                "mcp_aserver_middle".to_string(),
+                "mcp_zserver_alpha".to_string(),
+                "mcp_zserver_zeta".to_string(),
+                "list_mcp_resources".to_string(),
+                "list_mcp_resource_templates".to_string(),
+                "mcp_read_resource".to_string(),
+                "read_mcp_resource".to_string(),
+                "mcp_get_prompt".to_string(),
+            ]
+        );
     }
 
     /// #1244: when an MCP stdio server fails to spawn, the underlying OS
