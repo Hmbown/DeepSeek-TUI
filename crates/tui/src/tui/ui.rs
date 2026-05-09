@@ -2697,19 +2697,22 @@ async fn run_event_loop(
                 KeyCode::Right => {
                     app.move_cursor_right();
                 }
-                KeyCode::Home if key.modifiers.is_empty() => {
+                KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     if let Some(anchor) =
                         TranscriptScroll::anchor_for(app.viewport.transcript_cache.line_meta(), 0)
                     {
                         app.viewport.transcript_scroll = anchor;
                     }
                 }
-                KeyCode::End if key.modifiers.is_empty() => {
+                KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.scroll_to_bottom();
                 }
                 KeyCode::Home | KeyCode::Char('a')
                     if key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
+                    app.move_cursor_start();
+                }
+                KeyCode::Home => {
                     app.move_cursor_start();
                 }
                 KeyCode::End => {
