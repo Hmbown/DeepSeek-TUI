@@ -89,6 +89,7 @@ impl ProviderPickerView {
             ApiProvider::Deepseek | ApiProvider::DeepseekCN => "DEEPSEEK_API_KEY",
             ApiProvider::NvidiaNim => "NVIDIA_API_KEY",
             ApiProvider::Openai => "OPENAI_API_KEY",
+            ApiProvider::OpenaiCompatible => "OPENAI_COMPATIBLE_API_KEY",
             ApiProvider::Openrouter => "OPENROUTER_API_KEY",
             ApiProvider::Novita => "NOVITA_API_KEY",
             ApiProvider::Fireworks => "FIREWORKS_API_KEY",
@@ -392,7 +393,8 @@ mod tests {
             vec![
                 "DeepSeek",
                 "NVIDIA NIM",
-                "OpenAI-compatible",
+                "OpenAI Compatible",
+                "OpenAI",
                 "OpenRouter",
                 "Novita AI",
                 "Fireworks AI",

@@ -66,6 +66,7 @@ pub enum ApiProvider {
     DeepseekCN,
     NvidiaNim,
     Openai,
+    OpenaiCompatible,
     Openrouter,
     Novita,
     Fireworks,
@@ -84,6 +85,9 @@ impl ApiProvider {
             }
             "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => Some(Self::NvidiaNim),
             "openai" | "open-ai" => Some(Self::Openai),
+            "openai-compatible" | "openai_compatible" | "openai-compat" => {
+                Some(Self::OpenaiCompatible)
+            }
             "openrouter" | "open_router" => Some(Self::Openrouter),
             "novita" => Some(Self::Novita),
             "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
@@ -101,6 +105,7 @@ impl ApiProvider {
             Self::DeepseekCN => "deepseek-cn",
             Self::NvidiaNim => "nvidia-nim",
             Self::Openai => "openai",
+            Self::OpenaiCompatible => "openai-compatible",
             Self::Openrouter => "openrouter",
             Self::Novita => "novita",
             Self::Fireworks => "fireworks",
@@ -117,7 +122,8 @@ impl ApiProvider {
             Self::Deepseek => "DeepSeek",
             Self::DeepseekCN => "DeepSeek (legacy alias)",
             Self::NvidiaNim => "NVIDIA NIM",
-            Self::Openai => "OpenAI-compatible",
+            Self::Openai => "OpenAI",
+            Self::OpenaiCompatible => "OpenAI Compatible",
             Self::Openrouter => "OpenRouter",
             Self::Novita => "Novita AI",
             Self::Fireworks => "Fireworks AI",
@@ -133,6 +139,7 @@ impl ApiProvider {
         &[
             Self::Deepseek,
             Self::NvidiaNim,
+            Self::OpenaiCompatible,
             Self::Openai,
             Self::Openrouter,
             Self::Novita,
@@ -205,7 +212,7 @@ pub enum RequestPayloadMode {
 /// in the API payload (after normalization / provider-specific mapping).
 #[must_use]
 pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> ProviderCapability {
-    if matches!(provider, ApiProvider::Openai) {
+    if matches!(provider, ApiProvider::Openai | ApiProvider::OpenaiCompatible) {
         return ProviderCapability {
             provider,
             resolved_model: resolved_model.to_string(),
@@ -1029,6 +1036,8 @@ pub struct ProvidersConfig {
     #[serde(default)]
     pub openai: ProviderConfig,
     #[serde(default)]
+    pub openai_compatible: ProviderConfig,
+    #[serde(default)]
     pub openrouter: ProviderConfig,
     #[serde(default)]
     pub novita: ProviderConfig,
@@ -1099,7 +1108,7 @@ impl Config {
             && ApiProvider::parse(provider).is_none()
         {
             anyhow::bail!(
-                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openai, openrouter, novita, fireworks, sglang, vllm, or ollama."
+                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openai, openai-compatible, openrouter, novita, fireworks, sglang, vllm, or ollama."
             );
         }
         if let Some(ref key) = self.api_key
@@ -1216,6 +1225,7 @@ impl Config {
             ApiProvider::DeepseekCN => &providers.deepseek_cn,
             ApiProvider::NvidiaNim => &providers.nvidia_nim,
             ApiProvider::Openai => &providers.openai,
+            ApiProvider::OpenaiCompatible => &providers.openai_compatible,
             ApiProvider::Openrouter => &providers.openrouter,
             ApiProvider::Novita => &providers.novita,
             ApiProvider::Fireworks => &providers.fireworks,
@@ -1279,6 +1289,7 @@ impl Config {
             ApiProvider::Deepseek | ApiProvider::DeepseekCN => DEFAULT_TEXT_MODEL,
             ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_MODEL,
             ApiProvider::Openai => DEFAULT_OPENAI_MODEL,
+            ApiProvider::OpenaiCompatible => "",
             ApiProvider::Openrouter => DEFAULT_OPENROUTER_MODEL,
             ApiProvider::Novita => DEFAULT_NOVITA_MODEL,
             ApiProvider::Fireworks => DEFAULT_FIREWORKS_MODEL,
@@ -1308,6 +1319,7 @@ impl Config {
                 .filter(|base| base.contains("integrate.api.nvidia.com"))
                 .cloned(),
             ApiProvider::Openai
+            | ApiProvider::OpenaiCompatible
             | ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks
@@ -1321,6 +1333,7 @@ impl Config {
                 ApiProvider::DeepseekCN => DEFAULT_DEEPSEEKCN_BASE_URL,
                 ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
                 ApiProvider::Openai => DEFAULT_OPENAI_BASE_URL,
+                ApiProvider::OpenaiCompatible => "",
                 ApiProvider::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
                 ApiProvider::Novita => DEFAULT_NOVITA_BASE_URL,
                 ApiProvider::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
@@ -1352,6 +1365,7 @@ impl Config {
             ApiProvider::Deepseek | ApiProvider::DeepseekCN => "deepseek",
             ApiProvider::NvidiaNim => "nvidia-nim",
             ApiProvider::Openai => "openai",
+            ApiProvider::OpenaiCompatible => "openai-compatible",
             ApiProvider::Openrouter => "openrouter",
             ApiProvider::Novita => "novita",
             ApiProvider::Fireworks => "fireworks",
@@ -1409,8 +1423,14 @@ impl Config {
                  with provider = \"nvidia-nim\"."
             ),
             ApiProvider::Openai => anyhow::bail!(
-                "OpenAI-compatible API key not found. Run 'deepseek auth set --provider openai', \
+                "OpenAI API key not found. Run 'deepseek auth set --provider openai', \
                  set OPENAI_API_KEY, or add [providers.openai] api_key in ~/.deepseek/config.toml."
+            ),
+            ApiProvider::OpenaiCompatible => anyhow::bail!(
+                "OpenAI-compatible API key and base URL not found. \
+                 Run 'deepseek auth set --provider openai-compatible --url <BASE_URL>', \
+                 set OPENAI_COMPATIBLE_API_KEY and OPENAI_COMPATIBLE_BASE_URL, \
+                 or add [providers.openai_compatible] api_key and base_url in ~/.deepseek/config.toml."
             ),
             ApiProvider::Openrouter => anyhow::bail!(
                 "OpenRouter API key not found. Run 'deepseek auth set --provider openrouter', \
@@ -1898,6 +1918,13 @@ fn apply_env_overrides(config: &mut Config) {
                     .openai
                     .base_url = Some(value);
             }
+            ApiProvider::OpenaiCompatible => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .openai_compatible
+                    .base_url = Some(value);
+            }
             _ => {
                 config.base_url = Some(value);
             }
@@ -1925,6 +1952,16 @@ fn apply_env_overrides(config: &mut Config) {
             .providers
             .get_or_insert_with(ProvidersConfig::default)
             .openai
+            .base_url = Some(value);
+    }
+    if matches!(config.api_provider(), ApiProvider::OpenaiCompatible)
+        && let Ok(value) = std::env::var("OPENAI_COMPATIBLE_BASE_URL")
+        && !value.trim().is_empty()
+    {
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .openai_compatible
             .base_url = Some(value);
     }
     if matches!(config.api_provider(), ApiProvider::Openrouter)
@@ -1994,6 +2031,7 @@ fn apply_env_overrides(config: &mut Config) {
             ApiProvider::DeepseekCN => &mut providers.deepseek_cn,
             ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
             ApiProvider::Openai => &mut providers.openai,
+            ApiProvider::OpenaiCompatible => &mut providers.openai_compatible,
             ApiProvider::Openrouter => &mut providers.openrouter,
             ApiProvider::Novita => &mut providers.novita,
             ApiProvider::Fireworks => &mut providers.fireworks,
@@ -2032,6 +2070,11 @@ fn apply_env_overrides(config: &mut Config) {
     }
     if matches!(config.api_provider(), ApiProvider::Openai)
         && let Ok(value) = std::env::var("OPENAI_MODEL")
+    {
+        config.default_text_model = Some(value);
+    }
+    if matches!(config.api_provider(), ApiProvider::OpenaiCompatible)
+        && let Ok(value) = std::env::var("OPENAI_COMPATIBLE_MODEL")
     {
         config.default_text_model = Some(value);
     }
@@ -2280,7 +2323,10 @@ fn normalize_model_for_provider(provider: ApiProvider, model: &str) -> Option<St
 }
 
 fn provider_passes_model_through(provider: ApiProvider) -> bool {
-    matches!(provider, ApiProvider::Openai | ApiProvider::Ollama)
+    matches!(
+        provider,
+        ApiProvider::Openai | ApiProvider::OpenaiCompatible | ApiProvider::Ollama
+    )
 }
 
 fn provider_entry_uses_custom_base_url(provider: ApiProvider, entry: &ProviderConfig) -> bool {
@@ -2296,6 +2342,7 @@ fn default_base_url_for_provider(provider: ApiProvider) -> &'static str {
         ApiProvider::DeepseekCN => DEFAULT_DEEPSEEKCN_BASE_URL,
         ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
         ApiProvider::Openai => DEFAULT_OPENAI_BASE_URL,
+        ApiProvider::OpenaiCompatible => "",
         ApiProvider::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
         ApiProvider::Novita => DEFAULT_NOVITA_BASE_URL,
         ApiProvider::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
@@ -2310,8 +2357,10 @@ fn base_url_is_custom_for_provider(provider: ApiProvider, base_url: &str) -> boo
 }
 
 fn provider_preserves_custom_base_url_model(provider: ApiProvider, base_url: &str) -> bool {
-    matches!(provider, ApiProvider::Openrouter)
-        && base_url_is_custom_for_provider(provider, base_url)
+    matches!(
+        provider,
+        ApiProvider::Openrouter | ApiProvider::OpenaiCompatible
+    ) && base_url_is_custom_for_provider(provider, base_url)
 }
 
 fn model_for_provider(provider: ApiProvider, normalized: String) -> String {
@@ -2496,6 +2545,10 @@ fn merge_providers(
             deepseek_cn: merge_provider_config(base.deepseek_cn, override_cfg.deepseek_cn),
             nvidia_nim: merge_provider_config(base.nvidia_nim, override_cfg.nvidia_nim),
             openai: merge_provider_config(base.openai, override_cfg.openai),
+            openai_compatible: merge_provider_config(
+                base.openai_compatible,
+                override_cfg.openai_compatible,
+            ),
             openrouter: merge_provider_config(base.openrouter, override_cfg.openrouter),
             novita: merge_provider_config(base.novita, override_cfg.novita),
             fireworks: merge_provider_config(base.fireworks, override_cfg.fireworks),
@@ -2913,6 +2966,9 @@ pub fn active_provider_has_env_api_key(config: &Config) -> bool {
                 || std::env::var("NVIDIA_NIM_API_KEY").is_ok_and(|k| !k.trim().is_empty())
         }
         ApiProvider::Openai => std::env::var("OPENAI_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
+        ApiProvider::OpenaiCompatible => {
+            std::env::var("OPENAI_COMPATIBLE_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+        }
         ApiProvider::Openrouter => {
             std::env::var("OPENROUTER_API_KEY").is_ok_and(|k| !k.trim().is_empty())
         }
@@ -2940,6 +2996,7 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         ApiProvider::Deepseek | ApiProvider::DeepseekCN => "DEEPSEEK_API_KEY",
         ApiProvider::NvidiaNim => "NVIDIA_API_KEY",
         ApiProvider::Openai => "OPENAI_API_KEY",
+        ApiProvider::OpenaiCompatible => "OPENAI_COMPATIBLE_API_KEY",
         ApiProvider::Openrouter => "OPENROUTER_API_KEY",
         ApiProvider::Novita => "NOVITA_API_KEY",
         ApiProvider::Fireworks => "FIREWORKS_API_KEY",
@@ -3008,6 +3065,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         }
         ApiProvider::NvidiaNim => "providers.nvidia_nim",
         ApiProvider::Openai => "providers.openai",
+        ApiProvider::OpenaiCompatible => "providers.openai_compatible",
         ApiProvider::Openrouter => "providers.openrouter",
         ApiProvider::Novita => "providers.novita",
         ApiProvider::Fireworks => "providers.fireworks",
@@ -3042,6 +3100,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         }
         ApiProvider::NvidiaNim => "nvidia_nim",
         ApiProvider::Openai => "openai",
+        ApiProvider::OpenaiCompatible => "openai_compatible",
         ApiProvider::Openrouter => "openrouter",
         ApiProvider::Novita => "novita",
         ApiProvider::Fireworks => "fireworks",
@@ -3175,6 +3234,9 @@ mod tests {
         openai_api_key: Option<OsString>,
         openai_base_url: Option<OsString>,
         openai_model: Option<OsString>,
+        openai_compatible_api_key: Option<OsString>,
+        openai_compatible_base_url: Option<OsString>,
+        openai_compatible_model: Option<OsString>,
         openrouter_api_key: Option<OsString>,
         openrouter_base_url: Option<OsString>,
         novita_api_key: Option<OsString>,
@@ -3215,6 +3277,9 @@ mod tests {
             let openai_api_key_prev = env::var_os("OPENAI_API_KEY");
             let openai_base_url_prev = env::var_os("OPENAI_BASE_URL");
             let openai_model_prev = env::var_os("OPENAI_MODEL");
+            let openai_compatible_api_key_prev = env::var_os("OPENAI_COMPATIBLE_API_KEY");
+            let openai_compatible_base_url_prev = env::var_os("OPENAI_COMPATIBLE_BASE_URL");
+            let openai_compatible_model_prev = env::var_os("OPENAI_COMPATIBLE_MODEL");
             let openrouter_api_key_prev = env::var_os("OPENROUTER_API_KEY");
             let openrouter_base_url_prev = env::var_os("OPENROUTER_BASE_URL");
             let novita_api_key_prev = env::var_os("NOVITA_API_KEY");
@@ -3250,6 +3315,9 @@ mod tests {
                 env::remove_var("OPENAI_API_KEY");
                 env::remove_var("OPENAI_BASE_URL");
                 env::remove_var("OPENAI_MODEL");
+                env::remove_var("OPENAI_COMPATIBLE_API_KEY");
+                env::remove_var("OPENAI_COMPATIBLE_BASE_URL");
+                env::remove_var("OPENAI_COMPATIBLE_MODEL");
                 env::remove_var("OPENROUTER_API_KEY");
                 env::remove_var("OPENROUTER_BASE_URL");
                 env::remove_var("NOVITA_API_KEY");
@@ -3285,6 +3353,9 @@ mod tests {
                 openai_api_key: openai_api_key_prev,
                 openai_base_url: openai_base_url_prev,
                 openai_model: openai_model_prev,
+                openai_compatible_api_key: openai_compatible_api_key_prev,
+                openai_compatible_base_url: openai_compatible_base_url_prev,
+                openai_compatible_model: openai_compatible_model_prev,
                 openrouter_api_key: openrouter_api_key_prev,
                 openrouter_base_url: openrouter_base_url_prev,
                 novita_api_key: novita_api_key_prev,
@@ -3329,6 +3400,18 @@ mod tests {
                 Self::restore_var("OPENAI_API_KEY", self.openai_api_key.take());
                 Self::restore_var("OPENAI_BASE_URL", self.openai_base_url.take());
                 Self::restore_var("OPENAI_MODEL", self.openai_model.take());
+                Self::restore_var(
+                    "OPENAI_COMPATIBLE_API_KEY",
+                    self.openai_compatible_api_key.take(),
+                );
+                Self::restore_var(
+                    "OPENAI_COMPATIBLE_BASE_URL",
+                    self.openai_compatible_base_url.take(),
+                );
+                Self::restore_var(
+                    "OPENAI_COMPATIBLE_MODEL",
+                    self.openai_compatible_model.take(),
+                );
                 Self::restore_var("OPENROUTER_API_KEY", self.openrouter_api_key.take());
                 Self::restore_var("OPENROUTER_BASE_URL", self.openrouter_base_url.take());
                 Self::restore_var("NOVITA_API_KEY", self.novita_api_key.take());
