@@ -51,8 +51,8 @@ const REASONING_RAIL: &str = "\u{254E} "; // ╎ + space
 const REASONING_CURSOR: &str = "\u{258E}"; // ▎
 const TOOL_CARD_SUMMARY_LINES: usize = 4;
 const THINKING_SUMMARY_LINE_LIMIT: usize = 4;
-const TOOL_DONE_SYMBOL: &str = "•";
-const TOOL_FAILED_SYMBOL: &str = "•";
+const TOOL_DONE_SYMBOL: &str = "✓";
+const TOOL_FAILED_SYMBOL: &str = "✗";
 
 /// Render mode controlling whether tool/thinking cells render their compact
 /// "live" form (with caps and collapsed reasoning) or their full transcript
@@ -60,7 +60,7 @@ const TOOL_FAILED_SYMBOL: &str = "•";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
     /// Live in-stream view: thinking is collapsed to a summary, tool output is
-    /// truncated with a "Alt+V for details" affordance.
+    /// truncated with a "(ctrl+o to expand)" affordance.
     Live,
     /// Full transcript view: every line of reasoning and tool output is
     /// emitted, no caps, no affordance.
@@ -247,7 +247,7 @@ impl HistoryCell {
                 if lines.len() > 2 {
                     lines.truncate(2);
                     lines.push(details_affordance_line(
-                        "details hidden",
+                        "(tool details off)",
                         Style::default().fg(palette::TEXT_MUTED).italic(),
                     ));
                 }
@@ -258,7 +258,7 @@ impl HistoryCell {
                 if lines.len() > TOOL_CARD_SUMMARY_LINES {
                     lines.truncate(TOOL_CARD_SUMMARY_LINES);
                     lines.push(details_affordance_line(
-                        "Alt+V for details",
+                        "(ctrl+o to expand)",
                         Style::default().fg(palette::TEXT_MUTED).italic(),
                     ));
                 }
@@ -288,7 +288,7 @@ impl HistoryCell {
     }
 
     /// Render the cell in transcript mode: full content, no caps, no
-    /// "Alt+V for details" affordances.
+    /// "(ctrl+o to expand)" affordances.
     ///
     /// Use this for the pager (`v` / `Ctrl+O`), clipboard exports, and any
     /// surface that wants the complete body rather than the live summary.
@@ -606,7 +606,7 @@ impl ToolCell {
     }
 
     /// Full-content rendering for the pager / clipboard. Tool output that
-    /// would be capped + suffixed with "Alt+V for details" in the live view
+    /// would be capped + suffixed with "(ctrl+o to expand)" in the live view
     /// is emitted in full here.
     pub fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
         self.render(width, /*low_motion*/ false, RenderMode::Transcript)
@@ -2196,7 +2196,7 @@ fn render_command_mode(command: &str, width: u16, mode: RenderMode) -> Vec<Line<
     {
         if count >= cap {
             lines.push(details_affordance_line(
-                "command clipped; Alt+V for details",
+                "command clipped; (ctrl+o to expand)",
                 Style::default().fg(palette::TEXT_MUTED),
             ));
             break;
@@ -2314,7 +2314,7 @@ fn render_preserved_output_mode(
             let omitted = idx.saturating_sub(prev + 1);
             if omitted > 0 {
                 lines.push(details_affordance_line(
-                    &format!("{omitted} lines omitted; Alt+V for details"),
+                    &format!("{omitted} lines omitted; (ctrl+o to expand)"),
                     Style::default().fg(palette::TEXT_MUTED),
                 ));
             }
@@ -4193,11 +4193,11 @@ mod tests {
             transcript.len()
         );
         assert!(
-            live_text.contains("Alt+V for details"),
+            live_text.contains("(ctrl+o to expand)"),
             "live exec output must surface the pager affordance: {live_text}"
         );
         assert!(
-            !transcript_text.contains("Alt+V for details"),
+            !transcript_text.contains("(ctrl+o to expand)"),
             "transcript exec output must not include the pager affordance"
         );
         // First line is always emitted on both surfaces.
@@ -4342,7 +4342,7 @@ mod tests {
         );
         let live_text = lines_text(&live);
         assert!(
-            live_text.contains("Alt+V for details"),
+            live_text.contains("(ctrl+o to expand)"),
             "live view must show pager affordance: {live_text}"
         );
         // First line shows up in both; later rows only in transcript.
@@ -4371,7 +4371,7 @@ mod tests {
 
         assert!(live_text.contains("line 00"));
         assert!(live_text.contains("line 23"));
-        assert!(live_text.contains("lines omitted; Alt+V for details"));
+        assert!(live_text.contains("lines omitted; (ctrl+o to expand)"));
         assert!(
             !live_text.contains("line 12"),
             "middle plain output should stay omitted in live view: {live_text}"
@@ -4407,7 +4407,7 @@ mod tests {
         assert!(live_text.contains("fatal: failed to read /tmp/deepseek/config.toml"));
         assert!(live_text.contains("https://example.test/build/log"));
         assert!(live_text.contains("final line"));
-        assert!(live_text.contains("lines omitted; Alt+V for details"));
+        assert!(live_text.contains("lines omitted; (ctrl+o to expand)"));
     }
 
     // === ErrorEnvelope severity → cell color tests (#66) ===
