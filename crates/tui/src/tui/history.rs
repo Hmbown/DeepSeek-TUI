@@ -1272,18 +1272,14 @@ impl GenericToolCell {
             None,
             low_motion,
         ));
-        lines.extend(render_compact_kv(
-            "name",
-            &self.name,
-            tool_value_style(),
-            width,
-        ));
+
+        // Only show args/name while running — completed tools have output
+        // visible and the header already carries the essential context.
+        let is_running = matches!(self.status, ToolStatus::Running) || self.output.is_none();
 
         // Prefer per-prompt rows over the generic args summary when the tool
-        // exposes a list of child prompts. One row per child with a `[i]`
-        // index makes the fan-out legible without expanding JSON.
-        let show_prompts = matches!(self.status, ToolStatus::Running) || self.output.is_none();
-        if show_prompts
+        // exposes a list of child prompts.
+        if is_running
             && let Some(prompts) = self.prompts.as_ref()
             && !prompts.is_empty()
         {
@@ -1297,9 +1293,8 @@ impl GenericToolCell {
                     width,
                 ));
             }
-        } else {
-            let show_args = matches!(self.status, ToolStatus::Running) || self.output.is_none();
-            if show_args && let Some(summary) = self.input_summary.as_ref() {
+        } else if is_running {
+            if let Some(summary) = self.input_summary.as_ref() {
                 lines.extend(render_compact_kv(
                     "args",
                     summary,
