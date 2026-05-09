@@ -361,6 +361,12 @@ pub struct Engine {
     /// Lazily initialized in `spawn_engine`. `None` when the feature is
     /// disabled or initialization failed.
     vector_db: Option<crate::vector_db::VectorDbService>,
+
+    /// Most recently built retrieved context during `prepare_request_context`.
+    /// Cached so sub-agents can inherit the parent's semantic retrieval
+    /// results without re-querying the vector DB. Set on each request and
+    /// cleared when no vector DB is available.
+    last_retrieved_context: Option<crate::vector_db::RetrievedContext>,
 }
 
 // === Internal tool helpers ===
@@ -570,6 +576,7 @@ impl Engine {
             workshop_vars,
             sandbox_backend,
             vector_db: None,
+            last_retrieved_context: None,
         };
         engine.rehydrate_latest_canonical_state();
 
@@ -965,6 +972,10 @@ impl Engine {
             .observe_user_message(&content, &self.session.workspace);
         let force_update_plan_first = should_force_update_plan_first(mode, &content);
 
+        // Clone content before it's moved into user_text_message_with_turn_metadata,
+        // so we can use it later for sub-agent context retrieval (#12).
+        let content_for_subagent = content.clone();
+
         // Add user message to session
         let user_msg = self.user_text_message_with_turn_metadata(content);
         self.session.add_message(user_msg);
@@ -1008,10 +1019,18 @@ impl Engine {
                 Some(&self.subagent_manager),
             )
             .await;
+
+            // Build a retrieved-context block for sub-agent inheritance (#12).
+            // We run a preliminary semantic search here so sub-agents inherit
+            // the parent's context without re-querying the vector DB.
+            let parent_retrieved_block =
+                self.build_retrieved_context_for_subagent(&content_for_subagent).await;
+
             Some(SubAgentForkContext {
                 system: self.session.system_prompt.clone(),
                 messages: self.messages_with_turn_metadata(),
                 structured_state_block: state.to_system_block(),
+                parent_retrieved_block,
             })
         } else {
             None
@@ -2030,15 +2049,45 @@ impl Engine {
             }
         }
 
-        let window_turns = self.config.verbatim_window_turns.max(1);
+        // Compute a dynamic verbatim window: we keep at least
+        // `verbatim_window_turns * 2` messages, but we cap the total
+        // token budget of verbatim messages at ~4K tokens per turn
+        // to prevent massive tool-call rounds from blowing the budget.
+        let min_window = self.config.verbatim_window_turns.max(1) * 2;
+        let max_tokens = self.config.verbatim_window_turns * 4_000;
         let vw = crate::vector_db::VerbatimWindow::build(
             total,
-            window_turns * 2,
+            min_window,
             &[],
             &tool_call_indices,
             &tool_result_indices,
         );
-        let verbatim_count = vw.len();
+
+        // Walk backwards from the last message in the window and stop
+        // when the accumulated token estimate exceeds max_tokens.
+        // This keeps the verbatim window bounded by both turn count
+        // AND token budget.
+        let mut capped_indices: Vec<usize> = Vec::new();
+        let mut token_budget_used = 0usize;
+        for &idx in vw.indices.iter().rev() {
+            let msg_tokens = messages.get(idx).map(|m| {
+                m.content.iter().map(|c| match c {
+                    ContentBlock::Text { text, .. } => text.len() / 4,
+                    ContentBlock::Thinking { .. } => 0, // not sent verbatim
+                    ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
+                        .map(|s| s.len() / 4).unwrap_or(100),
+                    ContentBlock::ToolResult { content, .. } => content.len() / 4,
+                    _ => 0,
+                }).sum::<usize>()
+            }).unwrap_or(0);
+            if token_budget_used + msg_tokens > max_tokens && !capped_indices.is_empty() {
+                break; // budget exhausted
+            }
+            token_budget_used = token_budget_used.saturating_add(msg_tokens);
+            capped_indices.push(idx);
+        }
+        capped_indices.reverse(); // restore chronological order
+        let verbatim_count = capped_indices.len();
         let history_count = total.saturating_sub(verbatim_count);
 
         let mut memory_blocks: Vec<String> = Vec::new();
@@ -2110,7 +2159,7 @@ impl Engine {
         }
 
         crate::vector_db::RetrievedContext {
-            verbatim_messages: vw.indices,
+            verbatim_messages: capped_indices,
             window_extended: vw.extended,
             memory_blocks,
             summary_blocks,
@@ -2146,6 +2195,39 @@ impl Engine {
         Some(augmented)
     }
 
+    /// Build a simple retrieved-context block for sub-agent inheritance.
+    ///
+    /// Searches the vector DB using the user's latest message as query
+    /// and returns a `<retrieved_context>` text block. Best-effort:
+    /// returns `None` when vector DB is unavailable or search fails.
+    async fn build_retrieved_context_for_subagent(
+        &self,
+        user_message: &str,
+    ) -> Option<String> {
+        let vdb = self.vector_db.as_ref()?;
+        let memories = vdb.search_memories(user_message, 3, None).await.ok()?;
+        let summaries = vdb.search_summaries(user_message, 2).await.ok()?;
+
+        let mut parts: Vec<String> = Vec::new();
+        for m in &memories {
+            let tag = m.tags.as_deref().unwrap_or("memory");
+            parts.push(format!("- [{tag}] {}", m.content));
+        }
+        for s in &summaries {
+            parts.push(format!("- [history] {}", s.summary));
+        }
+
+        if parts.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "<parent_retrieved_context>\n{}\n</parent_retrieved_context>\n\
+            The above context was retrieved by the parent agent. Use it as \
+            background knowledge for this task.",
+            parts.join("\n")
+        ))
+    }
+
     /// Prepare the final message list and system prompt for the API request.
     ///
     /// Applies the verbatim window to filter messages and augments the
@@ -2158,6 +2240,10 @@ impl Engine {
         let retrieved = self
             .build_verbatim_window_for_request(&all_messages)
             .await;
+
+        // Cache the retrieved context so sub-agents can inherit the
+        // parent's semantic retrieval results (#12).
+        self.last_retrieved_context = Some(retrieved.clone());
 
         // Filter messages to only the verbatim window
         let filtered: Vec<Message> = retrieved

@@ -261,6 +261,7 @@ fn forked_subagent_messages_preserve_parent_prefix_then_append_task() {
         structured_state_block: Some(
             "## Cycle State (Auto-Preserved)\n- Mode: `AGENT`".to_string(),
         ),
+        parent_retrieved_block: None,
     };
 
     let assignment = SubAgentAssignment::new("inspect parser".to_string(), Some("worker".into()));
