@@ -1204,19 +1204,6 @@ async fn run_event_loop(
                                     //   1. What was just done
                                     //   2. What remains
                                     //   3. What to do next (exactly)
-                                    let goal_label = app
-                                        .goal
-                                        .goal_objective
-                                        .as_deref()
-                                        .map(|obj| {
-                                            format!("Goal: {obj}")
-                                        })
-                                        .unwrap_or_default();
-                                    let goal_context = app
-                                        .goal
-                                        .goal_context
-                                        .as_deref()
-                                        .unwrap_or("");
                                     let progress_note =
                                         if let Some(prev) =
                                             app.goal.prev_pending_count
@@ -1234,18 +1221,22 @@ async fn run_event_loop(
                                                 incomplete
                                             )
                                         };
+                                    // Continuation message pattern
+                                    // (matching Claude Code /goal):
+                                    //   - System prompt already has
+                                    //     One Todo Per Turn rules.
+                                    //   - Here we just provide state
+                                    //     recap + a terse nudge.
+                                    let goal_header = app
+                                        .goal
+                                        .goal_objective
+                                        .as_deref()
+                                        .map(|obj| format!("Goal: {obj}\n\n"))
+                                        .unwrap_or_default();
                                     let msg = format!(
-                                        "SYSTEM: This is an auto-continue work order, not a chat message. \
-                                         DO NOT explain what you will do. DO NOT summarize. \
-                                         DO NOT describe what you found. \
-                                         Pick one todo NOW and start working with a tool call immediately.\n\n\
-                                         {goal_label}\n\n{goal_context}\n\n---\n\n{recap}\n\n---\n\n\
-                                         ACTION: Pick the next pending todo. \
-                                         Mark it in_progress with checklist_update. \
-                                         Complete it using tools (read_file, write_file, exec_shell, etc.). \
-                                         Verify with tests/build. \
-                                         Mark it completed with checklist_update.{progress_note}\n\n\
-                                         Start with a tool call NOW. Move exactly one item from ○ or ⏳ to ✓."
+                                        "{goal_header}{recap}\n\n{progress_note}\n\n\
+                                         Continue with the next todo. \
+                                         Update checklist via checklist_update as you go."
                                     );
                                     app.queued_messages.push_back(QueuedMessage::new(msg, None));
                                     app.goal.auto_continue_turn_count += 1;
@@ -6429,14 +6420,9 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
             app.pending_todo_count()
         );
         let msg = format!(
-            "SYSTEM: Session restored. This is an auto-continue work order. \
-             DO NOT chat or explain — pick a todo and start working NOW.\n\n\
-             {recap}\n\n---\n\n\
-             ACTION: Pick the next pending todo. \
-             Mark it in_progress with checklist_update. \
-             Complete it using tools (read_file, write_file, exec_shell, etc.). \
-             Verify with tests/build. \
-             Mark it completed with checklist_update.{progress_note}"
+            "{recap}\n\n{progress_note}\n\n\
+             Continue with the next todo. \
+             Update checklist via checklist_update as you go."
         );
         app.queued_messages.push_back(QueuedMessage::new(msg, None));
     }
