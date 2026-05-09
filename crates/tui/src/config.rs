@@ -2852,13 +2852,8 @@ reasoning_effort = "max"
     Ok(config_path)
 }
 
-/// Check if an API key is configured anywhere the runtime can resolve it.
-///
-/// Order of inspection:
-///   1. `DEEPSEEK_API_KEY` env var (fast, no I/O, no OS prompts).
-///   2. In-memory override on the config (set by onboarding / picker).
-///   3. Config-file `api_key` slot (cheap file read already done by
-///      the loaded `Config`).
+/// Check if the active provider has any API key configured anywhere the
+/// runtime can resolve it.
 ///
 /// Platform credential stores are intentionally not queried here.
 /// Startup/onboarding checks must be cheap and prompt-free, so v0.8.8
@@ -2870,17 +2865,7 @@ reasoning_effort = "max"
 /// this wrong made users get prompted for credentials in situations
 /// where normal env/config auth was already available.
 pub fn has_api_key(config: &Config) -> bool {
-    if std::env::var("DEEPSEEK_API_KEY").is_ok_and(|k| !k.trim().is_empty()) {
-        return true;
-    }
-    if config
-        .api_key
-        .as_ref()
-        .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
-    {
-        return true;
-    }
-    false
+    has_api_key_for(config, config.api_provider())
 }
 
 #[must_use]
@@ -3600,6 +3585,104 @@ mod tests {
             std::env::remove_var("DEEPSEEK_API_KEY");
         }
         Ok(())
+    }
+
+    fn config_with_provider_scoped_key(provider: &str, api_key: &str) -> Config {
+        let mut providers = ProvidersConfig::default();
+        match provider {
+            "deepseek" | "deepseek-cn" => {
+                providers.deepseek.api_key = Some(api_key.to_string());
+            }
+            "nvidia-nim" => {
+                providers.nvidia_nim.api_key = Some(api_key.to_string());
+            }
+            "openai" => {
+                providers.openai.api_key = Some(api_key.to_string());
+            }
+            "openrouter" => {
+                providers.openrouter.api_key = Some(api_key.to_string());
+            }
+            "novita" => {
+                providers.novita.api_key = Some(api_key.to_string());
+            }
+            "fireworks" => {
+                providers.fireworks.api_key = Some(api_key.to_string());
+            }
+            "sglang" => {
+                providers.sglang.api_key = Some(api_key.to_string());
+            }
+            "vllm" => {
+                providers.vllm.api_key = Some(api_key.to_string());
+            }
+            "ollama" => {
+                providers.ollama.api_key = Some(api_key.to_string());
+            }
+            _ => panic!("unexpected provider {provider}"),
+        }
+
+        Config {
+            provider: Some(provider.to_string()),
+            providers: Some(providers),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn has_api_key_uses_active_provider_scoped_config_key() {
+        for provider in ["openai", "openrouter", "novita", "fireworks"] {
+            let config = config_with_provider_scoped_key(provider, "provider-config-key");
+
+            assert!(
+                has_api_key(&config),
+                "active provider config key must satisfy onboarding auth check for {provider}"
+            );
+        }
+    }
+
+    #[test]
+    fn has_api_key_uses_active_provider_env_key() -> Result<()> {
+        let _lock = lock_test_env();
+        for (provider, env_var) in [
+            ("openai", "OPENAI_API_KEY"),
+            ("openrouter", "OPENROUTER_API_KEY"),
+            ("novita", "NOVITA_API_KEY"),
+            ("fireworks", "FIREWORKS_API_KEY"),
+        ] {
+            unsafe {
+                std::env::set_var(env_var, "provider-env-key");
+            }
+
+            let config = Config {
+                provider: Some(provider.to_string()),
+                ..Config::default()
+            };
+
+            assert!(
+                has_api_key(&config),
+                "active provider env key must satisfy onboarding auth check for {provider}"
+            );
+
+            unsafe {
+                std::env::remove_var(env_var);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn has_api_key_uses_root_config_key_for_deepseek_variants() {
+        for provider in ["deepseek", "deepseek-cn"] {
+            let config = Config {
+                provider: Some(provider.to_string()),
+                api_key: Some("root-config-key".to_string()),
+                ..Config::default()
+            };
+
+            assert!(
+                has_api_key(&config),
+                "root config api_key must satisfy onboarding auth check for {provider}"
+            );
+        }
     }
 
     /// Regression for #343: clear_api_key strips both the root `api_key`
@@ -4998,6 +5081,17 @@ api_key = "novita-table-key"
 
         assert!(has_api_key_for(&config, ApiProvider::DeepseekCN));
         Ok(())
+    }
+
+    #[test]
+    fn has_api_key_for_uses_root_config_key_for_deepseek_variants() {
+        let config = Config {
+            api_key: Some("root-config-key".to_string()),
+            ..Config::default()
+        };
+
+        assert!(has_api_key_for(&config, ApiProvider::Deepseek));
+        assert!(has_api_key_for(&config, ApiProvider::DeepseekCN));
     }
 
     #[test]
