@@ -186,6 +186,12 @@ TUI, runtime, and docs. Big thanks to **Reid (@reidliu41)**,
 
 ## [0.8.20] - 2026-05-08
 
+### Added
+- **Global AGENTS.md fallback** - when a workspace and its parents do not
+  provide project instructions, DeepSeek TUI now loads `~/.deepseek/AGENTS.md`
+  before falling back to auto-generated `.deepseek/instructions.md`, keeping
+  repo-local instructions higher priority while supporting shared defaults.
+
 ### Fixed
 - **Chinese reasoning stays Chinese** - restore the #588 language contract after
   the deterministic environment prompt regressed it. The latest user message now

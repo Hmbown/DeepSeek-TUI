@@ -24,6 +24,10 @@ const PROJECT_CONTEXT_FILES: &[&str] = &[
     ".deepseek/instructions.md",
 ];
 
+/// User-level project instructions loaded as a fallback when the workspace and
+/// its parents do not define project context.
+const GLOBAL_AGENTS_RELATIVE_PATH: &[&str] = &[".deepseek", "AGENTS.md"];
+
 /// Maximum size for project context files (to prevent loading huge files)
 const MAX_CONTEXT_SIZE: usize = 100 * 1024; // 100KB
 
@@ -133,6 +137,13 @@ pub fn load_project_context(workspace: &Path) -> ProjectContext {
 ///
 /// This allows for monorepo setups where a root AGENTS.md applies to all subdirectories.
 pub fn load_project_context_with_parents(workspace: &Path) -> ProjectContext {
+    load_project_context_with_parents_and_home(workspace, dirs::home_dir().as_deref())
+}
+
+fn load_project_context_with_parents_and_home(
+    workspace: &Path,
+    home_dir: Option<&Path>,
+) -> ProjectContext {
     let mut ctx = load_project_context(workspace);
 
     // If no context found in workspace, check parent directories
@@ -152,13 +163,26 @@ pub fn load_project_context_with_parents(workspace: &Path) -> ProjectContext {
         }
     }
 
+    if !ctx.has_instructions()
+        && let Some(global_ctx) = load_global_agents_context(workspace, home_dir)
+    {
+        ctx.warnings.extend(global_ctx.warnings.iter().cloned());
+        if global_ctx.has_instructions() {
+            ctx.instructions = global_ctx.instructions;
+            ctx.source_path = global_ctx.source_path;
+        }
+    }
+
     // Auto-generate .deepseek/instructions.md when no context file exists anywhere.
     // This avoids the per-turn filesystem scan fallback in prompts.rs that
     // breaks KV prefix cache stability.
     if !ctx.has_instructions()
         && let Some(generated) = auto_generate_context(workspace)
     {
+        let mut warnings = std::mem::take(&mut ctx.warnings);
         ctx = load_project_context(workspace);
+        warnings.extend(ctx.warnings.iter().cloned());
+        ctx.warnings = warnings;
         if !ctx.has_instructions() {
             // Loaded from the file we just wrote — use the generated content
             // directly as a last resort (shouldn't normally happen).
@@ -168,6 +192,28 @@ pub fn load_project_context_with_parents(workspace: &Path) -> ProjectContext {
     }
 
     ctx
+}
+
+fn load_global_agents_context(workspace: &Path, home_dir: Option<&Path>) -> Option<ProjectContext> {
+    let home = home_dir?;
+    let mut path = home.to_path_buf();
+    for component in GLOBAL_AGENTS_RELATIVE_PATH {
+        path.push(component);
+    }
+
+    if !(path.exists() && path.is_file()) {
+        return None;
+    }
+
+    let mut ctx = ProjectContext::empty(workspace.to_path_buf());
+    match load_context_file(&path) {
+        Ok(content) => {
+            ctx.instructions = Some(content);
+            ctx.source_path = Some(path);
+        }
+        Err(error) => ctx.warnings.push(error.to_string()),
+    }
+    Some(ctx)
 }
 
 /// Generate a context file from project tree + summary and write it to
@@ -526,6 +572,74 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .contains("Organization instructions")
+        );
+    }
+
+    #[test]
+    fn test_load_global_agents_when_project_has_no_context() {
+        let workspace = tempdir().expect("workspace tempdir");
+        let home = tempdir().expect("home tempdir");
+        let global_dir = home.path().join(".deepseek");
+        fs::create_dir(&global_dir).expect("mkdir .deepseek");
+        let global_agents = global_dir.join("AGENTS.md");
+        fs::write(&global_agents, "Global instructions").expect("write global agents");
+
+        let ctx = load_project_context_with_parents_and_home(workspace.path(), Some(home.path()));
+
+        assert!(ctx.has_instructions());
+        assert!(
+            ctx.instructions
+                .as_ref()
+                .unwrap()
+                .contains("Global instructions")
+        );
+        assert_eq!(ctx.source_path, Some(global_agents));
+    }
+
+    #[test]
+    fn test_local_agents_takes_priority_over_global_agents() {
+        let workspace = tempdir().expect("workspace tempdir");
+        fs::write(workspace.path().join("AGENTS.md"), "Local instructions")
+            .expect("write local agents");
+
+        let home = tempdir().expect("home tempdir");
+        let global_dir = home.path().join(".deepseek");
+        fs::create_dir(&global_dir).expect("mkdir .deepseek");
+        fs::write(global_dir.join("AGENTS.md"), "Global instructions")
+            .expect("write global agents");
+
+        let ctx = load_project_context_with_parents_and_home(workspace.path(), Some(home.path()));
+
+        assert!(ctx.has_instructions());
+        let instructions = ctx.instructions.as_ref().unwrap();
+        assert!(instructions.contains("Local instructions"));
+        assert!(!instructions.contains("Global instructions"));
+        assert_eq!(ctx.source_path, Some(workspace.path().join("AGENTS.md")));
+    }
+
+    #[test]
+    fn test_invalid_global_agents_warns_and_falls_back_to_generated_context() {
+        let workspace = tempdir().expect("workspace tempdir");
+        let home = tempdir().expect("home tempdir");
+        let global_dir = home.path().join(".deepseek");
+        fs::create_dir(&global_dir).expect("mkdir .deepseek");
+        fs::write(global_dir.join("AGENTS.md"), "   \n  ").expect("write empty global agents");
+
+        let ctx = load_project_context_with_parents_and_home(workspace.path(), Some(home.path()));
+
+        assert!(
+            ctx.warnings
+                .iter()
+                .any(|warning| warning.contains("Context file") && warning.contains("is empty")),
+            "expected empty global AGENTS.md warning, got {:?}",
+            ctx.warnings
+        );
+        assert!(ctx.has_instructions());
+        assert!(
+            ctx.instructions
+                .as_ref()
+                .unwrap()
+                .contains("Project Structure (Auto-generated)")
         );
     }
 }
