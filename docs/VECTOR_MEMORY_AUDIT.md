@@ -110,8 +110,7 @@
 
 **修复思路**:
 - 写入前先 `search_memories(note, 1)` 检查 cosine 相似度
-- 如果 `score > 0.9`，跳过写入
-- 或者更新已有记录的时间戳（刷新 TTL）
+- 如果 `score > 0.9`，需要提取出来发送给AI进行整合两块相同的记忆，看看是否有补充，然后再更新回去，并且更新已有记录的时间戳（刷新 TTL）
 
 ---
 
@@ -131,6 +130,7 @@
 - 启用 LanceDB 时，InMemoryBackend 不再镜像全量数据
 - 或者将 InMemoryBackend 改为有界的 LRU 缓存（如最多 1000 条）
 - 读取路径：先查 InMemoryBackend，miss 时查 LanceDB 并回填缓存
+- InMemoryBackend 这个用内存机制，从内存中操作，比读写文件要强，InMemoryBackend作为文件存储的，方便工具启动的时候，了解当前项目的历史记忆对话的内容，但是需要启动的时候，加入内存中，避免直接操作文件。
 
 ---
 
@@ -168,8 +168,7 @@
 
 **修复思路**:
 - 后续需要在 `write_file` / `edit_file` 成功后触发 `store_code_chunk`
-- 或者在引擎启动时做后台全量索引
-- 短期可以用 `/index` 命令手动触发
+- 在引擎启动时做后台全量索引，因为文件修改的前提是你得了解文件，才能修改，当然了，每次修改前需要检查和优化这个部分的内容，避免你读取的内容和实际内容存在差异，全量索引的内容如果在实际修改的时候不对，需要进行重新读取相关的内容，然后修改索引的内容。
 
 ---
 
@@ -188,9 +187,7 @@
 **影响**: 某些轮次中，语义检索可能退化为随机匹配。尤其对中文短指令。
 
 **修复思路**:
-- 在 query 构造中包含最近 1-2 个 tool result 的摘要（截取前 100 chars）
-- 或者使用当前轮次的所有 text block 拼接
-- 对短 query 添加用户之前的消息作为上下文
+- 我觉得这个强制的内容是不对，的应该是查寻到匹配的，就提供，然后检查是否还有匹配的，然后继续提供，而不是一次性强制的给多或者给少的问题。就像人类的联想记忆，也是通过记忆宫殿，然后不停的联想才一件件的串联在一起完整的信息脉络。而不是单个事件，考虑问题需要全面，将最近的决策当作默认条件，从而对历史时间的内容做判断决策，这个才是检索的标准吧。
 
 ---
 
@@ -214,6 +211,7 @@ table.delete(&format!("ttl IS NOT NULL AND CAST(ttl AS INT64) < {nanos}"))
 - 方案 B: 使用 LanceDB Rust API 的 `only_if` 进行过滤（如果支持 timestamp 比较）
 - 方案 C: 定期用 `compact_files` + `cleanup_old_versions` 做物理清理
 
+选择三个方案都执行，第一个失败了用第二个，第二个失败了用第三个进行兜底。
 ---
 
 ### 11. VerbatimWindow 消息数计算不准
@@ -232,8 +230,7 @@ let vw = VerbatimWindow::build(total, window_turns * 2, ...)
 **影响**: verbatim window 的实际大小不可预测。可能超出 token 预算。
 
 **修复思路**:
-- 用消息数代替轮数设置窗口
-- 或者在 build 时传入实际的 token 预算作为上限，动态调整窗口大小
+- 在 build 时传入实际的 token 预算作为上限，动态调整窗口大小
 
 ---
 
@@ -251,7 +248,7 @@ let vw = VerbatimWindow::build(total, window_turns * 2, ...)
 
 **修复思路**:
 - 在 `SubAgentForkContext` 中包含父代理已检索的 `<retrieved_context>` 块
-- 或者在子代理的 system prompt 中追加父代理的检索结果
+- 在子代理的 system prompt 中追加父代理的检索结果。 子代理应该继承父代理的全部知识，而不是独立的，虽然这样做会导致token的增加，因此我俄建议是，应该那父亲总结的知识，而不是全部的人生经历。也就是说，需要在接手任务的时候，去查寻相关任务的背景已经记忆信息，是否有技能策略，以及知识库的内容，从而再来执行任务。
 
 ---
 
@@ -265,14 +262,19 @@ let vw = VerbatimWindow::build(total, window_turns * 2, ...)
 - `RetrievedContext::is_empty()` — 同上
 - `LanceDbBackend::embedder()` / `create_index()` — 同上
 
+- 为啥没有使用这些内容？需要看看这些功能定义的是什么？使用在哪些场景，如果是历史遗留的内容，可以删掉。
+
 ### 配置缺失
 - 无 `max_memory_items` / `max_summary_items` 配置项（上限硬编码为 3/2）
 - 无 `min_similarity_score` 阈值配置
 - 无 `code_index_enabled` 开关
 - 无 `compaction_threshold_with_vector` vs `without_vector` 的区别配置
+- 你应该增加默认配置。默认配置的内容就是你认为最佳状态，这个应该取决于用户的设备，如果用户的内存性能都比较可以那就最高，如果不行，你就设置最低。因此上下取中间值。而不是硬编码的设定参数。
 
 ### 测试覆盖
 - LanceDB 集成测试为 0（全部用 `dim=0` 跳过）
 - 没有 compaction + vector DB 的端到端测试
 - 没有 Embedder 预热失败的回退测试
 - 没有 TTL 删除路径的测试
+
+- 需要补充这些测试。否则没有办法交货。也无法验证你的功能是否生效的。
