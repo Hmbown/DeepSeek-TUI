@@ -72,8 +72,7 @@ pub struct ModelPickerView {
 impl ModelPickerView {
     #[must_use]
     pub fn new(app: &App) -> Self {
-        let hide_deepseek_models =
-            crate::config::provider_passes_model_through(app.api_provider);
+        let hide_deepseek_models = crate::config::provider_passes_model_through(app.api_provider);
         let initial_model = if app.auto_model {
             "auto".to_string()
         } else {
@@ -85,9 +84,7 @@ impl ModelPickerView {
         } else {
             PICKER_MODELS.iter().map(|(id, _)| *id).collect()
         };
-        let mut selected_model_idx = visible_models
-            .iter()
-            .position(|id| *id == initial_model);
+        let mut selected_model_idx = visible_models.iter().position(|id| *id == initial_model);
         let show_custom_model_row = selected_model_idx.is_none();
         if show_custom_model_row {
             selected_model_idx = Some(visible_models.len());

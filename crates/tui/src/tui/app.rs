@@ -1132,10 +1132,10 @@ impl App {
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
 
         // Let settings override the config provider so runtime switches survive restarts.
-        if let Some(ref provider_str) = settings.default_provider {
-            if let Some(parsed) = ApiProvider::parse(provider_str) {
-                provider = parsed;
-            }
+        if let Some(ref provider_str) = settings.default_provider
+            && let Some(parsed) = ApiProvider::parse(provider_str)
+        {
+            provider = parsed;
         }
         let auto_compact = settings.auto_compact;
         let calm_mode = settings.calm_mode;
