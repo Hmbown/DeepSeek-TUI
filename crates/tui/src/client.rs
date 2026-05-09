@@ -508,6 +508,7 @@ impl DeepSeekClient {
         let headers = build_default_headers(api_key, extra_headers)?;
         let mut builder = reqwest::Client::builder()
             .default_headers(headers)
+            .user_agent("deepseek-tui/0.8")
             .connect_timeout(Duration::from_secs(30))
             .tcp_keepalive(Some(Duration::from_secs(30)))
             .http2_keep_alive_interval(Some(Duration::from_secs(15)))

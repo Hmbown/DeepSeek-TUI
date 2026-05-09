@@ -119,11 +119,16 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
                 AppAction::UpdateCompaction(app.compaction_config()),
             );
         }
-        let Some(model_id) = normalize_model_name(name) else {
-            return CommandResult::error(format!(
-                "Invalid model '{name}'. Expected auto or a DeepSeek model ID. Common models: {}",
-                COMMON_DEEPSEEK_MODELS.join(", ")
-            ));
+        let model_id = if crate::config::provider_passes_model_through(app.api_provider) {
+            name.to_string()
+        } else {
+            let Some(normalized) = normalize_model_name(name) else {
+                return CommandResult::error(format!(
+                    "Invalid model '{name}'. Expected auto or a DeepSeek model ID. Common models: {}",
+                    COMMON_DEEPSEEK_MODELS.join(", ")
+                ));
+            };
+            normalized
         };
         let old_model = app.model_display_label();
         let model_changed = app.auto_model || app.model != model_id;

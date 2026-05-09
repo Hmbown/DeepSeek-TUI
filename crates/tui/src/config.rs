@@ -2288,8 +2288,9 @@ fn normalize_model_for_provider(provider: ApiProvider, model: &str) -> Option<St
     normalize_model_name(model).map(|normalized| model_for_provider(provider, normalized))
 }
 
-fn provider_passes_model_through(provider: ApiProvider) -> bool {
+pub(crate) fn provider_passes_model_through(provider: ApiProvider) -> bool {
     matches!(provider, ApiProvider::Openai | ApiProvider::Ollama)
+
 }
 
 fn provider_entry_uses_custom_base_url(provider: ApiProvider, entry: &ProviderConfig) -> bool {
