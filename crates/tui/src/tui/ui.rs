@@ -1200,33 +1200,50 @@ async fn run_event_loop(
                                         app.goal.auto_continue_turn_count
                                     ));
                                 } else {
-                                    // Include the goal context so the model
-                                    // can re-orient across many turns.
-                                    let goal_context_block = app
+                                    // Build a structured, actionable
+                                    // continuation prompt. The model
+                                    // should see:
+                                    //   1. What was just done
+                                    //   2. What remains
+                                    //   3. What to do next (exactly)
+                                    let goal_label = app
+                                        .goal
+                                        .goal_objective
+                                        .as_deref()
+                                        .map(|obj| {
+                                            format!("Goal: {obj}")
+                                        })
+                                        .unwrap_or_default();
+                                    let goal_context = app
                                         .goal
                                         .goal_context
                                         .as_deref()
-                                        .map(|ctx| {
-                                            format!(
-                                                "\n\n## Goal Context (from /goal set time)\n\n{ctx}"
-                                            )
-                                        })
-                                        .unwrap_or_default();
-                                    let decomposition_hint =
+                                        .unwrap_or("");
+                                    let progress_note =
                                         if let Some(prev) =
                                             app.goal.prev_pending_count
                                             && incomplete < prev
                                         {
-                                            // Todo was just completed:
-                                            // prompt to split next tasks.
-                                            "\n\nProgress made. Review the Goal Context above and split the \
-                                             next set of tasks from the remaining goal. \
-                                             Add them with checklist_add."
+                                            format!(
+                                                "\nA todo was just completed — {} items remain. \
+                                                 Review the goal and split the next concrete \
+                                                 task(s) with checklist_add before continuing.",
+                                                incomplete
+                                            )
                                         } else {
-                                            ""
+                                            format!(
+                                                "\n{} todo(s) remain.",
+                                                incomplete
+                                            )
                                         };
                                     let msg = format!(
-                                        "Continue working on the remaining todo items.\n\n{recap}{goal_context_block}{decomposition_hint}"
+                                        "{goal_label}\n\n{goal_context}\n\n---\n\n{recap}\n\n---\n\n\
+                                         ACTION: Pick the next pending todo. \
+                                         Mark it in_progress with checklist_update. \
+                                         Complete it using tools. \
+                                         Verify with tests/build. \
+                                         Mark it completed with checklist_update.{progress_note}\n\n\
+                                         Move exactly one item from ○ or ⏳ to ✓ this turn."
                                     );
                                     app.queued_messages.push_back(QueuedMessage::new(msg, None));
                                     app.goal.auto_continue_turn_count += 1;
@@ -6405,8 +6422,18 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
             app.pending_todo_count()
         ));
         let recap = app.recap_text();
+        let progress_note = format!(
+            "\n{} todo(s) remain. Pick the next one, mark it in_progress, \
+             complete it, verify, and mark it completed.",
+            app.pending_todo_count()
+        );
         let msg = format!(
-            "Continue working on the remaining todo items.\n\n{recap}"
+            "{recap}\n\n---\n\n\
+             ACTION: Resume working. Pick the next pending todo. \
+             Mark it in_progress with checklist_update. \
+             Complete it using tools. \
+             Verify with tests/build. \
+             Mark it completed with checklist_update.{progress_note}"
         );
         app.queued_messages.push_back(QueuedMessage::new(msg, None));
     }
