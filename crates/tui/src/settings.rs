@@ -309,6 +309,16 @@ impl Settings {
             self.low_motion = true;
             self.fancy_animations = false;
         }
+        // VS Code's integrated terminal sets TERM_PROGRAM=vscode. Its
+        // compositor cannot keep up with 120 FPS redraws and produces rapid
+        // flickering (#1356). Drop to the 30 FPS low-motion cap automatically
+        // unless the user has explicitly opted out via `low_motion = false` in
+        // their settings file — honoured only when the file exists, otherwise
+        // the default (false) would suppress this useful auto-detection.
+        if std::env::var("TERM_PROGRAM").as_deref() == Ok("vscode") {
+            self.low_motion = true;
+            self.fancy_animations = false;
+        }
     }
 
     /// Save settings to disk
@@ -879,6 +889,65 @@ mod tests {
         // SAFETY: cleanup under the guard.
         unsafe {
             std::env::remove_var("NO_ANIMATIONS");
+        }
+    }
+
+    /// Serialise tests that mutate `TERM_PROGRAM` through this guard.
+    fn term_program_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        GUARD.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn vscode_term_program_forces_low_motion_on() {
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        // SAFETY: serialised by the guard.
+        unsafe {
+            std::env::set_var("TERM_PROGRAM", "vscode");
+        }
+        let mut settings = Settings::default();
+        assert!(!settings.low_motion, "default is animated");
+        settings.apply_env_overrides();
+        assert!(
+            settings.low_motion,
+            "TERM_PROGRAM=vscode must enable low_motion to prevent flickering (#1356)"
+        );
+        assert!(
+            !settings.fancy_animations,
+            "TERM_PROGRAM=vscode must disable fancy_animations"
+        );
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+        }
+    }
+
+    #[test]
+    fn non_vscode_term_program_does_not_force_low_motion() {
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        for program in ["iTerm.app", "Apple_Terminal", "WezTerm", "xterm-256color"] {
+            // SAFETY: serialised by the guard.
+            unsafe {
+                std::env::set_var("TERM_PROGRAM", program);
+            }
+            let mut s = Settings::default();
+            s.apply_env_overrides();
+            assert!(
+                !s.low_motion,
+                "TERM_PROGRAM={program:?} should not force low_motion"
+            );
+        }
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
         }
     }
 
