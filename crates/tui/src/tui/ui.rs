@@ -2266,7 +2266,11 @@ async fn run_event_loop(
                     continue;
                 }
                 KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.view_stack.push(SessionPickerView::new());
+                    // Scope the picker to the current workspace so Ctrl+R
+                    // never restores a different project's history by
+                    // surprise (#1395). Press `a` inside the picker to
+                    // broaden to every saved session.
+                    app.view_stack.push(SessionPickerView::new(&app.workspace));
                     continue;
                 }
                 KeyCode::Char('c') | KeyCode::Char('C') if is_copy_shortcut(&key) => {
