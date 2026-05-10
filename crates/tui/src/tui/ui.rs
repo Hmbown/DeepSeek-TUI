@@ -5911,6 +5911,15 @@ async fn handle_view_events(
                 app.finalize_streaming_assistant_as_interrupted();
                 app.status_message = Some("Request cancelled".to_string());
             }
+            ViewEvent::CopyToClipboard { text } => {
+                let _ = app.clipboard.write_text(&text);
+                let preview = if text.len() > 80 {
+                    format!("{}… ({} chars)", &text[..80], text.len())
+                } else {
+                    text.clone()
+                };
+                app.status_message = Some(format!("Copied: {preview}"));
+            }
         }
     }
 

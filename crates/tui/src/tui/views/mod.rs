@@ -103,6 +103,9 @@ pub enum ViewEvent {
     UserInputCancelled {
         tool_id: String,
     },
+    CopyToClipboard {
+        text: String,
+    },
     ConfigUpdated {
         key: String,
         value: String,

@@ -10,6 +10,7 @@
 //! - `Ctrl+F` / PageDown / Space — full page down
 //! - `Ctrl+B` / PageUp / Shift+Space — full page up
 //! - `/` — start search; `n` / `N` — next / previous match
+//! - `y` — yank all content to clipboard
 //! - `q` / Esc — close pager
 
 use std::cell::Cell;
@@ -29,7 +30,8 @@ use crate::tui::views::{ModalKind, ModalView, ViewAction};
 
 /// Footer hint shown along the bottom border of the pager. Kept short so it
 /// fits on narrow terminals; full reference lives in the module docs.
-const FOOTER_HINT_NAV: &str = " j/k scroll  Space page  Ctrl+D/U half  g/G top/bottom  / search";
+const FOOTER_HINT_NAV: &str =
+    " j/k scroll  Space page  Ctrl+D/U half  g/G top/bottom  / search  y yank";
 const FOOTER_HINT_EXIT: &str = " q/Esc close ";
 
 pub struct PagerView {
@@ -305,6 +307,11 @@ impl ModalView for PagerView {
                 self.scroll_to_bottom(max_scroll);
                 self.pending_g = false;
                 ViewAction::None
+            }
+            KeyCode::Char('y') => {
+                self.pending_g = false;
+                let text = self.plain_lines.join("\n");
+                ViewAction::Emit(crate::tui::views::ViewEvent::CopyToClipboard { text })
             }
             KeyCode::Char('/') => {
                 self.start_search();
@@ -663,7 +670,15 @@ mod tests {
     fn footer_hint_includes_new_bindings() {
         // The rendered pager must surface the new vim-style bindings to
         // the user; check the footer hint covers the headline keys.
-        for needle in &["j/k", "g/G", "Space", "Ctrl+D", "/ search", "q/Esc close"] {
+        for needle in &[
+            "j/k",
+            "g/G",
+            "Space",
+            "Ctrl+D",
+            "/ search",
+            "y yank",
+            "q/Esc close",
+        ] {
             let full_hint = format!("{FOOTER_HINT_EXIT}{FOOTER_HINT_NAV}");
             assert!(
                 full_hint.contains(needle),
