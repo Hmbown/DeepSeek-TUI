@@ -1058,7 +1058,6 @@ async fn run_event_loop(
                                 &msg,
                                 idle_threshold,
                                 app.last_interaction_time,
-                                crate::tui::notifications::MAX_IDLE_WAIT,
                             );
                         }
 
@@ -1284,7 +1283,6 @@ async fn run_event_loop(
                                 &msg,
                                 idle_threshold,
                                 app.last_interaction_time,
-                                crate::tui::notifications::MAX_IDLE_WAIT,
                             );
                         }
                         if should_recapture_terminal {
