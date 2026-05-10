@@ -2301,11 +2301,11 @@ mod tests {
             ..Default::default()
         };
 
-        // Each message ~500 tokens; 1100 messages → ~550K total tokens.
+        // Each message ~60,000 tokens; 11 messages → ~660K total tokens.
         // That's above the floor (500K) AND below the deliberately high
         // token_threshold, so auto-compaction stays off — by threshold,
         // not floor.
-        let messages: Vec<Message> = (0..1100).map(|_| msg("user", &"x".repeat(2000))).collect();
+        let messages: Vec<Message> = (0..11).map(|_| msg("user", &"hello ".repeat(60_000))).collect();
         assert!(!should_compact(&messages, &config, None, None, None));
 
         // Crank threshold below total → compaction fires now that we're
