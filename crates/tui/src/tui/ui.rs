@@ -37,7 +37,6 @@ use crate::audit::log_sensitive_event;
 use crate::automation_manager::{AutomationManager, AutomationSchedulerConfig, spawn_scheduler};
 use crate::client::{DeepSeekClient, build_cache_warmup_request};
 use crate::commands;
-use crate::compaction::estimate_input_tokens_conservative;
 use crate::config::{ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL};
 use crate::config_ui::{self, ConfigUiMode, WebConfigSession, WebConfigSessionEvent};
 use crate::core::coherence::CoherenceState;
@@ -1097,7 +1096,7 @@ async fn run_event_loop(
                             ),
                             Err(err) => sanitize_stream_chunk(&format!("Error: {err}")),
                         };
-                        app.api_messages.push(Message {
+                        app.push_api_message(Message {
                             role: "user".to_string(),
                             content: vec![ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
@@ -1363,7 +1362,7 @@ async fn run_event_loop(
                         workspace,
                     } => {
                         app.current_session_id = Some(session_id);
-                        app.api_messages = messages;
+                        app.set_api_messages(messages);
                         app.system_prompt = system_prompt;
                         if app.auto_model {
                             app.last_effective_model = Some(model);
@@ -3827,7 +3826,7 @@ fn push_assistant_message(
         )
     });
     if has_sendable_content {
-        app.api_messages.push(Message {
+        app.push_api_message(Message {
             role: "assistant".to_string(),
             content: blocks,
         });
@@ -4362,7 +4361,7 @@ async fn dispatch_user_message(
     let history_cell = app.history.len().saturating_sub(1);
     app.record_context_references(history_cell, message_index, references);
     app.scroll_to_bottom();
-    app.api_messages.push(Message {
+    app.push_api_message(Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
             text: content.clone(),
@@ -5738,7 +5737,7 @@ async fn steer_user_message(
     });
     let history_cell = app.history.len().saturating_sub(1);
     app.record_context_references(history_cell, message_index, references);
-    app.api_messages.push(Message {
+    app.push_api_message(Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
             text: content.clone(),
@@ -6723,7 +6722,7 @@ fn apply_backtrack(app: &mut App, depth: usize) {
         }
     }
     if let Some(idx) = cut {
-        app.api_messages.truncate(idx);
+        app.truncate_api_messages(idx);
     }
 
     // Hand the dropped text back to the user so they can edit + resend.
@@ -6803,7 +6802,7 @@ async fn apply_provider_picker_api_key(
 
 fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     let (messages, recovered_draft) = recover_interrupted_user_tail(&session.messages);
-    app.api_messages = messages;
+    app.set_api_messages(messages);
     app.clear_history();
     app.tool_cells.clear();
     app.tool_details_by_cell.clear();
@@ -8188,11 +8187,7 @@ fn jump_to_adjacent_tool_cell(app: &mut App, direction: SearchDirection) -> bool
 }
 
 fn estimated_context_tokens(app: &App) -> Option<i64> {
-    i64::try_from(estimate_input_tokens_conservative(
-        &app.api_messages,
-        app.system_prompt.as_ref(),
-    ))
-    .ok()
+    i64::try_from(app.session.estimated_context_tokens).ok()
 }
 
 fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {

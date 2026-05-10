@@ -653,10 +653,7 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
     ]));
 
     // ── Token usage ──────────────────────────────────────────────
-    let total_tokens = crate::compaction::estimate_input_tokens_conservative(
-        &app.api_messages,
-        app.system_prompt.as_ref(),
-    );
+    let total_tokens = app.session.estimated_context_tokens;
     let window = crate::models::context_window_for_model(&app.model).unwrap_or(1_048_576);
     let pct = if window > 0 {
         ((total_tokens as f64 / window as f64) * 100.0).clamp(0.0, 100.0)

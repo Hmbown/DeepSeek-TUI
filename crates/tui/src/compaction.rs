@@ -1087,13 +1087,22 @@ async fn create_summary(
     // Pre-flight check: ensure payload fits within model context limit
     if let Some(window) = context_window_for_model(model) {
         let max_out = request.max_tokens;
-        let mut estimated = estimate_input_tokens_conservative(&request.messages, request.system.as_ref());
+        let mut raw_message_tokens = estimate_tokens(&request.messages);
+        let system_tokens = estimate_system_tokens_conservative(request.system.as_ref()).saturating_mul(11).div_ceil(10);
         let mut dropped_count = 0;
-        
-        while estimated.saturating_add(max_out as usize) > window as usize && request.messages.len() > 1 {
-            request.messages.remove(0);
+        while request.messages.len() > 1 {
+            let message_tokens_scaled = raw_message_tokens.saturating_mul(11).div_ceil(10);
+            let framing_overhead = request.messages.len().saturating_mul(12).saturating_add(48);
+            let estimated = message_tokens_scaled.saturating_add(system_tokens).saturating_add(framing_overhead);
+
+            if estimated.saturating_add(max_out as usize) <= window as usize {
+                break;
+            }
+
+            let removed = request.messages.remove(0);
+            raw_message_tokens = raw_message_tokens.saturating_sub(estimate_tokens_for_message(&removed, message_has_tool_use(&removed)));
             dropped_count += 1;
-            
+
             // Keep dropping if the new first message is a tool result or assistant message,
             // to ensure we always start the truncated history with a clean user message.
             while request.messages.len() > 1 {
@@ -1102,15 +1111,13 @@ async fn create_summary(
                 if is_clean_user {
                     break;
                 }
-                request.messages.remove(0);
+                let removed = request.messages.remove(0);
+                raw_message_tokens = raw_message_tokens.saturating_sub(estimate_tokens_for_message(&removed, message_has_tool_use(&removed)));
                 dropped_count += 1;
             }
-            
-            estimated = estimate_input_tokens_conservative(&request.messages, request.system.as_ref());
         }
-        
-        if dropped_count > 0 {
-            logging::warn(format!(
+
+        if dropped_count > 0 {            logging::warn(format!(
                 "Compaction summary payload exceeded API limit. Dropped {} oldest messages to fit.",
                 dropped_count
             ));

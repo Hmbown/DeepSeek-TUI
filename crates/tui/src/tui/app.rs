@@ -691,6 +691,7 @@ pub struct SessionState {
     pub last_reasoning_replay_tokens: Option<u32>,
     pub total_tokens: u32,
     pub total_conversation_tokens: u32,
+    pub estimated_context_tokens: usize,
     pub turn_cache_history: VecDeque<TurnCacheRecord>,
     pub last_cache_inspection: Option<PromptInspection>,
 }
@@ -712,6 +713,7 @@ impl Default for SessionState {
             last_reasoning_replay_tokens: None,
             total_tokens: 0,
             total_conversation_tokens: 0,
+            estimated_context_tokens: 0,
             turn_cache_history: VecDeque::new(),
             last_cache_inspection: None,
         }
@@ -3912,6 +3914,28 @@ impl App {
                 .unwrap_or(DEFAULT_TEXT_MODEL);
         }
         &self.model
+    }
+
+    pub fn recalculate_token_estimate(&mut self) {
+        self.session.estimated_context_tokens = crate::compaction::estimate_input_tokens_conservative(
+            &self.api_messages,
+            self.system_prompt.as_ref(),
+        );
+    }
+
+    pub fn push_api_message(&mut self, message: Message) {
+        self.api_messages.push(message);
+        self.recalculate_token_estimate();
+    }
+
+    pub fn set_api_messages(&mut self, messages: Vec<Message>) {
+        self.api_messages = messages;
+        self.recalculate_token_estimate();
+    }
+
+    pub fn truncate_api_messages(&mut self, len: usize) {
+        self.api_messages.truncate(len);
+        self.recalculate_token_estimate();
     }
 
     pub fn model_display_label(&self) -> String {

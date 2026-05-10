@@ -2070,6 +2070,7 @@ fn context_usage_snapshot_prefers_estimate_when_reported_exceeds_window() {
             cache_control: None,
         }],
     }];
+    app.recalculate_token_estimate();
 
     let (used, max, percent) =
         context_usage_snapshot(&app).expect("context usage should be available");
@@ -2090,6 +2091,7 @@ fn context_usage_snapshot_prefers_estimate_when_reported_is_inflated_by_old_reas
             cache_control: None,
         }],
     }];
+    app.recalculate_token_estimate();
 
     let (used, max, percent) =
         context_usage_snapshot(&app).expect("context usage should be available");
@@ -2149,6 +2151,7 @@ fn context_usage_snapshot_prefers_live_estimate_while_loading() {
             cache_control: None,
         }],
     }];
+    app.recalculate_token_estimate();
 
     let estimated = estimated_context_tokens(&app).expect("estimated context should be available");
     let (used, max, percent) =
@@ -2172,6 +2175,7 @@ fn should_auto_compact_before_send_respects_threshold_and_setting() {
 
     // High estimated context + auto_compact ON → auto-compact triggers.
     app.api_messages = big_buffer.clone();
+    app.recalculate_token_estimate();
     app.auto_compact = true;
     assert!(should_auto_compact_before_send(&app));
 
@@ -2191,6 +2195,7 @@ fn should_auto_compact_before_send_respects_threshold_and_setting() {
             cache_control: None,
         }],
     }];
+    app.recalculate_token_estimate();
     app.auto_compact = true;
     app.session.last_prompt_tokens = Some(10_000);
     assert!(!should_auto_compact_before_send(&app));
