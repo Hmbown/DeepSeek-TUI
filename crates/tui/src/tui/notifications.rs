@@ -182,10 +182,12 @@ fn native_notify(msg: &str) {
                 return;
             }
             // Fallback: plain osascript notification (no click-to-focus).
+            // Escape backslashes and double-quotes to prevent AppleScript injection.
+            let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
             let _ = std::process::Command::new("osascript")
                 .arg("-e")
                 .arg(format!(
-                    "display notification \"{msg}\" with title \"DeepSeek TUI\""
+                    "display notification \"{escaped}\" with title \"DeepSeek TUI\""
                 ))
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -329,60 +331,39 @@ pub const DEFAULT_IDLE_THRESHOLD: Duration = Duration::from_secs(6);
 /// Maximum time to wait for user to become idle before giving up.
 pub const MAX_IDLE_WAIT: Duration = Duration::from_secs(300);
 
-/// How often to poll for idle state.
-const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(6);
-
-/// Emit a notification when the user becomes idle after a turn completes.
+/// Emit a notification when the user is idle after a turn completes.
 ///
-/// If `idle_threshold` is zero, falls back to [`notify_done`] behavior
-/// (fixed elapsed-time check against the same value as `threshold`).
+/// If `idle_threshold` is zero, fires immediately (old fixed-elapsed behavior).
 ///
 /// Otherwise, checks whether the user has been idle (no keyboard input)
-/// for at least `idle_threshold` seconds. If already idle, fires
-/// immediately. If not, spawns a background thread that polls every
-/// 6 seconds and fires when idle is detected, up to `max_wait`.
+/// for at least `idle_threshold` seconds at the time of this call.
+/// If already idle, fires immediately. If not idle, the notification is
+/// silently skipped — the user is actively watching the output and doesn't
+/// need an alert.
+///
+/// This mirrors Claude Code's approach: notify when the user has tabbed
+/// away or stopped typing, not while they're actively engaged.
 pub fn notify_after_idle(
     method: Method,
     in_tmux: bool,
     msg: &str,
     idle_threshold: Duration,
     last_interaction: std::time::Instant,
-    max_wait: Duration,
 ) {
-    // Zero threshold → old fixed-elapsed behavior (threshold == elapsed check
-    // is done by caller; this function just fires immediately).
+    // Zero threshold → fire immediately (old behavior).
     if idle_threshold.is_zero() {
         let effective = resolve_effective_method(method);
         emit_notification(effective, in_tmux, msg);
         return;
     }
 
+    // Check if user is currently idle.
     let elapsed_since_input = last_interaction.elapsed();
     if elapsed_since_input >= idle_threshold {
-        // Already idle — fire immediately.
         let effective = resolve_effective_method(method);
         emit_notification(effective, in_tmux, msg);
-        return;
     }
-
-    // Spawn a polling thread.
-    let msg = msg.to_string();
-    let method_val = method;
-    std::thread::spawn(move || {
-        let start = std::time::Instant::now();
-        loop {
-            std::thread::sleep(IDLE_POLL_INTERVAL);
-            if start.elapsed() >= max_wait {
-                return; // Give up after max_wait.
-            }
-            // We can't check last_interaction here from the thread, so we
-            // just fire after the first poll interval. The caller should
-            // re-check at each poll. For simplicity, fire after one interval.
-            let effective = resolve_effective_method(method_val);
-            emit_notification(effective, in_tmux, &msg);
-            return;
-        }
-    });
+    // Not idle → skip. User is actively watching the output.
 }
 
 /// Resolve `Auto` to a concrete method.
