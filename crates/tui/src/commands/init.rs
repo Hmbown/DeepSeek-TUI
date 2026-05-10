@@ -49,19 +49,42 @@ fn ensure_deepseek_gitignored(workspace: &Path) {
     let entry = ".deepseek/";
 
     // Read existing contents (if any) and check whether the entry is already present.
+    // Check both with and without trailing slash to catch variants like
+    // ".deepseek" and ".deepseek/".
     if let Ok(existing) = std::fs::read_to_string(&gitignore) {
-        if existing.lines().any(|line| line.trim() == entry) {
+        let entry_no_slash = entry.trim_end_matches('/');
+        if existing.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed == entry || trimmed == entry_no_slash
+        }) {
             return; // already ignored
         }
     }
 
     // Append the entry. If .gitignore doesn't exist yet, create it with a header.
+    // Ensure there's a trailing newline before our entry to avoid joining with
+    // a previous unterminated line.
     use std::io::Write;
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&gitignore)
     {
+        // If the file is non-empty and doesn't end with a newline, add one first.
+        if let Ok(meta) = file.metadata() {
+            if meta.len() > 0 {
+                // Read last byte to check for trailing newline.
+                if let Ok(mut f) = std::fs::File::open(&gitignore) {
+                    use std::io::Seek;
+                    if f.seek(std::io::SeekFrom::End(-1)).is_ok() {
+                        let mut buf = [0u8; 1];
+                        if f.read_exact(&mut buf).is_ok() && buf[0] != b'\n' {
+                            let _ = writeln!(file);
+                        }
+                    }
+                }
+            }
+        }
         let _ = writeln!(file, "{entry}");
     }
 }
@@ -360,5 +383,37 @@ version = "1.0.0"
         ensure_deepseek_gitignored(tmpdir.path());
 
         assert!(!tmpdir.path().join(".gitignore").exists());
+    }
+
+    #[test]
+    fn ensure_deepseek_gitignored_handles_no_trailing_newline() {
+        let tmpdir = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmpdir.path().join(".git")).unwrap();
+        // Write a file that does NOT end with a newline.
+        std::fs::write(tmpdir.path().join(".gitignore"), "target/").unwrap();
+
+        ensure_deepseek_gitignored(tmpdir.path());
+
+        let content = std::fs::read_to_string(tmpdir.path().join(".gitignore")).unwrap();
+        // Must have both entries on separate lines.
+        assert!(content.contains("target/"));
+        assert!(content.contains(".deepseek/"));
+        // The entries should be on different lines.
+        let lines: Vec<&str> = content.lines().collect();
+        assert!(lines.len() >= 2);
+    }
+
+    #[test]
+    fn ensure_deepseek_gitignored_detects_variant_without_slash() {
+        let tmpdir = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmpdir.path().join(".git")).unwrap();
+        // Write .deepseek without trailing slash.
+        std::fs::write(tmpdir.path().join(".gitignore"), ".deepseek\n").unwrap();
+
+        ensure_deepseek_gitignored(tmpdir.path());
+
+        let content = std::fs::read_to_string(tmpdir.path().join(".gitignore")).unwrap();
+        // Should NOT add a duplicate entry.
+        assert_eq!(content.matches(".deepseek").count(), 1);
     }
 }
