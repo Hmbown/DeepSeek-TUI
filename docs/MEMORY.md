@@ -4,7 +4,7 @@ The user-memory feature gives the model a small persistent note file
 that's injected into the system prompt on every turn. It's the place
 to put preferences and conventions that should survive across
 sessions — "I prefer pytest over unittest", "this codebase uses
-4-space indentation", "always run `cargo fmt` before committing" —
+4-space indentation", "this repo runs `cargo fmt` before commits" —
 without having to repeat them in every conversation.
 
 Memory is **opt-in**. When disabled (the default), nothing is loaded,
