@@ -845,6 +845,7 @@ async fn run_event_loop(
                     EngineEvent::TurnStarted { turn_id } => {
                         app.is_loading = true;
                         app.offline_mode = false;
+                        app.turn_error_posted = false;
                         app.dispatch_started_at = None;
                         current_streaming_text.clear();
                         app.streaming_state.reset();
@@ -941,7 +942,14 @@ async fn run_event_loop(
                             recorded_at: Instant::now(),
                         });
                         if let Some(error) = error {
-                            app.status_message = Some(format!("Turn failed: {error}"));
+                            // Only show "Turn failed:" in the composer status
+                            // area when an EngineEvent::Error has NOT already
+                            // posted the same message into the transcript.
+                            // Otherwise the error appears twice: once in a
+                            // HistoryCell and again as a redundant status line.
+                            if !app.turn_error_posted {
+                                app.status_message = Some(format!("Turn failed: {error}"));
+                            }
                         }
 
                         // Update session cost
@@ -3172,6 +3180,7 @@ pub(crate) fn apply_engine_error_to_app(
     });
     app.is_loading = false;
     app.dispatch_started_at = None;
+    app.turn_error_posted = true;
     if matches!(
         envelope.category,
         crate::error_taxonomy::ErrorCategory::Authentication
@@ -3185,14 +3194,12 @@ pub(crate) fn apply_engine_error_to_app(
         );
         return;
     }
-    if recoverable {
-        app.status_message = Some(format!("Connection interrupted: {message}"));
-    } else {
+    if !recoverable {
         app.offline_mode = true;
-        app.status_message = Some(format!(
-            "Engine error; queued messages stay pending: {message}"
-        ));
     }
+    // Error is already in the transcript as HistoryCell::Error above;
+    // don't emit a redundant status_message that would become a sticky
+    // toast in the footer — that duplicates the transcript entry.
 }
 
 fn persist_offline_queue_state(app: &App) {

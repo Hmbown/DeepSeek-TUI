@@ -3865,13 +3865,10 @@ fn recoverable_engine_error_does_not_enter_offline_mode() {
         "recoverable error must keep the session online so the user can retry"
     );
     assert!(!app.is_loading);
-    let status = app
-        .status_message
-        .as_deref()
-        .expect("recoverable errors must set a status message");
+    assert!(app.turn_error_posted, "turn_error_posted must be set");
     assert!(
-        status.starts_with("Connection interrupted"),
-        "expected interrupt-style status, got {status:?}"
+        app.status_message.is_none(),
+        "recoverable error should NOT set status_message — already in transcript as HistoryCell::Error"
     );
 
     // Sanity: the rendered cell is the categorized Error variant, not a plain System note.
@@ -3905,13 +3902,10 @@ fn non_recoverable_engine_error_enters_offline_mode() {
         "non-recoverable error must enter offline mode"
     );
     assert!(!app.is_loading);
-    let status = app
-        .status_message
-        .as_deref()
-        .expect("non-recoverable errors must set a status message");
+    assert!(app.turn_error_posted, "turn_error_posted must be set");
     assert!(
-        status.starts_with("Engine error"),
-        "expected engine-error status, got {status:?}"
+        app.status_message.is_none(),
+        "non-recoverable error should NOT set status_message — already in transcript as HistoryCell::Error"
     );
 }
 
@@ -3935,6 +3929,7 @@ fn env_only_auth_failure_reopens_api_key_onboarding() {
         "env-only auth failures should prompt for a saved config key"
     );
     assert!(app.onboarding_needs_api_key);
+    assert!(app.turn_error_posted, "turn_error_posted must be set");
     let status = app
         .status_message
         .as_deref()
