@@ -564,6 +564,7 @@ mod tests {
             duration_ms: None,
             source: ExecSource::Assistant,
             interaction: None,
+                output_summary: None,
         }))
     }
 

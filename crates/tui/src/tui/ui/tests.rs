@@ -246,6 +246,8 @@ fn selection_to_text_copies_rendered_transcript_block() {
             output: Some("tool output line".to_string()),
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         })),
         HistoryCell::Assistant {
             content: "copy assistant".to_string(),
@@ -1194,6 +1196,7 @@ fn active_tool_status_label_summarizes_live_tool_group() {
             duration_ms: None,
             source: ExecSource::Assistant,
             interaction: None,
+                output_summary: None,
         })),
     );
     active.push_tool(
@@ -1205,6 +1208,8 @@ fn active_tool_status_label_summarizes_live_tool_group() {
             output: Some("done".to_string()),
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         })),
     );
     app.active_cell = Some(active);
@@ -1231,6 +1236,8 @@ fn active_tool_status_label_counts_foreground_rlm_work() {
             output: None,
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         })),
     );
     app.active_cell = Some(active);
@@ -2493,6 +2500,8 @@ fn jump_to_adjacent_tool_cell_finds_next_and_previous() {
             output: Some("done".to_string()),
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         })),
         HistoryCell::Assistant {
             content: "ok".to_string(),
@@ -2505,6 +2514,8 @@ fn jump_to_adjacent_tool_cell_finds_next_and_previous() {
             output: Some("...".to_string()),
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         })),
     ];
     app.mark_history_updated();
@@ -2561,6 +2572,8 @@ fn detail_target_prefers_visible_tool_card() {
             output: Some("done".to_string()),
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         })),
         HistoryCell::Assistant {
             content: "ok".to_string(),
@@ -2573,6 +2586,8 @@ fn detail_target_prefers_visible_tool_card() {
             output: Some("...".to_string()),
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         })),
     ];
     app.tool_details_by_cell.insert(
@@ -2664,6 +2679,8 @@ fn spillover_pager_section_returns_none_when_no_spillover() {
         output: Some("hi".to_string()),
         prompts: None,
         spillover_path: None,
+            output_summary: None,
+            is_diff: false,
     }))];
     app.resync_history_revisions();
     assert!(spillover_pager_section(&app, 0).is_none());
@@ -2685,6 +2702,8 @@ fn spillover_pager_section_loads_file_when_present() {
         output: Some("(truncated head)".to_string()),
         prompts: None,
         spillover_path: Some(path.clone()),
+            output_summary: None,
+            is_diff: false,
     }))];
     app.resync_history_revisions();
 
@@ -2708,6 +2727,8 @@ fn spillover_pager_section_returns_notice_when_file_missing() {
         output: Some("(truncated head)".to_string()),
         prompts: None,
         spillover_path: Some(bogus),
+            output_summary: None,
+            is_diff: false,
     }))];
     app.resync_history_revisions();
 
@@ -2731,6 +2752,7 @@ fn terminal_pause_has_live_owner_only_for_running_exec_cells() {
             duration_ms: None,
             source: ExecSource::Assistant,
             interaction: Some("interactive".to_string()),
+                output_summary: None,
         })),
     );
     app.active_cell = Some(active);
@@ -2746,6 +2768,8 @@ fn terminal_pause_has_live_owner_only_for_running_exec_cells() {
             output: None,
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         })),
     );
     app.active_cell = Some(active);
@@ -2769,6 +2793,8 @@ fn active_rlm_task_entries_surface_foreground_rlm_work() {
             output: None,
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         })),
     );
     app.active_cell = Some(active);
@@ -4266,6 +4292,8 @@ fn checklist_write_renders_dedicated_card() {
         ),
         prompts: None,
         spillover_path: None,
+            output_summary: None,
+            is_diff: false,
     };
     let lines = cell.lines_with_mode(80, true, crate::tui::history::RenderMode::Live);
     let text: Vec<String> = lines

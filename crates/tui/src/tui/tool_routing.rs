@@ -11,7 +11,8 @@ use crate::tui::app::{App, ToolDetailRecord};
 use crate::tui::history::{
     DiffPreviewCell, ExecCell, ExecSource, ExploringEntry, GenericToolCell, HistoryCell,
     McpToolCell, PatchSummaryCell, PlanStep, PlanUpdateCell, ReviewCell, ToolCell, ToolStatus,
-    ViewImageCell, WebSearchCell, summarize_mcp_output, summarize_tool_args, summarize_tool_output,
+    ViewImageCell, WebSearchCell, output_looks_like_diff, summarize_mcp_output,
+    summarize_tool_args, summarize_tool_output,
 };
 
 #[allow(clippy::too_many_lines)]
@@ -109,6 +110,7 @@ pub(super) fn handle_tool_call_started(
                     duration_ms: None,
                     source,
                     interaction: Some(summary.clone()),
+                    output_summary: None,
                 })),
             );
             return;
@@ -140,6 +142,7 @@ pub(super) fn handle_tool_call_started(
                 duration_ms: None,
                 source,
                 interaction: None,
+                output_summary: None,
             })),
         );
         return;
@@ -258,6 +261,8 @@ pub(super) fn handle_tool_call_started(
             output: None,
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         })),
     );
 }
@@ -473,11 +478,15 @@ pub(super) fn handle_tool_call_complete(
                         .and_then(serde_json::Value::as_u64);
                     if status != ToolStatus::Running && exec.interaction.is_none() {
                         exec.output = Some(tool_result.content.clone());
+                        exec.output_summary =
+                            Some(super::history::summarize_tool_output(&tool_result.content));
                     }
                 } else if let Err(err) = result.as_ref()
                     && exec.interaction.is_none()
                 {
                     exec.output = Some(err.to_string());
+                    exec.output_summary =
+                        Some(super::history::summarize_tool_output(&err.to_string()));
                 }
                 app.mark_history_updated();
             }
@@ -553,10 +562,17 @@ pub(super) fn handle_tool_call_complete(
                 generic.status = status;
                 match result.as_ref() {
                     Ok(tool_result) => {
-                        generic.output = Some(summarize_tool_output(&tool_result.content));
+                        generic.output = Some(tool_result.content.clone());
+                        generic.output_summary =
+                            Some(summarize_tool_output(&tool_result.content));
+                        generic.is_diff =
+                            output_looks_like_diff(&tool_result.content);
                     }
                     Err(err) => {
                         generic.output = Some(err.to_string());
+                        generic.output_summary =
+                            Some(summarize_tool_output(&err.to_string()));
+                        generic.is_diff = false;
                     }
                 }
                 app.mark_history_updated();
@@ -638,6 +654,12 @@ fn push_orphan_tool_completion(
         .and_then(|m| m.get("spillover_path"))
         .and_then(serde_json::Value::as_str)
         .map(std::path::PathBuf::from);
+    let output_summary = output
+        .as_deref()
+        .map(|o| summarize_tool_output(o));
+    let is_diff = output
+        .as_deref()
+        .is_some_and(|o| output_looks_like_diff(o));
     app.add_message(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
         name: name.to_string(),
         status,
@@ -645,6 +667,8 @@ fn push_orphan_tool_completion(
         output,
         prompts: None,
         spillover_path,
+        output_summary,
+        is_diff,
     })));
     let cell_index = app.history.len().saturating_sub(1);
     app.tool_details_by_cell.insert(
