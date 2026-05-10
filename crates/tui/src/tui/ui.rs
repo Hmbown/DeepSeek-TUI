@@ -39,7 +39,7 @@ use crate::core::coherence::CoherenceState;
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::Event as EngineEvent;
 use crate::core::ops::Op;
-use crate::hooks::HookEvent;
+use crate::hooks::{HookEvent, MessageSubmitOutcome};
 use crate::llm_client::LlmClient;
 use crate::models::{
     ContentBlock, Message, MessageRequest, SystemPrompt, Usage, context_window_for_model,
@@ -940,7 +940,7 @@ async fn run_event_loop(
                             reasoning_replay_tokens: usage.reasoning_replay_tokens,
                             recorded_at: Instant::now(),
                         });
-                        if let Some(error) = error {
+                        if let Some(error) = error.as_deref() {
                             app.status_message = Some(format!("Turn failed: {error}"));
                         }
 
@@ -957,6 +957,8 @@ async fn run_event_loop(
                         if let Some(cost) = turn_cost {
                             app.accrue_session_cost_estimate(cost);
                         }
+
+                        execute_turn_end_hooks(app, &usage, status, error.as_deref(), turn_elapsed);
 
                         // Emit OSC 9 / BEL desktop notification for long turns.
                         if status == crate::core::events::TurnOutcomeStatus::Completed
@@ -3755,19 +3757,29 @@ async fn dispatch_user_message(
     app: &mut App,
     config: &Config,
     engine_handle: &EngineHandle,
-    message: QueuedMessage,
+    mut message: QueuedMessage,
 ) -> Result<()> {
-    // #455 (observer-only): fire `message_submit` hooks before
-    // dispatch. Hooks see the user's display text via the
-    // `with_message` builder. Read-only — they can log, audit, or
-    // notify but cannot mutate the message that goes to the engine.
-    // Fast-path skip when no hooks configured.
+    // Fire `message_submit` before dispatch. Synchronous hooks may return
+    // `{"text":"..."}` on stdout to replace the message, or exit 2 to block.
+    // Non-JSON stdout preserves the old observer-only behavior.
     if app
         .hooks
         .has_hooks_for_event(crate::hooks::HookEvent::MessageSubmit)
     {
         let context = app.base_hook_context().with_message(&message.display);
-        let _ = app.execute_hooks(crate::hooks::HookEvent::MessageSubmit, &context);
+        match app.hooks.execute_message_submit(&context, &message.display) {
+            MessageSubmitOutcome::Continue { text, .. } => {
+                message.display = text;
+            }
+            MessageSubmitOutcome::Block { reason, .. } => {
+                restore_blocked_message_to_composer(app, &message.display);
+                app.status_message = Some(format!("Submission blocked by hook: {reason}"));
+                app.is_loading = false;
+                app.dispatch_started_at = None;
+                app.last_send_at = None;
+                return Ok(());
+            }
+        }
     }
 
     // Set immediately to prevent double-dispatch before TurnStarted event arrives.
@@ -3899,6 +3911,58 @@ async fn dispatch_user_message(
     }
 
     Ok(())
+}
+
+fn restore_blocked_message_to_composer(app: &mut App, message: &str) {
+    if app.input.trim().is_empty() {
+        app.input = message.to_string();
+        app.cursor_position = app.input.chars().count();
+        app.selected_attachment_index = None;
+        app.needs_redraw = true;
+    }
+}
+
+fn execute_turn_end_hooks(
+    app: &App,
+    usage: &Usage,
+    status: crate::core::events::TurnOutcomeStatus,
+    error: Option<&str>,
+    turn_elapsed: Duration,
+) {
+    if !app.hooks.has_hooks_for_event(HookEvent::TurnEnd) {
+        return;
+    }
+
+    let status_label = match status {
+        crate::core::events::TurnOutcomeStatus::Completed => "completed",
+        crate::core::events::TurnOutcomeStatus::Interrupted => "interrupted",
+        crate::core::events::TurnOutcomeStatus::Failed => "failed",
+    };
+    let duration_ms = u64::try_from(turn_elapsed.as_millis()).unwrap_or(u64::MAX);
+    let mut context = app
+        .base_hook_context()
+        .with_turn_status(status_label)
+        .with_turn_duration_ms(duration_ms)
+        .with_cost(app.session.session_cost + app.session.subagent_cost);
+    if let Some(error) = error {
+        context = context.with_error(error);
+    }
+    let mut payload = context.to_json_payload(HookEvent::TurnEnd);
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert(
+            "usage".to_string(),
+            serde_json::json!({
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "prompt_cache_hit_tokens": usage.prompt_cache_hit_tokens,
+                "prompt_cache_miss_tokens": usage.prompt_cache_miss_tokens,
+                "reasoning_replay_tokens": usage.reasoning_replay_tokens,
+            }),
+        );
+    }
+    let _ = app
+        .hooks
+        .execute_json(HookEvent::TurnEnd, &context, &payload);
 }
 
 fn should_resolve_auto_model_selection(app: &App) -> bool {

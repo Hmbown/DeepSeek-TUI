@@ -447,11 +447,23 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # ─────────────────────────────────────────────────────────────────────────────────
 # Hooks (optional)
 # ─────────────────────────────────────────────────────────────────────────────────
-# Hooks run shell commands on lifecycle events (session start/end, tool calls, etc.).
+# Hooks run shell commands on lifecycle events (session start/end, user submit,
+# turn end, tool calls, etc.).
 # Configure as `[[hooks.hooks]]` under a `[hooks]` table.
 #
-# Available events: session_start, session_end, message_submit,
+# Available events: session_start, session_end, message_submit, turn_end,
 # tool_call_before, tool_call_after, mode_change, on_error, shell_env.
+#
+# `message_submit` runs before a user message is sent. Hooks receive the current
+# context as JSON on stdin and compatibility env vars such as DEEPSEEK_MESSAGE.
+# Exit 0 with stdout JSON `{"text":"replacement"}` to replace the submitted
+# text. Exit 2 to block the submission; stdout JSON `{"reason":"..."}` or
+# stderr's first line is shown to the user. Empty/non-JSON stdout keeps the
+# original text, preserving observer-only hooks.
+#
+# `turn_end` runs after a turn completes and the TUI returns to idle. It receives
+# turn metadata as JSON on stdin plus env vars such as DEEPSEEK_TURN_STATUS and
+# DEEPSEEK_TURN_DURATION_MS. Prefer `background = true` for long-running hooks.
 #
 # `shell_env` (#456) is special: the hook runs immediately before each
 # `exec_shell` invocation and its stdout is parsed as `KEY=VALUE\n` lines.
@@ -469,6 +481,15 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # [[hooks.hooks]]
 # event = "session_start"
 # command = "echo 'DeepSeek TUI session started'"
+#
+# [[hooks.hooks]]
+# event = "message_submit"
+# command = "~/.deepseek/hooks/enrich-message"
+#
+# [[hooks.hooks]]
+# event = "turn_end"
+# command = "~/.deepseek/hooks/after-turn"
+# background = true
 #
 # # Inject ephemeral creds into every shell call. Output one
 # # KEY=VALUE per line on stdout (export prefix optional).

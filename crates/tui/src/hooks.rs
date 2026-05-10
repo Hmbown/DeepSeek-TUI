@@ -14,8 +14,9 @@
 #[allow(unused_imports)]
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -31,6 +32,8 @@ pub enum HookEvent {
     SessionEnd,
     /// Triggered before a user message is sent to the LLM
     MessageSubmit,
+    /// Triggered when a model turn completes and the TUI returns to idle
+    TurnEnd,
     /// Triggered before a tool is executed
     ToolCallBefore,
     /// Triggered after a tool completes (success or failure)
@@ -56,6 +59,7 @@ impl HookEvent {
             HookEvent::SessionStart => "session_start",
             HookEvent::SessionEnd => "session_end",
             HookEvent::MessageSubmit => "message_submit",
+            HookEvent::TurnEnd => "turn_end",
             HookEvent::ToolCallBefore => "tool_call_before",
             HookEvent::ToolCallAfter => "tool_call_after",
             HookEvent::ModeChange => "mode_change",
@@ -251,6 +255,10 @@ pub struct HookContext {
     pub total_tokens: Option<u32>,
     /// Session cost in USD
     pub session_cost: Option<f64>,
+    /// Final turn status (for `TurnEnd`)
+    pub turn_status: Option<String>,
+    /// Turn duration in milliseconds (for `TurnEnd`)
+    pub turn_duration_ms: Option<u64>,
 }
 
 impl HookContext {
@@ -328,6 +336,38 @@ impl HookContext {
         self
     }
 
+    pub fn with_turn_status(mut self, status: &str) -> Self {
+        self.turn_status = Some(status.to_string());
+        self
+    }
+
+    pub fn with_turn_duration_ms(mut self, duration_ms: u64) -> Self {
+        self.turn_duration_ms = Some(duration_ms);
+        self
+    }
+
+    pub fn to_json_payload(&self, event: HookEvent) -> serde_json::Value {
+        json!({
+            "event": event.as_str(),
+            "tool_name": self.tool_name,
+            "tool_args": self.tool_args,
+            "tool_result": self.tool_result,
+            "tool_exit_code": self.tool_exit_code,
+            "tool_success": self.tool_success,
+            "mode": self.mode,
+            "previous_mode": self.previous_mode,
+            "session_id": self.session_id,
+            "message": self.message,
+            "error": self.error_message,
+            "workspace": self.workspace.as_ref().map(|path| path.display().to_string()),
+            "model": self.model,
+            "total_tokens": self.total_tokens,
+            "session_cost": self.session_cost,
+            "turn_status": self.turn_status,
+            "turn_duration_ms": self.turn_duration_ms,
+        })
+    }
+
     /// Convert to environment variables
     pub fn to_env_vars(&self) -> HashMap<String, String> {
         let mut env = HashMap::new();
@@ -398,9 +438,24 @@ impl HookContext {
         if let Some(cost) = self.session_cost {
             env.insert("DEEPSEEK_SESSION_COST".to_string(), format!("{cost:.6}"));
         }
+        if let Some(ref status) = self.turn_status {
+            env.insert("DEEPSEEK_TURN_STATUS".to_string(), status.clone());
+        }
+        if let Some(duration_ms) = self.turn_duration_ms {
+            env.insert(
+                "DEEPSEEK_TURN_DURATION_MS".to_string(),
+                duration_ms.to_string(),
+            );
+        }
 
         env
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum MessageSubmitOutcome {
+    Continue { text: String },
+    Block { reason: String },
 }
 
 /// Result of a hook execution
@@ -557,6 +612,85 @@ impl HookExecutor {
 
     /// Execute all hooks for an event
     pub fn execute(&self, event: HookEvent, context: &HookContext) -> Vec<HookResult> {
+        self.execute_with_optional_stdin(event, context, None)
+    }
+
+    /// Execute hooks with a JSON stdin payload. The payload is additive:
+    /// existing environment variables stay populated for compatibility.
+    pub fn execute_json(
+        &self,
+        event: HookEvent,
+        context: &HookContext,
+        payload: &serde_json::Value,
+    ) -> Vec<HookResult> {
+        let stdin = serde_json::to_string(payload).unwrap_or_else(|_| "{}".to_string());
+        self.execute_with_optional_stdin(event, context, Some(&stdin))
+    }
+
+    pub fn execute_message_submit(
+        &self,
+        context: &HookContext,
+        original_text: &str,
+    ) -> MessageSubmitOutcome {
+        if !self.config.enabled {
+            return MessageSubmitOutcome::Continue {
+                text: original_text.to_string(),
+            };
+        }
+
+        let hooks = self.config.hooks_for_event(HookEvent::MessageSubmit);
+        if hooks.is_empty() {
+            return MessageSubmitOutcome::Continue {
+                text: original_text.to_string(),
+            };
+        }
+
+        let mut current_text = original_text.to_string();
+
+        for hook in hooks {
+            if !self.matches_condition(hook, context) {
+                continue;
+            }
+
+            let hook_context = context.clone().with_message(&current_text);
+            let env_vars = hook_context.to_env_vars();
+            let mut payload = hook_context.to_json_payload(HookEvent::MessageSubmit);
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("text".to_string(), json!(current_text));
+            }
+            let stdin = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+            let result = if hook.background {
+                self.execute_background_with_stdin(hook, &env_vars, Some(stdin))
+            } else {
+                self.execute_sync_with_stdin(hook, &env_vars, Some(&stdin))
+            };
+
+            if result.exit_code == Some(2) {
+                let reason = message_submit_block_reason(&result);
+                return MessageSubmitOutcome::Block { reason };
+            }
+
+            if !result.success {
+                self.log_hook_failure(HookEvent::MessageSubmit, &result);
+            } else if let Some(text) = message_submit_text_from_stdout(&result.stdout) {
+                current_text = text;
+            }
+
+            let should_continue = result.success || hook.continue_on_error;
+            if !should_continue {
+                break;
+            }
+        }
+
+        MessageSubmitOutcome::Continue { text: current_text }
+    }
+
+    fn execute_with_optional_stdin(
+        &self,
+        event: HookEvent,
+        context: &HookContext,
+        stdin: Option<&str>,
+    ) -> Vec<HookResult> {
         if !self.config.enabled {
             return Vec::new();
         }
@@ -579,9 +713,13 @@ impl HookExecutor {
             }
 
             let result = if hook.background {
-                self.execute_background(hook, &env_vars)
+                self.execute_background_with_stdin(
+                    hook,
+                    &env_vars,
+                    stdin.map(std::string::ToString::to_string),
+                )
             } else {
-                self.execute_sync(hook, &env_vars)
+                self.execute_sync_with_stdin(hook, &env_vars, stdin)
             };
 
             // Log failures via tracing so operators tailing
@@ -589,17 +727,7 @@ impl HookExecutor {
             // without instrumenting each call site. Successful runs
             // log nothing (would be too noisy on per-tool events).
             if !result.success {
-                let label = result.name.as_deref().unwrap_or("(unnamed)");
-                tracing::warn!(
-                    target: "hooks",
-                    hook = label,
-                    event = event.as_str(),
-                    exit_code = ?result.exit_code,
-                    duration_ms = result.duration.as_millis() as u64,
-                    error = result.error.as_deref().unwrap_or(""),
-                    stderr_head = %result.stderr.lines().next().unwrap_or(""),
-                    "hook failed"
-                );
+                self.log_hook_failure(event, &result);
             }
 
             let should_continue = result.success || hook.continue_on_error;
@@ -611,6 +739,20 @@ impl HookExecutor {
         }
 
         results
+    }
+
+    fn log_hook_failure(&self, event: HookEvent, result: &HookResult) {
+        let label = result.name.as_deref().unwrap_or("(unnamed)");
+        tracing::warn!(
+            target: "hooks",
+            hook = label,
+            event = event.as_str(),
+            exit_code = ?result.exit_code,
+            duration_ms = result.duration.as_millis() as u64,
+            error = result.error.as_deref().unwrap_or(""),
+            stderr_head = %result.stderr.lines().next().unwrap_or(""),
+            "hook failed"
+        );
     }
 
     /// Check if a hook's condition matches the context
@@ -659,6 +801,15 @@ impl HookExecutor {
 
     /// Execute a hook synchronously
     fn execute_sync(&self, hook: &Hook, env_vars: &HashMap<String, String>) -> HookResult {
+        self.execute_sync_with_stdin(hook, env_vars, None)
+    }
+
+    fn execute_sync_with_stdin(
+        &self,
+        hook: &Hook,
+        env_vars: &HashMap<String, String>,
+        stdin_payload: Option<&str>,
+    ) -> HookResult {
         let started = Instant::now();
         let working_dir = self
             .config
@@ -672,13 +823,17 @@ impl HookExecutor {
             .unwrap_or(hook.timeout_secs);
         let timeout = Duration::from_secs(timeout_secs);
 
-        let mut child = match Self::build_shell_command(&hook.command)
+        let mut command = Self::build_shell_command(&hook.command);
+        command
             .current_dir(&working_dir)
             .envs(env_vars)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
+            .stderr(Stdio::piped());
+        if stdin_payload.is_some() {
+            command.stdin(Stdio::piped());
+        }
+
+        let mut child = match command.spawn() {
             Ok(child) => child,
             Err(e) => {
                 return HookResult {
@@ -692,6 +847,12 @@ impl HookExecutor {
                 };
             }
         };
+
+        if let Some(payload) = stdin_payload
+            && let Some(mut stdin) = child.stdin.take()
+        {
+            let _ = stdin.write_all(payload.as_bytes());
+        }
 
         fn read_pipe(mut pipe: impl Read) -> String {
             let mut buf = String::new();
@@ -734,8 +895,12 @@ impl HookExecutor {
         }
     }
 
-    /// Execute a hook in the background (non-blocking)
-    fn execute_background(&self, hook: &Hook, env_vars: &HashMap<String, String>) -> HookResult {
+    fn execute_background_with_stdin(
+        &self,
+        hook: &Hook,
+        env_vars: &HashMap<String, String>,
+        stdin_payload: Option<String>,
+    ) -> HookResult {
         let started = Instant::now();
         let working_dir = self
             .config
@@ -749,10 +914,24 @@ impl HookExecutor {
 
         // Spawn in a detached thread
         std::thread::spawn(move || {
-            let _ = HookExecutor::build_shell_command(&cmd)
+            let mut command = HookExecutor::build_shell_command(&cmd);
+            command
                 .current_dir(&wd)
                 .envs(&env)
-                .output();
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            if stdin_payload.is_some() {
+                command.stdin(Stdio::piped());
+            }
+            let Ok(mut child) = command.spawn() else {
+                return;
+            };
+            if let Some(payload) = stdin_payload
+                && let Some(mut stdin) = child.stdin.take()
+            {
+                let _ = stdin.write_all(payload.as_bytes());
+            }
+            let _ = child.wait();
         });
 
         // Return immediately with success (background execution is fire-and-forget)
@@ -766,6 +945,36 @@ impl HookExecutor {
             error: None,
         }
     }
+}
+
+fn message_submit_text_from_stdout(stdout: &str) -> Option<String> {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    value
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+fn message_submit_block_reason(result: &HookResult) -> String {
+    let trimmed = result.stdout.trim();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed)
+        && let Some(reason) = value
+            .get("reason")
+            .or_else(|| value.get("message"))
+            .and_then(serde_json::Value::as_str)
+        && !reason.trim().is_empty()
+    {
+        return reason.to_string();
+    }
+    let stderr_head = result.stderr.lines().next().unwrap_or("").trim();
+    if !stderr_head.is_empty() {
+        return stderr_head.to_string();
+    }
+    "message_submit hook blocked the submission".to_string()
 }
 
 /// Parse `KEY=VALUE\n` lines from a `shell_env` hook's stdout into a map.
@@ -853,6 +1062,8 @@ NOEQUAL line dropped
     #[test]
     fn test_hook_event_as_str() {
         assert_eq!(HookEvent::SessionStart.as_str(), "session_start");
+        assert_eq!(HookEvent::MessageSubmit.as_str(), "message_submit");
+        assert_eq!(HookEvent::TurnEnd.as_str(), "turn_end");
         assert_eq!(HookEvent::ToolCallAfter.as_str(), "tool_call_after");
         assert_eq!(HookEvent::ModeChange.as_str(), "mode_change");
     }
@@ -1003,6 +1214,7 @@ NOEQUAL line dropped
             HookEvent::SessionStart,
             HookEvent::SessionEnd,
             HookEvent::MessageSubmit,
+            HookEvent::TurnEnd,
             HookEvent::ToolCallBefore,
             HookEvent::ToolCallAfter,
             HookEvent::ModeChange,
@@ -1047,5 +1259,103 @@ NOEQUAL line dropped
         assert!(!executor.has_hooks_for_event(HookEvent::ToolCallAfter));
         assert!(!executor.has_hooks_for_event(HookEvent::OnError));
         assert!(!executor.has_hooks_for_event(HookEvent::ModeChange));
+    }
+
+    #[cfg(not(windows))]
+    fn shell_quote(input: &str) -> String {
+        format!("'{}'", input.replace('\'', "'\"'\"'"))
+    }
+
+    #[cfg(not(windows))]
+    fn printf_command(output: &str) -> String {
+        format!("printf %s {}", shell_quote(output))
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn message_submit_hook_replaces_text_from_json_stdout() {
+        let command = printf_command(r#"{"text":"changed"}"#);
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::MessageSubmit, &command)],
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, PathBuf::from("."));
+        let context = HookContext::new().with_message("original");
+
+        let outcome = executor.execute_message_submit(&context, "original");
+
+        match outcome {
+            MessageSubmitOutcome::Continue { text } => assert_eq!(text, "changed"),
+            MessageSubmitOutcome::Block { reason, .. } => {
+                panic!("unexpected block: {reason}");
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn message_submit_hook_blocks_on_exit_two() {
+        let command = format!("{}; exit 2", printf_command(r#"{"reason":"nope"}"#));
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::MessageSubmit, &command)],
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, PathBuf::from("."));
+        let context = HookContext::new().with_message("original");
+
+        let outcome = executor.execute_message_submit(&context, "original");
+
+        match outcome {
+            MessageSubmitOutcome::Block { reason } => assert_eq!(reason, "nope"),
+            MessageSubmitOutcome::Continue { text, .. } => {
+                panic!("unexpected continue: {text}");
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn message_submit_hook_preserves_text_for_legacy_stdout() {
+        let command = printf_command("legacy observer output");
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::MessageSubmit, &command)],
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, PathBuf::from("."));
+        let context = HookContext::new().with_message("original");
+
+        let outcome = executor.execute_message_submit(&context, "original");
+
+        match outcome {
+            MessageSubmitOutcome::Continue { text, .. } => assert_eq!(text, "original"),
+            MessageSubmitOutcome::Block { reason, .. } => {
+                panic!("unexpected block: {reason}");
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn json_hook_stdin_contains_event_context() {
+        let command = "grep -q '\"event\":\"turn_end\"' && printf %s ok";
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::TurnEnd, command)],
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, PathBuf::from("."));
+        let context = HookContext::new()
+            .with_turn_status("completed")
+            .with_turn_duration_ms(123);
+        let payload = context.to_json_payload(HookEvent::TurnEnd);
+
+        let results = executor.execute_json(HookEvent::TurnEnd, &context, &payload);
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].success);
+        assert_eq!(results[0].stdout, "ok");
     }
 }

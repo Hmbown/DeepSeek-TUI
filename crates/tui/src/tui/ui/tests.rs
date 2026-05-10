@@ -2,6 +2,8 @@ use super::*;
 use crate::config::{ApiProvider, Config};
 use crate::config_ui::{self, WebConfigSession, WebConfigSessionEvent};
 use crate::core::engine::mock_engine_handle;
+#[cfg(not(windows))]
+use crate::hooks::{Hook, HookEvent, HookExecutor, HooksConfig};
 use crate::tui::file_mention::{
     apply_mention_menu_selection, find_file_mention_completions, partial_file_mention_at_cursor,
     try_autocomplete_file_mention, user_request_with_file_mentions, visible_mention_menu_entries,
@@ -15,6 +17,16 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
+
+#[cfg(not(windows))]
+fn shell_quote(input: &str) -> String {
+    format!("'{}'", input.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(not(windows))]
+fn printf_command(output: &str) -> String {
+    format!("printf %s {}", shell_quote(output))
+}
 
 #[test]
 fn format_resume_hint_uses_canonical_resume_command() {
@@ -2385,6 +2397,100 @@ async fn dismissed_plan_prompt_leaves_non_numeric_input_for_normal_send_path() {
         app.status_message.as_deref(),
         Some("Offline: 1 queued — ↑ to edit, /queue list")
     );
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+async fn message_submit_hook_mutates_dispatched_content() {
+    let mut app = create_test_app();
+    let command = printf_command(r#"{"text":"changed by hook"}"#);
+    app.hooks = HookExecutor::new(
+        HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::MessageSubmit, &command)],
+            ..HooksConfig::default()
+        },
+        app.workspace.clone(),
+    );
+    let mut engine = mock_engine_handle();
+    let config = Config::default();
+
+    let queued = build_queued_message(&mut app, "original".to_string());
+    submit_or_steer_message(&mut app, &config, &engine.handle, queued)
+        .await
+        .expect("submit");
+
+    let op = engine.rx_op.recv().await.expect("send op");
+    match op {
+        Op::SendMessage { content, .. } => assert_eq!(content, "changed by hook"),
+        other => panic!("expected SendMessage, got {other:?}"),
+    }
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+async fn message_submit_hook_exit_two_blocks_submission_and_restores_input() {
+    let mut app = create_test_app();
+    let command = format!("{}; exit 2", printf_command(r#"{"reason":"blocked"}"#));
+    app.hooks = HookExecutor::new(
+        HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::MessageSubmit, &command)],
+            ..HooksConfig::default()
+        },
+        app.workspace.clone(),
+    );
+    let mut engine = mock_engine_handle();
+    let config = Config::default();
+
+    let queued = build_queued_message(&mut app, "do not send".to_string());
+    submit_or_steer_message(&mut app, &config, &engine.handle, queued)
+        .await
+        .expect("blocked submit still returns ok");
+
+    assert!(engine.rx_op.try_recv().is_err());
+    assert_eq!(app.input, "do not send");
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Submission blocked by hook: blocked")
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn turn_end_hook_receives_status_duration_and_token_context() {
+    let dir = TempDir::new().expect("tempdir");
+    let output = dir.path().join("turn-end.txt");
+    let command = format!(
+        "printf %s \"$DEEPSEEK_TURN_STATUS:$DEEPSEEK_TURN_DURATION_MS:$DEEPSEEK_TOTAL_TOKENS\" > {}",
+        shell_quote(&output.display().to_string())
+    );
+    let mut app = create_test_app();
+    app.session.total_tokens = 42;
+    app.hooks = HookExecutor::new(
+        HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::TurnEnd, &command)],
+            ..HooksConfig::default()
+        },
+        app.workspace.clone(),
+    );
+    let usage = Usage {
+        input_tokens: 1,
+        output_tokens: 2,
+        ..Usage::default()
+    };
+
+    execute_turn_end_hooks(
+        &app,
+        &usage,
+        crate::core::events::TurnOutcomeStatus::Completed,
+        None,
+        Duration::from_millis(123),
+    );
+
+    let written = std::fs::read_to_string(output).expect("hook output");
+    assert_eq!(written, "completed:123:42");
 }
 
 #[tokio::test]

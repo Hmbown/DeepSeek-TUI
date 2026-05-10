@@ -258,6 +258,18 @@ obvious when hooks are globally suppressed. Hooks are
 configured under `[[hooks.hooks]]` entries — see the existing
 hook-system documentation for the full schema.
 
+`message_submit` hooks run before a user message is dispatched. They receive
+context JSON on stdin and the usual `DEEPSEEK_*` environment variables. A
+synchronous hook may print `{"text":"replacement"}` to stdout to replace the
+submitted text, or exit with code `2` to block the submission. Empty or
+non-JSON stdout leaves the original text unchanged for compatibility with
+observer-only hooks.
+
+`turn_end` hooks run after a model turn completes and the TUI is idle again.
+They receive turn metadata on stdin and environment variables such as
+`DEEPSEEK_TURN_STATUS` and `DEEPSEEK_TURN_DURATION_MS`. Use `background = true`
+for hooks that do slow follow-up work.
+
 ### Composer stash (`/stash`, Ctrl+S)
 
 Press **Ctrl+S** in the composer to park the current draft to
