@@ -8,6 +8,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Component, Path};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -17,6 +18,7 @@ use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::child_env;
 use crate::network_policy::{Decision, NetworkPolicyDecider, host_from_url};
@@ -288,6 +290,10 @@ pub struct StdioTransport {
     child: Child,
     stdin: ChildStdin,
     reader: tokio::io::BufReader<ChildStdout>,
+    /// Tail of stderr lines from the spawned MCP server. A background task
+    /// drains the child's stderr into this buffer so a mid-run crash leaves
+    /// some context behind instead of `Stdio::null` swallowing it.
+    stderr_tail: Arc<StderrTail>,
 }
 
 /// How long `StdioTransport::shutdown` waits for the child to exit on SIGTERM
@@ -295,6 +301,54 @@ pub struct StdioTransport {
 /// can't stall TUI exit; well-behaved servers almost always exit within
 /// a few hundred ms.
 const STDIO_SHUTDOWN_GRACE: Duration = Duration::from_millis(2_000);
+
+/// How many lines of MCP-server stderr to keep around for crash diagnostics.
+/// Bounded so a chatty server can't grow this without limit; large enough to
+/// catch typical Node/Python startup or panic output.
+const STDERR_TAIL_CAPACITY: usize = 64;
+
+/// Bounded ring buffer for the most recent stderr lines from a spawned MCP
+/// server. Used by `StdioTransport` to surface server-side context when the
+/// transport read side fails (server crashed, exited early, etc).
+#[derive(Default)]
+pub struct StderrTail {
+    lines: TokioMutex<VecDeque<String>>,
+}
+
+impl StderrTail {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            lines: TokioMutex::new(VecDeque::with_capacity(STDERR_TAIL_CAPACITY)),
+        })
+    }
+
+    async fn push(&self, line: String) {
+        let mut buf = self.lines.lock().await;
+        if buf.len() >= STDERR_TAIL_CAPACITY {
+            buf.pop_front();
+        }
+        buf.push_back(line);
+    }
+
+    async fn snapshot(&self) -> Vec<String> {
+        self.lines.lock().await.iter().cloned().collect()
+    }
+}
+
+/// Format the captured stderr tail for inclusion in an error message. Empty
+/// tails return `None` so the caller can fall back to its original message.
+async fn format_stderr_context(tail: &StderrTail) -> Option<String> {
+    let lines = tail.snapshot().await;
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "MCP server stderr (last {} line{}):\n{}",
+        lines.len(),
+        if lines.len() == 1 { "" } else { "s" },
+        lines.join("\n"),
+    ))
+}
 
 /// Best-effort SIGTERM. On Unix uses `libc::kill`; on Windows there's no
 /// equivalent so we let `kill_on_drop` (TerminateProcess) handle it via the
@@ -334,8 +388,19 @@ impl McpTransport for StdioTransport {
         let mut line = String::new();
         loop {
             line.clear();
-            let bytes = self.reader.read_line(&mut line).await?;
+            let bytes = match self.reader.read_line(&mut line).await {
+                Ok(b) => b,
+                Err(err) => {
+                    if let Some(stderr) = format_stderr_context(&self.stderr_tail).await {
+                        anyhow::bail!("Stdio transport read error: {err}\n{stderr}");
+                    }
+                    return Err(err.into());
+                }
+            };
             if bytes == 0 {
+                if let Some(stderr) = format_stderr_context(&self.stderr_tail).await {
+                    anyhow::bail!("Stdio transport closed\n{stderr}");
+                }
                 anyhow::bail!("Stdio transport closed");
             }
 
@@ -883,7 +948,7 @@ impl McpConnection {
             cmd.args(&config.args)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
                 .kill_on_drop(true);
 
             // MCP stdio servers are user-configured integrations. Use the
@@ -903,11 +968,28 @@ impl McpConnection {
 
             let stdin = child.stdin.take().context("Failed to get MCP stdin")?;
             let stdout = child.stdout.take().context("Failed to get MCP stdout")?;
+            let stderr = child.stderr.take().context("Failed to get MCP stderr")?;
+
+            // Drain stderr into a bounded ring buffer so a crash mid-run
+            // leaves diagnostic breadcrumbs instead of disappearing into
+            // `Stdio::null`. The task exits naturally when the child closes
+            // its stderr (kill_on_drop / exit / explicit shutdown).
+            let stderr_tail = StderrTail::new();
+            {
+                let tail = Arc::clone(&stderr_tail);
+                tokio::spawn(async move {
+                    let mut lines = tokio::io::BufReader::new(stderr).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        tail.push(line).await;
+                    }
+                });
+            }
 
             Box::new(StdioTransport {
                 child,
                 stdin,
                 reader: tokio::io::BufReader::new(stdout),
+                stderr_tail,
             })
         } else {
             anyhow::bail!(
@@ -1026,6 +1108,10 @@ impl McpConnection {
                 break;
             }
         }
+        // Sort by tool name so the order the model sees doesn't depend on
+        // server-side pagination ordering — keeps the prompt prefix stable
+        // for cache-hit purposes (#1319).
+        self.tools.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(())
     }
 
@@ -1459,6 +1545,9 @@ impl McpPool {
                 tools.push((format!("mcp_{}_{}", server, tool.name), tool));
             }
         }
+        // Sort by prefixed name so iteration order across servers is
+        // deterministic for prefix-cache stability (#1319).
+        tools.sort_by(|a, b| a.0.cmp(&b.0));
         tools
     }
 
@@ -1734,6 +1823,9 @@ impl McpPool {
             });
         }
 
+        // Sort by name for prefix-cache stability — the tool block sent to
+        // the model needs to be deterministic across runs (#1319).
+        api_tools.sort_by(|a, b| a.name.cmp(&b.name));
         api_tools
     }
 
@@ -2538,6 +2630,49 @@ mod tests {
         assert!(pool.all_tools().is_empty());
     }
 
+    /// #1319: discovered tools must be sorted by name so the prompt prefix
+    /// is stable across runs (cache-hit stability), even when the server
+    /// returns them in arbitrary or paginated order.
+    #[tokio::test]
+    async fn discover_tools_sorts_by_name_for_cache_stability() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let transport = ScriptedValueTransport {
+            sent: Arc::clone(&sent),
+            responses: VecDeque::from([
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "tools": [
+                            { "name": "zeta", "inputSchema": {} },
+                            { "name": "alpha", "inputSchema": {} }
+                        ],
+                        "nextCursor": "page-2"
+                    }
+                })),
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "result": {
+                        "tools": [
+                            { "name": "mu", "inputSchema": {} },
+                            { "name": "beta", "inputSchema": {} }
+                        ]
+                    }
+                })),
+            ]),
+        };
+        let mut conn = test_connection(Box::new(transport));
+        conn.discover_tools().await.expect("discover");
+
+        let names: Vec<&str> = conn.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["alpha", "beta", "mu", "zeta"],
+            "tools must be sorted by name regardless of server order or pagination"
+        );
+    }
+
     /// #1244: when an MCP stdio server fails to spawn, the underlying OS
     /// error (e.g. ENOENT for a missing binary) must reach the user via the
     /// snapshot.error string. Regression test for `err.to_string()` dropping
@@ -2782,6 +2917,7 @@ mod tests {
             child,
             stdin,
             reader: tokio::io::BufReader::new(stdout),
+            stderr_tail: StderrTail::new(),
         };
 
         // shutdown() should send SIGTERM and complete within the grace window.
@@ -2803,6 +2939,64 @@ mod tests {
         assert!(
             !still_alive,
             "child {pid} survived StdioTransport::shutdown — SIGTERM not delivered"
+        );
+    }
+
+    /// Mid-run MCP server crash: the v0.8.x spawn path used `Stdio::null` for
+    /// stderr, so a server that died with a useful stderr message left the
+    /// caller with only "Stdio transport closed". Now stderr is piped into a
+    /// bounded ring buffer and surfaced when the read side fails.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_transport_recv_error_includes_stderr_tail() {
+        use tokio::process::Command as TokioCommand;
+
+        let mut cmd = TokioCommand::new("sh");
+        cmd.arg("-c")
+            .arg("echo 'mcp-server: failed to load plugin' 1>&2; exit 1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+
+        let mut child = cmd.spawn().expect("spawn sh");
+        let stdin = child.stdin.take().expect("stdin");
+        let stdout = child.stdout.take().expect("stdout");
+        let stderr = child.stderr.take().expect("stderr");
+
+        let stderr_tail = StderrTail::new();
+        {
+            let tail = Arc::clone(&stderr_tail);
+            tokio::spawn(async move {
+                let mut lines = tokio::io::BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    tail.push(line).await;
+                }
+            });
+        }
+
+        let mut transport = StdioTransport {
+            child,
+            stdin,
+            reader: tokio::io::BufReader::new(stdout),
+            stderr_tail,
+        };
+
+        // Give the subprocess time to write its stderr line and exit.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let err = transport
+            .recv()
+            .await
+            .expect_err("expected transport closed error");
+        let err_str = format!("{err}");
+        assert!(
+            err_str.contains("Stdio transport closed"),
+            "missing closed marker in: {err_str}"
+        );
+        assert!(
+            err_str.contains("mcp-server: failed to load plugin"),
+            "stderr context missing from error: {err_str}"
         );
     }
 

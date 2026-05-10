@@ -221,7 +221,7 @@ fn selection_to_text_handles_multiline_and_reversed_endpoints() {
         column: 6,
     });
 
-    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\n▏ gam"));
+    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\ngam"));
 }
 
 #[test]
@@ -276,10 +276,19 @@ fn selection_to_text_copies_rendered_transcript_block() {
 
     let selected = selection_to_text(&app).expect("selection text");
     assert!(selected.contains("Note copy system"), "{selected:?}");
-    assert!(selected.contains("▎ copy user"), "{selected:?}");
+    assert!(selected.contains("copy user"), "{selected:?}");
     assert!(selected.contains("copy thinking"), "{selected:?}");
     assert!(selected.contains("tool output line"), "{selected:?}");
-    assert!(selected.contains("● copy assistant"), "{selected:?}");
+    assert!(selected.contains("copy assistant"), "{selected:?}");
+    // #1163: tool-card middle lines are rendered with a `│ ` left rail
+    // glyph, but that decoration must not leak into copied text. Assert
+    // no isolated rail glyph survives at the start of any line.
+    for (idx, line) in selected.lines().enumerate() {
+        assert!(
+            !line.starts_with("\u{2502} "),
+            "line {idx} retained tool-card rail prefix: {line:?}"
+        );
+    }
 }
 
 #[test]
@@ -385,8 +394,11 @@ fn jump_to_latest_button_click_scrolls_to_tail() {
     assert!(!app.viewport.transcript_selection.dragging);
 }
 
+/// Clicking the transcript scrollbar gutter starts a scrollbar drag (not
+/// text selection) so the visible thumb remains interactive for users who
+/// prefer mouse-based navigation.
 #[test]
-fn transcript_scrollbar_gutter_is_not_draggable() {
+fn transcript_scrollbar_gutter_starts_scrollbar_drag() {
     let mut app = create_test_app();
     app.history = vec![HistoryCell::Assistant {
         content: "alpha beta".to_string(),
@@ -410,6 +422,8 @@ fn transcript_scrollbar_gutter_is_not_draggable() {
     app.viewport.transcript_scroll = TranscriptScroll::to_bottom();
     app.user_scrolled_during_stream = false;
 
+    // Left-down on the scrollbar gutter (column == right edge) starts a
+    // scrollbar drag, not a transcript selection.
     let events = handle_mouse_event(
         &mut app,
         MouseEvent {
@@ -421,10 +435,17 @@ fn transcript_scrollbar_gutter_is_not_draggable() {
     );
 
     assert!(events.is_empty());
-    assert!(app.viewport.transcript_selection.dragging);
-    assert!(app.viewport.transcript_scroll.is_at_tail());
-    assert!(!app.user_scrolled_during_stream);
+    assert!(
+        app.viewport.transcript_scrollbar_dragging,
+        "gutter click should start scrollbar drag"
+    );
+    assert!(
+        !app.viewport.transcript_selection.dragging,
+        "gutter click should NOT start text selection"
+    );
 
+    // Drag moves the viewport (no assertion on exact scroll position — the
+    // mapping depends on area geometry).
     handle_mouse_event(
         &mut app,
         MouseEvent {
@@ -434,11 +455,9 @@ fn transcript_scrollbar_gutter_is_not_draggable() {
             modifiers: KeyModifiers::NONE,
         },
     );
+    assert!(app.viewport.transcript_scrollbar_dragging);
 
-    assert!(app.viewport.transcript_scroll.is_at_tail());
-    assert!(!app.user_scrolled_during_stream);
-    assert!(app.viewport.transcript_selection.dragging);
-
+    // Left-up ends the scrollbar drag.
     handle_mouse_event(
         &mut app,
         MouseEvent {
@@ -449,7 +468,7 @@ fn transcript_scrollbar_gutter_is_not_draggable() {
         },
     );
 
-    assert!(!app.viewport.transcript_selection.dragging);
+    assert!(!app.viewport.transcript_scrollbar_dragging);
 }
 
 #[test]
@@ -481,6 +500,264 @@ fn left_down_inside_transcript_starts_selection() {
 
     assert!(events.is_empty());
     assert!(app.viewport.transcript_selection.dragging);
+}
+
+#[test]
+fn drag_below_viewport_arms_autoscroll_down() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Assistant {
+        content: "alpha beta".to_string(),
+        streaming: false,
+    }];
+    app.resync_history_revisions();
+    app.viewport.transcript_cache.ensure(
+        &app.history,
+        &app.history_revisions,
+        80,
+        app.transcript_render_options(),
+    );
+    app.viewport.last_transcript_area = Some(Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 8,
+    });
+    app.viewport.last_transcript_total = app.viewport.transcript_cache.total_lines();
+    app.viewport.transcript_selection.dragging = true;
+    app.viewport.transcript_selection.anchor = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 0,
+    });
+    app.viewport.transcript_selection.head = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 0,
+    });
+
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 4,
+            row: 12, // below area.y + area.height (= 8)
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    let state = app.viewport.selection_autoscroll.expect("autoscroll armed");
+    assert_eq!(state.direction, 1);
+    assert_eq!(state.column, 4);
+}
+
+#[test]
+fn drag_above_viewport_arms_autoscroll_up() {
+    let mut app = create_test_app();
+    app.viewport.last_transcript_area = Some(Rect {
+        x: 5,
+        y: 4,
+        width: 40,
+        height: 6,
+    });
+    app.viewport.transcript_selection.dragging = true;
+    app.viewport.transcript_selection.anchor = Some(TranscriptSelectionPoint {
+        line_index: 5,
+        column: 0,
+    });
+    app.viewport.transcript_selection.head = Some(TranscriptSelectionPoint {
+        line_index: 5,
+        column: 0,
+    });
+
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 50, // outside horizontally too — clamped to area.x + width - 1
+            row: 1,     // above area.y (= 4)
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    let state = app.viewport.selection_autoscroll.expect("autoscroll armed");
+    assert_eq!(state.direction, -1);
+    assert_eq!(state.column, 5 + 40 - 1);
+}
+
+#[test]
+fn drag_back_inside_disarms_autoscroll() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Assistant {
+        content: "alpha beta".to_string(),
+        streaming: false,
+    }];
+    app.resync_history_revisions();
+    app.viewport.transcript_cache.ensure(
+        &app.history,
+        &app.history_revisions,
+        80,
+        app.transcript_render_options(),
+    );
+    app.viewport.last_transcript_area = Some(Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 8,
+    });
+    app.viewport.last_transcript_total = app.viewport.transcript_cache.total_lines();
+    app.viewport.transcript_selection.dragging = true;
+    app.viewport.transcript_selection.anchor = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 0,
+    });
+    app.viewport.transcript_selection.head = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 0,
+    });
+    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
+        direction: 1,
+        column: 4,
+        next_tick: Instant::now(),
+    });
+
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 6,
+            row: 0, // inside area
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(app.viewport.selection_autoscroll.is_none());
+    let head = app
+        .viewport
+        .transcript_selection
+        .head
+        .expect("head present");
+    assert_eq!(head.column, 6);
+}
+
+#[test]
+fn mouse_up_clears_selection_autoscroll() {
+    let mut app = create_test_app();
+    app.viewport.transcript_selection.dragging = true;
+    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
+        direction: -1,
+        column: 0,
+        next_tick: Instant::now(),
+    });
+
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(app.viewport.selection_autoscroll.is_none());
+    assert!(!app.viewport.transcript_selection.dragging);
+}
+
+#[test]
+fn tick_selection_autoscroll_advances_pending_scroll_when_due() {
+    let mut app = create_test_app();
+    app.viewport.last_transcript_area = Some(Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 8,
+    });
+    app.viewport.last_transcript_total = 200;
+    app.viewport.transcript_selection.dragging = true;
+    app.viewport.transcript_selection.anchor = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 0,
+    });
+    app.viewport.transcript_selection.head = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 0,
+    });
+    let earlier = Instant::now() - Duration::from_millis(100);
+    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
+        direction: 1,
+        column: 10,
+        next_tick: earlier,
+    });
+
+    tick_selection_autoscroll(&mut app);
+
+    assert_eq!(app.viewport.pending_scroll_delta, 1);
+    assert!(app.user_scrolled_during_stream);
+    let next_tick = app
+        .viewport
+        .selection_autoscroll
+        .expect("still armed")
+        .next_tick;
+    assert!(next_tick > earlier);
+    let head = app
+        .viewport
+        .transcript_selection
+        .head
+        .expect("head extended");
+    // Edge row for direction = +1 is the bottom of area (height - 1 = 7),
+    // so head.line_index should equal last_transcript_top + 7.
+    assert_eq!(head.line_index, 7);
+    assert_eq!(head.column, 10);
+}
+
+#[test]
+fn tick_selection_autoscroll_respects_cadence() {
+    let mut app = create_test_app();
+    app.viewport.last_transcript_area = Some(Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 8,
+    });
+    app.viewport.transcript_selection.dragging = true;
+    let future = Instant::now() + Duration::from_secs(60);
+    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
+        direction: 1,
+        column: 0,
+        next_tick: future,
+    });
+
+    tick_selection_autoscroll(&mut app);
+
+    assert_eq!(app.viewport.pending_scroll_delta, 0);
+    assert_eq!(
+        app.viewport
+            .selection_autoscroll
+            .expect("still armed")
+            .next_tick,
+        future,
+        "next_tick must not advance before its deadline"
+    );
+}
+
+#[test]
+fn tick_selection_autoscroll_clears_when_drag_ended() {
+    let mut app = create_test_app();
+    app.viewport.last_transcript_area = Some(Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 8,
+    });
+    app.viewport.transcript_selection.dragging = false;
+    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
+        direction: 1,
+        column: 0,
+        next_tick: Instant::now() - Duration::from_millis(100),
+    });
+
+    tick_selection_autoscroll(&mut app);
+
+    assert!(app.viewport.selection_autoscroll.is_none());
+    assert_eq!(app.viewport.pending_scroll_delta, 0);
 }
 
 #[test]

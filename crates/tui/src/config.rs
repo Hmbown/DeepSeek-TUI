@@ -1086,7 +1086,58 @@ impl Config {
         apply_requirements(&mut config)?;
         normalize_model_config(&mut config);
         config.validate()?;
+        config.warn_on_misplaced_root_base_url();
         Ok(config)
+    }
+
+    /// Surface a one-line warning when the user has set the legacy root
+    /// `base_url` field but their active provider is not DeepSeek (the only
+    /// provider that actually reads that field, plus an NvidiaNim back-compat
+    /// sniff). Common confusion: users add `base_url = "..."` at the top of
+    /// `~/.deepseek/config.toml` for ollama / vllm / openai-compat servers
+    /// and wonder why it's silently ignored (#1308).
+    fn warn_on_misplaced_root_base_url(&self) {
+        let Some(root_base) = self.base_url.as_deref().map(str::trim) else {
+            return;
+        };
+        if root_base.is_empty() {
+            return;
+        }
+        let provider = self.api_provider();
+        if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
+            return;
+        }
+        if matches!(provider, ApiProvider::NvidiaNim)
+            && root_base.contains("integrate.api.nvidia.com")
+        {
+            return;
+        }
+        // Only warn if the per-provider table doesn't have an explicit
+        // `base_url`, because if it does, the per-provider one wins and the
+        // root field is just dead config — no behavior surprise.
+        let has_provider_base = self
+            .provider_config_for(provider)
+            .and_then(|p| p.base_url.as_deref().map(str::trim))
+            .is_some_and(|s| !s.is_empty());
+        if has_provider_base {
+            return;
+        }
+        let table = match provider {
+            ApiProvider::Openai => "providers.openai",
+            ApiProvider::Openrouter => "providers.openrouter",
+            ApiProvider::Novita => "providers.novita",
+            ApiProvider::Fireworks => "providers.fireworks",
+            ApiProvider::Sglang => "providers.sglang",
+            ApiProvider::Vllm => "providers.vllm",
+            ApiProvider::Ollama => "providers.ollama",
+            ApiProvider::NvidiaNim => "providers.nvidia_nim",
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => return,
+        };
+        tracing::warn!(
+            "Top-level `base_url = \"{root_base}\"` is ignored for the {provider:?} provider. \
+             Move it under `[{table}]` (e.g. `[{table}]\\nbase_url = \"...\"`) \
+             or set the corresponding `*_BASE_URL` env var. (#1308)"
+        );
     }
 
     /// Validate that critical config fields are present.
@@ -1500,10 +1551,11 @@ impl Config {
         self.context.project_pack.unwrap_or(true)
     }
 
-    /// Return whether shell execution is allowed.
+    /// Return whether shell execution is allowed. Defaults to `false`: shell
+    /// access must be opted into explicitly (GHSA-72w5-pf8h-xfp4).
     #[must_use]
     pub fn allow_shell(&self) -> bool {
-        self.allow_shell.unwrap_or(true)
+        self.allow_shell.unwrap_or(false)
     }
 
     /// Return the maximum number of concurrent sub-agents.
@@ -1901,6 +1953,9 @@ fn apply_env_overrides(config: &mut Config) {
     }
     if let Ok(value) = std::env::var("DEEPSEEK_BASE_URL") {
         match config.api_provider() {
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+                config.base_url = Some(value);
+            }
             ApiProvider::NvidiaNim => {
                 config
                     .providers
@@ -1915,8 +1970,47 @@ fn apply_env_overrides(config: &mut Config) {
                     .openai
                     .base_url = Some(value);
             }
-            _ => {
-                config.base_url = Some(value);
+            ApiProvider::Openrouter => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .openrouter
+                    .base_url = Some(value);
+            }
+            ApiProvider::Novita => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .novita
+                    .base_url = Some(value);
+            }
+            ApiProvider::Fireworks => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .fireworks
+                    .base_url = Some(value);
+            }
+            ApiProvider::Sglang => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .sglang
+                    .base_url = Some(value);
+            }
+            ApiProvider::Vllm => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .vllm
+                    .base_url = Some(value);
+            }
+            ApiProvider::Ollama => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .ollama
+                    .base_url = Some(value);
             }
         }
     }
@@ -3147,6 +3241,17 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    // GHSA-72w5-pf8h-xfp4 — regression: `allow_shell` must be opt-in.
+    #[test]
+    fn allow_shell_defaults_to_false_when_unset() {
+        let config = Config::default();
+        assert_eq!(config.allow_shell, None, "default Config has no opt-in set");
+        assert!(
+            !config.allow_shell(),
+            "Config::allow_shell() must default to false when no opt-in is recorded"
+        );
+    }
 
     #[test]
     fn network_policy_toml_maps_proxy_hosts_to_runtime_policy() {
@@ -4842,6 +4947,41 @@ model = "qwen2.5-coder:7b"
         assert_eq!(config.api_provider(), ApiProvider::Ollama);
         assert_eq!(config.default_model(), "qwen2.5-coder:7b");
         assert_eq!(config.deepseek_base_url(), "http://127.0.0.1:11434/v1");
+        Ok(())
+    }
+
+    #[test]
+    fn deepseek_base_url_env_scopes_to_self_hosted_providers() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-self-hosted-base-url-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "ollama");
+            env::set_var("DEEPSEEK_BASE_URL", "http://ollama.remote:11434/v1");
+        }
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Ollama);
+        assert_eq!(config.deepseek_base_url(), "http://ollama.remote:11434/v1");
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "vllm");
+            env::set_var("DEEPSEEK_BASE_URL", "http://vllm.remote:8000/v1");
+        }
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Vllm);
+        assert_eq!(config.deepseek_base_url(), "http://vllm.remote:8000/v1");
         Ok(())
     }
 

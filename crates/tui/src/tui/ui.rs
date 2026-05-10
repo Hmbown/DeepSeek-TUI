@@ -69,7 +69,7 @@ use crate::tui::pager::PagerView;
 use crate::tui::persistence_actor::{self, PersistRequest};
 use crate::tui::plan_prompt::PlanPromptView;
 use crate::tui::scrolling::{ScrollDirection, TranscriptScroll};
-use crate::tui::selection::TranscriptSelectionPoint;
+use crate::tui::selection::{SelectionAutoscroll, TranscriptSelectionPoint};
 use crate::tui::session_picker::SessionPickerView;
 use crate::tui::shell_job_routing::{
     add_shell_job_message, format_shell_job_list, format_shell_poll, open_shell_job_pager,
@@ -1722,6 +1722,10 @@ async fn run_event_loop(
         // Expire the "Press Ctrl+C again to quit" prompt silently after its
         // window. Triggers a redraw if the prompt was visible.
         app.tick_quit_armed();
+        // While the user is drag-selecting past the transcript edge, advance
+        // the viewport on a fixed cadence and extend the selection head so a
+        // long passage can be selected in one drag (#1163).
+        tick_selection_autoscroll(app);
         let allow_workspace_context_refresh =
             !app.is_loading && !has_running_agents && !app.is_compacting;
         refresh_workspace_context_if_needed(app, now, allow_workspace_context_refresh);
@@ -1771,6 +1775,13 @@ async fn run_event_loop(
         if let Some(deadline) = app.quit_armed_until {
             let remaining = deadline.saturating_duration_since(now);
             poll_timeout = poll_timeout.min(remaining.max(Duration::from_millis(50)));
+        }
+        // Drag-edge auto-scroll wakes the loop on its own cadence so the
+        // viewport keeps advancing while the user holds the mouse outside
+        // the transcript rect (#1163).
+        if let Some(state) = app.viewport.selection_autoscroll {
+            let remaining = state.next_tick.saturating_duration_since(now);
+            poll_timeout = poll_timeout.min(remaining);
         }
         poll_timeout = clamp_event_poll_timeout(poll_timeout);
 
@@ -7908,6 +7919,17 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
             }
         }
         MouseEventKind::Down(MouseButton::Left) => {
+            app.viewport.transcript_scrollbar_dragging = false;
+            app.viewport.selection_autoscroll = None;
+
+            // Click on the transcript scrollbar gutter starts a scrollbar
+            // drag so the visible thumb remains interactive for users who
+            // prefer mouse-based navigation.
+            if mouse_hits_transcript_scrollbar(app, mouse) {
+                app.viewport.transcript_scrollbar_dragging = true;
+                return Vec::new();
+            }
+
             if mouse_hits_rect(mouse, app.viewport.jump_to_latest_button_area) {
                 app.scroll_to_bottom();
                 return Vec::new();
@@ -7932,14 +7954,23 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            if app.viewport.transcript_selection.dragging
-                && let Some(point) = selection_point_from_mouse(app, mouse)
-            {
-                app.viewport.transcript_selection.head = Some(point);
+            if app.viewport.transcript_scrollbar_dragging {
+                scroll_transcript_to_mouse_row(app, mouse.row);
+                return Vec::new();
             }
+
+            if app.viewport.transcript_selection.dragging {
+                update_selection_drag(app, mouse);
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) if app.viewport.transcript_scrollbar_dragging => {
+            app.viewport.transcript_scrollbar_dragging = false;
+            app.viewport.selection_autoscroll = None;
+            app.needs_redraw = true;
         }
         MouseEventKind::Up(MouseButton::Left) if app.viewport.transcript_selection.dragging => {
             app.viewport.transcript_selection.dragging = false;
+            app.viewport.selection_autoscroll = None;
             if selection_has_content(app) {
                 copy_active_selection(app);
             }
@@ -7951,6 +7982,154 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
     }
 
     Vec::new()
+}
+
+fn mouse_hits_transcript_scrollbar(app: &App, mouse: MouseEvent) -> bool {
+    let Some(area) = app.viewport.last_transcript_area else {
+        return false;
+    };
+    if area.width <= 1 || app.viewport.last_transcript_total <= app.viewport.last_transcript_visible
+    {
+        return false;
+    }
+
+    let scrollbar_col = area.x.saturating_add(area.width.saturating_sub(1));
+    mouse.column == scrollbar_col
+        && mouse.row >= area.y
+        && mouse.row < area.y.saturating_add(area.height)
+}
+
+fn scroll_transcript_to_mouse_row(app: &mut App, row: u16) -> bool {
+    let Some(area) = app.viewport.last_transcript_area else {
+        return false;
+    };
+    let total = app.viewport.last_transcript_total;
+    let visible = app.viewport.last_transcript_visible;
+    if area.height == 0 || total <= visible {
+        return false;
+    }
+
+    let max_start = total.saturating_sub(visible);
+    if max_start == 0 {
+        app.scroll_to_bottom();
+        return true;
+    }
+
+    let max_row = usize::from(area.height.saturating_sub(1));
+    let relative_row = usize::from(row.saturating_sub(area.y)).min(max_row);
+    let numerator = relative_row
+        .saturating_mul(max_start)
+        .saturating_add(max_row / 2);
+    // Round to the nearest transcript offset so short thumbs still feel
+    // responsive on compact terminals.
+    let top = numerator.checked_div(max_row).unwrap_or(0);
+
+    app.viewport.transcript_scroll = if top >= max_start {
+        TranscriptScroll::to_bottom()
+    } else {
+        TranscriptScroll::at_line(top)
+    };
+    app.viewport.pending_scroll_delta = 0;
+    app.user_scrolled_during_stream = !app.viewport.transcript_scroll.is_at_tail();
+    app.needs_redraw = true;
+    true
+}
+
+/// Cadence between auto-scroll ticks while drag-selecting past the
+/// transcript edge (#1163). 30 ms ≈ 33 lines/sec, comparable to the feel
+/// of a steady scroll-wheel drag.
+const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(30);
+
+/// Update the transcript selection while the left button is dragging.
+/// When the mouse leaves the transcript rect vertically, arm
+/// `selection_autoscroll` so the main loop can advance the viewport on a
+/// fixed cadence; when the mouse returns inside, disarm it.
+fn update_selection_drag(app: &mut App, mouse: MouseEvent) {
+    if let Some(point) = selection_point_from_mouse(app, mouse) {
+        app.viewport.transcript_selection.head = Some(point);
+        app.viewport.selection_autoscroll = None;
+        return;
+    }
+
+    let Some(area) = app.viewport.last_transcript_area else {
+        return;
+    };
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
+    let direction = if mouse.row < area.y {
+        -1
+    } else if mouse.row >= area.y.saturating_add(area.height) {
+        1
+    } else {
+        // Outside horizontally only — leave selection head where it is.
+        return;
+    };
+
+    let max_col = area.x.saturating_add(area.width.saturating_sub(1));
+    let column = mouse.column.clamp(area.x, max_col);
+
+    // Fire on the next tick immediately by setting `next_tick` to now.
+    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
+        direction,
+        column,
+        next_tick: Instant::now(),
+    });
+    app.needs_redraw = true;
+}
+
+/// Advance the drag-edge auto-scroll one step if its cadence has elapsed.
+/// Called once per main-loop iteration.
+fn tick_selection_autoscroll(app: &mut App) {
+    let Some(state) = app.viewport.selection_autoscroll else {
+        return;
+    };
+
+    if !app.viewport.transcript_selection.dragging {
+        app.viewport.selection_autoscroll = None;
+        return;
+    }
+
+    let Some(area) = app.viewport.last_transcript_area else {
+        return;
+    };
+    if area.height == 0 {
+        return;
+    }
+
+    let now = Instant::now();
+    if now < state.next_tick {
+        return;
+    }
+
+    app.viewport.pending_scroll_delta = app
+        .viewport
+        .pending_scroll_delta
+        .saturating_add(state.direction);
+    app.user_scrolled_during_stream = true;
+
+    let edge_row = if state.direction < 0 {
+        area.y
+    } else {
+        area.y.saturating_add(area.height.saturating_sub(1))
+    };
+    if let Some(point) = selection_point_from_position(
+        area,
+        state.column,
+        edge_row,
+        app.viewport.last_transcript_top,
+        app.viewport.last_transcript_total,
+        app.viewport.last_transcript_padding_top,
+    ) {
+        app.viewport.transcript_selection.head = Some(point);
+    }
+
+    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
+        next_tick: now + SELECTION_AUTOSCROLL_INTERVAL,
+        ..state
+    });
+    app.needs_redraw = true;
 }
 
 fn mouse_hits_rect(mouse: MouseEvent, area: Option<Rect>) -> bool {
@@ -8240,17 +8419,35 @@ fn selection_to_text(app: &App) -> Option<String> {
     let mut selected_lines = Vec::new();
     #[allow(clippy::needless_range_loop)]
     for line_index in start_index..=end_index {
-        let line_text = line_to_plain(&lines[line_index]);
+        // Rail-prefix decorations are stored as cache metadata rather than
+        // detected from glyphs, so new decoration types are covered without
+        // changes to the copy path (#1163).
+        let rail_width = app.viewport.transcript_cache.rail_prefix_width(line_index);
+        // Convert the rendered line to plain text (strips OSC-8), then
+        // slice off the rail prefix so subsequent column offsets operate
+        // on content-only text.
+        let full_text = line_to_plain(&lines[line_index]);
+        let line_text = if rail_width > 0 {
+            slice_text(&full_text, rail_width, text_display_width(&full_text))
+        } else {
+            full_text
+        };
         let line_width = text_display_width(&line_text);
-        let (col_start, col_end) = if start_index == end_index {
+        // Selection coordinates are recorded in rendered-column space, which
+        // includes the visual rail prefix. Add rail_width back so the column
+        // window maps correctly into the rail-stripped text.
+        let (raw_col_start, raw_col_end) = if start_index == end_index {
             (start.column, end.column)
         } else if line_index == start_index {
-            (start.column, line_width)
+            (start.column, line_width.saturating_add(rail_width))
         } else if line_index == end_index {
             (0, end.column)
         } else {
-            (0, line_width)
+            (0, line_width.saturating_add(rail_width))
         };
+
+        let col_start = raw_col_start.saturating_sub(rail_width).min(line_width);
+        let col_end = raw_col_end.saturating_sub(rail_width).min(line_width);
 
         let slice = slice_text(&line_text, col_start, col_end);
         selected_lines.push(slice);

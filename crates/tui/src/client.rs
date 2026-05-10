@@ -346,9 +346,15 @@ fn validate_base_url_security(base_url: &str) -> Result<()> {
 
     if base_url.starts_with("http://") {
         anyhow::bail!(
-            "Refusing insecure base URL '{}'. Use HTTPS or set {}=1 to override for trusted environments.",
-            base_url,
-            ALLOW_INSECURE_HTTP_ENV
+            "Refusing insecure base URL '{base_url}'.\n\
+             \n\
+             Loopback hosts (localhost, 127.0.0.1, [::1]) are auto-allowed.\n\
+             For other trusted local hosts (LAN, llama.cpp on a private IP, etc.)\n\
+             set the env var `{env}=1` in the shell that runs deepseek and re-run.\n\
+             \n\
+             Example: `{env}=1 deepseek` (note the underscores).",
+            base_url = base_url,
+            env = ALLOW_INSECURE_HTTP_ENV,
         );
     }
 

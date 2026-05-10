@@ -5,6 +5,94 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.26] - 2026-05-09
+
+A security + polish release. Two responsibly-disclosed issues were
+patched, plus a small batch of internal release-pipeline fixes. Big
+thanks to **@JafarAkhondali** and **@47Cid** for the disclosures.
+
+### Security
+
+- Hardened the `fetch_url` tool's network-target validation
+  (GHSA-88gh-2526-gfrr). Thanks to **@JafarAkhondali**.
+- Tightened the default privileges of sub-agents created through
+  `task_create` (GHSA-72w5-pf8h-xfp4). Thanks to **@47Cid**.
+
+Both items will have full advisory text once the GHSA entries are
+published.
+
+### Fixed
+
+- **Hint when root `base_url` is set with a non-DeepSeek provider
+  (#1308)** — config load now logs a warning telling the user to
+  move the URL under the matching `[providers.<name>]` table or use
+  the `*_BASE_URL` env var. Closes the silent-ignore footgun for
+  Ollama / vLLM / OpenAI-compatible setups.
+- **Insecure base-URL error message is more discoverable (#1303)** —
+  the rejection now spells out which env var to set (with underscores
+  visible), notes that loopback hosts are auto-allowed, and shows a
+  one-line `DEEPSEEK_ALLOW_INSECURE_HTTP=1 deepseek` example.
+- **Workspace skills survive prompt truncation** — when the skill
+  catalog needs trimming to fit the prompt budget, workspace-local
+  skills now keep precedence over global ones rather than being
+  truncated indiscriminately. Thanks **@hhhaiai**.
+- **`/skills` listing has visual spacing** between entries so long
+  skill descriptions don't run together. Thanks **@reidliu41**.
+- **Provider base-URL overrides reach the active provider** — the
+  per-provider `*_BASE_URL` env vars (e.g. `OPENAI_BASE_URL`,
+  `OPENROUTER_BASE_URL`) now propagate into the active provider's
+  config entry consistently. Closes a gap where the override was
+  parsed but never applied. Thanks **@reidliu41**.
+- **WSL2 turn-start timeout** — `TurnStarted` is now emitted before the
+  snapshot step so a slow snapshot on WSL2's `/mnt/*` volumes doesn't
+  push past the runtime watchdog and surface a spurious "engine may
+  have stopped" error. Thanks **@michaeltse321**.
+- **`/init` auto-adds `.deepseek/` to `.gitignore` (#1326)** when the
+  workspace is a git repo, so workspace-local snapshots, instructions,
+  and pastes don't get accidentally committed. Idempotent on repeated
+  runs. Thanks **@Giggitycountless**.
+- **MCP tool ordering is deterministic** — discovered tools and the
+  resulting API tool block are now sorted by name so the prompt
+  prefix the model sees is stable across runs, regardless of
+  server-side pagination order. Improves prompt-cache hit rates with
+  multi-server MCP setups. Thanks **@hxy91819**.
+- **Error cells render as plain text** so env-var names (`API_KEY_FOO`)
+  in error messages keep their underscores instead of being parsed as
+  markdown emphasis. Thanks **@douglarek**.
+- **`/clear` resets the Todos sidebar (#1258)** — previously `/clear`
+  only reset the Plan panel; the Todos checklist persisted across
+  clears. Thanks **@Giggitycountless**.
+- **Drag-select past the viewport edge auto-scrolls (#1163, #1255,
+  #1292, #1298)** — when the mouse drag reaches the top or bottom of
+  the transcript area the viewport now scrolls to follow the
+  selection, the way text editors do. **Copy strips every visual-only
+  decoration glyph** — tool-card rails (`╭│╰`), transcript rails
+  (`▏`), reasoning rails (`╎`), tool-status symbols (`·•◦`), and
+  tool-family glyphs no longer leak into clipboard output. Thanks
+  **@Oliver-ZPLiu**.
+- MCP stdio servers no longer discard stderr. The spawn site now pipes
+  stderr through a bounded ring buffer; when a server crashes
+  mid-session, the transport-closed error includes the captured stderr
+  tail instead of disappearing into `Stdio::null`. Useful for debugging
+  Node/Python MCP servers that fail well after `initialize`.
+- Mouse capture now defaults on inside Windows Terminal (#1169, #1298,
+  #1331). When `WT_SESSION` is set, in-app text selection is enabled
+  by default and the wheel scrolls the transcript again (rather than
+  the terminal interpreting wheel events as input-history keys).
+  Legacy conhost stays opt-in via `--mouse-capture` or `[tui]
+  mouse_capture = true` to preserve the protections from #878 / #898.
+  Selection now clamps to the transcript region instead of the
+  terminal painting native selection across the sidebar.
+- The build script now invalidates its cache on `.git/HEAD` changes, so
+  the embedded short-SHA in `deepseek --version` stays current after
+  commits and branch switches without needing `cargo clean`. Both
+  regular checkouts and `git worktree` layouts are handled.
+- The release-time `changelog_entry_exists_for_current_package_version`
+  gate walks up from the crate manifest to find `CHANGELOG.md` instead
+  of assuming a fixed `../../CHANGELOG.md` layout. The workspace path
+  still resolves; running the suite from a packaged crate skips the
+  gate quietly instead of panicking.
+
 ## [0.8.25] - 2026-05-09
 
 A stabilization + drift-fixes release. Headline work hardens the
