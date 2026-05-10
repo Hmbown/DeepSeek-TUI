@@ -33,9 +33,11 @@ fn render_skill_warnings(registry: &SkillRegistry) -> String {
 /// List all available skills. Pass `--remote` (or `remote`) to fetch the
 /// curated registry instead of scanning the local skills directory.
 /// Pass `sync` to pull the registry index and download all skills to the
-/// local cache (`~/.deepseek/cache/skills/`).
+/// local cache (`~/.deepseek/cache/skills/`). Any other argument is treated
+/// as a name prefix and filters the listing — useful when many skills are
+/// installed and only a family is interesting (#1318).
 pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
-    if let Some(arg) = arg {
+    let prefix = if let Some(arg) = arg {
         let trimmed = arg.trim();
         if trimmed == "--remote" || trimmed == "remote" {
             return list_remote_skills(app);
@@ -43,10 +45,15 @@ pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
         if trimmed == "sync" || trimmed == "--sync" {
             return sync_skills(app);
         }
-        if !trimmed.is_empty() {
-            return CommandResult::error("Usage: /skills [--remote|sync]");
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
         }
-    }
+    } else {
+        None
+    };
+
     let skills_dir = app.skills_dir.clone();
     let registry = discover_visible_skills(app);
     let warnings = render_skill_warnings(&registry);
@@ -70,9 +77,31 @@ pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
         return CommandResult::message(msg);
     }
 
-    let mut output = format!("Available skills ({}):\n", registry.len());
+    let total = registry.len();
+    let filtered: Vec<_> = match prefix.as_deref() {
+        Some(p) => registry
+            .list()
+            .iter()
+            .filter(|s| s.name.starts_with(p))
+            .collect(),
+        None => registry.list().iter().collect(),
+    };
+
+    if filtered.is_empty() {
+        let p = prefix.as_deref().unwrap_or("");
+        return CommandResult::message(format!(
+            "No skills match prefix \"{p}\".\n\n\
+             Use /skills (no argument) to see all {total} available skills.{warnings}"
+        ));
+    }
+
+    let header = match prefix.as_deref() {
+        Some(p) => format!("Skills matching \"{p}\" ({}/{total}):\n", filtered.len()),
+        None => format!("Available skills ({total}):\n"),
+    };
+    let mut output = header;
     output.push_str("─────────────────────────────\n");
-    for (idx, skill) in registry.list().iter().enumerate() {
+    for (idx, skill) in filtered.iter().enumerate() {
         if idx > 0 {
             output.push('\n');
         }
@@ -678,5 +707,63 @@ mod tests {
         assert!(msg.contains("A test skill"));
         assert!(app.active_skill.is_some());
         assert!(!app.history.is_empty());
+    }
+
+    #[test]
+    fn test_list_skills_filters_by_prefix() {
+        let tmpdir = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmpdir);
+        create_skill_dir(
+            &tmpdir,
+            "flutter-impl",
+            "---\nname: flutter-impl\ndescription: Flutter impl helper\n---\nDo flutter impl",
+        );
+        create_skill_dir(
+            &tmpdir,
+            "flutter-test",
+            "---\nname: flutter-test\ndescription: Flutter test helper\n---\nDo flutter test",
+        );
+        create_skill_dir(
+            &tmpdir,
+            "rust-impl",
+            "---\nname: rust-impl\ndescription: Rust impl helper\n---\nDo rust impl",
+        );
+
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result = list_skills(&mut app, Some("flutter"));
+        let msg = result.message.unwrap();
+
+        // Header shows filter + counts.
+        assert!(
+            msg.contains("Skills matching \"flutter\""),
+            "expected filtered header, got: {msg}"
+        );
+        assert!(msg.contains("(2/3)"), "expected 2-of-3 count, got: {msg}");
+        // Matching entries appear; non-matching ones are gone.
+        assert!(msg.contains("/flutter-impl"), "got: {msg}");
+        assert!(msg.contains("/flutter-test"), "got: {msg}");
+        assert!(!msg.contains("/rust-impl"), "rust-impl leaked: {msg}");
+    }
+
+    #[test]
+    fn test_list_skills_prefix_no_match_friendly() {
+        let tmpdir = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmpdir);
+        create_skill_dir(
+            &tmpdir,
+            "alpha-skill",
+            "---\nname: alpha-skill\ndescription: First skill\n---\nDo alpha work",
+        );
+
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result = list_skills(&mut app, Some("zz-nope"));
+        let msg = result.message.unwrap();
+
+        assert!(
+            msg.contains("No skills match prefix \"zz-nope\""),
+            "got: {msg}"
+        );
+        // Hint to retry without the filter, citing the real total.
+        assert!(msg.contains("see all 1 available skills"), "got: {msg}");
     }
 }
