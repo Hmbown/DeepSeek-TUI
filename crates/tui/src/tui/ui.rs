@@ -3577,6 +3577,8 @@ fn notification_settings(
         crate::config::NotificationMethod::Osc9 => crate::tui::notifications::Method::Osc9,
         crate::config::NotificationMethod::Native => crate::tui::notifications::Method::Native,
         crate::config::NotificationMethod::Bel => crate::tui::notifications::Method::Bel,
+        crate::config::NotificationMethod::Kitty => crate::tui::notifications::Method::Kitty,
+        crate::config::NotificationMethod::Ghostty => crate::tui::notifications::Method::Ghostty,
         crate::config::NotificationMethod::Off => crate::tui::notifications::Method::Off,
     };
 

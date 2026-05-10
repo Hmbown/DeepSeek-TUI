@@ -418,7 +418,8 @@ pub enum NotificationCondition {
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum NotificationMethod {
-    /// Auto-detect: OSC 9 for iTerm.app / Ghostty / WezTerm / Cmux;
+    /// Auto-detect: OSC 9 for iTerm / WezTerm / Cmux;
+    /// Ghostty-specific protocol for Ghostty; Kitty-specific for Kitty;
     /// native OS notification on macOS / Linux otherwise; on Windows
     /// the fallback is `Off` because BEL maps to the system error
     /// chime there (#583).
@@ -430,6 +431,10 @@ pub enum NotificationMethod {
     Native,
     /// Plain BEL character.
     Bel,
+    /// Kitty notification protocol (OSC 99 with ST terminator, no beep).
+    Kitty,
+    /// Ghostty notification protocol (OSC 777).
+    Ghostty,
     /// Disable notifications.
     Off,
 }
