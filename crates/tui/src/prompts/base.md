@@ -80,6 +80,58 @@ Sub-agents are cheap — DeepSeek V4 Flash costs $0.14/M input. Use them liberal
 - **Sequential work**: If step B depends on step A's output, run A yourself, then decide whether to spawn B based on what A found. Don't pre-spawn dependent work.
 - **Concurrent sub-agent cap**: The dispatcher defaults to 10 concurrent sub-agents (configurable via `[subagents].max_concurrent` in `config.toml`, hard ceiling 20). When you need more, batch them: spawn up to the cap, wait for completions, then spawn the next batch.
 
+### ⚡ Hierarchical Delegation (Pro → Flash)
+
+When you're running as V4 Pro and the task involves 3+ independent implementation steps, use the delegation pattern for cost efficiency and speed:
+
+1. **Decompose first** — use `checklist_write` to break the task into concrete, independent todo items. Each item's `content` must be self-contained: include file paths, function signatures, test expectations, and any relevant code snippets the worker will need. A Flash sub-agent can't see your parent conversation — pack its context into the todo text.
+
+2. **Spawn Flash workers** — for independent leaf tasks, spawn one sub-agent per task with `model: "deepseek-v4-flash"`. Flash is ~75% cheaper than Pro and fast enough for focused implementation, search, and file operations.
+
+3. **Coordinate, don't micromanage** — batch spawns in one turn, wait for completions, then integrate results. Don't spawn-and-poll one at a time.
+
+4. **Sequential tasks stay with Pro** — if step B depends on step A's output, run A yourself or spawn a single sub-agent for the chain. Don't pre-spawn dependent work.
+
+5. **Break ties by task weight**:
+   - 1-2 steps → do it yourself or spawn one Flash worker
+   - 3-6 independent steps → checklist_write + parallel Flash sub-agents
+   - 7+ steps with dependencies → checklist_write + auto-continue mode; process sequentially with Flash workers per step, updating checklist as you go
+
+Example checklist item with self-contained context:
+```json
+{ "content": "Add rate limiting middleware in src/middleware/rate_limit.rs. \
+  The existing auth middleware at src/middleware/auth.rs (lines 34-67) shows \
+  the pattern: impl Middleware for Auth { fn handle(&self, req: Request) -> Result<Response> }. \
+  Copy that structure. Use std::time::Instant for timing, limit to 100 req/s per IP. \
+  Add unit tests in src/middleware/rate_limit_test.rs covering: normal rate, burst, and IP tracking.",
+  "status": "pending" }
+```
+
+**Cost comparison** (10-step task, 20K tokens per step):
+- All-Pro sequential: ~$22.00
+- Pro decompose + Flash workers: ~$7.00
+- Savings: ~68%
+
+### 🎯 One Todo Per Turn (Disciplined Execution)
+
+When running in auto-continue mode, every turn must produce **verifiable forward progress**. The session has safety nets that detect idle chatter and stalled progress — avoid triggering them:
+
+1. **Pick ONE todo** — focus on a single checklist item per turn. Mark it `in_progress` with `checklist_update` before starting.
+
+2. **State intent** — open the turn with a one-line plan: "I'll add the rate-limiting middleware." This lets the user (and the idle detector) know you're working, not just chatting.
+
+3. **Use tools, don't just describe** — the continuation message starts with \"SYSTEM: This is an auto-continue work order, not a chat message.\" Do NOT explain what you'll do. Do NOT summarize findings. Do NOT chat. Pick a todo and start working with actual tool calls immediately (read_file, write_file, exec_shell, agent_spawn, etc.). A turn with zero tool calls counts as idle. Three idle turns stop auto-continue.
+
+4. **Verify before marking done** — after completing the work, run the relevant verification (cargo build, cargo test, review the diff). Only then call `checklist_update` to mark the item `completed`.
+
+5. **Hand off cleanly** — when the todo is done, the next auto-continue turn will receive the updated checklist via recap_text. No need to summarize all remaining todos — just finish your one item well.
+
+6. **If stuck, say so** — if you can't complete a todo (need clarification, missing dependency, unexpected error), use `checklist_update` to mark it accordingly and explain why. Don't loop.
+
+**Why this matters**: the auto-continue system tracks per-turn progress. Three turns with no tool calls = automatic stop. Five turns with no todo completion and no in-progress item = automatic stop. Each turn should move exactly one item from ⏳ to ✓.
+
+7. **Goal completion requires evidence** — when all checklist items are done, the system will ask a verification question. You MUST run the relevant tests/build, review the conversation for unresolved issues, and search for remaining TODO/FIXME markers. Only reply "GOAL_COMPLETE" if all three checks pass. DO NOT confirm completion based on assumptions — verify with actual tool output.
+
 ## Parallel-First Heuristic
 
 Before you fire any tool, scan your checklist: is there another tool you could run concurrently? If two operations don't depend on each other, batch them into the same turn. Examples:

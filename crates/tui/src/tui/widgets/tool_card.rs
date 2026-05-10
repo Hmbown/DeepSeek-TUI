@@ -175,8 +175,10 @@ pub enum CardRail {
     /// Any middle line — body content. `│`.
     Middle,
     /// Last line of the card. `╰`.
+    #[allow(dead_code)]
     Bottom,
     /// Single-line card — no rail at all.
+    #[allow(dead_code)]
     Single,
 }
 
