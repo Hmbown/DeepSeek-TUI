@@ -57,15 +57,12 @@ fn ensure_deepseek_gitignored(workspace: &Path) {
 
     // Append the entry. If .gitignore doesn't exist yet, create it with a header.
     use std::io::Write;
-    match std::fs::OpenOptions::new()
+    if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&gitignore)
     {
-        Ok(mut file) => {
-            let _ = writeln!(file, "{entry}");
-        }
-        Err(_) => {} // non-fatal: user may not have write permissions
+        let _ = writeln!(file, "{entry}");
     }
 }
 
