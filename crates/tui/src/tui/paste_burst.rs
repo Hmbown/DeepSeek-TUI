@@ -193,8 +193,9 @@ impl PasteBurst {
     ) -> Option<RetroGrab> {
         let start_byte = retro_start_index(before, retro_chars);
         let grabbed = before[start_byte..].to_string();
-        let looks_pastey =
-            grabbed.chars().any(char::is_whitespace) || grabbed.chars().count() >= 16;
+        let looks_pastey = grabbed.chars().any(char::is_whitespace)
+            || !grabbed.is_ascii()
+            || grabbed.chars().count() >= 16;
         if looks_pastey {
             self.begin_with_retro_grabbed(grabbed.clone(), now);
             Some(RetroGrab {

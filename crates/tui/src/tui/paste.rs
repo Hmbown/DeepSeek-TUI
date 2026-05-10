@@ -187,6 +187,41 @@ mod tests {
     }
 
     #[test]
+    fn raw_short_cjk_multiline_paste_buffers_enter_instead_of_submitting() {
+        let mut app = test_app();
+        let t0 = Instant::now();
+
+        let pasted = "请联网搜索：\nSTM32 商业应用案例";
+        let mut enter_was_handled = false;
+        for (i, ch) in pasted.chars().enumerate() {
+            let key = if ch == '\n' {
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            } else {
+                plain(ch)
+            };
+            let handled =
+                handle_paste_burst_key(&mut app, &key, t0 + Duration::from_millis(i as u64));
+            assert!(
+                handled,
+                "raw paste character {ch:?} should be handled by paste-burst detection"
+            );
+            if ch == '\n' {
+                enter_was_handled = handled;
+            }
+        }
+
+        assert!(
+            enter_was_handled,
+            "raw paste Enter must not fall through to submit"
+        );
+        assert!(app.flush_paste_burst_if_due(
+            t0 + Duration::from_millis(pasted.chars().count() as u64)
+                + crate::tui::paste_burst::PasteBurst::recommended_active_flush_delay()
+        ));
+        assert_eq!(app.input, pasted);
+    }
+
+    #[test]
     fn paste_buffered_question_mark_does_not_fall_through_to_help_shortcut() {
         let mut app = test_app();
         let t0 = Instant::now();
