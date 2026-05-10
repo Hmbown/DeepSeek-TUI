@@ -311,10 +311,9 @@ impl Settings {
         }
         // VS Code's integrated terminal sets TERM_PROGRAM=vscode. Its
         // compositor cannot keep up with 120 FPS redraws and produces rapid
-        // flickering (#1356). Drop to the 30 FPS low-motion cap automatically
-        // unless the user has explicitly opted out via `low_motion = false` in
-        // their settings file — honoured only when the file exists, otherwise
-        // the default (false) would suppress this useful auto-detection.
+        // flickering (#1356). Drop to the 30 FPS low-motion cap automatically.
+        // Like NO_ANIMATIONS above, this unconditionally overrides any
+        // disk-loaded value — consistent precedence: env signals always win.
         if std::env::var("TERM_PROGRAM").as_deref() == Ok("vscode") {
             self.low_motion = true;
             self.fancy_animations = false;
