@@ -225,40 +225,45 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## What's New In v0.8.20
+## What's New In v0.8.25
 
-A hotfix release for Chinese reasoning language, DeepSeek endpoint defaults,
-and the v0.8.18 TUI/runtime/install polish.
-[Full changelog](CHANGELOG.md).
+A stabilization + drift-fixes release. [Full changelog](CHANGELOG.md).
 
-- **Chinese reasoning stays Chinese** - when the latest user message is in
-  Simplified Chinese, V4 `reasoning_content` and the final reply are prompted
-  to stay in Simplified Chinese even on an English system locale.
-- **DeepSeek beta endpoint stays default worldwide** - Chinese locales and
-  legacy `deepseek-cn` configs now use `https://api.deepseek.com/beta`, so
-  strict tool mode and other beta-gated features remain available.
-- **`deepseek-cn` is legacy-only** - it is no longer advertised as a separate
-  provider. Existing configs still parse it as a backwards-compatible alias for
-  `deepseek`.
-- **Plain `deepseek` starts fresh** - opening a second terminal in the same
-  folder now creates a new session instead of silently re-entering the same
-  interrupted checkpoint. Use `deepseek --continue` when you want recovery.
-- **Docker is a supported install path** - release builds publish
-  `ghcr.io/hmbown/deepseek-tui` images with `latest`, semver, and `vX.Y.Z`
-  tags; Docker publishing is part of the release gate.
-- **Chinese destructive approval dialogs are localized** - zh-Hans approval
-  copy keeps explicit destructive-risk wording while English defaults stay
-  unchanged.
-- **Transcript scrollbar dragging** - with mouse capture enabled, drag the
-  transcript scrollbar thumb to move through long sessions.
-- **Viewport drift fix** - terminal scroll margins and origin mode are reset
-  before key repaints, with a PTY regression for the blank-top-rows bug.
-- **npm installs are more resilient** - transient release-download failures
-  are recoverable at postinstall time, while checksum, platform, glibc, and
-  runtime failures remain fatal.
-- **Plus**: FreeBSD secrets-crate compile fallback, Docker Buildx cache-race
-  fix, readable light-theme toggles, softer long-session text colors, Windows
-  sandbox guarantee cleanup, and rustup mirror/install troubleshooting updates.
+- **Markdown tables wrap long cells** instead of truncating with `…`.
+  Long cell content is word-wrapped within the column and the grid stays
+  intact on every wrapped line.
+- **Self-update is `curl`-free and verifies SHA-256** — `deepseek update`
+  uses `reqwest` with rustls and parses the aggregated checksum manifest
+  to verify each downloaded asset before installing. Drops the v0.8.23
+  Schannel `--ssl-no-revoke` Windows hack.
+- **MCP JSON-RPC framing centralized** — request/response correlation,
+  timeouts, and message framing now live above the byte transports.
+  Stdio, SSE, and the new Streamable HTTP transport share one protocol
+  layer.
+- **Streamable HTTP MCP endpoints** (#1300, thanks **Reid Liu
+  (@reidliu41)**) — third MCP transport alongside stdio and SSE.
+- **Terminal-mode recovery unified** — startup, `FocusGained`, and
+  `resume_terminal` all route through one `recover_terminal_modes()`
+  helper. Wheel scroll, keyboard enhancement, bracketed paste, and
+  focus events are re-armed in one place after focus round-trips.
+- **`recall_archive` available in parent registries** — the read-only
+  BM25 archive search tool is now callable from Plan, Agent, and YOLO
+  parent registries (was sub-agent only).
+- **Onboarding respects the active provider** (#1265, thanks
+  **jinpengxuan (@jinpengxuan)**), **Home/End move the cursor**
+  (#1246, thanks **heloanc (@heloanc)**), **`/config` view columns
+  align to data** (#1290, thanks **Reid Liu (@reidliu41)**),
+  **`reasoning_content` replay is cache-stable** (#1297, thanks
+  **Duducoco (@Duducoco)**), **docs anchor scroll-margin overrideable**
+  (#1282, thanks **Wenjunyun123 (@Wenjunyun123)**), **zh-Hans
+  approval-dialog uses 终止** (#1274, thanks **Liu-Vince
+  (@Liu-Vince)**).
+
+⚠️ **Known issues carried over to v0.8.26:** Windows 10 conhost flicker
+(#1260, #1251), per-turn snapshotting (no write-aware skip yet), `▏`
+glyph leak in code blocks (#1212), mouse selection crossing the
+sidebar (#1169), drag-select edge auto-scroll (#1163), mid-run MCP
+stderr capture.
 
 ---
 

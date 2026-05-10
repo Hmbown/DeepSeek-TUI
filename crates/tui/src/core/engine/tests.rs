@@ -460,6 +460,7 @@ fn turn_tool_registry_builder_keeps_plan_mode_read_only_for_files() {
     assert!(registry.contains("update_plan"));
     assert!(registry.contains("task_list"));
     assert!(registry.contains("task_read"));
+    assert!(registry.contains("recall_archive"));
 
     let plan_state_tools = [
         "checklist_add",
@@ -486,6 +487,26 @@ fn turn_tool_registry_builder_keeps_plan_mode_read_only_for_files() {
         write_or_exec_tools.is_empty(),
         "Plan mode must not register file-writing or code-execution tools: {write_or_exec_tools:?}"
     );
+}
+
+#[test]
+fn parent_turn_registry_includes_recall_archive_for_investigative_modes() {
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+
+    for mode in [AppMode::Plan, AppMode::Agent, AppMode::Yolo] {
+        let registry = engine
+            .build_turn_tool_registry_builder(
+                mode,
+                engine.config.todos.clone(),
+                engine.config.plan_state.clone(),
+            )
+            .build(engine.build_tool_context(mode, false));
+
+        assert!(
+            registry.contains("recall_archive"),
+            "parent {mode:?} registry should expose recall_archive"
+        );
+    }
 }
 
 #[test]
@@ -827,6 +848,33 @@ fn turn_metadata_includes_current_local_date_without_working_set() {
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     assert!(text.starts_with("<turn_meta>\n"));
     assert!(text.contains(&format!("Current local date: {today}")));
+}
+
+#[test]
+fn user_text_message_keeps_current_turn_input_after_turn_metadata() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (engine, _handle) = Engine::new(config, &Config::default());
+
+    let user_msg =
+        engine.user_text_message_with_turn_metadata("explain the cache metrics".to_string());
+
+    let last_text = user_msg
+        .content
+        .iter()
+        .rev()
+        .find_map(|block| {
+            if let ContentBlock::Text { text, .. } = block {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
+        .expect("user text block");
+    assert_eq!(last_text, "explain the cache metrics");
 }
 
 #[test]

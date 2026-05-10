@@ -192,25 +192,36 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## v0.8.20 新功能
+## v0.8.25 新功能
 
-面向中文思考语言、端点默认值、TUI、运行时和安装体验的热修复版本。[完整更新日志](CHANGELOG.md)。
+稳定性 + 漂移修复版本。[完整更新日志](CHANGELOG.md)。
 
-- **中文思考保持中文** —— 当最新用户消息是简体中文时，即使系统 locale
-  是英文，V4 的 `reasoning_content` 和最终回复也会被提示保持简体中文。
-- **直接运行 `deepseek` 会启动新会话** —— 同一目录开第二个终端时，不再静默进入
-  同一个中断检查点；需要恢复时请显式使用 `deepseek --continue`。
-- **Docker 成为受支持安装方式** —— 发布流程会推送
-  `ghcr.io/hmbown/deepseek-tui`，包含 `latest`、语义版本和 `vX.Y.Z` 标签。
-- **中文危险审批弹窗本地化** —— zh-Hans 文案会明确保留破坏性风险提示，
-  英文默认行为不变。
-- **对话滚动条支持拖拽** —— 开启鼠标捕获后，可直接拖拽 transcript 滚动条。
-- **修复终端视口漂移** —— 关键重绘前会重置滚动边界和 origin mode，并加入 PTY
-  回归测试覆盖顶部空行问题。
-- **npm 安装更稳健** —— postinstall 阶段的临时下载失败可恢复；校验和、平台、
-  glibc 和运行时错误仍然保持失败。
-- **此外**：FreeBSD secrets crate 编译回退、Docker Buildx cache 竞争修复、
-  长会话文本配色微调、Windows 沙箱保证说明收紧，以及 rustup 镜像安装排障更新。
+- **Markdown 表格长单元格自动换行**，不再以 `…` 截断。长内容在列内
+  按词换行，网格在每个换行后保持完整。
+- **自更新不再依赖 `curl` 并验证 SHA-256** — `deepseek update` 现在使用
+  `reqwest` + rustls，并解析聚合校验清单以在安装前验证每个下载产物。
+  移除了 v0.8.23 为 Windows 添加的 Schannel `--ssl-no-revoke` 临时方案。
+- **MCP JSON-RPC 帧处理统一** — 请求/响应关联、超时、消息帧现在都位于
+  字节传输层之上。Stdio、SSE 和新的 Streamable HTTP 传输共享同一协议层。
+- **Streamable HTTP MCP 端点** (#1300，感谢 **Reid Liu (@reidliu41)**)
+  — 在 stdio 和 SSE 之外新增第三种 MCP 传输。
+- **终端模式恢复统一** — 启动、`FocusGained` 和 `resume_terminal` 都
+  通过同一个 `recover_terminal_modes()` 辅助函数。鼠标滚轮、键盘增强、
+  括号粘贴、焦点事件在焦点往返后只需一处重新启用。
+- **`recall_archive` 在父级注册表中可用** — 只读 BM25 归档搜索工具
+  现在可在 Plan、Agent 和 YOLO 父级注册表中调用（此前仅子代理可用）。
+- **入门时尊重当前 provider** (#1265，感谢 **jinpengxuan
+  (@jinpengxuan)**)、**Home/End 移动光标** (#1246，感谢 **heloanc
+  (@heloanc)**)、**`/config` 视图列宽对齐数据** (#1290，感谢 **Reid
+  Liu (@reidliu41)**)、**`reasoning_content` 重放对缓存稳定** (#1297，
+  感谢 **Duducoco (@Duducoco)**)、**docs 锚点 scroll-margin 可覆盖**
+  (#1282，感谢 **Wenjunyun123 (@Wenjunyun123)**)、**zh-Hans 审批对话框
+  使用「终止」** (#1274，感谢 **Liu-Vince (@Liu-Vince)**)。
+
+⚠️ **已知问题（沿用至 v0.8.26）**：Windows 10 conhost 闪烁（#1260、
+#1251）、按轮次快照（尚无写感知跳过）、代码块中 `▏` 字符泄漏（#1212）、
+鼠标选择跨入侧边栏（#1169）、拖拽选择边缘自动滚动（#1163）、运行时
+MCP 服务器 stderr 捕获。
 
 ---
 

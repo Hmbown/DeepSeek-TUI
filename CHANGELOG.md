@@ -5,6 +5,205 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.25] - 2026-05-09
+
+A stabilization + drift-fixes release. Headline work hardens the
+self-update path (no more `curl` shellout, real SHA-256 verification),
+fixes long-cell truncation in markdown tables, centralizes the MCP
+JSON-RPC framing, and unifies terminal-mode recovery on focus events.
+Big thanks to **Reid Liu (@reidliu41)** (Streamable HTTP MCP transport,
+`/config` column alignment), **Duducoco (@Duducoco)** (cache-stable
+`reasoning_content` replay), **jinpengxuan (@jinpengxuan)** (provider
+credentials during onboarding), **heloanc (@heloanc)** (Home/End cursor
+keys), **Wenjunyun123 (@Wenjunyun123)** (docs anchor scroll), and
+**Liu-Vince (@Liu-Vince)** (zh-Hans approval-dialog wording) for the
+contributions below.
+
+### Added
+
+- **Streamable HTTP MCP endpoints with SSE fallback (#1300)** — adds
+  the third MCP transport alongside stdio and SSE. The new transport
+  posts JSON-RPC over plain HTTP with optional SSE upgrade for servers
+  that prefer streaming responses. Thanks **Reid Liu (@reidliu41)**.
+- **`recall_archive` exposed in the parent agent registry** — the
+  read-only BM25 archive search tool was previously only available to
+  sub-agents; it is now callable from Plan, Agent, and YOLO parent
+  registries. Plan mode's read-only contract is preserved (the existing
+  registry test was updated to assert membership while still rejecting
+  write/exec tools).
+
+### Changed
+
+- **Markdown tables wrap long cells instead of truncating (#1163-adjacent)**
+  — long cell content is word-wrapped within the column instead of
+  collapsing to `…`. Column separators are preserved on every wrapped
+  line so the table grid stays readable.
+- **MCP JSON-RPC framing centralized** — request/response correlation,
+  timeout handling, and message framing now live above the byte-level
+  transports. Stdio, SSE, and the new Streamable HTTP transport share a
+  single protocol layer instead of each maintaining its own copy of the
+  framing code.
+- **Self-update is curl-free and verifies SHA-256** — `deepseek update`
+  no longer shells out to system `curl` (and no longer needs the
+  Schannel `--ssl-no-revoke` Windows hack from v0.8.23). Downloads now
+  use `reqwest::blocking` with rustls, and the aggregated
+  `deepseek-artifacts-sha256.txt` manifest is parsed and checked
+  against each downloaded asset before it is installed. Verification
+  status is surfaced in the update output.
+- **Terminal-mode recovery unified in `recover_terminal_modes()`** —
+  startup, `FocusGained`, and `resume_terminal` all route through one
+  idempotent helper that re-establishes keyboard enhancement flags,
+  mouse capture, bracketed paste, and focus events. Adding a new mode
+  flag now only has to happen in one place.
+
+### Fixed
+
+- **`reasoning_content` replay stable for prompt cache (#1297)** —
+  reasoning text replayed from saved sessions now hashes consistently
+  across turns so the cache-aware prompt builder's static-prefix
+  stability isn't broken by replays. Thanks **Duducoco (@Duducoco)**.
+- **Active provider credentials respected during onboarding (#1265)**
+  — the onboarding flow now reads credentials from the active provider
+  instead of falling back to the default DeepSeek path when another
+  provider is selected. Thanks **jinpengxuan (@jinpengxuan)**.
+- **Home/End keys move the input cursor (#1246)** — Home and End now
+  jump the composer cursor to line start/end instead of being
+  swallowed. Thanks **heloanc (@heloanc)**.
+- **Docs anchor scroll-margin overrideable (#1282)** — the
+  scroll-margin offset on docs anchors is now overrideable so embedded
+  contexts can adjust it without forking the stylesheet. Thanks
+  **Wenjunyun123 (@Wenjunyun123)**.
+- **`/config` view columns aligned (#1290)** — the `/config` table now
+  sizes the key column from the actual data instead of a fixed width,
+  so long keys no longer overflow into the value column. Thanks
+  **Reid Liu (@reidliu41)**.
+- **zh-Hans approval dialog wording (#1274)** — uses 终止 (terminate)
+  instead of 中止 (abort) in the Chinese approval dialog, matching the
+  English semantics. Thanks **Liu-Vince (@Liu-Vince)**.
+
+### Removed
+
+- **Unwired `[context.per_model]` config field** — the field had no
+  runtime consumer and was only present in the config schema. Removed
+  to keep the schema honest. Existing configs that still contain a
+  `[context.per_model.*]` table continue to load (serde ignores
+  unknown keys; covered by a regression test).
+- **Stale aspirational `[cycle.per_model]` comments** — reference to a
+  config table that was never wired. No behavior change.
+
+### Documentation
+
+- **`.claude/CODEMAP_v0.8.25_dead_code.md`** — committed the
+  cycle/seam/coherence/capacity codemap with a softened
+  `cycle_manager` classification: live by code trace, design
+  load-bearing, practical load-bearing unproven. Use this to decide
+  the v0.8.26+ product direction for the cycle/seam/capacity
+  subsystems.
+
+### Known issues
+
+- **Windows 10 conhost flicker regression (#1260, #1251)** —
+  v0.8.22-and-later content flickering on Windows 10 is still present.
+  The viewport-reset escape sequence added in v0.8.22 needs a Windows
+  guard. Deferred to v0.8.26.
+- **Snapshot system still snapshots every turn** — the v0.8.24 500 MB
+  hard cap protects against blowups, but the underlying design still
+  snapshots on every turn regardless of whether the workspace changed.
+  A write-aware skip is planned for v0.8.26.
+- **`▏` glyph leak in code blocks (#1212)**, **mouse selection
+  crossing the sidebar (#1169)**, **drag-select edge auto-scroll
+  (#1163)**, **mid-run MCP server stderr capture** — all deferred to
+  v0.8.26.
+
+## [0.8.24] - 2026-05-09
+
+A bugfix + refactor release picking up the backlog after the v0.8.23 security
+release. Big thanks to **wplll** (cache-aware prompt + `/cache inspect`),
+**Liu-Vince** (MCP pagination diagnosis), **@Giggitycountless** (snapshot cap
+proposal), and to issue reporters **@SamhandsomeLee**,
+**@barjatiyasaurabh**, **@tyculw**, **@hongyuatcufe**, and **@ljlbit** for
+the bugs fixed below.
+
+### Fixed
+
+- **Mouse-wheel scroll survives focus toggles** — on macOS, switching away
+  (Cmd+Tab, opening the screenshot tool, etc.) and back can drop the
+  terminal's mouse-tracking mode, leaving wheel scroll dead until restart.
+  The TUI now re-arms `EnableMouseCapture` on `FocusGained` alongside the
+  existing keyboard-mode recapture, so wheel events keep flowing after a
+  focus round-trip.
+- **Workspace-local slash commands are now loaded (#1259)** — user command
+  files placed in `<workspace>/.deepseek/commands/`,
+  `<workspace>/.claude/commands/`, and `<workspace>/.cursor/commands/` are
+  now discovered alongside the existing global `~/.deepseek/commands/`.
+  Workspace-local commands shadow global by name, matching the precedence
+  model already used for skills. Reported by **@SamhandsomeLee**.
+- **`@`-mention completion finds AI-tool dot-directories** — files inside
+  `.deepseek/`, `.cursor/`, `.claude/`, and `.agents/` are now discoverable
+  in `@`-mention Tab-completion even when those directories are excluded by
+  `.gitignore`. The fix also applies to the Ctrl+P file picker and fuzzy
+  file resolution.
+- **MCP paginated discovery (#1250, #1256)** — tools, resources, resource
+  templates, and prompts from MCP servers that paginate their responses
+  (e.g., gbrain at 5 items per page) are now fully discovered by following
+  the MCP spec's `nextCursor` across all pages. Reported by
+  **@hongyuatcufe**; thanks to **Liu-Vince** for the diagnosis and PR
+  #1256 with the same fix shape.
+- **Snapshot storage has a disk-space cap (#1112)** — the snapshot side repo
+  now enforces a 500 MB hard limit. When the limit is exceeded at snapshot
+  time, the oldest snapshots are pruned aggressively to stay under a 400 MB
+  target. Guards against the reported 1.2 TB snapshot blowup during
+  high-churn sessions. Reported by **@tyculw**; thanks to
+  **@Giggitycountless** for the PR #1131 proposal that informed the
+  hard-cap approach.
+- **`/clear` now resets the Todos sidebar (#1258)** — previously `/clear`
+  only reset the Plan panel; the Todos checklist persisted across clears
+  until app restart. The fix ensures `clear_todos()` clears the
+  `SharedTodoList` inner state. Reported by **@barjatiyasaurabh**.
+
+### Added
+
+- **Cache-aware prompt diagnostics + payload optimization (#1196)** — adds
+  a `PromptBuilder` that classifies the system prompt into `static` /
+  `history` / `dynamic` layers for cache-prefix stability, plus:
+  - `/cache inspect` — shows SHA-256 hashes per layer, base static prefix
+    hash vs full request prefix hash, static-prefix stability across
+    turns, and first-divergence tracking. Does not print prompt text.
+  - `/cache warmup` — prefetches the stable prefix to seed the DeepSeek
+    context cache.
+  - **Project Context Pack injected into the stable prefix by default**
+    — a structured workspace summary (directory listing up to 4 levels /
+    400 entries, README excerpt up to 4 KB, config + key source file
+    lists). Adds **~1–10 KB to every prompt depending on repo size**, in
+    exchange for a much more cacheable prefix. **Default ON**; disable
+    with `[context] project_pack = false` in `~/.deepseek/config.toml`
+    if you'd rather keep prompts minimal.
+  - Wire-payload optimization: large tool outputs are budgeted, repeated
+    identical tool outputs and `<turn_meta>` blocks are deduplicated
+    with stable refs (wire-only — local session messages stay intact).
+  - Footer cache-hit % chip from `prompt_cache_hit_tokens` /
+    `prompt_cache_miss_tokens` in the API response.
+  
+  Thanks **wplll** for the design and implementation.
+
+### Changed
+
+- **Language directive strengthened against project-context bias (#1118)**
+  — the system prompt now explicitly instructs the model that project
+  context (AGENTS.md, auto-generated instructions, file trees) is NOT a
+  language signal. Chinese filenames in a repo no longer bias the model
+  toward Chinese replies when the user writes in English. Reported by
+  **@ljlbit**.
+
+### Known issues
+
+- **Windows flicker/shake regression (#1260, #1251)** — v0.8.22 and v0.8.23
+  exhibit content flickering on Windows 10 (v0.8.20 works correctly). The
+  issue is likely caused by the viewport-reset escape sequence
+  (`\x1b[r\x1b[?6l\x1b[H\x1b[2J\x1b[3J`) added in v0.8.22 to fix viewport
+  drift. On Windows conhost, this sequence may trigger a full screen clear
+  on every repaint. A platform guard or less aggressive sequence is needed.
+
 ## [0.8.23] - 2026-05-08
 
 A security-focused follow-up to v0.8.22. The bulk of the diff is hardening of

@@ -36,6 +36,56 @@ fn focus_gained_forces_terminal_viewport_recapture() {
     assert!(!terminal_event_needs_viewport_recapture(&Event::FocusLost));
 }
 
+// ANSI byte sequences are only written on platforms where crossterm uses the
+// ANSI execution path. On Windows the same logical commands route through the
+// WinAPI console backend and never reach the writer, so byte-level assertions
+// here only make sense on non-Windows targets.
+#[cfg(not(windows))]
+#[test]
+fn recover_terminal_modes_emits_expected_csi_sequences_with_gating() {
+    let mut all_on: Vec<u8> = Vec::new();
+    let mut all_off: Vec<u8> = Vec::new();
+    recover_terminal_modes(&mut all_on, true, true);
+    recover_terminal_modes(&mut all_off, false, false);
+    let on = String::from_utf8_lossy(&all_on);
+    let off = String::from_utf8_lossy(&all_off);
+
+    assert!(
+        on.contains("\x1b[?1004h") && off.contains("\x1b[?1004h"),
+        "EnableFocusChange must be re-armed regardless of gating"
+    );
+    assert!(
+        on.contains("\x1b[>1u") && off.contains("\x1b[>1u"),
+        "Kitty keyboard disambiguation flag must be re-pushed regardless of gating"
+    );
+
+    assert!(
+        on.contains("\x1b[?1000h"),
+        "EnableMouseCapture missing when use_mouse_capture=true"
+    );
+    assert!(
+        !off.contains("\x1b[?1000h"),
+        "EnableMouseCapture must be gated by use_mouse_capture"
+    );
+
+    assert!(
+        on.contains("\x1b[?2004h"),
+        "EnableBracketedPaste missing when use_bracketed_paste=true"
+    );
+    assert!(
+        !off.contains("\x1b[?2004h"),
+        "EnableBracketedPaste must be gated by use_bracketed_paste"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn recover_terminal_modes_runs_without_panic_on_windows() {
+    let mut buf: Vec<u8> = Vec::new();
+    recover_terminal_modes(&mut buf, true, true);
+    recover_terminal_modes(&mut buf, false, false);
+}
+
 #[test]
 fn terminal_origin_reset_resets_scroll_region_origin_and_clears() {
     assert!(
@@ -1490,9 +1540,20 @@ fn footer_auxiliary_spans_show_cache_when_compact() {
     app.session.last_prompt_cache_miss_tokens = Some(12_000);
     app.session.session_cost = 12.34;
 
-    let compact = spans_text(&footer_auxiliary_spans(&app, 14));
-    assert!(compact.contains("cache"));
+    let compact = spans_text(&footer_auxiliary_spans(&app, 48));
+    assert!(compact.contains("Cache: 75.0% hit"));
     assert!(!compact.contains('$'));
+}
+
+#[test]
+fn footer_auxiliary_spans_show_cache_unavailable_when_provider_omits_cache_fields() {
+    let mut app = create_test_app();
+    app.session.last_prompt_tokens = Some(48_000);
+    app.session.last_completion_tokens = Some(2_000);
+
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 72));
+
+    assert!(roomy.contains("Cache: unavailable"));
 }
 
 #[test]
@@ -1503,8 +1564,8 @@ fn footer_auxiliary_spans_show_cache_and_cost_when_roomy() {
     app.session.last_prompt_cache_miss_tokens = Some(12_000);
     app.session.session_cost = 12.34;
 
-    let roomy = spans_text(&footer_auxiliary_spans(&app, 32));
-    assert!(roomy.contains("cache hit 75%"));
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 72));
+    assert!(roomy.contains("Cache: 75.0% hit | hit 36000 | miss 12000"));
     assert!(roomy.contains("$12.34"));
     assert!(
         !roomy.contains("ctx"),
