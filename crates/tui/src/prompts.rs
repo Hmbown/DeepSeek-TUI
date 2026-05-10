@@ -542,6 +542,44 @@ mod tests {
     }
 
     #[test]
+    fn language_section_carries_reasoning_content_directives_for_1118() {
+        // #1118 ("Language has been configured to Chinese, but thinking
+        // outputs are still in English"): the base prompt's language
+        // section is the only knob that steers V4's `reasoning_content`
+        // language. Pin the load-bearing phrases so a future innocuous
+        // edit can't quietly drop them.
+        let lang = BASE_PROMPT;
+        assert!(
+            lang.contains("reasoning_content"),
+            "language section must explicitly call out reasoning_content"
+        );
+        // Bold "must both be in Simplified Chinese" anchor — strong
+        // emphasis aimed at the failure mode V4 falls into where it
+        // mirrors the user message for the final reply but defaults to
+        // English for thinking.
+        assert!(
+            lang.contains("must both be in Simplified Chinese"),
+            "expected the bold Simplified Chinese requirement"
+        );
+        // "overwhelmingly English" — addresses the specific trigger
+        // where a Chinese question lands on a codebase whose system
+        // prompt and context are English-heavy.
+        assert!(
+            lang.contains("overwhelmingly English"),
+            "expected the context-is-English caveat"
+        );
+        // Explicit-user-override clause keeps the prompt useful for the
+        // opposite preference (#1118 commenters who want English
+        // thinking for token-cost reasons).
+        for phrase in ["think in English", "\u{7528}\u{82F1}\u{6587}\u{601D}\u{8003}"] {
+            assert!(
+                lang.contains(phrase),
+                "expected the user-override example `{phrase}`"
+            );
+        }
+    }
+
+    #[test]
     fn environment_block_is_inserted_into_system_prompt() {
         let tmp = tempdir().expect("tempdir");
         let prompt = match system_prompt_for_mode_with_context_skills_and_session(
