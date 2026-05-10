@@ -532,6 +532,9 @@ pub fn env_for(name: &str) -> Option<String> {
         "vllm" | "v-llm" => &["VLLM_API_KEY"],
         "ollama" | "ollama-local" => &["OLLAMA_API_KEY"],
         "openai" => &["OPENAI_API_KEY"],
+        "openai-compatible" | "openai_compatible" | "openai-compat" => {
+            &["OPENAI_COMPATIBLE_API_KEY"]
+        }
         _ => return None,
     };
     for var in candidates {

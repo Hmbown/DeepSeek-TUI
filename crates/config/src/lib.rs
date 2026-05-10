@@ -45,6 +45,7 @@ pub enum ProviderKind {
     Deepseek,
     NvidiaNim,
     Openai,
+    OpenaiCompatible,
     Openrouter,
     Novita,
     Fireworks,
@@ -60,6 +61,7 @@ impl ProviderKind {
             Self::Deepseek => "deepseek",
             Self::NvidiaNim => "nvidia-nim",
             Self::Openai => "openai",
+            Self::OpenaiCompatible => "openai-compatible",
             Self::Openrouter => "openrouter",
             Self::Novita => "novita",
             Self::Fireworks => "fireworks",
@@ -75,6 +77,9 @@ impl ProviderKind {
             "deepseek" | "deep-seek" => Some(Self::Deepseek),
             "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => Some(Self::NvidiaNim),
             "openai" | "open-ai" => Some(Self::Openai),
+            "openai-compatible" | "openai_compatible" | "openai-compat" => {
+                Some(Self::OpenaiCompatible)
+            }
             "openrouter" | "open_router" => Some(Self::Openrouter),
             "novita" => Some(Self::Novita),
             "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
@@ -104,6 +109,8 @@ pub struct ProvidersToml {
     #[serde(default)]
     pub openai: ProviderConfigToml,
     #[serde(default)]
+    pub openai_compatible: ProviderConfigToml,
+    #[serde(default)]
     pub openrouter: ProviderConfigToml,
     #[serde(default)]
     pub novita: ProviderConfigToml,
@@ -124,6 +131,7 @@ impl ProvidersToml {
             ProviderKind::Deepseek => &self.deepseek,
             ProviderKind::NvidiaNim => &self.nvidia_nim,
             ProviderKind::Openai => &self.openai,
+            ProviderKind::OpenaiCompatible => &self.openai_compatible,
             ProviderKind::Openrouter => &self.openrouter,
             ProviderKind::Novita => &self.novita,
             ProviderKind::Fireworks => &self.fireworks,
@@ -138,6 +146,7 @@ impl ProvidersToml {
             ProviderKind::Deepseek => &mut self.deepseek,
             ProviderKind::NvidiaNim => &mut self.nvidia_nim,
             ProviderKind::Openai => &mut self.openai,
+            ProviderKind::OpenaiCompatible => &mut self.openai_compatible,
             ProviderKind::Openrouter => &mut self.openrouter,
             ProviderKind::Novita => &mut self.novita,
             ProviderKind::Fireworks => &mut self.fireworks,
@@ -897,6 +906,7 @@ impl ConfigToml {
                 ProviderKind::Deepseek => DEFAULT_DEEPSEEK_BASE_URL.to_string(),
                 ProviderKind::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL.to_string(),
                 ProviderKind::Openai => DEFAULT_OPENAI_BASE_URL.to_string(),
+                ProviderKind::OpenaiCompatible => String::new(),
                 ProviderKind::Openrouter => DEFAULT_OPENROUTER_BASE_URL.to_string(),
                 ProviderKind::Novita => DEFAULT_NOVITA_BASE_URL.to_string(),
                 ProviderKind::Fireworks => DEFAULT_FIREWORKS_BASE_URL.to_string(),
@@ -1007,7 +1017,10 @@ pub fn load_project_config(workspace: &Path) -> Option<ConfigToml> {
 }
 
 fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> String {
-    if matches!(provider, ProviderKind::Ollama) {
+    if matches!(
+        provider,
+        ProviderKind::Ollama | ProviderKind::OpenaiCompatible
+    ) {
         return model.to_string();
     }
 
@@ -1065,6 +1078,7 @@ fn default_model_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Deepseek => DEFAULT_DEEPSEEK_MODEL,
         ProviderKind::NvidiaNim => DEFAULT_NVIDIA_NIM_MODEL,
         ProviderKind::Openai => DEFAULT_OPENAI_MODEL,
+        ProviderKind::OpenaiCompatible => "",
         ProviderKind::Openrouter => DEFAULT_OPENROUTER_MODEL,
         ProviderKind::Novita => DEFAULT_NOVITA_MODEL,
         ProviderKind::Fireworks => DEFAULT_FIREWORKS_MODEL,
@@ -1079,6 +1093,7 @@ fn default_base_url_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Deepseek => DEFAULT_DEEPSEEK_BASE_URL,
         ProviderKind::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
         ProviderKind::Openai => DEFAULT_OPENAI_BASE_URL,
+        ProviderKind::OpenaiCompatible => "",
         ProviderKind::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
         ProviderKind::Novita => DEFAULT_NOVITA_BASE_URL,
         ProviderKind::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
@@ -1095,8 +1110,10 @@ fn base_url_is_custom_for_provider(provider: ProviderKind, base_url: &str) -> bo
 }
 
 fn provider_preserves_custom_base_url_model(provider: ProviderKind, base_url: &str) -> bool {
-    matches!(provider, ProviderKind::Openrouter)
-        && base_url_is_custom_for_provider(provider, base_url)
+    matches!(
+        provider,
+        ProviderKind::Openrouter | ProviderKind::OpenaiCompatible
+    ) && base_url_is_custom_for_provider(provider, base_url)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1365,6 +1382,7 @@ struct EnvRuntimeOverrides {
     deepseek_base_url: Option<String>,
     nvidia_base_url: Option<String>,
     openai_base_url: Option<String>,
+    openai_compatible_base_url: Option<String>,
     openrouter_base_url: Option<String>,
     novita_base_url: Option<String>,
     fireworks_base_url: Option<String>,
@@ -1403,6 +1421,9 @@ impl EnvRuntimeOverrides {
             openai_base_url: std::env::var("OPENAI_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            openai_compatible_base_url: std::env::var("OPENAI_COMPATIBLE_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
             openrouter_base_url: std::env::var("OPENROUTER_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
@@ -1431,6 +1452,7 @@ impl EnvRuntimeOverrides {
             ProviderKind::Deepseek => self.deepseek_base_url.clone(),
             ProviderKind::NvidiaNim => self.nvidia_base_url.clone(),
             ProviderKind::Openai => self.openai_base_url.clone(),
+            ProviderKind::OpenaiCompatible => self.openai_compatible_base_url.clone(),
             ProviderKind::Openrouter => self.openrouter_base_url.clone(),
             ProviderKind::Novita => self.novita_base_url.clone(),
             ProviderKind::Fireworks => self.fireworks_base_url.clone(),

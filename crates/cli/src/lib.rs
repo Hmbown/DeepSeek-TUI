@@ -26,6 +26,7 @@ enum ProviderArg {
     Deepseek,
     NvidiaNim,
     Openai,
+    OpenaiCompatible,
     Openrouter,
     Novita,
     Fireworks,
@@ -40,6 +41,7 @@ impl From<ProviderArg> for ProviderKind {
             ProviderArg::Deepseek => ProviderKind::Deepseek,
             ProviderArg::NvidiaNim => ProviderKind::NvidiaNim,
             ProviderArg::Openai => ProviderKind::Openai,
+            ProviderArg::OpenaiCompatible => ProviderKind::OpenaiCompatible,
             ProviderArg::Openrouter => ProviderKind::Openrouter,
             ProviderArg::Novita => ProviderKind::Novita,
             ProviderArg::Fireworks => ProviderKind::Fireworks,
@@ -249,6 +251,9 @@ enum AuthCommand {
         /// Read the key from stdin instead of prompting.
         #[arg(long = "api-key-stdin", default_value_t = false)]
         api_key_stdin: bool,
+        /// Base URL for the provider's API (required for openai-compatible).
+        #[arg(long)]
+        url: Option<String>,
     },
     /// Report whether a provider has a key configured. Never prints
     /// the value; just `set` / `not set` plus the source layer.
@@ -669,6 +674,7 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
         ProviderKind::Deepseek => "deepseek",
         ProviderKind::NvidiaNim => "nvidia-nim",
         ProviderKind::Openai => "openai",
+        ProviderKind::OpenaiCompatible => "openai-compatible",
         ProviderKind::Openrouter => "openrouter",
         ProviderKind::Novita => "novita",
         ProviderKind::Fireworks => "fireworks",
@@ -679,9 +685,10 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
 }
 
 /// Provider order used by the `auth list` and `auth status` outputs.
-const PROVIDER_LIST: [ProviderKind; 9] = [
+const PROVIDER_LIST: [ProviderKind; 10] = [
     ProviderKind::Deepseek,
     ProviderKind::NvidiaNim,
+    ProviderKind::OpenaiCompatible,
     ProviderKind::Openrouter,
     ProviderKind::Novita,
     ProviderKind::Fireworks,
@@ -744,6 +751,7 @@ fn provider_env_vars(provider: ProviderKind) -> &'static [&'static str] {
         ProviderKind::Vllm => &["VLLM_API_KEY"],
         ProviderKind::Ollama => &["OLLAMA_API_KEY"],
         ProviderKind::Openai => &["OPENAI_API_KEY"],
+        ProviderKind::OpenaiCompatible => &["OPENAI_COMPATIBLE_API_KEY"],
     }
 }
 
@@ -883,9 +891,25 @@ fn run_auth_command_with_secrets(
             provider,
             api_key,
             api_key_stdin,
+            url,
         } => {
             let provider: ProviderKind = provider.into();
             let slot = provider_slot(provider);
+
+            // openai-compatible requires a base URL.
+            if provider == ProviderKind::OpenaiCompatible {
+                let provider_cfg = store.config.providers.for_provider_mut(provider);
+                if let Some(url) = url.clone() {
+                    provider_cfg.base_url = Some(url);
+                } else if provider_cfg.base_url.is_none() {
+                    let entered = prompt_base_url(slot)?;
+                    provider_cfg.base_url = Some(entered);
+                }
+            } else if let Some(url) = url.clone() {
+                let provider_cfg = store.config.providers.for_provider_mut(provider);
+                provider_cfg.base_url = Some(url);
+            }
+
             if provider == ProviderKind::Ollama && api_key.is_none() && !api_key_stdin {
                 store.config.provider = provider;
                 let provider_cfg = store.config.providers.for_provider_mut(provider);
@@ -897,6 +921,34 @@ fn run_auth_command_with_secrets(
                     "configured {slot} provider in {} (API key optional)",
                     store.path().display()
                 );
+                return Ok(());
+            }
+            // For openai-compatible, API key is also optional (local servers may not need one).
+            if provider == ProviderKind::OpenaiCompatible && api_key.is_none() && !api_key_stdin {
+                let entered = prompt_api_key_optional(slot)?;
+                if !entered.is_empty() {
+                    write_provider_api_key_to_config(store, provider, &entered);
+                    let keyring_saved =
+                        write_provider_api_key_to_keyring(secrets, provider, &entered);
+                    store.config.provider = provider;
+                    store.save()?;
+                    if keyring_saved {
+                        println!(
+                            "saved API key for {slot} to {} and {}",
+                            store.path().display(),
+                            secrets.backend_name()
+                        );
+                    } else {
+                        println!("saved API key for {slot} to {}", store.path().display());
+                    }
+                } else {
+                    store.config.provider = provider;
+                    store.save()?;
+                    println!(
+                        "configured {slot} provider in {} (API key optional, no key set)",
+                        store.path().display()
+                    );
+                }
                 return Ok(());
             }
             let api_key = match (api_key, api_key_stdin) {
@@ -1010,6 +1062,40 @@ fn prompt_api_key(slot: &str) -> Result<String> {
         bail!("empty API key provided");
     }
     Ok(key)
+}
+
+fn prompt_api_key_optional(slot: &str) -> Result<String> {
+    use std::io::{IsTerminal, Write};
+    eprint!("Enter API key for {slot} (press Enter to skip): ");
+    io::stderr().flush().ok();
+    if !io::stdin().is_terminal() {
+        // Non-interactive: read directly without prompting twice.
+        return read_api_key_from_stdin();
+    }
+    let mut buf = String::new();
+    io::stdin()
+        .read_line(&mut buf)
+        .context("failed to read API key from stdin")?;
+    Ok(buf.trim().to_string())
+}
+
+fn prompt_base_url(slot: &str) -> Result<String> {
+    use std::io::{IsTerminal, Write};
+    eprint!("Enter base URL for {slot}: ");
+    io::stderr().flush().ok();
+    if !io::stdin().is_terminal() {
+        // Non-interactive: read directly without prompting twice.
+        return read_api_key_from_stdin();
+    }
+    let mut buf = String::new();
+    io::stdin()
+        .read_line(&mut buf)
+        .context("failed to read base URL from stdin")?;
+    let url = buf.trim().to_string();
+    if url.is_empty() {
+        bail!("empty base URL provided — openai-compatible requires a base URL");
+    }
+    Ok(url)
 }
 
 /// Move plaintext keys from config.toml into the configured secret store.
