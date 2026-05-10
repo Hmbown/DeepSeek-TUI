@@ -192,36 +192,33 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## v0.8.25 新功能
+## v0.8.26 新功能
 
-稳定性 + 漂移修复版本。[完整更新日志](CHANGELOG.md)。
+安全 + 优化版本。[完整更新日志](CHANGELOG.md)。
 
-- **Markdown 表格长单元格自动换行**，不再以 `…` 截断。长内容在列内
-  按词换行，网格在每个换行后保持完整。
-- **自更新不再依赖 `curl` 并验证 SHA-256** — `deepseek update` 现在使用
-  `reqwest` + rustls，并解析聚合校验清单以在安装前验证每个下载产物。
-  移除了 v0.8.23 为 Windows 添加的 Schannel `--ssl-no-revoke` 临时方案。
-- **MCP JSON-RPC 帧处理统一** — 请求/响应关联、超时、消息帧现在都位于
-  字节传输层之上。Stdio、SSE 和新的 Streamable HTTP 传输共享同一协议层。
-- **Streamable HTTP MCP 端点** (#1300，感谢 **Reid Liu (@reidliu41)**)
-  — 在 stdio 和 SSE 之外新增第三种 MCP 传输。
-- **终端模式恢复统一** — 启动、`FocusGained` 和 `resume_terminal` 都
-  通过同一个 `recover_terminal_modes()` 辅助函数。鼠标滚轮、键盘增强、
-  括号粘贴、焦点事件在焦点往返后只需一处重新启用。
-- **`recall_archive` 在父级注册表中可用** — 只读 BM25 归档搜索工具
-  现在可在 Plan、Agent 和 YOLO 父级注册表中调用（此前仅子代理可用）。
-- **入门时尊重当前 provider** (#1265，感谢 **jinpengxuan
-  (@jinpengxuan)**)、**Home/End 移动光标** (#1246，感谢 **heloanc
-  (@heloanc)**)、**`/config` 视图列宽对齐数据** (#1290，感谢 **Reid
-  Liu (@reidliu41)**)、**`reasoning_content` 重放对缓存稳定** (#1297，
-  感谢 **Duducoco (@Duducoco)**)、**docs 锚点 scroll-margin 可覆盖**
-  (#1282，感谢 **Wenjunyun123 (@Wenjunyun123)**)、**zh-Hans 审批对话框
-  使用「终止」** (#1274，感谢 **Liu-Vince (@Liu-Vince)**)。
+- **安全加固** — 强化了 `fetch_url` 网络目标验证（GHSA-88gh-2526-gfrr）
+  并收紧了 `task_create` 子代理的默认权限（GHSA-72w5-pf8h-xfp4）。
+  感谢 **@JafarAkhondali** 和 **@47Cid** 的负责任的披露。
+- **代码块边栏字符从复制内容中剥离** (#1212，感谢 **Oliver-ZPLiu
+  (@Oliver-ZPLiu)**) — `▏` 不再泄漏到剪贴板或拖拽选择中。
+- **拖拽选择可超出视口边缘自动滚动** (#1163，感谢 **Oliver-ZPLiu
+  (@Oliver-ZPLiu)**)。
+- **MCP stdio 服务器捕获 stderr** — 运行中的服务器诊断信息现在可用。
+- **Windows Terminal 默认开启鼠标捕获** (#1169，感谢 **Giggitycountless
+  (@Giggitycountless)**)。
+- **`/clear` 重置 Todos 侧边栏**（感谢 **Giggitycountless
+  (@Giggitycountless)**）、**提示预算截断时保持技能可见**（感谢 **hhhaiai
+  (@hhhaiai)**）、**`/skills` 列表间距修复** 以及 **base URL 覆盖传递到
+  provider**（感谢 **reidliu41 (@reidliu41)**）、**WSL2 轮次启动超时
+  修复**（感谢 **michaeltse321 (@michaeltse321)**）、**自动将
+  `.deepseek/` 添加到 `.gitignore`**（感谢 **Giggitycountless
+  (@Giggitycountless)**）、**错误单元格渲染时禁用 markdown**（感谢
+  **douglarek (@douglarek)**）、**MCP 工具排序稳定化** (#1319)、
+  **非 DeepSeek provider 使用根 `base_url` 时输出配置警告** (#1308)。
 
-⚠️ **已知问题（沿用至 v0.8.26）**：Windows 10 conhost 闪烁（#1260、
-#1251）、按轮次快照（尚无写感知跳过）、代码块中 `▏` 字符泄漏（#1212）、
-鼠标选择跨入侧边栏（#1169）、拖拽选择边缘自动滚动（#1163）、运行时
-MCP 服务器 stderr 捕获。
+⚠️ **已知问题（沿用至 v0.8.27）**：Windows 10 conhost 闪烁（#1260、
+#1251）、按轮次快照（尚无写感知跳过）、非 WT 终端鼠标选择跨入侧边栏
+(#1169)。
 
 ---
 
