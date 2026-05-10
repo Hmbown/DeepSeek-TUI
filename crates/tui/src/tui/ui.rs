@@ -208,30 +208,24 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     if use_alt_screen {
         execute!(stdout, EnterAlternateScreen)?;
     }
-    if use_mouse_capture {
-        execute!(stdout, EnableMouseCapture)?;
-    }
-    if use_bracketed_paste {
-        execute!(stdout, EnableBracketedPaste)?;
-    }
-    // Enable focus events so the terminal reports FocusGained/FocusLost.
-    // Necessary for IME compositor re-activation on macOS when the user
-    // switches away (Cmd+Tab) and returns.
-    execute!(stdout, EnableFocusChange)?;
-    // #442: opt into the Kitty keyboard protocol's escape-code
-    // disambiguation so terminals that support it (Kitty, Ghostty,
+    // Mouse capture, bracketed paste, focus events, and the Kitty
+    // keyboard-protocol escape-disambiguation flag (#442). Single source
+    // of truth shared with the FocusGained recovery path and
+    // resume_terminal — see recover_terminal_modes.
+    //
+    // Focus events are necessary for IME compositor re-activation on
+    // macOS when the user switches away (Cmd+Tab) and returns. The Kitty
+    // keyboard protocol opt-in is best-effort: terminals that don't
+    // support it (iTerm2, Terminal.app, Windows 10 conhost) silently
+    // discard the escape, while supporting terminals (Kitty, Ghostty,
     // Alacritty 0.13+, WezTerm, recent Konsole, recent xterm) report
-    // unambiguous events for Option/Alt-modified keys, plain Esc, and
-    // multi-byte sequences. Terminals that don't recognise the escape
-    // silently discard it; behaviour is identical to today on legacy
-    // terminals (iTerm2, Terminal.app, Windows 10 conhost).
+    // unambiguous events for Option/Alt-modified keys and plain Esc.
     //
     // Only `DISAMBIGUATE_ESCAPE_CODES` is pushed — the higher tiers
     // (`REPORT_EVENT_TYPES`, `REPORT_ALL_KEYS_AS_ESCAPE_CODES`) emit
     // release events that the existing key handlers would mis-route
-    // as duplicate presses. Best-effort: failure to push is logged
-    // and ignored so a quirky terminal can't block startup.
-    push_keyboard_enhancement_flags(&mut stdout);
+    // as duplicate presses.
+    recover_terminal_modes(&mut stdout, use_mouse_capture, use_bracketed_paste);
     let color_depth = palette::ColorDepth::detect();
     let palette_mode = palette::PaletteMode::detect();
     tracing::debug!(
@@ -1586,24 +1580,18 @@ async fn run_event_loop(
                 continue;
             }
 
-            // Re-push keyboard enhancement flags on focus-gain and force a
-            // full viewport reset before repainting. App-switching and
-            // interactive handoffs can leave the host terminal scrolled away
-            // from row 0; treating focus as a recapture point prevents the
-            // native scrollback gutter / blank-top-row failure mode from
-            // persisting after the user returns.
-            // On macOS, switching away (Cmd+Tab) and back can reset the
-            // terminal's keyboard mode, which breaks IME compositor state.
-            // Acknowledging FocusGained and re-pushing the flags restores
-            // the IME so CJK input methods work after a focus toggle.
-            // The same reset can drop the terminal's mouse-tracking mode,
-            // leaving wheel scroll dead until restart — re-arm mouse
-            // capture on focus-gain so wheel events keep flowing.
+            // Re-establish terminal mode flags on focus-gain and force a full
+            // viewport reset before repainting. App-switching and interactive
+            // handoffs can leave the host terminal scrolled away from row 0
+            // and (on macOS) can drop the keyboard, mouse-tracking, or
+            // bracketed-paste modes — recover_terminal_modes() is the
+            // canonical place those flags live.
             if terminal_event_needs_viewport_recapture(&evt) {
-                push_keyboard_enhancement_flags(terminal.backend_mut());
-                if app.use_mouse_capture {
-                    let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
-                }
+                recover_terminal_modes(
+                    terminal.backend_mut(),
+                    app.use_mouse_capture,
+                    app.use_bracketed_paste,
+                );
                 force_terminal_repaint = true;
                 app.needs_redraw = true;
             }
@@ -2705,19 +2693,22 @@ async fn run_event_loop(
                 KeyCode::Right => {
                     app.move_cursor_right();
                 }
-                KeyCode::Home if key.modifiers.is_empty() => {
+                KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     if let Some(anchor) =
                         TranscriptScroll::anchor_for(app.viewport.transcript_cache.line_meta(), 0)
                     {
                         app.viewport.transcript_scroll = anchor;
                     }
                 }
-                KeyCode::End if key.modifiers.is_empty() => {
+                KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.scroll_to_bottom();
                 }
                 KeyCode::Home | KeyCode::Char('a')
                     if key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
+                    app.move_cursor_start();
+                }
+                KeyCode::Home => {
                     app.move_cursor_start();
                 }
                 KeyCode::End => {
@@ -6405,14 +6396,11 @@ fn resume_terminal(
     if use_alt_screen {
         execute!(terminal.backend_mut(), EnterAlternateScreen)?;
     }
-    if use_mouse_capture {
-        execute!(terminal.backend_mut(), EnableMouseCapture)?;
-    }
-    if use_bracketed_paste {
-        execute!(terminal.backend_mut(), EnableBracketedPaste)?;
-    }
-    execute!(terminal.backend_mut(), EnableFocusChange)?;
-    push_keyboard_enhancement_flags(terminal.backend_mut());
+    recover_terminal_modes(
+        terminal.backend_mut(),
+        use_mouse_capture,
+        use_bracketed_paste,
+    );
     reset_terminal_viewport(terminal)?;
     Ok(())
 }
@@ -6440,6 +6428,35 @@ fn push_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
             ?err,
             "PushKeyboardEnhancementFlags ignored (terminal lacks support)"
         );
+    }
+}
+
+/// Re-establish terminal mode flags. Idempotent and best-effort: each
+/// underlying flag is silently discarded by terminals that don't support
+/// it, and a single flag's failure doesn't prevent later flags from being
+/// attempted.
+///
+/// **Canonical location for terminal-mode setup.** If you add a new mode
+/// flag at startup or in `resume_terminal`, add it here too — `FocusGained`
+/// recovery calls this and will silently fall behind otherwise.
+///
+/// Excluded by design: raw mode and the alternate screen — those persist
+/// across focus events and are only re-established by `resume_terminal`
+/// after a suspension, which always runs a separate path.
+fn recover_terminal_modes<W: Write>(
+    writer: &mut W,
+    use_mouse_capture: bool,
+    use_bracketed_paste: bool,
+) {
+    push_keyboard_enhancement_flags(writer);
+    if use_mouse_capture && let Err(err) = execute!(writer, EnableMouseCapture) {
+        tracing::debug!(?err, "EnableMouseCapture ignored");
+    }
+    if use_bracketed_paste && let Err(err) = execute!(writer, EnableBracketedPaste) {
+        tracing::debug!(?err, "EnableBracketedPaste ignored");
+    }
+    if let Err(err) = execute!(writer, EnableFocusChange) {
+        tracing::debug!(?err, "EnableFocusChange ignored");
     }
 }
 

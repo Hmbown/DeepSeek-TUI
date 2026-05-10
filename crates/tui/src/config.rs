@@ -710,9 +710,6 @@ pub struct ContextConfig {
     /// Model used for seam/briefing work. Default: "deepseek-v4-flash".
     #[serde(default)]
     pub seam_model: Option<String>,
-    /// Per-model threshold overrides.
-    #[serde(default)]
-    pub per_model: Option<HashMap<String, PerModelContextConfig>>,
 }
 
 /// Sub-agent model overrides. Keys in `models` can be role names (`worker`,
@@ -738,19 +735,6 @@ pub struct SubagentsConfig {
     /// setting. Clamped to [1, MAX_SUBAGENTS].
     #[serde(default)]
     pub max_concurrent: Option<usize>,
-}
-
-/// Per-model context tuning.
-#[derive(Debug, Clone, Deserialize)]
-pub struct PerModelContextConfig {
-    #[serde(default)]
-    pub l1_threshold: Option<usize>,
-    #[serde(default)]
-    pub l2_threshold: Option<usize>,
-    #[serde(default)]
-    pub l3_threshold: Option<usize>,
-    #[serde(default)]
-    pub cycle_threshold: Option<usize>,
 }
 
 /// Resolved CLI configuration, including defaults and environment overrides.
@@ -2481,7 +2465,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
                 .cycle_threshold
                 .or(base.context.cycle_threshold),
             seam_model: override_cfg.context.seam_model.or(base.context.seam_model),
-            per_model: override_cfg.context.per_model.or(base.context.per_model),
         },
         subagents: override_cfg.subagents.or(base.subagents),
         strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
@@ -2868,13 +2851,8 @@ reasoning_effort = "max"
     Ok(config_path)
 }
 
-/// Check if an API key is configured anywhere the runtime can resolve it.
-///
-/// Order of inspection:
-///   1. `DEEPSEEK_API_KEY` env var (fast, no I/O, no OS prompts).
-///   2. In-memory override on the config (set by onboarding / picker).
-///   3. Config-file `api_key` slot (cheap file read already done by
-///      the loaded `Config`).
+/// Check if the active provider has any API key configured anywhere the
+/// runtime can resolve it.
 ///
 /// Platform credential stores are intentionally not queried here.
 /// Startup/onboarding checks must be cheap and prompt-free, so v0.8.8
@@ -2886,17 +2864,7 @@ reasoning_effort = "max"
 /// this wrong made users get prompted for credentials in situations
 /// where normal env/config auth was already available.
 pub fn has_api_key(config: &Config) -> bool {
-    if std::env::var("DEEPSEEK_API_KEY").is_ok_and(|k| !k.trim().is_empty()) {
-        return true;
-    }
-    if config
-        .api_key
-        .as_ref()
-        .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
-    {
-        return true;
-    }
-    false
+    has_api_key_for(config, config.api_provider())
 }
 
 #[must_use]
@@ -3618,6 +3586,104 @@ mod tests {
         Ok(())
     }
 
+    fn config_with_provider_scoped_key(provider: &str, api_key: &str) -> Config {
+        let mut providers = ProvidersConfig::default();
+        match provider {
+            "deepseek" | "deepseek-cn" => {
+                providers.deepseek.api_key = Some(api_key.to_string());
+            }
+            "nvidia-nim" => {
+                providers.nvidia_nim.api_key = Some(api_key.to_string());
+            }
+            "openai" => {
+                providers.openai.api_key = Some(api_key.to_string());
+            }
+            "openrouter" => {
+                providers.openrouter.api_key = Some(api_key.to_string());
+            }
+            "novita" => {
+                providers.novita.api_key = Some(api_key.to_string());
+            }
+            "fireworks" => {
+                providers.fireworks.api_key = Some(api_key.to_string());
+            }
+            "sglang" => {
+                providers.sglang.api_key = Some(api_key.to_string());
+            }
+            "vllm" => {
+                providers.vllm.api_key = Some(api_key.to_string());
+            }
+            "ollama" => {
+                providers.ollama.api_key = Some(api_key.to_string());
+            }
+            _ => panic!("unexpected provider {provider}"),
+        }
+
+        Config {
+            provider: Some(provider.to_string()),
+            providers: Some(providers),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn has_api_key_uses_active_provider_scoped_config_key() {
+        for provider in ["openai", "openrouter", "novita", "fireworks"] {
+            let config = config_with_provider_scoped_key(provider, "provider-config-key");
+
+            assert!(
+                has_api_key(&config),
+                "active provider config key must satisfy onboarding auth check for {provider}"
+            );
+        }
+    }
+
+    #[test]
+    fn has_api_key_uses_active_provider_env_key() -> Result<()> {
+        let _lock = lock_test_env();
+        for (provider, env_var) in [
+            ("openai", "OPENAI_API_KEY"),
+            ("openrouter", "OPENROUTER_API_KEY"),
+            ("novita", "NOVITA_API_KEY"),
+            ("fireworks", "FIREWORKS_API_KEY"),
+        ] {
+            unsafe {
+                std::env::set_var(env_var, "provider-env-key");
+            }
+
+            let config = Config {
+                provider: Some(provider.to_string()),
+                ..Config::default()
+            };
+
+            assert!(
+                has_api_key(&config),
+                "active provider env key must satisfy onboarding auth check for {provider}"
+            );
+
+            unsafe {
+                std::env::remove_var(env_var);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn has_api_key_uses_root_config_key_for_deepseek_variants() {
+        for provider in ["deepseek", "deepseek-cn"] {
+            let config = Config {
+                provider: Some(provider.to_string()),
+                api_key: Some("root-config-key".to_string()),
+                ..Config::default()
+            };
+
+            assert!(
+                has_api_key(&config),
+                "root config api_key must satisfy onboarding auth check for {provider}"
+            );
+        }
+    }
+
     /// Regression for #343: clear_api_key strips both the root `api_key`
     /// and any nested `[providers.<name>].api_key` lines from config.toml
     /// so a stale credential can't shadow a fresh login.
@@ -4118,6 +4184,25 @@ api_key = "old-openrouter-key"
 
         let merged = apply_profile(config, Some("work")).expect("profile");
         assert_eq!(merged.context.enabled, Some(true));
+    }
+
+    #[test]
+    fn removed_context_per_model_table_is_ignored_for_compatibility() -> Result<()> {
+        let parsed: ConfigFile = toml::from_str(
+            r#"
+            [context]
+            enabled = true
+
+            [context.per_model.deepseek-v4-pro]
+            l1_threshold = 111
+            l2_threshold = 222
+            l3_threshold = 333
+            cycle_threshold = 444
+            "#,
+        )?;
+
+        assert_eq!(parsed.base.context.enabled, Some(true));
+        Ok(())
     }
 
     #[test]
@@ -5056,6 +5141,17 @@ api_key = "novita-table-key"
 
         assert!(has_api_key_for(&config, ApiProvider::DeepseekCN));
         Ok(())
+    }
+
+    #[test]
+    fn has_api_key_for_uses_root_config_key_for_deepseek_variants() {
+        let config = Config {
+            api_key: Some("root-config-key".to_string()),
+            ..Config::default()
+        };
+
+        assert!(has_api_key_for(&config, ApiProvider::Deepseek));
+        assert!(has_api_key_for(&config, ApiProvider::DeepseekCN));
     }
 
     #[test]
