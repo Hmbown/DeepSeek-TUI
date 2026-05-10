@@ -296,6 +296,7 @@ impl SubAgentType {
             Self::General => vec![
                 "list_dir",
                 "read_file",
+                "resolve_import",
                 "write_file",
                 "edit_file",
                 "apply_patch",
@@ -322,6 +323,7 @@ impl SubAgentType {
             Self::Explore => vec![
                 "list_dir",
                 "read_file",
+                "resolve_import",
                 "grep_files",
                 "file_search",
                 "web.run",
@@ -335,6 +337,7 @@ impl SubAgentType {
             Self::Plan => vec![
                 "list_dir",
                 "read_file",
+                "resolve_import",
                 "grep_files",
                 "file_search",
                 "web.run",
@@ -349,10 +352,18 @@ impl SubAgentType {
                 "todo_update",
                 "todo_list",
             ],
-            Self::Review => vec!["list_dir", "read_file", "grep_files", "file_search", "note"],
+            Self::Review => vec![
+                "list_dir",
+                "read_file",
+                "resolve_import",
+                "grep_files",
+                "file_search",
+                "note",
+            ],
             Self::Implementer => vec![
                 "list_dir",
                 "read_file",
+                "resolve_import",
                 "write_file",
                 "edit_file",
                 "apply_patch",
@@ -377,6 +388,7 @@ impl SubAgentType {
             Self::Verifier => vec![
                 "list_dir",
                 "read_file",
+                "resolve_import",
                 "grep_files",
                 "file_search",
                 "exec_shell",

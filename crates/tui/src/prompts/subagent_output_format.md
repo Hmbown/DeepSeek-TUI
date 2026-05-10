@@ -54,6 +54,8 @@ workspace boundary. Reach for `exec_shell` only for things the typed tools do
 not cover (build, test, format, lint, ad-hoc one-liners).
 
 - Read a file: `read_file` (NOT `exec_shell` with `cat`/`head`/`tail`).
+- Resolve a frontend alias import: `resolve_import` first, then `read_file`
+  the returned concrete path.
 - List a directory: `list_dir` (NOT `exec_shell` with `ls`).
 - Search file contents: `grep_files` (NOT `exec_shell` with `rg`/`grep`).
 - Find files by name: `file_search` (NOT `exec_shell` with `find`).

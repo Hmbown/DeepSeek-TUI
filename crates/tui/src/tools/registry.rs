@@ -430,6 +430,13 @@ impl ToolRegistryBuilder {
             ))
     }
 
+    /// Include frontend import alias resolution.
+    #[must_use]
+    pub fn with_module_resolve_tool(self) -> Self {
+        use super::module_resolve::ResolveImportTool;
+        self.with_tool(Arc::new(ResolveImportTool))
+    }
+
     /// Include shell execution tool.
     #[must_use]
     pub fn with_shell_tools(self) -> Self {
@@ -714,6 +721,7 @@ impl ToolRegistryBuilder {
             .with_git_tools()
             .with_git_history_tools()
             .with_diagnostics_tool()
+            .with_module_resolve_tool()
             .with_project_tools()
             .with_skill_tools()
             .with_test_runner_tool()
