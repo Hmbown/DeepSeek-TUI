@@ -23,6 +23,9 @@ use std::time::Duration;
 
 const DUCKDUCKGO_HOST: &str = "html.duckduckgo.com";
 const BING_HOST: &str = "www.bing.com";
+const TAVILY_ENDPOINT: &str = "https://api.tavily.com/search";
+const BOCHA_ENDPOINT: &str = "https://api.bochaai.com/v1/ai/search";
+const ERROR_BODY_PREVIEW_BYTES: usize = 512;
 
 /// Returns `Ok(())` if the policy allows the call, or a `ToolError` otherwise.
 /// Falls through silently when no policy is attached (back-compat).
@@ -181,10 +184,18 @@ impl ToolSpec for WebSearchTool {
         // Dispatch to the configured search provider.
         match context.search_provider {
             SearchProvider::Tavily => {
-                return self.run_tavily_search(&query, max_results, timeout_ms, context).await;
+                let decider = context.network_policy.as_ref();
+                check_policy(decider, "api.tavily.com")?;
+                return self
+                    .run_tavily_search(&query, max_results, timeout_ms, context)
+                    .await;
             }
             SearchProvider::Bocha => {
-                return self.run_bocha_search(&query, max_results, timeout_ms, context).await;
+                let decider = context.network_policy.as_ref();
+                check_policy(decider, "api.bochaai.com")?;
+                return self
+                    .run_bocha_search(&query, max_results, timeout_ms, context)
+                    .await;
             }
             SearchProvider::DuckDuckGo => {
                 // fall through to existing DuckDuckGo + Bing fallback logic
@@ -309,14 +320,14 @@ impl WebSearchTool {
             })?;
 
         let payload = json!({
-            "api_key": api_key,
+            "api_key": api_key, // noqa: api-key-in-body
             "query": query,
             "search_depth": "basic",
             "max_results": max_results,
         });
 
         let resp = client
-            .post("https://api.tavily.com/search")
+            .post(TAVILY_ENDPOINT)
             .header("Content-Type", "application/json")
             .json(&payload)
             .send()
@@ -331,8 +342,9 @@ impl WebSearchTool {
         })?;
 
         if !status.is_success() {
+            let truncated = truncate_error_body(&body);
             return Err(ToolError::execution_failed(format!(
-                "Tavily search failed: HTTP {} — {body}",
+                "Tavily search failed: HTTP {} — {truncated}",
                 status.as_u16()
             )));
         }
@@ -411,7 +423,7 @@ impl WebSearchTool {
         });
 
         let resp = client
-            .post("https://api.bochaai.com/v1/ai/search")
+            .post(BOCHA_ENDPOINT)
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {api_key}"))
             .json(&payload)
@@ -427,8 +439,9 @@ impl WebSearchTool {
         })?;
 
         if !status.is_success() {
+            let truncated = truncate_error_body(&body);
             return Err(ToolError::execution_failed(format!(
-                "Bocha search failed: HTTP {} — {body}",
+                "Bocha search failed: HTTP {} — {truncated}",
                 status.as_u16()
             )));
         }
@@ -487,6 +500,27 @@ impl WebSearchTool {
 
         ToolResult::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
+}
+
+fn truncate_error_body(body: &str) -> String {
+    let stripped = sanitize_error_body(body);
+    if stripped.len() <= ERROR_BODY_PREVIEW_BYTES {
+        stripped
+    } else {
+        let mut end = ERROR_BODY_PREVIEW_BYTES;
+        while !stripped.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &stripped[..end])
+    }
+}
+
+fn sanitize_error_body(body: &str) -> String {
+    let stripped = strip_html_tags(body);
+    stripped
+        .chars()
+        .filter(|c| !c.is_control() || c.is_ascii_whitespace())
+        .collect()
 }
 
 fn extract_search_query(input: &Value) -> Result<String, ToolError> {
@@ -858,4 +892,26 @@ mod tests {
             .expect_err("missing query should fail");
         assert!(format!("{err}").contains("missing required field 'query'"));
     }
+
+    #[test]
+    fn truncate_error_body_truncates_long_body() {
+        let body = "a".repeat(ERROR_BODY_PREVIEW_BYTES + 100);
+        let truncated = truncate_error_body(&body);
+        assert!(truncated.len() <= ERROR_BODY_PREVIEW_BYTES + 3);
+        assert!(truncated.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_error_body_keeps_short_body_intact() {
+        let body = "short error";
+        assert_eq!(truncate_error_body(body), body);
+    }
+
+    #[test]
+    fn sanitize_error_body_strips_html_and_control_chars() {
+        let body = "<p>error</p>\x00\x01\x02";
+        let sanitized = sanitize_error_body(body);
+        assert_eq!(sanitized, "error");
+    }
+}
 }

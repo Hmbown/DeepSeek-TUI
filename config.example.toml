@@ -219,6 +219,8 @@ max_subagents = 10 # optional (1-20)
 #                            # tavily: https://tavily.com — AI search, needs api_key
 #                            # bocha:  https://bochaai.com — 博查AI搜索，国内友好，需api_key
 # api_key = "tvly-YOUR_KEY"  # required for tavily and bocha
+#                            # WARNING: treat config.toml like a secret file when
+#                            # storing API keys. Use env vars or `auth set` instead.
 #
 # Env-var overrides:
 #   DEEPSEEK_SEARCH_PROVIDER → search.provider
