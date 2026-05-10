@@ -269,6 +269,19 @@ osc8_links = true            # emit OSC 8 escapes around URLs (Cmd+click in iTer
 #                           # Note: this only affects TUI labels/chrome — it does NOT change model output language.
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Display — per-role text color overrides
+# ─────────────────────────────────────────────────────────────────────────────────
+# Customize the color of transcript message roles. Each field accepts an ANSI
+# 256-color index (e.g. "93"), a 6-digit hex (#RRGGBB or RRGGBB), or a named
+# ratatui color (e.g. "cyan", "bright yellow").
+#
+# [display]
+# user = "93"          # bright yellow — overrides the default green
+# agent = "36"         # cyan — overrides the default white
+# tool_output = "33"   # gold — overrides the default muted blue-grey
+# subagent = "35"      # magenta — overrides the default muted grey
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Feature Flags
 # ─────────────────────────────────────────────────────────────────────────────────
 [features]

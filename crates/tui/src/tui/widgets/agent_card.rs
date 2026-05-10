@@ -354,7 +354,10 @@ fn card_header(
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
-        Span::styled(role.to_string(), Style::default().fg(palette::TEXT_PRIMARY)),
+        Span::styled(
+            role.to_string(),
+            Style::default().fg(palette::role_colors().subagent),
+        ),
         Span::raw(" "),
         Span::styled(
             format!("[{}]", status.label()),

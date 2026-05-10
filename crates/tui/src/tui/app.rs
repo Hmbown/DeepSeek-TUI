@@ -1162,6 +1162,17 @@ impl App {
         {
             ui_theme = ui_theme.with_background_color(background);
         }
+
+        // Initialize role colors from config.
+        if let Some(display_colors) = config.display.as_ref() {
+            palette::init_role_colors(palette::RoleColors::from_raw(
+                display_colors.user.as_deref(),
+                display_colors.agent.as_deref(),
+                display_colors.tool_output.as_deref(),
+                display_colors.subagent.as_deref(),
+            ));
+        }
+
         let model = settings.default_model.clone().unwrap_or(model);
         let auto_model = model.trim().eq_ignore_ascii_case("auto");
         let threshold_model = if auto_model {

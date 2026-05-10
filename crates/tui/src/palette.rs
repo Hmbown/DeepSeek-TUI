@@ -1,4 +1,6 @@
-//! DeepSeek color palette and semantic roles.
+//! DeepSeek color palette, semantic roles, and configurable role colors.
+
+use std::sync::RwLock;
 
 use ratatui::style::Color;
 
@@ -648,16 +650,152 @@ fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
     }
 }
 
+// ============================================================================
+// Configurable role-based colors
+// ============================================================================
+
+/// Per-role color mapping for transcript visibility.
+///
+/// Each role has a default that matches the existing hard-coded palette;
+/// users can override via `[display]` in `~/.deepseek/config.toml`.
+#[derive(Debug, Clone, Copy)]
+pub struct RoleColors {
+    /// Color for user messages. Default: `USER_BODY` (green).
+    pub user: Color,
+    /// Color for agent (assistant) messages. Default: `TEXT_PRIMARY`.
+    pub agent: Color,
+    /// Color for tool execution output. Default: `TEXT_TOOL_OUTPUT`.
+    pub tool_output: Color,
+    /// Color for sub-agent / delegated-call messages. Default: `TEXT_MUTED`.
+    pub subagent: Color,
+}
+
+impl Default for RoleColors {
+    fn default() -> Self {
+        Self {
+            user: USER_BODY,
+            agent: TEXT_PRIMARY,
+            tool_output: TEXT_TOOL_OUTPUT,
+            subagent: TEXT_MUTED,
+        }
+    }
+}
+
+impl RoleColors {
+    /// Build `RoleColors` from optional per-role color strings.
+    /// Each value is parsed via [`parse_role_color`]; missing fields fall
+    /// back to the palette default.
+    #[must_use]
+    pub fn from_raw(
+        user: Option<&str>,
+        agent: Option<&str>,
+        tool_output: Option<&str>,
+        subagent: Option<&str>,
+    ) -> Self {
+        Self {
+            user: user.and_then(parse_role_color).unwrap_or(USER_BODY),
+            agent: agent.and_then(parse_role_color).unwrap_or(TEXT_PRIMARY),
+            tool_output: tool_output
+                .and_then(parse_role_color)
+                .unwrap_or(TEXT_TOOL_OUTPUT),
+            subagent: subagent.and_then(parse_role_color).unwrap_or(TEXT_MUTED),
+        }
+    }
+}
+
+static ROLE_COLORS: RwLock<RoleColors> = RwLock::new(RoleColors {
+    user: USER_BODY,
+    agent: TEXT_PRIMARY,
+    tool_output: TEXT_TOOL_OUTPUT,
+    subagent: TEXT_MUTED,
+});
+
+/// Set the process-wide role colors. Safe to call multiple times (e.g. on
+/// config reload or in tests with different display configs).
+pub fn init_role_colors(colors: RoleColors) {
+    if let Ok(mut guard) = ROLE_COLORS.write() {
+        *guard = colors;
+    }
+}
+
+/// Return a snapshot of the active role colors. Cheap copy — `RoleColors` is `Copy`.
+#[must_use]
+pub fn role_colors() -> RoleColors {
+    ROLE_COLORS.read().map(|guard| *guard).unwrap_or_default()
+}
+
+/// Parse a role-color config value into a `ratatui::Color`.
+///
+/// Accepts:
+/// - 6-digit hex `"#RRGGBB"` or `"RRGGBB"`
+/// - ANSI 256-color index `"0"`..`"255"`
+/// - Named ratatui color, case-insensitive: `"red"`, `"bright yellow"`, etc.
+#[must_use]
+pub fn parse_role_color(value: &str) -> Option<Color> {
+    let trimmed = value.trim();
+
+    // Try hex (#RRGGBB or RRGGBB)
+    if let Some(color) = parse_hex_rgb_color(trimmed) {
+        return Some(color);
+    }
+
+    // Try ANSI 256-color index
+    if let Ok(index) = trimmed.parse::<u8>() {
+        return Some(Color::Indexed(index));
+    }
+
+    // Try named color
+    match trimmed.to_ascii_lowercase().as_str() {
+        "black" => Some(Color::Black),
+        "red" => Some(Color::Red),
+        "green" => Some(Color::Green),
+        "yellow" => Some(Color::Yellow),
+        "blue" => Some(Color::Blue),
+        "magenta" => Some(Color::Magenta),
+        "cyan" => Some(Color::Cyan),
+        "white" => Some(Color::White),
+        "gray" | "grey" => Some(Color::Gray),
+        "darkgray" | "dark_gray" | "dark-gray" | "darkgrey" | "dark_grey" | "dark-grey" => {
+            Some(Color::DarkGray)
+        }
+        s if s.contains("bright") || s.contains("light") => {
+            let base = s
+                .replace("bright", "")
+                .replace("light", "")
+                .replace(['-', '_'], "")
+                .trim()
+                .to_ascii_lowercase();
+            match base.as_str() {
+                "red" => Some(Color::LightRed),
+                "green" => Some(Color::LightGreen),
+                "yellow" => Some(Color::LightYellow),
+                "blue" => Some(Color::LightBlue),
+                "magenta" => Some(Color::LightMagenta),
+                "cyan" => Some(Color::LightCyan),
+                _ => None,
+            }
+        }
+        "lightred" | "light_red" | "light-red" => Some(Color::LightRed),
+        "lightgreen" | "light_green" | "light-green" => Some(Color::LightGreen),
+        "lightyellow" | "light_yellow" | "light-yellow" => Some(Color::LightYellow),
+        "lightblue" | "light_blue" | "light-blue" => Some(Color::LightBlue),
+        "lightmagenta" | "light_magenta" | "light-magenta" => Some(Color::LightMagenta),
+        "lightcyan" | "light_cyan" | "light-cyan" => Some(Color::LightCyan),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ACCENT_REASONING_LIVE, ColorDepth, DEEPSEEK_INK, DEEPSEEK_RED, DEEPSEEK_SKY,
         DEEPSEEK_SLATE, LIGHT_PANEL, LIGHT_REASONING, LIGHT_SURFACE, LIGHT_TEXT_BODY,
-        LIGHT_TEXT_HINT, LIGHT_UI_THEME, PaletteMode, SURFACE_REASONING, SURFACE_REASONING_TINT,
-        TEXT_BODY, TEXT_HINT, TEXT_REASONING, TEXT_TOOL_OUTPUT, UI_THEME, adapt_bg,
-        adapt_bg_for_palette_mode, adapt_color, adapt_fg_for_palette_mode, blend, nearest_ansi16,
-        normalize_hex_rgb_color, parse_hex_rgb_color, pulse_brightness, reasoning_surface_tint,
-        rgb_to_ansi256,
+        LIGHT_TEXT_HINT, LIGHT_UI_THEME, PaletteMode, RoleColors, SURFACE_REASONING,
+        SURFACE_REASONING_TINT, TEXT_BODY, TEXT_HINT, TEXT_MUTED, TEXT_PRIMARY, TEXT_REASONING,
+        TEXT_TOOL_OUTPUT, UI_THEME, USER_BODY, adapt_bg, adapt_bg_for_palette_mode, adapt_color,
+        adapt_fg_for_palette_mode, blend, nearest_ansi16, normalize_hex_rgb_color,
+        parse_hex_rgb_color, parse_role_color, pulse_brightness, reasoning_surface_tint,
+        rgb_to_ansi256, role_colors,
     };
     use ratatui::style::Color;
 
@@ -879,5 +1017,82 @@ mod tests {
         // exercise the path so a panic would surface.
         let _ = ColorDepth::detect();
         let _ = adapt_color(DEEPSEEK_INK, ColorDepth::detect());
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Role-based colors
+    // ────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_role_color_accepts_ansi_index() {
+        assert_eq!(parse_role_color("93"), Some(Color::Indexed(93)));
+        assert_eq!(parse_role_color("36"), Some(Color::Indexed(36)));
+        assert_eq!(parse_role_color("0"), Some(Color::Indexed(0)));
+        assert_eq!(parse_role_color("255"), Some(Color::Indexed(255)));
+    }
+
+    #[test]
+    fn parse_role_color_accepts_hex_rgb() {
+        assert_eq!(parse_role_color("#4ADE80"), Some(Color::Rgb(74, 222, 128)));
+        assert_eq!(parse_role_color("E2E8F0"), Some(Color::Rgb(226, 232, 240)));
+    }
+
+    #[test]
+    fn parse_role_color_accepts_named_colors() {
+        assert_eq!(parse_role_color("cyan"), Some(Color::Cyan));
+        assert_eq!(parse_role_color("bright yellow"), Some(Color::LightYellow));
+        assert_eq!(
+            parse_role_color("Bright Magenta"),
+            Some(Color::LightMagenta)
+        );
+        assert_eq!(parse_role_color("light red"), Some(Color::LightRed));
+        assert_eq!(parse_role_color("light-green"), Some(Color::LightGreen));
+        assert_eq!(parse_role_color("blue"), Some(Color::Blue));
+        assert_eq!(parse_role_color("gray"), Some(Color::Gray));
+        assert_eq!(parse_role_color("dark_gray"), Some(Color::DarkGray));
+        assert_eq!(parse_role_color("dark-grey"), Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn parse_role_color_rejects_invalid_values() {
+        assert_eq!(parse_role_color(""), None);
+        assert_eq!(parse_role_color("notacolor"), None);
+        assert_eq!(parse_role_color("999"), None, "256-color index 999 > 255");
+        assert_eq!(parse_role_color("#GGGGGG"), None);
+    }
+
+    #[test]
+    fn role_colors_defaults_fall_back_correctly() {
+        let colors = RoleColors::default();
+        assert_eq!(colors.user, USER_BODY);
+        assert_eq!(colors.agent, TEXT_PRIMARY);
+        assert_eq!(colors.tool_output, TEXT_TOOL_OUTPUT);
+        assert_eq!(colors.subagent, TEXT_MUTED);
+    }
+
+    #[test]
+    fn role_colors_from_raw_uses_defaults_for_missing() {
+        let colors = RoleColors::from_raw(None, None, None, None);
+        assert_eq!(colors.user, USER_BODY);
+        assert_eq!(colors.agent, TEXT_PRIMARY);
+    }
+
+    #[test]
+    fn role_colors_from_raw_overrides_configured_roles() {
+        let colors = RoleColors::from_raw(Some("93"), Some("36"), None, Some("magenta"));
+        assert_eq!(colors.user, Color::Indexed(93));
+        assert_eq!(colors.agent, Color::Indexed(36));
+        assert_eq!(colors.tool_output, TEXT_TOOL_OUTPUT, "default for missing");
+        assert_eq!(colors.subagent, Color::Magenta);
+    }
+
+    #[test]
+    fn role_colors_global_reflects_init() {
+        // role_colors() lazy-initialises to defaults; we can test in isolation
+        // because ROLE_COLORS is write-once. Just verify the function returns
+        // something internally consistent.
+        let colors = role_colors();
+        assert_eq!(colors.user, USER_BODY);
+        assert_eq!(colors.agent, TEXT_PRIMARY);
     }
 }

@@ -828,6 +828,10 @@ pub struct Config {
     #[serde(default)]
     pub lsp: Option<LspConfigToml>,
 
+    /// Per-role display color configuration for the TUI transcript.
+    #[serde(default)]
+    pub display: Option<DisplayColorsToml>,
+
     /// Append-only layered context management with Flash seam manager (#159).
     #[serde(default)]
     pub context: ContextConfig,
@@ -976,6 +980,34 @@ pub struct LspConfigToml {
     /// are language slugs (`"rust"`, `"go"`, etc.).
     #[serde(default)]
     pub servers: Option<HashMap<String, Vec<String>>>,
+}
+
+/// Per-role ANSI color configuration for the TUI transcript display.
+///
+/// Each field accepts an ANSI 256-color index (e.g., `"93"`), a named
+/// color (e.g., `"bright yellow"`, `"cyan"`), or a 6-digit hex RGB value
+/// (e.g., `"#4ADE80"`). When a field is absent the TUI falls back to its
+/// built-in default for that role.
+///
+/// # Example
+///
+/// ```toml
+/// [display]
+/// user = "93"
+/// agent = "36"
+/// tool_output = "33"
+/// subagent = "35"
+/// ```
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct DisplayColorsToml {
+    /// Color for user messages.
+    pub user: Option<String>,
+    /// Color for agent (assistant) messages.
+    pub agent: Option<String>,
+    /// Color for tool execution output.
+    pub tool_output: Option<String>,
+    /// Color for sub-agent / delegated call messages.
+    pub subagent: Option<String>,
 }
 
 impl LspConfigToml {
@@ -2527,6 +2559,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         network: override_cfg.network.or(base.network),
         skills: override_cfg.skills.or(base.skills),
         snapshots: override_cfg.snapshots.or(base.snapshots),
+        display: override_cfg.display.or(base.display),
         memory: override_cfg.memory.or(base.memory),
         lsp: override_cfg.lsp.or(base.lsp),
         context: ContextConfig {

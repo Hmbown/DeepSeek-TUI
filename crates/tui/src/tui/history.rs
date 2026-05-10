@@ -2551,7 +2551,7 @@ fn render_output_row(
     // check for a file:line pattern and highlight it distinctively.
     let diff_style = diff_line_style(&row.text);
     let file_style = file_line_style(&row.text);
-    let value_style = diff_style.or(file_style).unwrap_or_else(tool_value_style);
+    let value_style = diff_style.or(file_style).unwrap_or_else(tool_output_body_style);
     if row.intact {
         lines.push(render_card_detail_line_single(
             label,
@@ -2664,7 +2664,7 @@ fn user_label_style() -> Style {
 }
 
 fn user_body_style() -> Style {
-    Style::default().fg(palette::USER_BODY)
+    Style::default().fg(palette::role_colors().user)
 }
 
 /// Style for the assistant glyph (`●`). When the cell is streaming and
@@ -2690,7 +2690,7 @@ fn system_label_style() -> Style {
 }
 
 fn message_body_style() -> Style {
-    Style::default().fg(palette::TEXT_PRIMARY)
+    Style::default().fg(palette::role_colors().agent)
 }
 
 fn system_body_style() -> Style {
@@ -2929,6 +2929,10 @@ fn tool_status_label(status: ToolStatus) -> &'static str {
 
 fn tool_value_style() -> Style {
     active_theme().tool_value_style()
+}
+
+fn tool_output_body_style() -> Style {
+    Style::default().fg(palette::role_colors().tool_output)
 }
 
 fn thinking_visual_state(streaming: bool, duration_secs: Option<f32>) -> ThinkingVisualState {

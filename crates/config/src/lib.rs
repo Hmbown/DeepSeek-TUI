@@ -190,8 +190,39 @@ pub struct ConfigToml {
     /// applies the defaults documented in [`LspConfigToml`].
     #[serde(default)]
     pub lsp: Option<LspConfigToml>,
+    /// Per-role display color configuration for the TUI transcript.
+    #[serde(default)]
+    pub display: Option<DisplayColorsToml>,
     #[serde(flatten)]
     pub extras: BTreeMap<String, toml::Value>,
+}
+
+/// Per-role ANSI color configuration for the TUI transcript display.
+///
+/// Each field accepts an ANSI 256-color index (e.g., `"93"`), a named
+/// ratatui color (e.g., `"bright yellow"`, `"cyan"`), or a 6-digit hex
+/// RGB value (e.g., `"#4ADE80"` or `"4ADE80"`). When a field is absent
+/// the TUI falls back to its built-in default for that role.
+///
+/// # Example
+///
+/// ```toml
+/// [display]
+/// user = "93"          # bright yellow
+/// agent = "36"         # cyan
+/// tool_output = "33"   # gold
+/// subagent = "35"      # magenta
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DisplayColorsToml {
+    /// Color for user messages.
+    pub user: Option<String>,
+    /// Color for agent (assistant) messages.
+    pub agent: Option<String>,
+    /// Color for tool execution output (shell results, etc.).
+    pub tool_output: Option<String>,
+    /// Color for sub-agent / delegated call messages.
+    pub subagent: Option<String>,
 }
 
 /// On-disk schema for the `[skills]` table (#140). See `config.example.toml`
@@ -370,6 +401,9 @@ impl ConfigToml {
         }
         if project.lsp.is_some() {
             self.lsp = project.lsp;
+        }
+        if project.display.is_some() {
+            self.display = project.display;
         }
         for (k, v) in project.extras {
             self.extras.insert(k, v);
