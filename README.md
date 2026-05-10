@@ -28,6 +28,12 @@ brew install deepseek-tui
 # 4. Direct download — no package manager or toolchain.
 #    https://github.com/Hmbown/DeepSeek-TUI/releases
 #    Prebuilt for Linux x64/ARM64, macOS x64/ARM64, Windows x64.
+
+# 5. Docker — prebuilt release image.
+docker run --rm -it \
+  -e DEEPSEEK_API_KEY \
+  -v "$PWD:/workspace" \
+  ghcr.io/hmbown/deepseek-tui:latest
 ```
 
 > In mainland China, speed up the npm path with
@@ -219,28 +225,45 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## What's New In v0.8.16
+## What's New In v0.8.25
 
-A focused hotfix for RLM, sub-agent visibility, and terminal ownership on top
-of v0.8.15.
-[Full changelog](CHANGELOG.md).
+A stabilization + drift-fixes release. [Full changelog](CHANGELOG.md).
 
-- **RLM no longer has the old 180s wall-clock timeout** — long-input REPL work
-  can keep running while it is still making progress.
-- **RLM reports what happened** — output now includes input size, iteration
-  count, elapsed time, sub-LLM RPC count, and termination state.
-- **RLM chunking is safer for exact answers** — prompts require deterministic
-  Python for counts/aggregation and coverage reporting for whole-input chunks.
-- **Sub-agent visibility is more truthful** — `/subagents`, the transcript, and
-  the right rail include live progress and fanout workers instead of showing
-  false `No agents` or `No active tasks` states.
-- **Sub-agent cards are quieter** — internal scheduler lines are hidden while
-  useful tool activity remains visible.
-- **Sub-agent completion events stay internal** — the parent agent integrates
-  child results without explaining raw sentinel XML back to the user.
-- **Terminal ownership is hardened** — background sub-agents cannot take over
-  the parent terminal, and the TUI restores alternate-screen mode after
-  delegated work drains.
+- **Markdown tables wrap long cells** instead of truncating with `…`.
+  Long cell content is word-wrapped within the column and the grid stays
+  intact on every wrapped line.
+- **Self-update is `curl`-free and verifies SHA-256** — `deepseek update`
+  uses `reqwest` with rustls and parses the aggregated checksum manifest
+  to verify each downloaded asset before installing. Drops the v0.8.23
+  Schannel `--ssl-no-revoke` Windows hack.
+- **MCP JSON-RPC framing centralized** — request/response correlation,
+  timeouts, and message framing now live above the byte transports.
+  Stdio, SSE, and the new Streamable HTTP transport share one protocol
+  layer.
+- **Streamable HTTP MCP endpoints** (#1300, thanks **Reid Liu
+  (@reidliu41)**) — third MCP transport alongside stdio and SSE.
+- **Terminal-mode recovery unified** — startup, `FocusGained`, and
+  `resume_terminal` all route through one `recover_terminal_modes()`
+  helper. Wheel scroll, keyboard enhancement, bracketed paste, and
+  focus events are re-armed in one place after focus round-trips.
+- **`recall_archive` available in parent registries** — the read-only
+  BM25 archive search tool is now callable from Plan, Agent, and YOLO
+  parent registries (was sub-agent only).
+- **Onboarding respects the active provider** (#1265, thanks
+  **jinpengxuan (@jinpengxuan)**), **Home/End move the cursor**
+  (#1246, thanks **heloanc (@heloanc)**), **`/config` view columns
+  align to data** (#1290, thanks **Reid Liu (@reidliu41)**),
+  **`reasoning_content` replay is cache-stable** (#1297, thanks
+  **Duducoco (@Duducoco)**), **docs anchor scroll-margin overrideable**
+  (#1282, thanks **Wenjunyun123 (@Wenjunyun123)**), **zh-Hans
+  approval-dialog uses 终止** (#1274, thanks **Liu-Vince
+  (@Liu-Vince)**).
+
+⚠️ **Known issues carried over to v0.8.26:** Windows 10 conhost flicker
+(#1260, #1251), per-turn snapshotting (no write-aware skip yet), `▏`
+glyph leak in code blocks (#1212), mouse selection crossing the
+sidebar (#1169), drag-select edge auto-scroll (#1163), mid-run MCP
+stderr capture.
 
 ---
 
@@ -264,11 +287,22 @@ deepseek resume <SESSION_ID>                     # resume a specific session by 
 deepseek fork <SESSION_ID>                       # fork a session at a chosen turn
 deepseek serve --http                            # HTTP/SSE API server
 deepseek serve --acp                             # ACP stdio adapter for Zed/custom agents
-deepseek pr <N>                                  # fetch PR and pre-seed review prompt
+deepseek run pr <N>                              # fetch PR and pre-seed review prompt
 deepseek mcp list                                # list configured MCP servers
 deepseek mcp validate                            # validate MCP config/connectivity
 deepseek mcp-server                              # run dispatcher MCP stdio server
 deepseek update                                  # check for and apply binary updates
+```
+
+Docker images are published to GHCR for release builds:
+
+```bash
+docker volume create deepseek-tui-home
+
+docker run --rm -it \
+  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -v deepseek-tui-home:/home/deepseek/.deepseek \
+  ghcr.io/hmbown/deepseek-tui:latest
 ```
 
 ### Zed / ACP
@@ -335,7 +369,7 @@ Key environment variables:
 | `DEEPSEEK_HTTP_HEADERS` | Optional custom model request headers, e.g. `X-Model-Provider-Id=your-model-provider` |
 | `DEEPSEEK_MODEL` | Default model |
 | `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` | Stream idle timeout in seconds, default `300`, clamped to `1..=3600` |
-| `DEEPSEEK_PROVIDER` | `deepseek` (default), `deepseek-cn`, `nvidia-nim`, `openai`, `openrouter`, `novita`, `fireworks`, `sglang`, `vllm`, `ollama` |
+| `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `openai`, `openrouter`, `novita`, `fireworks`, `sglang`, `vllm`, `ollama` |
 | `DEEPSEEK_PROFILE` | Config profile name |
 | `DEEPSEEK_MEMORY` | Set to `on` to enable user memory |
 | `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
@@ -347,7 +381,7 @@ Key environment variables:
 | `NO_ANIMATIONS=1` | Force accessibility mode at startup |
 | `SSL_CERT_FILE` | Custom CA bundle for corporate proxies |
 
-Set `locale` in `settings.toml`, use `/config locale zh-Hans`, or rely on `LC_ALL`/`LANG` to choose UI chrome and the default natural language sent to V4 models. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [docs/MCP.md](docs/MCP.md).
+Set `locale` in `settings.toml`, use `/config locale zh-Hans`, or rely on `LC_ALL`/`LANG` to choose UI chrome and the fallback language sent to V4 models. The latest user message still wins for natural-language reasoning and replies, so Chinese user turns stay Chinese even on an English system locale. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [docs/MCP.md](docs/MCP.md).
 
 ---
 
@@ -417,6 +451,9 @@ Full Changelog: [CHANGELOG.md](CHANGELOG.md).
 
 ## Thanks
 
+- **[DeepSeek](https://github.com/deepseek-ai)** — thank you for the models and support that power every turn. 感谢 DeepSeek 提供模型与支持，让每一次交互成为可能。
+- **[DataWhale](https://github.com/datawhalechina)** 🐋 — thank you for your support and for welcoming us into the Whale Brother family. 感谢 DataWhale 的支持，并欢迎我们加入“鲸兄弟”大家庭。
+
 This project ships with help from a growing community of contributors:
 
 - **[merchloubna70-dot](https://github.com/merchloubna70-dot)** — 28 PRs spanning features, fixes, and VS Code extension scaffolding (#645–#681)
@@ -429,14 +466,14 @@ This project ships with help from a growing community of contributors:
 - **[toi500](https://github.com/toi500)** — Windows paste fix report
 - **[xsstomy](https://github.com/xsstomy)** — Terminal startup repaint report
 - **[melody0709](https://github.com/melody0709)** — Slash-prefix Enter activation report
-- **[lloydzhou](https://github.com/lloydzhou)** and **[jeoor](https://github.com/jeoor)** — Compaction cost reports; lloydzhou also contributed deterministic environment context (#813, #922)
+- **[lloydzhou](https://github.com/lloydzhou)** and **[jeoor](https://github.com/jeoor)** — Compaction cost reports; lloydzhou also contributed deterministic environment context (#813, #922) and KV prefix-cache stabilisation (#1080)
 - **[Agent-Skill-007](https://github.com/Agent-Skill-007)** — README clarity pass (#685)
 - **[woyxiang](https://github.com/woyxiang)** — Windows install documentation (#696)
 - **[wangfeng](mailto:wangfengcsu@qq.com)** — Pricing/discount info update (#692)
 - **[zichen0116](https://github.com/zichen0116)** — CODE_OF_CONDUCT.md (#686)
 - **[dfwqdyl-ui](https://github.com/dfwqdyl-ui)** — model ID case-sensitivity compatibility report (#729)
 - **[Oliver-ZPLiu](https://github.com/Oliver-ZPLiu)** — stale `working...` state bug report and Windows clipboard fallback (#738, #850)
-- **[reidliu41](https://github.com/reidliu41)** — resume hint, workspace trust persistence, and Ollama provider support (#863, #870, #921)
+- **[reidliu41](https://github.com/reidliu41)** — resume hint, workspace trust persistence, Ollama provider support, and thinking-block stream finalization (#863, #870, #921, #1078)
 - **[xieshutao](https://github.com/xieshutao)** — plain Markdown skill fallback (#869)
 - **[GK012](https://github.com/GK012)** — npm wrapper `--version` fallback (#885)
 - **[y0sif](https://github.com/y0sif)** — parent turn-loop wakeup after direct child sub-agent completion (#901)
@@ -444,7 +481,7 @@ This project ships with help from a growing community of contributors:
 - **[dumbjack](https://github.com/dumbjack)** / **浩淼的mac** — command-safety null-byte hardening (#706, #918)
 - **macworkers** — fork confirmation with the new session id (#600, #919)
 - **zero** and **[zerx-lab](https://github.com/zerx-lab)** — notification condition config and richer OSC 9 notification body (#820, #920)
-- **[chnjames](https://github.com/chnjames)** — cached @mention completions and config recovery polish (#849, #927)
+- **[chnjames](https://github.com/chnjames)** — cached @mention completions, config recovery polish, and Windows UTF-8 shell output (#849, #927, #982, #1018)
 - **[angziii](https://github.com/angziii)** — config safety, async cleanup, Docker hardening, and command-safety fixes (#822, #824, #827, #831, #833, #835, #837)
 - **[elowen53](https://github.com/elowen53)** — UTF-8 decoding and deterministic test coverage (#825, #840)
 - **[wdw8276](https://github.com/wdw8276)** — `/rename` command for custom session titles (#836)
@@ -453,6 +490,15 @@ This project ships with help from a growing community of contributors:
 - **Hafeez Pizofreude** — SSRF protection in `fetch_url` and Star History chart
 - **Unic (YuniqueUnic)** — Schema-driven config UI (TUI + web)
 - **Jason** — SSRF security hardening
+- **[axobase001](https://github.com/axobase001)** — snapshot orphan cleanup, npm install guards, session telemetry fixes, model-scope cache clear, symlinked skill support, and npm mirror-escape-hatch guidance (#975, #1032, #1047, #1049, #1052, #1019, #1051, #1056)
+- **[MengZ-super](https://github.com/MengZ-super)** — `/theme` command for dark/light toggle and SSE gzip/brotli decompression (#1057, #1061)
+- **[DI-HUO-MING-YI](https://github.com/DI-HUO-MING-YI)** — Plan-mode read-only sandbox safety fix (#1077)
+- **[bevis-wong](https://github.com/bevis-wong)** — precise paste-Enter auto-submit reproducer (#1073)
+- **[Duducoco](https://github.com/Duducoco)** and **[AlphaGogoo](https://github.com/AlphaGogoo)** — skills slash-menu and `/skills` coverage fix (#1068, #1083)
+- **[ArronAI007](https://github.com/ArronAI007)** — window-resize artifact fix for macOS Terminal.app and ConHost (#993)
+- **[THINKER-ONLY](https://github.com/THINKER-ONLY)** — OpenRouter and custom-endpoint model-ID preservation (#1066)
+- **[Jefsky](https://github.com/Jefsky)** — DeepSeek endpoint correction report (#1079, #1084)
+- **[wlon](https://github.com/wlon)** — NVIDIA NIM provider API-key preference diagnosis (#1081)
 
 ---
 

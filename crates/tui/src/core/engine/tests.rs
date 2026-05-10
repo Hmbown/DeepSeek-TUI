@@ -2,6 +2,7 @@ use super::*;
 
 use crate::models::SystemBlock;
 use crate::test_support::lock_test_env;
+use crate::tools::spec::ToolCapability;
 use serde_json::json;
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -448,8 +449,64 @@ fn turn_tool_registry_builder_keeps_plan_mode_read_only_for_files() {
     assert!(registry.contains("list_dir"));
     assert!(!registry.contains("write_file"));
     assert!(!registry.contains("edit_file"));
+    assert!(!registry.contains("exec_shell"));
+    assert!(!registry.contains("exec_shell_wait"));
+    assert!(!registry.contains("exec_shell_interact"));
+    assert!(!registry.contains("task_shell_start"));
+    assert!(!registry.contains("task_create"));
+    assert!(!registry.contains("task_gate_run"));
+    assert!(!registry.contains("rlm"));
+    assert!(!registry.contains("fim_edit"));
     assert!(registry.contains("update_plan"));
-    assert!(registry.contains("task_create"));
+    assert!(registry.contains("task_list"));
+    assert!(registry.contains("task_read"));
+    assert!(registry.contains("recall_archive"));
+
+    let plan_state_tools = [
+        "checklist_add",
+        "checklist_update",
+        "checklist_write",
+        "todo_add",
+        "todo_update",
+        "todo_write",
+        "update_plan",
+    ];
+    let mut write_or_exec_tools: Vec<String> = registry
+        .all()
+        .into_iter()
+        .filter(|tool| !plan_state_tools.contains(&tool.name()))
+        .filter(|tool| {
+            let capabilities = tool.capabilities();
+            capabilities.contains(&ToolCapability::WritesFiles)
+                || capabilities.contains(&ToolCapability::ExecutesCode)
+        })
+        .map(|tool| tool.name().to_string())
+        .collect();
+    write_or_exec_tools.sort();
+    assert!(
+        write_or_exec_tools.is_empty(),
+        "Plan mode must not register file-writing or code-execution tools: {write_or_exec_tools:?}"
+    );
+}
+
+#[test]
+fn parent_turn_registry_includes_recall_archive_for_investigative_modes() {
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+
+    for mode in [AppMode::Plan, AppMode::Agent, AppMode::Yolo] {
+        let registry = engine
+            .build_turn_tool_registry_builder(
+                mode,
+                engine.config.todos.clone(),
+                engine.config.plan_state.clone(),
+            )
+            .build(engine.build_tool_context(mode, false));
+
+        assert!(
+            registry.contains("recall_archive"),
+            "parent {mode:?} registry should expose recall_archive"
+        );
+    }
 }
 
 #[test]
@@ -501,21 +558,69 @@ fn agent_and_yolo_modes_elevate_shell_sandbox_to_allow_network() {
         "Yolo mode must use DangerFullAccess (no sandbox); got {yolo_policy:?}",
     );
 
-    // Plan mode can still expose shell tools for local read-only inspection,
-    // but it keeps outbound network blocked and attaches an explicit hint so
-    // network command failures are not mistaken for DNS/proxy issues.
+    // Plan mode (#1077): the sandbox must actually deny workspace writes.
+    // The previous WorkspaceWrite-with-empty-network policy whitelisted the
+    // workspace as writable, so `python -c "open('f','w').write('x')"`
+    // mutated files inside the workspace despite Plan-mode's intent. Lock
+    // it to ReadOnly: no writes anywhere, no network. The shell tool stays
+    // exposed for read-only inspection (`ls`, `git log`, `grep`, …) and
+    // the per-platform sandbox enforces the rest.
     let plan_ctx = engine.build_tool_context(AppMode::Plan, false);
     let plan_policy = plan_ctx
         .elevated_sandbox_policy
         .as_ref()
         .expect("Plan mode should make the shell sandbox policy explicit");
+    assert!(
+        matches!(plan_policy, crate::sandbox::SandboxPolicy::ReadOnly),
+        "Plan mode must use ReadOnly sandbox to deny workspace writes (#1077); got {plan_policy:?}",
+    );
     assert!(!plan_policy.has_network_access());
+    assert!(!plan_policy.has_full_disk_write_access());
+    assert!(
+        plan_policy
+            .get_writable_roots(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+            .is_empty(),
+        "ReadOnly policy must enumerate zero writable roots; got {plan_policy:?}",
+    );
     assert!(
         plan_ctx
             .shell_network_denied_hint
             .as_deref()
-            .is_some_and(|hint| hint.contains("Plan mode")),
+            .is_some_and(|hint| hint.contains("Plan mode") && hint.contains("read-only")),
     );
+}
+
+#[test]
+fn sandbox_policy_for_mode_returns_correct_policy_per_mode() {
+    use super::tool_setup::sandbox_policy_for_mode;
+    use crate::sandbox::SandboxPolicy;
+
+    let workspace = PathBuf::from("/tmp/example-workspace");
+
+    // Plan: ReadOnly. The whole point of #1077.
+    assert!(matches!(
+        sandbox_policy_for_mode(AppMode::Plan, &workspace),
+        SandboxPolicy::ReadOnly
+    ));
+
+    // Agent: WorkspaceWrite with workspace as writable root, network on.
+    match sandbox_policy_for_mode(AppMode::Agent, &workspace) {
+        SandboxPolicy::WorkspaceWrite {
+            writable_roots,
+            network_access,
+            ..
+        } => {
+            assert_eq!(writable_roots, vec![workspace.clone()]);
+            assert!(network_access, "Agent mode must allow shell network access");
+        }
+        other => panic!("Agent mode should be WorkspaceWrite; got {other:?}"),
+    }
+
+    // YOLO: DangerFullAccess.
+    assert!(matches!(
+        sandbox_policy_for_mode(AppMode::Yolo, &workspace),
+        SandboxPolicy::DangerFullAccess
+    ));
 }
 
 #[tokio::test]
@@ -743,6 +848,33 @@ fn turn_metadata_includes_current_local_date_without_working_set() {
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     assert!(text.starts_with("<turn_meta>\n"));
     assert!(text.contains(&format!("Current local date: {today}")));
+}
+
+#[test]
+fn user_text_message_keeps_current_turn_input_after_turn_metadata() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (engine, _handle) = Engine::new(config, &Config::default());
+
+    let user_msg =
+        engine.user_text_message_with_turn_metadata("explain the cache metrics".to_string());
+
+    let last_text = user_msg
+        .content
+        .iter()
+        .rev()
+        .find_map(|block| {
+            if let ContentBlock::Text { text, .. } = block {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
+        .expect("user text block");
+    assert_eq!(last_text, "explain the cache metrics");
 }
 
 #[test]
@@ -1302,7 +1434,7 @@ fn tool_search_activates_discovered_deferred_tools() {
             cache_control: None,
         },
     ];
-    ensure_advanced_tooling(&mut catalog);
+    ensure_advanced_tooling(&mut catalog, AppMode::Agent);
     let mut active = initial_active_tools(&catalog);
     let result = execute_tool_search(
         TOOL_SEARCH_BM25_NAME,
@@ -1324,6 +1456,27 @@ async fn code_execution_runs_python_and_returns_result_payload() {
             .expect("code execution should run");
     assert!(result.content.contains("hello from code exec"));
     assert!(result.content.contains("return_code"));
+}
+
+#[test]
+fn plan_mode_catalog_skips_code_execution_tool() {
+    let mut plan_catalog = vec![api_tool("read_file")];
+    ensure_advanced_tooling(&mut plan_catalog, AppMode::Plan);
+    assert!(
+        !plan_catalog
+            .iter()
+            .any(|tool| tool.name == CODE_EXECUTION_TOOL_NAME),
+        "Plan mode must not expose code_execution"
+    );
+
+    let mut agent_catalog = vec![api_tool("read_file")];
+    ensure_advanced_tooling(&mut agent_catalog, AppMode::Agent);
+    assert!(
+        agent_catalog
+            .iter()
+            .any(|tool| tool.name == CODE_EXECUTION_TOOL_NAME),
+        "Agent mode should still expose code_execution"
+    );
 }
 
 #[test]

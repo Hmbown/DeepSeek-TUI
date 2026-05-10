@@ -1,7 +1,7 @@
 //! TUI event loop and rendering logic for `DeepSeek` CLI.
 
 use std::collections::HashSet;
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -9,16 +9,17 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::{
     event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-        MouseEventKind, PopKeyboardEnhancementFlags,
+        self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
     Frame, Terminal,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Rect, Size},
     prelude::Widget,
     style::Style,
     text::Span,
@@ -29,7 +30,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::audit::log_sensitive_event;
 use crate::automation_manager::{AutomationManager, AutomationSchedulerConfig, spawn_scheduler};
-use crate::client::DeepSeekClient;
+use crate::client::{DeepSeekClient, build_cache_warmup_request};
 use crate::commands;
 use crate::compaction::estimate_input_tokens_conservative;
 use crate::config::{ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL};
@@ -39,7 +40,10 @@ use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::Event as EngineEvent;
 use crate::core::ops::Op;
 use crate::hooks::HookEvent;
-use crate::models::{ContentBlock, Message, SystemPrompt, context_window_for_model};
+use crate::llm_client::LlmClient;
+use crate::models::{
+    ContentBlock, Message, MessageRequest, SystemPrompt, Usage, context_window_for_model,
+};
 use crate::palette;
 use crate::prompts;
 use crate::session_manager::{
@@ -65,7 +69,7 @@ use crate::tui::pager::PagerView;
 use crate::tui::persistence_actor::{self, PersistRequest};
 use crate::tui::plan_prompt::PlanPromptView;
 use crate::tui::scrolling::{ScrollDirection, TranscriptScroll};
-use crate::tui::selection::TranscriptSelectionPoint;
+use crate::tui::selection::{SelectionAutoscroll, TranscriptSelectionPoint};
 use crate::tui::session_picker::SessionPickerView;
 use crate::tui::shell_job_routing::{
     add_shell_job_message, format_shell_job_list, format_shell_poll, open_shell_job_pager,
@@ -124,6 +128,7 @@ const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
 const UI_IDLE_POLL_MS: u64 = 48;
 const UI_ACTIVE_POLL_MS: u64 = 24;
 const WEB_CONFIG_POLL_MS: u64 = 16;
+const DISPATCH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
 // Forced repaint cadence while a turn is live (model loading, compacting,
 // sub-agents running). Drives the footer water-spout animation as well as
 // the per-tool spinner pulse — keep this fast enough that the spout reads as
@@ -134,6 +139,7 @@ const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 100;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 
 type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
+const TERMINAL_ORIGIN_RESET: &[u8] = b"\x1b[r\x1b[?6l\x1b[H\x1b[2J\x1b[3J";
 
 /// Run the interactive TUI event loop.
 ///
@@ -202,37 +208,24 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     if use_alt_screen {
         execute!(stdout, EnterAlternateScreen)?;
     }
-    if use_mouse_capture {
-        execute!(stdout, EnableMouseCapture)?;
-    }
-    if use_bracketed_paste {
-        execute!(stdout, EnableBracketedPaste)?;
-    }
-    // #442: opt into the Kitty keyboard protocol's escape-code
-    // disambiguation so terminals that support it (Kitty, Ghostty,
+    // Mouse capture, bracketed paste, focus events, and the Kitty
+    // keyboard-protocol escape-disambiguation flag (#442). Single source
+    // of truth shared with the FocusGained recovery path and
+    // resume_terminal — see recover_terminal_modes.
+    //
+    // Focus events are necessary for IME compositor re-activation on
+    // macOS when the user switches away (Cmd+Tab) and returns. The Kitty
+    // keyboard protocol opt-in is best-effort: terminals that don't
+    // support it (iTerm2, Terminal.app, Windows 10 conhost) silently
+    // discard the escape, while supporting terminals (Kitty, Ghostty,
     // Alacritty 0.13+, WezTerm, recent Konsole, recent xterm) report
-    // unambiguous events for Option/Alt-modified keys, plain Esc, and
-    // multi-byte sequences. Terminals that don't recognise the escape
-    // silently discard it; behaviour is identical to today on legacy
-    // terminals (iTerm2, Terminal.app, Windows 10 conhost).
+    // unambiguous events for Option/Alt-modified keys and plain Esc.
     //
     // Only `DISAMBIGUATE_ESCAPE_CODES` is pushed — the higher tiers
     // (`REPORT_EVENT_TYPES`, `REPORT_ALL_KEYS_AS_ESCAPE_CODES`) emit
     // release events that the existing key handlers would mis-route
-    // as duplicate presses. Best-effort: failure to push is logged
-    // and ignored so a quirky terminal can't block startup.
-    if let Err(err) = execute!(
-        stdout,
-        crossterm::event::PushKeyboardEnhancementFlags(
-            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-        )
-    ) {
-        tracing::debug!(
-            target: "kitty_keyboard",
-            ?err,
-            "PushKeyboardEnhancementFlags ignored (terminal lacks support)"
-        );
-    }
+    // as duplicate presses.
+    recover_terminal_modes(&mut stdout, use_mouse_capture, use_bracketed_paste);
     let color_depth = palette::ColorDepth::detect();
     let palette_mode = palette::PaletteMode::detect();
     tracing::debug!(
@@ -242,7 +235,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     );
     let backend = ColorCompatBackend::new(stdout, color_depth, palette_mode);
     let mut terminal = Terminal::new(backend)?;
-    terminal.clear()?;
+    reset_terminal_viewport(&mut terminal)?;
     let event_broker = EventBroker::new();
 
     // Local mutable copy so runtime config flips (e.g. `/provider` switch)
@@ -418,6 +411,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     persistence_actor::persist(PersistRequest::Shutdown);
 
     let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    execute!(terminal.backend_mut(), DisableFocusChange)?;
     disable_raw_mode()?;
     if use_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -445,9 +439,7 @@ fn format_resume_hint(session_id: Option<&str>) -> Option<String> {
     if session_id.is_empty() {
         return None;
     }
-    Some(format!(
-        "To continue this session, run deepseek resume {session_id}"
-    ))
+    Some("To continue this session, run deepseek --continue".to_string())
 }
 
 fn terminal_probe_timeout(config: &Config) -> Duration {
@@ -515,6 +507,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         mcp_config_path: config.mcp_config_path(),
         skills_dir: app.skills_dir.clone(),
         instructions: config.instructions_paths(),
+        project_context_pack_enabled: config.project_context_pack_enabled(),
         // Effectively unlimited. V4 has a 1M context window and the user
         // wants the model running until it's actually done. The previous cap
         // of 100 hit the ceiling on long multi-step plans (wide refactors,
@@ -641,6 +634,7 @@ async fn run_event_loop(
     // for terminal-native text selection.
     let mut shift_bypass_active = false;
     let mut terminal_paused_at: Option<Instant> = None;
+    let mut force_terminal_repaint = false;
 
     loop {
         if !drain_web_config_events(&mut web_config_session, app, config, &engine_handle).await {
@@ -753,12 +747,9 @@ async fn run_event_loop(
                         // P2.3: thinking lives in the active cell so it groups
                         // visually with the tool calls that follow until the
                         // next assistant prose chunk flushes the group.
-                        app.reasoning_buffer.clear();
-                        app.reasoning_header = None;
-                        app.thinking_started_at = Some(Instant::now());
-                        app.streaming_state.reset();
-                        app.streaming_state.start_thinking(0, None);
-                        let _ = ensure_streaming_thinking_active_entry(app);
+                        if start_streaming_thinking_block(app) {
+                            transcript_batch_updated = true;
+                        }
                     }
                     EngineEvent::ThinkingDelta { content, .. } => {
                         let sanitized = sanitize_stream_chunk(&content);
@@ -779,19 +770,10 @@ async fn run_event_loop(
                         }
                     }
                     EngineEvent::ThinkingComplete { .. } => {
-                        let duration = app
-                            .thinking_started_at
-                            .take()
-                            .map(|t| t.elapsed().as_secs_f32());
-                        let remaining = app.streaming_state.finalize_block_text(0);
-                        if finalize_streaming_thinking_active_entry(app, duration, &remaining) {
+                        if finalize_current_streaming_thinking(app) {
                             transcript_batch_updated = true;
                         }
-
-                        if !app.reasoning_buffer.is_empty() {
-                            app.last_reasoning = Some(app.reasoning_buffer.clone());
-                        }
-                        app.reasoning_buffer.clear();
+                        stash_reasoning_buffer_into_last_reasoning(app);
                     }
                     EngineEvent::ToolCallStarted { id, name, input } => {
                         app.pending_tool_uses
@@ -863,6 +845,7 @@ async fn run_event_loop(
                     EngineEvent::TurnStarted { turn_id } => {
                         app.is_loading = true;
                         app.offline_mode = false;
+                        app.dispatch_started_at = None;
                         current_streaming_text.clear();
                         app.streaming_state.reset();
                         app.streaming_message_index = None;
@@ -882,6 +865,7 @@ async fn run_event_loop(
                         status,
                         error,
                     } => {
+                        force_terminal_repaint = true;
                         // Finalize any in-flight tool group. Cancellation
                         // marks still-running entries as Failed so the user
                         // sees they were interrupted rather than the spinner
@@ -901,6 +885,7 @@ async fn run_event_loop(
                             app.flush_active_cell();
                         }
                         app.is_loading = false;
+                        app.dispatch_started_at = None;
                         app.offline_mode = false;
                         app.streaming_state.reset();
                         // Capture elapsed before clearing turn_started_at so
@@ -1127,7 +1112,7 @@ async fn run_event_loop(
                             "Capacity memory persist failed ({action}): {error}"
                         ));
                     }
-                    EngineEvent::PauseEvents => {
+                    EngineEvent::PauseEvents { ack } => {
                         if !event_broker.is_paused() {
                             pause_terminal(
                                 terminal,
@@ -1137,6 +1122,9 @@ async fn run_event_loop(
                             )?;
                             event_broker.pause_events();
                             terminal_paused_at = Some(Instant::now());
+                        }
+                        if let Some(ack) = ack {
+                            ack.notify_one();
                         }
                     }
                     EngineEvent::ResumeEvents => {
@@ -1322,7 +1310,8 @@ async fn run_event_loop(
                                     "mode": app.mode.label(),
                                 }),
                             );
-                            app.view_stack.push(ApprovalView::new(request));
+                            app.view_stack
+                                .push(ApprovalView::new_for_locale(request, app.ui_locale));
                             app.status_message = Some(format!(
                                 "Approval required for '{tool_name}': {description}"
                             ));
@@ -1453,6 +1442,9 @@ async fn run_event_loop(
         }
 
         let has_running_agents = running_agent_count(app) > 0;
+        if reconcile_turn_liveness(app, Instant::now(), has_running_agents) {
+            app.needs_redraw = true;
+        }
         if (app.is_loading || has_running_agents || app.is_compacting)
             && last_status_frame.elapsed()
                 >= Duration::from_millis(status_animation_interval_ms(app))
@@ -1482,6 +1474,7 @@ async fn run_event_loop(
             terminal_paused_at = None;
             app.status_message = Some("Terminal controls restored".to_string());
             app.needs_redraw = true;
+            force_terminal_repaint = true;
         }
 
         let now = Instant::now();
@@ -1501,6 +1494,10 @@ async fn run_event_loop(
         // Expire the "Press Ctrl+C again to quit" prompt silently after its
         // window. Triggers a redraw if the prompt was visible.
         app.tick_quit_armed();
+        // While the user is drag-selecting past the transcript edge, advance
+        // the viewport on a fixed cadence and extend the selection head so a
+        // long passage can be selected in one drag (#1163).
+        tick_selection_autoscroll(app);
         let allow_workspace_context_refresh =
             !app.is_loading && !has_running_agents && !app.is_compacting;
         refresh_workspace_context_if_needed(app, now, allow_workspace_context_refresh);
@@ -1522,7 +1519,11 @@ async fn run_event_loop(
             None
         };
         if app.needs_redraw && draw_wait.is_none() {
-            terminal.draw(|f| render(f, app))?; // app is &mut
+            if force_terminal_repaint {
+                reset_terminal_viewport(terminal)?;
+                force_terminal_repaint = false;
+            }
+            draw_app_frame(terminal, app)?;
             frame_rate_limiter.mark_emitted(Instant::now());
             app.needs_redraw = false;
         }
@@ -1546,6 +1547,13 @@ async fn run_event_loop(
         if let Some(deadline) = app.quit_armed_until {
             let remaining = deadline.saturating_duration_since(now);
             poll_timeout = poll_timeout.min(remaining.max(Duration::from_millis(50)));
+        }
+        // Drag-edge auto-scroll wakes the loop on its own cadence so the
+        // viewport keeps advancing while the user holds the mouse outside
+        // the transcript rect (#1163).
+        if let Some(state) = app.viewport.selection_autoscroll {
+            let remaining = state.next_tick.saturating_duration_since(now);
+            poll_timeout = poll_timeout.min(remaining);
         }
         poll_timeout = clamp_event_poll_timeout(poll_timeout);
 
@@ -1583,6 +1591,21 @@ async fn run_event_loop(
                 continue;
             }
 
+            // Re-establish terminal mode flags on focus-gain and force a full
+            // viewport reset before repainting. App-switching and interactive
+            // handoffs can leave the host terminal scrolled away from row 0
+            // and (on macOS) can drop the keyboard, mouse-tracking, or
+            // bracketed-paste modes — recover_terminal_modes() is the
+            // canonical place those flags live.
+            if terminal_event_needs_viewport_recapture(&evt) {
+                recover_terminal_modes(
+                    terminal.backend_mut(),
+                    app.use_mouse_capture,
+                    app.use_bracketed_paste,
+                );
+                force_terminal_repaint = true;
+                app.needs_redraw = true;
+            }
             if let Event::Resize(width, height) = evt {
                 tracing::debug!(
                     width,
@@ -1641,13 +1664,31 @@ async fn run_event_loop(
                     );
                 }
 
-                terminal.clear()?;
+                reset_terminal_viewport(terminal)?;
                 app.handle_resize(final_w, final_h);
+                // #macos-resize: some terminals (macOS Terminal.app, Windows
+                // ConHost) briefly report stale dimensions via
+                // `terminal::size()` after a resize. ratatui's `draw()` calls
+                // `autoresize()` internally, which queries the backend size;
+                // if it sees the old dimension it shrinks the viewport back,
+                // leaving the newly-expanded area filled with stale content
+                // from the previous frame (duplicate UI panels).
+                //
+                // We force the backend to report the resize-event size for
+                // this single draw so the buffer matches the real viewport.
+                {
+                    let backend = terminal.backend_mut();
+                    backend.force_size(Size::new(final_w, final_h));
+                }
                 // Draw immediately so the cleared screen gets repainted before
                 // any other events can interleave. Without this, the next
                 // iteration's draw can race against fast follow-up input and
                 // leave the user staring at a blank/partial frame.
-                terminal.draw(|f| render(f, app))?;
+                draw_app_frame(terminal, app)?;
+                {
+                    let backend = terminal.backend_mut();
+                    backend.clear_forced_size();
+                }
                 app.needs_redraw = false;
                 continue;
             }
@@ -2053,6 +2094,11 @@ async fn run_event_loop(
             let is_plain_char = matches!(key.code, KeyCode::Char(_)) && !has_ctrl_alt_or_super;
             let is_enter = matches!(key.code, KeyCode::Enter);
 
+            if is_macos_option_v_legacy_key(&key) {
+                open_tool_details_pager(app);
+                continue;
+            }
+
             if !is_plain_char
                 && !is_enter
                 && let Some(pending) = app.flush_paste_burst_before_modified_input_if_enabled()
@@ -2211,6 +2257,7 @@ async fn run_event_loop(
                     if app.is_loading {
                         engine_handle.cancel();
                         app.is_loading = false;
+                        app.dispatch_started_at = None;
                         app.streaming_state.reset();
                         // Optimistically clear the turn-in-progress flag so
                         // the footer wave animation halts immediately —
@@ -2263,6 +2310,7 @@ async fn run_event_loop(
                         app.backtrack.reset();
                         engine_handle.cancel();
                         app.is_loading = false;
+                        app.dispatch_started_at = None;
                         app.streaming_state.reset();
                         // Optimistically halt the wave + working label —
                         // engine's TurnComplete will resync with the real
@@ -2333,12 +2381,8 @@ async fn run_event_loop(
                 {
                     app.mention_menu_selected = app.mention_menu_selected.saturating_sub(1);
                 }
-                KeyCode::Up
-                    if key.modifiers.is_empty()
-                        && slash_menu_open
-                        && app.slash_menu_selected > 0 =>
-                {
-                    app.slash_menu_selected = app.slash_menu_selected.saturating_sub(1);
+                KeyCode::Up if key.modifiers.is_empty() && slash_menu_open => {
+                    select_previous_slash_menu_entry(app, slash_menu_entries.len());
                 }
                 KeyCode::Up
                     if key.modifiers.is_empty()
@@ -2381,8 +2425,7 @@ async fn run_event_loop(
                         .min(mention_menu_entries.len().saturating_sub(1));
                 }
                 KeyCode::Down if key.modifiers.is_empty() && slash_menu_open => {
-                    app.slash_menu_selected = (app.slash_menu_selected + 1)
-                        .min(slash_menu_entries.len().saturating_sub(1));
+                    select_next_slash_menu_entry(app, slash_menu_entries.len());
                 }
                 KeyCode::Down
                     if key.modifiers.is_empty()
@@ -2544,7 +2587,7 @@ async fn run_event_loop(
                     {
                         app.close_slash_menu();
                     }
-                    if let Some(input) = app.submit_input() {
+                    if let Some(input) = app.handle_composer_enter() {
                         if handle_plan_choice(app, config, &engine_handle, &input).await? {
                             continue;
                         }
@@ -2649,25 +2692,34 @@ async fn run_event_loop(
                     app.delete_char_forward();
                 }
                 KeyCode::Delete => {}
+                KeyCode::Left if is_word_cursor_modifier(key.modifiers) => {
+                    app.move_cursor_word_backward();
+                }
                 KeyCode::Left => {
                     app.move_cursor_left();
+                }
+                KeyCode::Right if is_word_cursor_modifier(key.modifiers) => {
+                    app.move_cursor_word_forward();
                 }
                 KeyCode::Right => {
                     app.move_cursor_right();
                 }
-                KeyCode::Home if key.modifiers.is_empty() => {
+                KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     if let Some(anchor) =
                         TranscriptScroll::anchor_for(app.viewport.transcript_cache.line_meta(), 0)
                     {
                         app.viewport.transcript_scroll = anchor;
                     }
                 }
-                KeyCode::End if key.modifiers.is_empty() => {
+                KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.scroll_to_bottom();
                 }
                 KeyCode::Home | KeyCode::Char('a')
                     if key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
+                    app.move_cursor_start();
+                }
+                KeyCode::Home => {
                     app.move_cursor_start();
                 }
                 KeyCode::End => {
@@ -2718,22 +2770,12 @@ async fn run_event_loop(
                     app.needs_redraw = true;
                 }
                 KeyCode::Up => {
-                    if key.modifiers.contains(KeyModifiers::CONTROL) {
-                        app.history_up();
-                    } else if should_scroll_with_arrows(app) {
-                        app.scroll_up(1);
-                    } else {
-                        app.history_up();
-                    }
+                    let _ =
+                        handle_composer_history_arrow(app, key, slash_menu_open, mention_menu_open);
                 }
                 KeyCode::Down => {
-                    if key.modifiers.contains(KeyModifiers::CONTROL) {
-                        app.history_down();
-                    } else if should_scroll_with_arrows(app) {
-                        app.scroll_down(1);
-                    } else {
-                        app.history_down();
-                    }
+                    let _ =
+                        handle_composer_history_arrow(app, key, slash_menu_open, mention_menu_open);
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.clear_input_recoverable();
@@ -2951,6 +2993,50 @@ async fn fetch_available_models(config: &Config) -> Result<Vec<String>> {
     Ok(ids)
 }
 
+async fn run_cache_warmup(app: &App, config: &Config) -> Result<Usage> {
+    let client = DeepSeekClient::new(config)?;
+    let reasoning_effort = if app.reasoning_effort == ReasoningEffort::Auto {
+        app.last_effective_reasoning_effort
+            .and_then(ReasoningEffort::api_value)
+            .map(str::to_string)
+    } else {
+        app.reasoning_effort.api_value().map(str::to_string)
+    };
+    let request = MessageRequest {
+        model: app.model.clone(),
+        messages: app.api_messages.clone(),
+        max_tokens: 1024,
+        system: app.system_prompt.clone(),
+        tools: None,
+        tool_choice: None,
+        metadata: None,
+        thinking: None,
+        reasoning_effort,
+        stream: None,
+        temperature: None,
+        top_p: None,
+    };
+    let warmup = build_cache_warmup_request(&request);
+    let response =
+        tokio::time::timeout(Duration::from_secs(45), client.create_message(warmup)).await??;
+    Ok(response.usage)
+}
+
+fn format_cache_warmup_result(usage: &Usage) -> String {
+    let cache = match (
+        usage.prompt_cache_hit_tokens,
+        usage.prompt_cache_miss_tokens,
+    ) {
+        (Some(hit), Some(miss)) => format!("Cache warmup complete: hit {hit} | miss {miss}"),
+        (Some(hit), None) => format!("Cache warmup complete: hit {hit} | miss unavailable"),
+        (None, Some(miss)) => format!("Cache warmup complete: hit unavailable | miss {miss}"),
+        (None, None) => "Cache warmup complete: cache telemetry unavailable".to_string(),
+    };
+    format!(
+        "{cache}\nNote: the first warmup is usually a miss. Later requests that reuse the same stable prefix may hit the provider cache; a hit is not guaranteed."
+    )
+}
+
 fn format_available_models_message(current_model: &str, models: &[String]) -> String {
     let mut lines = vec![format!("Available models ({})", models.len())];
     for model in models {
@@ -3004,6 +3090,46 @@ fn queued_session_to_ui(msg: QueuedSessionMessage) -> QueuedMessage {
     }
 }
 
+fn reconcile_turn_liveness(app: &mut App, now: Instant, has_running_agents: bool) -> bool {
+    if app.is_loading
+        && app.runtime_turn_status.is_none()
+        && !has_running_agents
+        && !app.is_compacting
+        && app.dispatch_started_at.is_some_and(|started| {
+            now.saturating_duration_since(started) > DISPATCH_WATCHDOG_TIMEOUT
+        })
+    {
+        app.is_loading = false;
+        app.dispatch_started_at = None;
+        app.push_status_toast(
+            "Turn dispatch timed out; the engine may have stopped. Please try again.",
+            StatusToastLevel::Error,
+            None,
+        );
+        return true;
+    }
+
+    if app.is_loading
+        && matches!(
+            app.runtime_turn_status.as_deref(),
+            Some("completed" | "interrupted" | "failed")
+        )
+        && !has_running_agents
+        && !app.is_compacting
+    {
+        app.is_loading = false;
+        app.dispatch_started_at = None;
+        app.push_status_toast(
+            "Recovered from an inconsistent busy state.",
+            StatusToastLevel::Warning,
+            None,
+        );
+        return true;
+    }
+
+    false
+}
+
 /// Translate an `EngineEvent::Error` into UI state updates.
 ///
 /// The engine's `recoverable` flag (mirrored on `ErrorEnvelope`) decides
@@ -3022,6 +3148,7 @@ pub(crate) fn apply_engine_error_to_app(
     let recoverable = envelope.recoverable;
     let message = envelope.message.clone();
     let severity = envelope.severity;
+    finalize_current_streaming_thinking(app);
     app.streaming_state.reset();
     app.streaming_message_index = None;
     app.streaming_thinking_active_entry = None;
@@ -3044,6 +3171,7 @@ pub(crate) fn apply_engine_error_to_app(
         severity,
     });
     app.is_loading = false;
+    app.dispatch_started_at = None;
     if matches!(
         envelope.category,
         crate::error_taxonomy::ErrorCategory::Authentication
@@ -3314,6 +3442,54 @@ fn append_streaming_thinking(app: &mut App, entry_idx: usize, text: &str) {
     }
 }
 
+/// Start a new streaming thinking block. If another thinking block is still
+/// active, first drain its pending UI tail so a late block boundary cannot
+/// discard content buffered inside `StreamingState`.
+fn start_streaming_thinking_block(app: &mut App) -> bool {
+    let finalized_previous = if app.streaming_thinking_active_entry.is_some() {
+        let finalized = finalize_current_streaming_thinking(app);
+        stash_reasoning_buffer_into_last_reasoning(app);
+        finalized
+    } else {
+        false
+    };
+
+    app.reasoning_buffer.clear();
+    app.reasoning_header = None;
+    app.thinking_started_at = Some(Instant::now());
+    app.streaming_state.reset();
+    app.streaming_state.start_thinking(0, None);
+    let _ = ensure_streaming_thinking_active_entry(app);
+    finalized_previous
+}
+
+fn finalize_current_streaming_thinking(app: &mut App) -> bool {
+    let duration = app
+        .thinking_started_at
+        .take()
+        .map(|t| t.elapsed().as_secs_f32());
+    let remaining = app.streaming_state.finalize_block_text(0);
+    finalize_streaming_thinking_active_entry(app, duration, &remaining)
+}
+
+fn stash_reasoning_buffer_into_last_reasoning(app: &mut App) {
+    if app.reasoning_buffer.is_empty() {
+        return;
+    }
+
+    if let Some(existing) = app.last_reasoning.as_mut()
+        && !existing.is_empty()
+    {
+        if !existing.ends_with('\n') {
+            existing.push('\n');
+        }
+        existing.push_str(&app.reasoning_buffer);
+    } else {
+        app.last_reasoning = Some(app.reasoning_buffer.clone());
+    }
+    app.reasoning_buffer.clear();
+}
+
 /// Finalize the in-flight thinking entry in `active_cell`: append the
 /// collector's remaining buffered text, stop the spinner, and stamp the
 /// duration. Returns `true` when a thinking entry was finalized (so the
@@ -3365,6 +3541,52 @@ fn next_escape_action(app: &App, slash_menu_open: bool) -> EscapeAction {
     } else {
         EscapeAction::Noop
     }
+}
+
+fn select_previous_slash_menu_entry(app: &mut App, entry_count: usize) {
+    if entry_count == 0 {
+        return;
+    }
+    let selected = app.slash_menu_selected.min(entry_count.saturating_sub(1));
+    app.slash_menu_selected = (selected + entry_count - 1) % entry_count;
+}
+
+fn select_next_slash_menu_entry(app: &mut App, entry_count: usize) {
+    if entry_count == 0 {
+        return;
+    }
+    let selected = app.slash_menu_selected.min(entry_count.saturating_sub(1));
+    app.slash_menu_selected = (selected + 1) % entry_count;
+}
+
+fn handle_composer_history_arrow(
+    app: &mut App,
+    key: KeyEvent,
+    slash_menu_open: bool,
+    mention_menu_open: bool,
+) -> bool {
+    if slash_menu_open || mention_menu_open {
+        return false;
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SUPER) {
+        return false;
+    }
+
+    match key.code {
+        KeyCode::Up => {
+            app.history_up();
+            true
+        }
+        KeyCode::Down => {
+            app.history_down();
+            true
+        }
+        _ => false,
+    }
+}
+
+fn is_word_cursor_modifier(modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::ALT)
 }
 
 fn is_composer_newline_key(key: KeyEvent) -> bool {
@@ -3549,8 +3771,11 @@ async fn dispatch_user_message(
     }
 
     // Set immediately to prevent double-dispatch before TurnStarted event arrives.
+    let dispatch_started_at = Instant::now();
     app.is_loading = true;
-    app.last_send_at = Some(Instant::now());
+    app.dispatch_started_at = Some(dispatch_started_at);
+    app.runtime_turn_status = None;
+    app.last_send_at = Some(dispatch_started_at);
 
     let cwd = std::env::current_dir().ok();
     let references = crate::tui::file_mention::context_references_from_input(
@@ -3570,6 +3795,7 @@ async fn dispatch_user_message(
             prompts::PromptSessionContext {
                 user_memory_block: None,
                 goal_objective: app.goal.goal_objective.as_deref(),
+                project_context_pack_enabled: config.project_context_pack_enabled(),
                 locale_tag: app.ui_locale.tag(),
             },
         ),
@@ -3667,6 +3893,7 @@ async fn dispatch_user_message(
         .await
     {
         app.is_loading = false;
+        app.dispatch_started_at = None;
         app.last_send_at = None;
         return Err(err);
     }
@@ -4383,6 +4610,24 @@ async fn apply_command_result(
                         app.add_message(HistoryCell::System {
                             content: format!("Failed to fetch models: {error}"),
                         });
+                    }
+                }
+            }
+            AppAction::CacheWarmup => {
+                app.status_message = Some("Warming DeepSeek cache...".to_string());
+                match run_cache_warmup(app, config).await {
+                    Ok(usage) => {
+                        let message = format_cache_warmup_result(&usage);
+                        app.add_message(HistoryCell::System {
+                            content: message.clone(),
+                        });
+                        app.status_message = Some("Cache warmup complete".to_string());
+                    }
+                    Err(error) => {
+                        app.add_message(HistoryCell::System {
+                            content: format!("Cache warmup failed: {error}"),
+                        });
+                        app.status_message = Some("Cache warmup failed".to_string());
                     }
                 }
             }
@@ -5233,7 +5478,7 @@ fn render(f: &mut Frame, app: &mut App) {
 
                 // Render the file-tree pane.
                 if let Some(ref mut state) = app.file_tree {
-                    super::file_tree::render_file_tree(f, tree_area, state);
+                    super::file_tree::render_file_tree(f, tree_area, state, app.ui_theme.mode);
                 }
 
                 remaining
@@ -5306,6 +5551,12 @@ fn render(f: &mut Frame, app: &mut App) {
         let buf = f.buffer_mut();
         app.view_stack.render(size, buf);
     }
+}
+
+fn draw_app_frame(terminal: &mut AppTerminal, app: &mut App) -> Result<()> {
+    terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
+    terminal.draw(|f| render(f, app))?;
+    Ok(())
 }
 
 /// Pull the latest snapshot of cells / revisions / render options into the
@@ -5639,6 +5890,14 @@ async fn handle_view_events(
             ViewEvent::BacktrackConfirm => {
                 if let Some(depth) = app.backtrack.confirm() {
                     apply_backtrack(app, depth);
+                    let _ = engine_handle
+                        .send(Op::SyncSession {
+                            messages: app.api_messages.clone(),
+                            system_prompt: app.system_prompt.clone(),
+                            model: app.model.clone(),
+                            workspace: app.workspace.clone(),
+                        })
+                        .await;
                 }
             }
             ViewEvent::BacktrackCancel => {
@@ -5656,6 +5915,7 @@ async fn handle_view_events(
                 app.backtrack.reset();
                 engine_handle.cancel();
                 app.is_loading = false;
+                app.dispatch_started_at = None;
                 app.streaming_state.reset();
                 app.runtime_turn_status = None;
                 app.finalize_active_cell_as_interrupted();
@@ -6123,6 +6383,7 @@ fn pause_terminal(
     // mode. Best-effort — terminals that didn't accept the flags
     // silently ignore the pop. Matches the shutdown and panic paths.
     let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    execute!(terminal.backend_mut(), DisableFocusChange)?;
     disable_raw_mode()?;
     if use_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -6146,14 +6407,72 @@ fn resume_terminal(
     if use_alt_screen {
         execute!(terminal.backend_mut(), EnterAlternateScreen)?;
     }
-    if use_mouse_capture {
-        execute!(terminal.backend_mut(), EnableMouseCapture)?;
-    }
-    if use_bracketed_paste {
-        execute!(terminal.backend_mut(), EnableBracketedPaste)?;
-    }
+    recover_terminal_modes(
+        terminal.backend_mut(),
+        use_mouse_capture,
+        use_bracketed_paste,
+    );
+    reset_terminal_viewport(terminal)?;
+    Ok(())
+}
+
+fn reset_terminal_viewport(terminal: &mut AppTerminal) -> Result<()> {
+    // Reset scroll margins and origin mode before clearing. Some interactive
+    // child processes leave DECSTBM/DECOM behind; if ratatui's diff renderer
+    // then writes "row 0", terminals can place it relative to the leaked
+    // scroll region and the whole viewport appears shifted down. CSI 3J also
+    // erases saved scrollback so a focus/resize recapture cannot leave the
+    // host terminal's scrollbar above the live TUI.
+    terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
+    terminal.backend_mut().flush()?;
     terminal.clear()?;
     Ok(())
+}
+
+fn push_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
+    if let Err(err) = execute!(
+        writer,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    ) {
+        tracing::debug!(
+            target: "kitty_keyboard",
+            ?err,
+            "PushKeyboardEnhancementFlags ignored (terminal lacks support)"
+        );
+    }
+}
+
+/// Re-establish terminal mode flags. Idempotent and best-effort: each
+/// underlying flag is silently discarded by terminals that don't support
+/// it, and a single flag's failure doesn't prevent later flags from being
+/// attempted.
+///
+/// **Canonical location for terminal-mode setup.** If you add a new mode
+/// flag at startup or in `resume_terminal`, add it here too — `FocusGained`
+/// recovery calls this and will silently fall behind otherwise.
+///
+/// Excluded by design: raw mode and the alternate screen — those persist
+/// across focus events and are only re-established by `resume_terminal`
+/// after a suspension, which always runs a separate path.
+fn recover_terminal_modes<W: Write>(
+    writer: &mut W,
+    use_mouse_capture: bool,
+    use_bracketed_paste: bool,
+) {
+    push_keyboard_enhancement_flags(writer);
+    if use_mouse_capture && let Err(err) = execute!(writer, EnableMouseCapture) {
+        tracing::debug!(?err, "EnableMouseCapture ignored");
+    }
+    if use_bracketed_paste && let Err(err) = execute!(writer, EnableBracketedPaste) {
+        tracing::debug!(?err, "EnableBracketedPaste ignored");
+    }
+    if let Err(err) = execute!(writer, EnableFocusChange) {
+        tracing::debug!(?err, "EnableFocusChange ignored");
+    }
+}
+
+fn terminal_event_needs_viewport_recapture(evt: &Event) -> bool {
+    matches!(evt, Event::FocusGained)
 }
 
 fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
@@ -6446,7 +6765,7 @@ fn active_tool_status_label(app: &App) -> Option<String> {
     if active_foreground_shell_running(app) {
         parts.push("Ctrl+B shell".to_string());
     }
-    parts.push("Alt+V".to_string());
+    parts.push(tool_details_shortcut_label().to_string());
     Some(parts.join(" \u{00B7} "))
 }
 
@@ -6652,7 +6971,8 @@ fn render_footer_from(
     for item in items {
         let chip = match *item {
             S::ContextPercent => footer_context_percent_spans(app),
-            S::GitBranch | S::LastToolElapsed | S::RateLimit => Vec::new(),
+            S::GitBranch => footer_git_branch_spans(app),
+            S::LastToolElapsed | S::RateLimit => Vec::new(),
             _ => continue,
         };
         if chip.is_empty() {
@@ -6675,6 +6995,16 @@ fn render_footer_from(
     }
 
     props
+}
+
+fn footer_git_branch_spans(app: &App) -> Vec<Span<'static>> {
+    let Some(branch) = workspace_git_branch(&app.workspace) else {
+        return Vec::new();
+    };
+    vec![Span::styled(
+        branch,
+        Style::default().fg(app.ui_theme.text_muted),
+    )]
 }
 
 /// Spans for the "context %" footer chip. Mirrors the header colour ramp so
@@ -6773,8 +7103,14 @@ fn footer_coherence_spans(app: &App) -> Vec<Span<'static>> {
 }
 
 fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
-    let Some(hit_tokens) = app.session.last_prompt_cache_hit_tokens else {
+    if app.session.last_prompt_tokens.is_none() && app.session.last_completion_tokens.is_none() {
         return Vec::new();
+    };
+    let Some(hit_tokens) = app.session.last_prompt_cache_hit_tokens else {
+        return vec![Span::styled(
+            "Cache: unavailable",
+            Style::default().fg(palette::TEXT_MUTED),
+        )];
     };
     let miss_tokens = app
         .session
@@ -6786,11 +7122,11 @@ fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
                 .saturating_sub(hit_tokens)
         });
     let total = hit_tokens.saturating_add(miss_tokens);
-    if total == 0 {
-        return Vec::new();
-    }
-
-    let percent = (f64::from(hit_tokens) / f64::from(total) * 100.0).clamp(0.0, 100.0);
+    let percent = if total == 0 {
+        0.0
+    } else {
+        (f64::from(hit_tokens) / f64::from(total) * 100.0).clamp(0.0, 100.0)
+    };
     // Threshold-based coloring for cache hit rate (#396):
     //   >80%: green (good cache utilization)
     //   40-80%: yellow/warning
@@ -6803,7 +7139,10 @@ fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
         palette::STATUS_ERROR
     };
     vec![Span::styled(
-        format!("cache hit {:.0}%", percent),
+        format!(
+            "Cache: {:.1}% hit | hit {hit_tokens} | miss {miss_tokens}",
+            percent
+        ),
         Style::default().fg(color),
     )]
 }
@@ -7263,6 +7602,17 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
             }
         }
         MouseEventKind::Down(MouseButton::Left) => {
+            app.viewport.transcript_scrollbar_dragging = false;
+            app.viewport.selection_autoscroll = None;
+
+            // Click on the transcript scrollbar gutter starts a scrollbar
+            // drag so the visible thumb remains interactive for users who
+            // prefer mouse-based navigation.
+            if mouse_hits_transcript_scrollbar(app, mouse) {
+                app.viewport.transcript_scrollbar_dragging = true;
+                return Vec::new();
+            }
+
             if mouse_hits_rect(mouse, app.viewport.jump_to_latest_button_area) {
                 app.scroll_to_bottom();
                 return Vec::new();
@@ -7287,14 +7637,23 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            if app.viewport.transcript_selection.dragging
-                && let Some(point) = selection_point_from_mouse(app, mouse)
-            {
-                app.viewport.transcript_selection.head = Some(point);
+            if app.viewport.transcript_scrollbar_dragging {
+                scroll_transcript_to_mouse_row(app, mouse.row);
+                return Vec::new();
             }
+
+            if app.viewport.transcript_selection.dragging {
+                update_selection_drag(app, mouse);
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) if app.viewport.transcript_scrollbar_dragging => {
+            app.viewport.transcript_scrollbar_dragging = false;
+            app.viewport.selection_autoscroll = None;
+            app.needs_redraw = true;
         }
         MouseEventKind::Up(MouseButton::Left) if app.viewport.transcript_selection.dragging => {
             app.viewport.transcript_selection.dragging = false;
+            app.viewport.selection_autoscroll = None;
             if selection_has_content(app) {
                 copy_active_selection(app);
             }
@@ -7306,6 +7665,154 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
     }
 
     Vec::new()
+}
+
+fn mouse_hits_transcript_scrollbar(app: &App, mouse: MouseEvent) -> bool {
+    let Some(area) = app.viewport.last_transcript_area else {
+        return false;
+    };
+    if area.width <= 1 || app.viewport.last_transcript_total <= app.viewport.last_transcript_visible
+    {
+        return false;
+    }
+
+    let scrollbar_col = area.x.saturating_add(area.width.saturating_sub(1));
+    mouse.column == scrollbar_col
+        && mouse.row >= area.y
+        && mouse.row < area.y.saturating_add(area.height)
+}
+
+fn scroll_transcript_to_mouse_row(app: &mut App, row: u16) -> bool {
+    let Some(area) = app.viewport.last_transcript_area else {
+        return false;
+    };
+    let total = app.viewport.last_transcript_total;
+    let visible = app.viewport.last_transcript_visible;
+    if area.height == 0 || total <= visible {
+        return false;
+    }
+
+    let max_start = total.saturating_sub(visible);
+    if max_start == 0 {
+        app.scroll_to_bottom();
+        return true;
+    }
+
+    let max_row = usize::from(area.height.saturating_sub(1));
+    let relative_row = usize::from(row.saturating_sub(area.y)).min(max_row);
+    let numerator = relative_row
+        .saturating_mul(max_start)
+        .saturating_add(max_row / 2);
+    // Round to the nearest transcript offset so short thumbs still feel
+    // responsive on compact terminals.
+    let top = numerator.checked_div(max_row).unwrap_or(0);
+
+    app.viewport.transcript_scroll = if top >= max_start {
+        TranscriptScroll::to_bottom()
+    } else {
+        TranscriptScroll::at_line(top)
+    };
+    app.viewport.pending_scroll_delta = 0;
+    app.user_scrolled_during_stream = !app.viewport.transcript_scroll.is_at_tail();
+    app.needs_redraw = true;
+    true
+}
+
+/// Cadence between auto-scroll ticks while drag-selecting past the
+/// transcript edge (#1163). 30 ms ≈ 33 lines/sec, comparable to the feel
+/// of a steady scroll-wheel drag.
+const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(30);
+
+/// Update the transcript selection while the left button is dragging.
+/// When the mouse leaves the transcript rect vertically, arm
+/// `selection_autoscroll` so the main loop can advance the viewport on a
+/// fixed cadence; when the mouse returns inside, disarm it.
+fn update_selection_drag(app: &mut App, mouse: MouseEvent) {
+    if let Some(point) = selection_point_from_mouse(app, mouse) {
+        app.viewport.transcript_selection.head = Some(point);
+        app.viewport.selection_autoscroll = None;
+        return;
+    }
+
+    let Some(area) = app.viewport.last_transcript_area else {
+        return;
+    };
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
+    let direction = if mouse.row < area.y {
+        -1
+    } else if mouse.row >= area.y.saturating_add(area.height) {
+        1
+    } else {
+        // Outside horizontally only — leave selection head where it is.
+        return;
+    };
+
+    let max_col = area.x.saturating_add(area.width.saturating_sub(1));
+    let column = mouse.column.clamp(area.x, max_col);
+
+    // Fire on the next tick immediately by setting `next_tick` to now.
+    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
+        direction,
+        column,
+        next_tick: Instant::now(),
+    });
+    app.needs_redraw = true;
+}
+
+/// Advance the drag-edge auto-scroll one step if its cadence has elapsed.
+/// Called once per main-loop iteration.
+fn tick_selection_autoscroll(app: &mut App) {
+    let Some(state) = app.viewport.selection_autoscroll else {
+        return;
+    };
+
+    if !app.viewport.transcript_selection.dragging {
+        app.viewport.selection_autoscroll = None;
+        return;
+    }
+
+    let Some(area) = app.viewport.last_transcript_area else {
+        return;
+    };
+    if area.height == 0 {
+        return;
+    }
+
+    let now = Instant::now();
+    if now < state.next_tick {
+        return;
+    }
+
+    app.viewport.pending_scroll_delta = app
+        .viewport
+        .pending_scroll_delta
+        .saturating_add(state.direction);
+    app.user_scrolled_during_stream = true;
+
+    let edge_row = if state.direction < 0 {
+        area.y
+    } else {
+        area.y.saturating_add(area.height.saturating_sub(1))
+    };
+    if let Some(point) = selection_point_from_position(
+        area,
+        state.column,
+        edge_row,
+        app.viewport.last_transcript_top,
+        app.viewport.last_transcript_total,
+        app.viewport.last_transcript_padding_top,
+    ) {
+        app.viewport.transcript_selection.head = Some(point);
+    }
+
+    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
+        next_tick: now + SELECTION_AUTOSCROLL_INTERVAL,
+        ..state
+    });
+    app.needs_redraw = true;
 }
 
 fn mouse_hits_rect(mouse: MouseEvent, area: Option<Rect>) -> bool {
@@ -7595,17 +8102,35 @@ fn selection_to_text(app: &App) -> Option<String> {
     let mut selected_lines = Vec::new();
     #[allow(clippy::needless_range_loop)]
     for line_index in start_index..=end_index {
-        let line_text = line_to_plain(&lines[line_index]);
+        // Rail-prefix decorations are stored as cache metadata rather than
+        // detected from glyphs, so new decoration types are covered without
+        // changes to the copy path (#1163).
+        let rail_width = app.viewport.transcript_cache.rail_prefix_width(line_index);
+        // Convert the rendered line to plain text (strips OSC-8), then
+        // slice off the rail prefix so subsequent column offsets operate
+        // on content-only text.
+        let full_text = line_to_plain(&lines[line_index]);
+        let line_text = if rail_width > 0 {
+            slice_text(&full_text, rail_width, text_display_width(&full_text))
+        } else {
+            full_text
+        };
         let line_width = text_display_width(&line_text);
-        let (col_start, col_end) = if start_index == end_index {
+        // Selection coordinates are recorded in rendered-column space, which
+        // includes the visual rail prefix. Add rail_width back so the column
+        // window maps correctly into the rail-stripped text.
+        let (raw_col_start, raw_col_end) = if start_index == end_index {
             (start.column, end.column)
         } else if line_index == start_index {
-            (start.column, line_width)
+            (start.column, line_width.saturating_add(rail_width))
         } else if line_index == end_index {
             (0, end.column)
         } else {
-            (0, line_width)
+            (0, line_width.saturating_add(rail_width))
         };
+
+        let col_start = raw_col_start.saturating_sub(rail_width).min(line_width);
+        let col_end = raw_col_end.saturating_sub(rail_width).min(line_width);
 
         let slice = slice_text(&line_text, col_start, col_end);
         selected_lines.push(slice);
@@ -7871,7 +8396,8 @@ fn selected_detail_footer_label(app: &App) -> Option<String> {
     )?;
     let label = detail_target_label(app, cell_index)?;
     Some(format!(
-        "Alt+V details: {}",
+        "{} details: {}",
+        tool_details_shortcut_label(),
         truncate_line_to_width(&label, 34)
     ))
 }
@@ -7944,12 +8470,28 @@ fn is_file_tree_toggle_shortcut(key: &KeyEvent) -> bool {
     ctrl_shift_e || cmd_shift_e
 }
 
+fn tool_details_shortcut_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "\u{2325}+V"
+    } else {
+        "Alt+V"
+    }
+}
+
 fn details_shortcut_modifiers(modifiers: KeyModifiers) -> bool {
     modifiers.is_empty()
         || modifiers == KeyModifiers::SHIFT
         || (modifiers.contains(KeyModifiers::ALT)
             && !modifiers.contains(KeyModifiers::CONTROL)
             && !modifiers.contains(KeyModifiers::SUPER))
+}
+
+fn is_macos_option_v_legacy_key(key: &KeyEvent) -> bool {
+    is_macos_option_v_legacy_key_for_platform(key, cfg!(target_os = "macos"))
+}
+
+fn is_macos_option_v_legacy_key_for_platform(key: &KeyEvent, is_macos: bool) -> bool {
+    is_macos && key.modifiers.is_empty() && matches!(key.code, KeyCode::Char('\u{221A}'))
 }
 
 fn is_paste_shortcut(key: &KeyEvent) -> bool {
@@ -7987,14 +8529,6 @@ fn is_ctrl_h_backspace(key: &KeyEvent) -> bool {
         && key.modifiers.contains(KeyModifiers::CONTROL)
         && !key.modifiers.contains(KeyModifiers::ALT)
         && !key.modifiers.contains(KeyModifiers::SUPER)
-}
-
-fn should_scroll_with_arrows(app: &App) -> bool {
-    // When the composer is empty (or only whitespace), Up/Down arrows
-    // scroll the transcript. When the composer has text, they navigate
-    // composer history so the user can recall previous prompts.
-    // Cmd+Up / Alt+Up always scroll regardless, handled upstream.
-    app.input.trim().is_empty()
 }
 
 fn extract_reasoning_header(text: &str) -> Option<String> {

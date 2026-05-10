@@ -15,12 +15,14 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{BorderType, Borders, Padding};
 
 use crate::palette;
+use crate::palette::PaletteMode;
 use crate::tui::history::ToolStatus;
 
 /// Visual variant exposed by the theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
     Dark,
+    Light,
 }
 
 /// Centralized visual tokens for sidebar, plan, and tool rendering.
@@ -85,6 +87,40 @@ impl Theme {
         }
     }
 
+    /// Light theme tokens for sidebar and tool chrome.
+    #[must_use]
+    pub const fn light() -> Self {
+        Self {
+            variant: Variant::Light,
+            section_borders: Borders::ALL,
+            section_border_type: BorderType::Plain,
+            section_border_color: palette::LIGHT_BORDER,
+            section_bg: palette::LIGHT_PANEL,
+            section_title_color: palette::DEEPSEEK_BLUE,
+            section_padding: Padding::horizontal(1),
+            tool_title_color: palette::LIGHT_TEXT_SOFT,
+            tool_value_color: palette::LIGHT_TEXT_MUTED,
+            tool_label_color: palette::LIGHT_TEXT_HINT,
+            tool_running_accent: palette::DEEPSEEK_BLUE,
+            tool_success_accent: palette::LIGHT_TEXT_HINT,
+            tool_failed_accent: palette::DEEPSEEK_RED,
+            plan_progress_color: palette::DEEPSEEK_BLUE,
+            plan_summary_color: palette::LIGHT_TEXT_MUTED,
+            plan_explanation_color: palette::LIGHT_TEXT_HINT,
+            plan_pending_color: palette::LIGHT_TEXT_MUTED,
+            plan_in_progress_color: Color::Rgb(180, 83, 9),
+            plan_completed_color: palette::DEEPSEEK_BLUE,
+        }
+    }
+
+    #[must_use]
+    pub const fn for_palette_mode(mode: PaletteMode) -> Self {
+        match mode {
+            PaletteMode::Dark => Self::dark(),
+            PaletteMode::Light => Self::light(),
+        }
+    }
+
     /// Pick the right tool accent for a given [`ToolStatus`].
     #[must_use]
     pub const fn tool_status_color(self, status: ToolStatus) -> Color {
@@ -123,9 +159,6 @@ impl Theme {
 }
 
 /// Returns the active theme used by the TUI today.
-///
-/// Today this is always `Theme::dark()`. A future PR can wire this to an
-/// `App` field or a config setting in five lines.
 #[must_use]
 pub const fn active_theme() -> Theme {
     Theme::dark()
@@ -155,6 +188,17 @@ mod tests {
         assert_eq!(theme.tool_running_accent, palette::ACCENT_TOOL_LIVE);
         assert_eq!(theme.tool_success_accent, palette::TEXT_DIM);
         assert_eq!(theme.tool_failed_accent, palette::ACCENT_TOOL_ISSUE);
+    }
+
+    #[test]
+    fn light_theme_uses_light_panel_tokens() {
+        let theme = Theme::for_palette_mode(crate::palette::PaletteMode::Light);
+        assert_eq!(theme.variant, Variant::Light);
+        assert_eq!(theme.section_bg, palette::LIGHT_PANEL);
+        assert_eq!(theme.section_border_color, palette::LIGHT_BORDER);
+        assert_eq!(theme.tool_title_color, palette::LIGHT_TEXT_SOFT);
+        assert_eq!(theme.tool_value_color, palette::LIGHT_TEXT_MUTED);
+        assert_eq!(theme.plan_summary_color, palette::LIGHT_TEXT_MUTED);
     }
 
     #[test]

@@ -1,11 +1,35 @@
 # Docker
 
-Docker support is currently a local-build/devcontainer path, not a supported
-release channel. The release workflow may try an experimental GHCR publish, but
-no public `ghcr.io/hmbown/deepseek-tui` image should be treated as available
-until this page says so.
+DeepSeek-TUI publishes a multi-arch Linux image to GitHub Container Registry
+for each release.
 
-## Local quick start
+```bash
+docker pull ghcr.io/hmbown/deepseek-tui:latest
+```
+
+## Quick start
+
+Run the published image with a Docker-managed data volume:
+
+```bash
+docker volume create deepseek-tui-home
+
+docker run --rm -it \
+  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -v deepseek-tui-home:/home/deepseek/.deepseek \
+  ghcr.io/hmbown/deepseek-tui:latest
+```
+
+Use a pinned release tag for reproducible installs:
+
+```bash
+docker run --rm -it \
+  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -v deepseek-tui-home:/home/deepseek/.deepseek \
+  ghcr.io/hmbown/deepseek-tui:v0.8.20
+```
+
+## Local build
 
 Build the image locally from a checkout:
 
@@ -13,16 +37,17 @@ Build the image locally from a checkout:
 docker build -t deepseek-tui .
 ```
 
-Then run it with your existing config directory mounted:
+Then run it with the same Docker-managed data volume:
 
 ```bash
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v ~/.deepseek:/home/deepseek/.deepseek \
+  -v deepseek-tui-home:/home/deepseek/.deepseek \
   deepseek-tui
 ```
 
-Docker Hub publishing is not configured.
+Docker Hub publishing is not configured; GHCR is the supported prebuilt image
+registry.
 
 ## Environment variables
 
@@ -34,14 +59,36 @@ Docker Hub publishing is not configured.
 
 ## Volumes
 
-Mount `~/.deepseek` to persist sessions, config, skills, memory, and the offline queue
-across container restarts:
+Mount `/home/deepseek/.deepseek` to persist sessions, config, skills, memory,
+and the offline queue across container restarts. A Docker-managed named volume
+is the safest default because Docker creates it with ownership the container can
+write:
 
 ```bash
--v ~/.deepseek:/home/deepseek/.deepseek
+-v deepseek-tui-home:/home/deepseek/.deepseek
 ```
 
 Without this mount the container starts fresh each time.
+
+If you bind-mount an existing host directory instead, the image runs as the
+non-root `deepseek` user with UID/GID `1000:1000`. The mounted directory must be
+writable by that user, or startup can fail while creating runtime directories
+under `.deepseek/tasks`. On Linux hosts, either use the named volume above or
+prepare the bind mount explicitly:
+
+```bash
+mkdir -p ~/.deepseek
+sudo chown -R 1000:1000 ~/.deepseek
+
+docker run --rm -it \
+  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -v ~/.deepseek:/home/deepseek/.deepseek \
+  ghcr.io/hmbown/deepseek-tui:latest
+```
+
+That `chown` changes ownership of the host `~/.deepseek` directory. Skip it if
+you do not want the container UID to own your local config, and use a named
+volume instead.
 
 ## Non-interactive / pipeline usage
 
@@ -50,7 +97,7 @@ When stdin is not a TTY, `deepseek` drops to the dispatcher's one-shot mode
 
 ```bash
 echo "Explain the Cargo.toml in structured English." | \
-  docker run --rm -i -e DEEPSEEK_API_KEY deepseek-tui
+  docker run --rm -i -e DEEPSEEK_API_KEY ghcr.io/hmbown/deepseek-tui:latest
 ```
 
 ## Building locally
@@ -73,6 +120,5 @@ ready-to-use development environment.
 
 ## Release status
 
-Docker image publishing is experimental and non-blocking for releases. The
-supported distribution channels are npm, Cargo, Homebrew, GitHub Release
-assets, and Scoop's independently maintained main-bucket manifest.
+Docker image publishing is part of the release gate. The image is published to
+GHCR for `linux/amd64` and `linux/arm64` with semver tags plus `latest`.

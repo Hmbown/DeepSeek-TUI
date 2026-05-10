@@ -2,7 +2,7 @@
 # DeepSeek-TUI multi-arch Docker image (#501)
 #
 # Build:  docker buildx build --platform linux/amd64,linux/arm64 -t deepseek-tui:latest .
-# Run:    docker run --rm -it -e DEEPSEEK_API_KEY -v ~/.deepseek:/home/deepseek/.deepseek deepseek-tui
+# Run:    docker run --rm -it -e DEEPSEEK_API_KEY -v deepseek-tui-home:/home/deepseek/.deepseek deepseek-tui
 #
 # The image ships both binaries (deepseek dispatcher + deepseek-tui runtime)
 # in a minimal runtime layer. No MCP servers or heavy toolchains are included
@@ -18,10 +18,26 @@ ARG RUST_VERSION=1.88
 # ── Stage 1: Build ────────────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-slim-bookworm AS builder
 ARG TARGETPLATFORM
+ARG TARGETARCH
 ARG BUILDPLATFORM
+ARG DEEPSEEK_BUILD_SHA
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libdbus-1-dev \
+ENV CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    PKG_CONFIG_ALLOW_CROSS=1 \
+    PKG_CONFIG_LIBDIR_aarch64_unknown_linux_gnu=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig \
+    DEEPSEEK_BUILD_SHA=${DEEPSEEK_BUILD_SHA}
+
+RUN if [ "${TARGETARCH}" = "arm64" ] && [ "${BUILDPLATFORM}" != "${TARGETPLATFORM}" ]; then \
+      dpkg --add-architecture arm64; \
+    fi \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+      pkg-config libdbus-1-dev \
+    && if [ "${TARGETARCH}" = "arm64" ] && [ "${BUILDPLATFORM}" != "${TARGETPLATFORM}" ]; then \
+      apt-get install -y --no-install-recommends \
+        gcc-aarch64-linux-gnu libc6-dev-arm64-cross libdbus-1-dev:arm64; \
+    fi \
     && rm -rf /var/lib/apt/lists/*
 
 # Translate Docker platform into Rust target triple.
@@ -40,8 +56,9 @@ COPY . .
 
 # Build both binaries for the target platform.  --locked ensures
 # reproducible builds from the committed lockfile.
-RUN --mount=type=cache,target=/build/target \
-    --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=deepseek-tui-target-${TARGETARCH},target=/build/target,sharing=locked \
+    --mount=type=cache,id=deepseek-tui-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=deepseek-tui-cargo-git-${TARGETARCH},target=/usr/local/cargo/git,sharing=locked \
     cargo build --release --locked --target "$(cat /rust-target)" \
     && mkdir -p /out \
     && cp target/$(cat /rust-target)/release/deepseek /out/ \

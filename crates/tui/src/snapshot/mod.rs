@@ -23,6 +23,8 @@
 //!     - `gc.auto = 0` on the side repo (we don't want background gcs
 //!       firing mid-turn) plus an explicit `git gc --prune=now` after
 //!       prune.
+//!     - Startup cleanup for stale `tmp_pack_*` files left by interrupted
+//!       git pack operations.
 //!
 //! ## Failure model
 //!

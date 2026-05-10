@@ -95,6 +95,7 @@ pub struct EngineConfig {
     /// `instructions = [...]` config (or the per-project override).
     /// Resolved via `expand_path` so `~` works.
     pub instructions: Vec<PathBuf>,
+    pub project_context_pack_enabled: bool,
     /// Maximum number of assistant steps before stopping.
     pub max_steps: u32,
     /// Maximum number of concurrently active subagents.
@@ -166,6 +167,7 @@ impl Default for EngineConfig {
             mcp_config_path: PathBuf::from("mcp.json"),
             skills_dir: crate::skills::default_skills_dir(),
             instructions: Vec::new(),
+            project_context_pack_enabled: true,
             max_steps: 100,
             max_subagents: DEFAULT_MAX_SUBAGENTS,
             features: Features::with_defaults(),
@@ -442,6 +444,7 @@ impl Engine {
                 prompts::PromptSessionContext {
                     user_memory_block: user_memory_block.as_deref(),
                     goal_objective: config.goal_objective.as_deref(),
+                    project_context_pack_enabled: config.project_context_pack_enabled,
                     locale_tag: &config.locale_tag,
                 },
                 session.approval_mode,
@@ -892,6 +895,16 @@ impl Engine {
         self.turn_counter = self.turn_counter.saturating_add(1);
         self.capacity_controller.mark_turn_start(self.turn_counter);
 
+        // Emit turn started event IMMEDIATELY so the UI knows the turn is
+        // active. The snapshot below can take 30+ seconds on slow filesystems
+        // (e.g. WSL2 /mnt/c) and must not delay the TurnStarted event.
+        let _ = self
+            .tx_event
+            .send(Event::TurnStarted {
+                turn_id: turn.id.clone(),
+            })
+            .await;
+
         // Snapshot the workspace BEFORE we touch a single tool. Run the git
         // work on the blocking pool so the async runtime stays responsive;
         // failure is non-fatal (the helper logs at WARN).
@@ -901,14 +914,6 @@ impl Engine {
             let _ = tokio::task::spawn_blocking(move || pre_turn_snapshot(&pre_workspace, pre_seq))
                 .await;
         }
-
-        // Emit turn started event
-        let _ = self
-            .tx_event
-            .send(Event::TurnStarted {
-                turn_id: turn.id.clone(),
-            })
-            .await;
 
         // A new turn means any leftover retry banner (success cleared
         // it, failure pinned it) is no longer relevant — reset to idle
@@ -1500,48 +1505,14 @@ impl Engine {
             ctx = ctx.with_sandbox_backend(std::sync::Arc::clone(backend));
         }
 
-        match mode {
-            // Plan mode is read-only investigation. Shell tools can still be
-            // available for read-only local inspection, but outbound network
-            // remains sandbox-blocked; attach an explicit hint so network
-            // command failures do not look like DNS/proxy problems.
-            AppMode::Plan => ctx
-                .with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::WorkspaceWrite {
-                    writable_roots: vec![self.session.workspace.clone()],
-                    network_access: false,
-                    exclude_tmpdir: false,
-                    exclude_slash_tmp: false,
-                })
-                .with_shell_network_denied_hint(
-                    "Shell command blocked: Plan mode runs shell commands in a network-restricted sandbox. Use fetch_url or code_execution for network access, or switch to Agent mode (`/agent`) before retrying shell network commands.",
-                ),
-            // Agent registers the shell tool and runs each command through
-            // the per-mode sandbox + per-tool approval flow. The sandbox
-            // default would deny all outbound network — including DNS —
-            // which breaks ordinary developer commands (cargo fetch, npm
-            // install, curl, yt-dlp, …) without buying the user any safety
-            // the approval flow doesn't already provide. Elevate to
-            // workspace-write + network. (#273)
-            AppMode::Agent => {
-                ctx.with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::WorkspaceWrite {
-                    writable_roots: vec![self.session.workspace.clone()],
-                    network_access: true,
-                    exclude_tmpdir: false,
-                    exclude_slash_tmp: false,
-                })
-            }
-            // YOLO is the explicit "no guardrails" mode — auto-approve all
-            // tools, trust mode on, no sandbox. Workspace-write was still
-            // intercepting commands that wanted to write outside the
-            // workspace (rare but legitimate: pipx install, npm install
-            // -g, brew, package-manager state under ~/.cache, sub-agent
-            // workspaces, …) which forced approval round-trips and
-            // contradicts the YOLO contract. The user opted into YOLO
-            // deliberately; trust them.
-            AppMode::Yolo => {
-                ctx.with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::DangerFullAccess)
-            }
+        let policy = sandbox_policy_for_mode(mode, &self.session.workspace);
+        let mut ctx = ctx.with_elevated_sandbox_policy(policy);
+        if matches!(mode, AppMode::Plan) {
+            ctx = ctx.with_shell_network_denied_hint(
+                "Shell command blocked: Plan mode runs shell commands in a read-only sandbox — no writes, no network. Use Agent mode (`/agent`) for any command that creates or modifies files, or that needs network access.",
+            );
         }
+        ctx
     }
 
     async fn ensure_mcp_pool(&mut self) -> Result<Arc<AsyncMutex<McpPool>>, ToolError> {
@@ -1573,7 +1544,7 @@ impl Engine {
             let _ = self
                 .tx_event
                 .send(Event::status(format!(
-                    "Failed to connect MCP server '{server}': {err}"
+                    "Failed to connect MCP server '{server}': {err:#}"
                 )))
                 .await;
         }
@@ -1896,6 +1867,7 @@ impl Engine {
             prompts::PromptSessionContext {
                 user_memory_block: user_memory_block.as_deref(),
                 goal_objective: self.config.goal_objective.as_deref(),
+                project_context_pack_enabled: self.config.project_context_pack_enabled,
                 locale_tag: &self.config.locale_tag,
             },
             self.session.approval_mode,
@@ -2075,6 +2047,7 @@ use self::tool_catalog::{
 #[cfg(test)]
 use self::tool_catalog::{TOOL_SEARCH_BM25_NAME, should_default_defer_tool};
 use self::tool_execution::emit_tool_audit;
+use self::tool_setup::sandbox_policy_for_mode;
 
 #[cfg(test)]
 mod tests;

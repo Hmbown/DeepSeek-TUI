@@ -1,0 +1,136 @@
+import { cookies } from "next/headers";
+import { getAgentEnv, listDrafts, validateSession, type AgentDraft } from "@/lib/community-agent";
+import { AdminClient } from "./admin-client";
+
+export const dynamic = "force-dynamic";
+
+const TYPE_LABELS: Record<string, { en: string; zh: string }> = {
+  triage: { en: "Issue Triage", zh: "议题分类" },
+  "pr-review": { en: "PR Review", zh: "PR 审阅" },
+  stale: { en: "Stale Nudge", zh: "过期提醒" },
+  dupes: { en: "Duplicate", zh: "重复检测" },
+  digest: { en: "Weekly Digest", zh: "每周摘要" },
+};
+
+function LoginForm({ locale, error }: { locale: string; error: boolean }) {
+  const isZh = locale === "zh";
+  return (
+    <div className="mx-auto max-w-md px-6 py-20">
+      <h1 className="font-display text-3xl mb-6">
+        {isZh ? "维护者登录" : "Maintainer login"}
+      </h1>
+      <form method="POST" action={`/api/admin/login?locale=${locale}`} autoComplete="off" className="space-y-4">
+        <input type="hidden" name="locale" value={locale} />
+        <label className="block">
+          <span className="eyebrow block mb-2">{isZh ? "令牌" : "Token"}</span>
+          <input
+            type="password"
+            name="token"
+            required
+            autoFocus
+            autoComplete="off"
+            spellCheck={false}
+            className="w-full px-3 py-2 hairline-t hairline-b hairline-l hairline-r bg-paper font-mono text-sm focus:outline-none focus:border-indigo"
+          />
+        </label>
+        <button
+          type="submit"
+          className="w-full px-5 py-3 bg-ink text-paper font-mono text-sm uppercase tracking-wider hover:bg-indigo transition-colors"
+        >
+          {isZh ? "登录 →" : "Sign in →"}
+        </button>
+        {error && (
+          <p className="text-sm text-indigo font-mono">
+            {isZh ? "令牌错误。" : "Invalid token."}
+          </p>
+        )}
+      </form>
+    </div>
+  );
+}
+
+export default async function AdminPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ locale: string }>;
+  searchParams: Promise<{ err?: string }>;
+}) {
+  const { locale } = await params;
+  const { err } = await searchParams;
+  const isZh = locale === "zh";
+
+  const env = await getAgentEnv();
+
+  if (!env.MAINTAINER_TOKEN) {
+    return (
+      <div className="mx-auto max-w-[1400px] px-6 py-20 text-center">
+        <h1 className="font-display text-3xl mb-4">{isZh ? "未配置" : "Not configured"}</h1>
+        <p className="text-ink-soft">
+          {isZh
+            ? "MAINTAINER_TOKEN 未设置。请在部署前配置此环境变量。"
+            : "MAINTAINER_TOKEN is not set. Configure this secret before deployment."}
+        </p>
+      </div>
+    );
+  }
+
+  const cookieStore = await cookies();
+  const sid = cookieStore.get("mt_sid")?.value;
+  const authed = await validateSession(env.CURATED_KV, sid);
+
+  if (!authed) {
+    return <LoginForm locale={locale} error={err === "1"} />;
+  }
+
+  let drafts: AgentDraft[] = [];
+  try {
+    drafts = await listDrafts(env.CURATED_KV);
+  } catch (e) {
+    console.error("failed to list drafts", e);
+  }
+
+  const pending = drafts.filter((d) => !d.posted);
+  const posted = drafts.filter((d) => d.posted);
+
+  return (
+    <section className="mx-auto max-w-[1400px] px-6 pt-12 pb-20">
+      <div className="flex items-baseline justify-between mb-8 hairline-b pb-4">
+        <div>
+          <h1 className="font-display tracking-crisp text-3xl">
+            {isZh ? "社区助理草稿" : "Community Assistant Drafts"}
+          </h1>
+          <p className="mt-2 text-sm text-ink-mute font-mono">
+            {pending.length} pending · {posted.length} posted
+          </p>
+        </div>
+        <form method="POST" action={`/api/admin/logout?locale=${locale}`}>
+          <button
+            type="submit"
+            className="font-mono text-xs text-ink-mute hover:text-indigo uppercase tracking-wider"
+          >
+            {isZh ? "退出 →" : "Sign out →"}
+          </button>
+        </form>
+      </div>
+
+      {pending.length === 0 && posted.length === 0 && (
+        <div className="hairline-t hairline-b py-16 text-center">
+          <div className="font-cjk text-indigo text-2xl mb-3">暂无草稿</div>
+          <p className="text-ink-soft">
+            {isZh
+              ? "草稿将在 cron 运行后出现。可在 wrangler.jsonc 中配置触发时间。"
+              : "Drafts will appear here after cron runs. Configure triggers in wrangler.jsonc."}
+          </p>
+        </div>
+      )}
+
+      <AdminClient
+        drafts={pending}
+        posted={posted}
+        isZh={isZh}
+        typeLabels={TYPE_LABELS}
+      />
+    </section>
+  );
+}

@@ -10,7 +10,9 @@
 //!
 //! - **macOS**: Uses Seatbelt (sandbox-exec) for mandatory access control
 //! - **Linux**: Uses Landlock (kernel 5.13+) for filesystem access control
-//! - **Windows**: Windows Sandbox/AppContainer/Restricted token (best-effort)
+//! - **Windows**: No OS sandbox is advertised yet. The planned first helper
+//!   contract is process-tree containment only via a Windows Job Object; it
+//!   must not claim filesystem, network, registry, or AppContainer isolation.
 //!
 //! # Usage
 //!
@@ -78,10 +80,14 @@ impl CommandSpec {
     /// Create a `CommandSpec` for running a shell command via the platform shell.
     pub fn shell(command: &str, cwd: PathBuf, timeout: Duration) -> Self {
         #[cfg(windows)]
-        let (program, args) = (
-            "cmd".to_string(),
-            vec!["/C".to_string(), command.to_string()],
-        );
+        let (program, args) = {
+            // Force UTF-8 output on Windows by running `chcp 65001` before the
+            // actual command. Without this, subprocesses output in the system's
+            // ANSI code page (e.g. GBK for Chinese locales), causing garbled
+            // text in the shell output panel. See issue #982.
+            let cmd = format!("chcp 65001 >NUL & {command}");
+            ("cmd".to_string(), vec!["/C".to_string(), cmd])
+        };
         #[cfg(not(windows))]
         let (program, args) = (
             "sh".to_string(),
@@ -145,7 +151,12 @@ impl CommandSpec {
             && self.args.len() == 2
             && self.args[0].eq_ignore_ascii_case("/C")
         {
-            self.args[1].clone()
+            // Strip the `chcp 65001 >NUL & ` prefix we add on Windows for
+            // UTF-8 output (issue #982).
+            let raw = &self.args[1];
+            raw.strip_prefix("chcp 65001 >NUL & ")
+                .unwrap_or(raw)
+                .to_string()
         } else {
             // For other commands, join program and args
             let mut parts = vec![self.program.clone()];
@@ -170,7 +181,10 @@ pub enum SandboxType {
     #[cfg(target_os = "linux")]
     LinuxLandlock,
 
-    /// Windows sandboxing (Windows Sandbox/AppContainer/Restricted token).
+    /// Windows process-containment helper.
+    ///
+    /// Not advertised until a helper enforces Job Object cleanup. This does
+    /// not imply filesystem, network, registry, or AppContainer isolation.
     #[cfg(target_os = "windows")]
     Windows,
 }
@@ -418,10 +432,12 @@ impl SandboxManager {
         }
     }
 
-    /// Prepare a Windows-sandboxed execution environment.
+    /// Prepare a Windows helper execution environment.
     ///
-    /// Note: Windows sandboxing requires a helper process for full isolation.
-    /// This implementation marks intent and defers enforcement to a helper.
+    /// Windows support is currently not advertised by `get_platform_sandbox`.
+    /// This branch only exists for forced tests and future helper wiring.
+    /// The first supported helper contract is process-tree containment only;
+    /// it must not be presented as filesystem or network isolation.
     #[cfg(target_os = "windows")]
     fn prepare_windows(spec: &CommandSpec) -> ExecEnv {
         let mut command = vec![spec.program.clone()];
@@ -530,7 +546,11 @@ mod tests {
     fn expected_shell_command(command: &str) -> Vec<String> {
         #[cfg(windows)]
         {
-            vec!["cmd".to_string(), "/C".to_string(), command.to_string()]
+            vec![
+                "cmd".to_string(),
+                "/C".to_string(),
+                format!("chcp 65001 >NUL & {command}"),
+            ]
         }
         #[cfg(not(windows))]
         {
@@ -545,7 +565,7 @@ mod tests {
         #[cfg(windows)]
         {
             assert_eq!(spec.program, "cmd");
-            assert_eq!(spec.args, vec!["/C", "echo hello"]);
+            assert_eq!(spec.args, vec!["/C", "chcp 65001 >NUL & echo hello"]);
         }
         #[cfg(not(windows))]
         {

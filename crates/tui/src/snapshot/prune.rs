@@ -24,7 +24,9 @@ pub fn prune_older_than(workspace: &Path, max_age: Duration) -> io::Result<usize
         return Ok(0);
     }
     let repo = SnapshotRepo::open_or_init(workspace)?;
-    repo.prune_older_than(max_age)
+    let removed = repo.prune_older_than(max_age)?;
+    repo.prune_unreachable_objects()?;
+    Ok(removed)
 }
 
 #[cfg(test)]

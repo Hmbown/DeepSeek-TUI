@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 pub struct PromptSessionContext<'a> {
     pub user_memory_block: Option<&'a str>,
     pub goal_objective: Option<&'a str>,
+    pub project_context_pack_enabled: bool,
     /// Resolved BCP-47 locale tag for the `## Environment` block in
     /// the system prompt (e.g. `"en"`, `"zh-Hans"`, `"ja"`). The
     /// caller is responsible for resolving this from `Settings`; no
@@ -333,6 +334,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
         PromptSessionContext {
             user_memory_block,
             goal_objective: None,
+            project_context_pack_enabled: true,
             locale_tag: "en",
         },
     )
@@ -371,18 +373,23 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
     // Load project context from workspace
     let project_context = load_project_context_with_parents(workspace);
 
-    // 1–2. Mode prompt + project context (or fallback automap).
+    // 1–2. Mode prompt + project context.
+    // `load_project_context_with_parents` auto-generates .deepseek/instructions.md
+    // when no context file exists, so the fallback should always be available.
     let mut full_prompt = if let Some(project_block) = project_context.as_system_block() {
         format!("{}\n\n{}", mode_prompt, project_block)
     } else {
-        // Fallback: Generate an automatic project map summary
-        let summary = crate::utils::summarize_project(workspace);
-        let tree = crate::utils::project_tree(workspace, 2); // Shallow tree for prompt
-        format!(
-            "{}\n\n### Project Structure (Automatic Map)\n**Summary:** {}\n\n**Tree:**\n```\n{}\n```",
-            mode_prompt, summary, tree
-        )
+        // Extremely unlikely: context generation failed (e.g. filesystem error).
+        // Use mode prompt alone rather than panic.
+        tracing::warn!("No project context available and auto-generation failed");
+        mode_prompt
     };
+
+    if session_context.project_context_pack_enabled
+        && let Some(pack) = crate::project_context::generate_project_context_pack(workspace)
+    {
+        full_prompt = format!("{full_prompt}\n\n{pack}");
+    }
 
     // 2.25. Environment block — locale, platform, shell, pwd. All
     // four inputs are session-stable (workspace path is fixed for
@@ -546,6 +553,7 @@ mod tests {
             PromptSessionContext {
                 user_memory_block: None,
                 goal_objective: None,
+                project_context_pack_enabled: true,
                 locale_tag: "ja",
             },
         ) {
@@ -555,6 +563,59 @@ mod tests {
         assert!(prompt.contains("## Environment"));
         assert!(prompt.contains("- lang: ja"));
         assert!(prompt.contains("- deepseek_version:"));
+    }
+
+    #[test]
+    fn project_context_pack_can_be_disabled() {
+        let tmp = tempdir().expect("tempdir");
+        std::fs::write(tmp.path().join("README.md"), "# Pack test").expect("write readme");
+        let prompt = match system_prompt_for_mode_with_context_skills_and_session(
+            AppMode::Agent,
+            tmp.path(),
+            None,
+            None,
+            None,
+            PromptSessionContext {
+                user_memory_block: None,
+                goal_objective: None,
+                project_context_pack_enabled: false,
+                locale_tag: "en",
+            },
+        ) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+        assert!(!prompt.contains("<project_context_pack>"));
+    }
+
+    #[test]
+    fn project_context_pack_is_before_dynamic_tail() {
+        let tmp = tempdir().expect("tempdir");
+        std::fs::write(tmp.path().join("README.md"), "# Pack test").expect("write readme");
+        std::fs::create_dir_all(tmp.path().join(".deepseek")).expect("mkdir");
+        std::fs::write(tmp.path().join(".deepseek").join("handoff.md"), "handoff")
+            .expect("handoff");
+        let prompt = match system_prompt_for_mode_with_context_skills_and_session(
+            AppMode::Agent,
+            tmp.path(),
+            None,
+            None,
+            None,
+            PromptSessionContext {
+                user_memory_block: None,
+                goal_objective: None,
+                project_context_pack_enabled: true,
+                locale_tag: "en",
+            },
+        ) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+        assert!(prompt.contains("<project_context_pack>"));
+        assert!(
+            prompt.find("<project_context_pack>").expect("pack")
+                < prompt.find("## Previous Session Handoff").expect("handoff")
+        );
     }
 
     #[test]
@@ -615,12 +676,50 @@ mod tests {
         assert!(prompt.contains("Approval Policy: Suggest"));
     }
 
+    /// Gate against shipping a release with a missing CHANGELOG entry — which
+    /// is exactly what happened with v0.8.21 / v0.8.22 (entries had to be
+    /// backfilled in v0.8.23). Asserts the top-of-file CHANGELOG contains a
+    /// `## [X.Y.Z]` heading matching the current `CARGO_PKG_VERSION`. No
+    /// hardcoded version string — the test self-updates with the workspace
+    /// version bump and only fires when the CHANGELOG is the missing piece.
+    ///
+    /// Walks up from `CARGO_MANIFEST_DIR` to find `CHANGELOG.md` instead of
+    /// assuming a fixed `../../CHANGELOG.md` layout. The workspace root is
+    /// the common case, but the walk also tolerates deeper crate layouts and
+    /// the packaged-crate case (where the workspace root has been stripped
+    /// out): if no `CHANGELOG.md` is reachable, the gate quietly skips
+    /// rather than panicking, so consumers running the suite outside the
+    /// workspace checkout don't see a spurious failure.
     #[test]
-    fn package_version_is_current_hotfix_release() {
-        assert_eq!(
-            env!("CARGO_PKG_VERSION"),
-            "0.8.16",
-            "0.8.16 hotfix branch must report the release version before publishing"
+    fn changelog_entry_exists_for_current_package_version() {
+        let version = env!("CARGO_PKG_VERSION");
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let Some(changelog_path) = manifest_dir
+            .ancestors()
+            .map(|dir| dir.join("CHANGELOG.md"))
+            .find(|candidate| candidate.is_file())
+        else {
+            eprintln!(
+                "changelog_entry_exists_for_current_package_version: no \
+                 CHANGELOG.md found above {} — skipping (this gate only \
+                 fires inside a workspace checkout).",
+                manifest_dir.display()
+            );
+            return;
+        };
+
+        let contents = std::fs::read_to_string(&changelog_path).unwrap_or_else(|err| {
+            panic!(
+                "failed to read CHANGELOG.md at {}: {err}",
+                changelog_path.display()
+            )
+        });
+        let header = format!("## [{version}]");
+        assert!(
+            contents.contains(&header),
+            "CHANGELOG.md is missing a `{header}` entry for the current package \
+             version. Add a release section at the top before tagging — see \
+             docs/RELEASE_CHECKLIST.md."
         );
     }
 
@@ -698,6 +797,7 @@ mod tests {
             PromptSessionContext {
                 user_memory_block: None,
                 goal_objective: Some("Fix transcript corruption"),
+                project_context_pack_enabled: true,
                 locale_tag: "en",
             },
         ) {
@@ -725,6 +825,7 @@ mod tests {
             PromptSessionContext {
                 user_memory_block: None,
                 goal_objective: Some("   "),
+                project_context_pack_enabled: true,
                 locale_tag: "en",
             },
         ) {
@@ -774,6 +875,24 @@ mod tests {
                  internal reasoning, not just the visible reply, follows the user's language"
             );
         }
+    }
+
+    #[test]
+    fn language_mirroring_prioritizes_latest_user_message_over_locale_default() {
+        let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
+        assert!(
+            prompt.contains("latest user message first"),
+            "the language directive must choose the turn language from the user message before \
+             falling back to the environment locale"
+        );
+        assert!(
+            prompt.contains("even when the `lang` field in `## Environment` is `en`"),
+            "Chinese user text must override an English resolved locale for reasoning_content"
+        );
+        assert!(
+            prompt.contains("Use the `lang` field only when"),
+            "environment locale should be an ambiguity fallback, not the primary language source"
+        );
     }
 
     /// #358: rlm guidance was reframed from "first-class" to "specialty

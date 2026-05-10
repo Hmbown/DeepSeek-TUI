@@ -391,7 +391,6 @@ mod tests {
             names,
             vec![
                 "DeepSeek",
-                "DeepSeek (中国)",
                 "NVIDIA NIM",
                 "OpenAI-compatible",
                 "OpenRouter",

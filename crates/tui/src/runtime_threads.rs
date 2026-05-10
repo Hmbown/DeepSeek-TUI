@@ -8,12 +8,13 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -32,6 +33,24 @@ use crate::tui::app::AppMode;
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
 const MAX_ACTIVE_THREADS_DEFAULT: usize = 8;
 const SUMMARY_LIMIT: usize = 280;
+
+fn validated_record_id<'a>(id: &'a str, label: &str) -> Result<&'a str> {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        bail!("{label} cannot be empty");
+    }
+    if trimmed != id {
+        bail!("{label} cannot contain leading or trailing whitespace");
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        bail!("{label} contains unsupported characters");
+    }
+    Ok(trimmed)
+}
+
 /// Bumped to 2 for v0.6.6 — see issue #124. The persisted thread/turn/item
 /// records didn't change shape, but the live engine semantics did: cycle
 /// boundaries advance the `Session.cycle_count` and produce archived JSONL
@@ -40,6 +59,7 @@ const SUMMARY_LIMIT: usize = 280;
 /// might misinterpret message counts; bumping is the safe choice.
 const CURRENT_RUNTIME_SCHEMA_VERSION: u32 = 2;
 const RUNTIME_RESTART_REASON: &str = "Interrupted by process restart";
+const APPROVAL_DECISION_TIMEOUT: Duration = Duration::from_secs(300);
 
 const fn default_runtime_schema_version() -> u32 {
     CURRENT_RUNTIME_SCHEMA_VERSION
@@ -61,6 +81,7 @@ pub enum RuntimeTurnStatus {
 pub enum TurnItemKind {
     UserMessage,
     AgentMessage,
+    AgentReasoning,
     ToolCall,
     FileChange,
     CommandExecution,
@@ -238,36 +259,43 @@ impl RuntimeThreadStore {
         })
     }
 
-    fn thread_path(&self, thread_id: &str) -> PathBuf {
-        self.threads_dir.join(format!("{thread_id}.json"))
+    fn record_path(base: &Path, id: &str, extension: &str, label: &str) -> Result<PathBuf> {
+        let id = validated_record_id(id, label)?;
+        Ok(base.join(format!("{id}.{extension}")))
     }
 
-    fn turn_path(&self, turn_id: &str) -> PathBuf {
-        self.turns_dir.join(format!("{turn_id}.json"))
+    fn thread_path(&self, thread_id: &str) -> Result<PathBuf> {
+        Self::record_path(&self.threads_dir, thread_id, "json", "thread id")
     }
 
-    fn item_path(&self, item_id: &str) -> PathBuf {
-        self.items_dir.join(format!("{item_id}.json"))
+    fn turn_path(&self, turn_id: &str) -> Result<PathBuf> {
+        Self::record_path(&self.turns_dir, turn_id, "json", "turn id")
     }
 
-    fn events_path(&self, thread_id: &str) -> PathBuf {
-        self.events_dir.join(format!("{thread_id}.jsonl"))
+    fn item_path(&self, item_id: &str) -> Result<PathBuf> {
+        Self::record_path(&self.items_dir, item_id, "json", "item id")
+    }
+
+    fn events_path(&self, thread_id: &str) -> Result<PathBuf> {
+        Self::record_path(&self.events_dir, thread_id, "jsonl", "thread id")
     }
 
     pub fn save_thread(&self, thread: &ThreadRecord) -> Result<()> {
-        write_json_atomic(&self.thread_path(&thread.id), thread)
+        write_json_atomic(&self.thread_path(&thread.id)?, thread)
     }
 
     pub fn save_turn(&self, turn: &TurnRecord) -> Result<()> {
-        write_json_atomic(&self.turn_path(&turn.id), turn)
+        validated_record_id(&turn.thread_id, "thread id")?;
+        write_json_atomic(&self.turn_path(&turn.id)?, turn)
     }
 
     pub fn save_item(&self, item: &TurnItemRecord) -> Result<()> {
-        write_json_atomic(&self.item_path(&item.id), item)
+        validated_record_id(&item.turn_id, "turn id")?;
+        write_json_atomic(&self.item_path(&item.id)?, item)
     }
 
     pub fn load_thread(&self, thread_id: &str) -> Result<ThreadRecord> {
-        let path = self.thread_path(thread_id);
+        let path = self.thread_path(thread_id)?;
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read thread {}", path.display()))?;
         let record: ThreadRecord = serde_json::from_str(&raw)
@@ -283,7 +311,7 @@ impl RuntimeThreadStore {
     }
 
     pub fn load_turn(&self, turn_id: &str) -> Result<TurnRecord> {
-        let path = self.turn_path(turn_id);
+        let path = self.turn_path(turn_id)?;
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read turn {}", path.display()))?;
         let record: TurnRecord = serde_json::from_str(&raw)
@@ -299,7 +327,7 @@ impl RuntimeThreadStore {
     }
 
     pub fn load_item(&self, item_id: &str) -> Result<TurnItemRecord> {
-        let path = self.item_path(item_id);
+        let path = self.item_path(item_id)?;
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read item {}", path.display()))?;
         let record: TurnItemRecord = serde_json::from_str(&raw)
@@ -342,6 +370,7 @@ impl RuntimeThreadStore {
     }
 
     pub fn list_turns_for_thread(&self, thread_id: &str) -> Result<Vec<TurnRecord>> {
+        validated_record_id(thread_id, "thread id")?;
         let mut out = Vec::new();
         for entry in fs::read_dir(&self.turns_dir)
             .with_context(|| format!("Failed to read {}", self.turns_dir.display()))?
@@ -371,6 +400,7 @@ impl RuntimeThreadStore {
     }
 
     pub fn list_items_for_turn(&self, turn_id: &str) -> Result<Vec<TurnItemRecord>> {
+        validated_record_id(turn_id, "turn id")?;
         let mut out = Vec::new();
         for entry in fs::read_dir(&self.items_dir)
             .with_context(|| format!("Failed to read {}", self.items_dir.display()))?
@@ -411,6 +441,15 @@ impl RuntimeThreadStore {
         event: impl Into<String>,
         payload: Value,
     ) -> Result<RuntimeEventRecord> {
+        validated_record_id(thread_id, "thread id")?;
+        if let Some(turn_id) = turn_id {
+            validated_record_id(turn_id, "turn id")?;
+        }
+        if let Some(item_id) = item_id {
+            validated_record_id(item_id, "item id")?;
+        }
+        let path = self.events_path(thread_id)?;
+
         let mut state = self.state.lock().await;
         let seq = state.next_seq;
         state.next_seq = state.next_seq.saturating_add(1);
@@ -428,7 +467,6 @@ impl RuntimeThreadStore {
             payload,
         };
 
-        let path = self.events_path(thread_id);
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -448,7 +486,7 @@ impl RuntimeThreadStore {
         thread_id: &str,
         since_seq: Option<u64>,
     ) -> Result<Vec<RuntimeEventRecord>> {
-        let path = self.events_path(thread_id);
+        let path = self.events_path(thread_id)?;
         if !path.exists() {
             return Ok(Vec::new());
         }
@@ -685,6 +723,7 @@ pub struct RuntimeThreadManager {
     cancel_token: CancellationToken,
     task_manager: Arc<StdMutex<Option<crate::task_manager::SharedTaskManager>>>,
     automations: Arc<StdMutex<Option<crate::automation_manager::SharedAutomationManager>>>,
+    pending_approvals: Arc<StdMutex<HashMap<String, oneshot::Sender<ExternalApprovalDecision>>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -692,6 +731,12 @@ enum RuntimeApprovalDecision {
     ApproveTool,
     DenyTool,
     RetryWithFullAccess,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalApprovalDecision {
+    Allow { remember: bool },
+    Deny { remember: bool },
 }
 
 impl RuntimeThreadManager {
@@ -712,6 +757,7 @@ impl RuntimeThreadManager {
             cancel_token: CancellationToken::new(),
             task_manager: Arc::new(StdMutex::new(None)),
             automations: Arc::new(StdMutex::new(None)),
+            pending_approvals: Arc::new(StdMutex::new(HashMap::new())),
         };
         manager.recover_interrupted_state()?;
         Ok(manager)
@@ -738,11 +784,80 @@ impl RuntimeThreadManager {
     #[allow(dead_code)] // Public API for external callers (runtime API, task manager)
     pub fn shutdown(&self) {
         self.cancel_token.cancel();
+        if let Ok(mut map) = self.pending_approvals.lock() {
+            map.clear();
+        }
     }
 
     #[allow(dead_code)] // Public API for external callers
     pub fn is_shutdown(&self) -> bool {
         self.cancel_token.is_cancelled()
+    }
+
+    fn register_pending_approval(
+        &self,
+        approval_id: &str,
+    ) -> oneshot::Receiver<ExternalApprovalDecision> {
+        let (tx, rx) = oneshot::channel();
+        if let Ok(mut map) = self.pending_approvals.lock() {
+            map.insert(approval_id.to_string(), tx);
+        }
+        rx
+    }
+
+    fn cancel_pending_approval(&self, approval_id: &str) {
+        if let Ok(mut map) = self.pending_approvals.lock() {
+            map.remove(approval_id);
+        }
+    }
+
+    pub fn deliver_external_approval(
+        &self,
+        approval_id: &str,
+        decision: ExternalApprovalDecision,
+    ) -> bool {
+        let sender = match self.pending_approvals.lock() {
+            Ok(mut map) => map.remove(approval_id),
+            Err(_) => return false,
+        };
+        match sender {
+            Some(tx) => tx.send(decision).is_ok(),
+            None => false,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn pending_approvals_count(&self) -> usize {
+        self.pending_approvals
+            .lock()
+            .map(|map| map.len())
+            .unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn register_pending_approval_for_test(
+        &self,
+        approval_id: &str,
+    ) -> oneshot::Receiver<ExternalApprovalDecision> {
+        self.register_pending_approval(approval_id)
+    }
+
+    async fn remember_thread_auto_approve(&self, thread_id: &str) {
+        let Ok(mut thread) = self.store.load_thread(thread_id) else {
+            return;
+        };
+        if thread.auto_approve {
+            return;
+        }
+        thread.auto_approve = true;
+        thread.updated_at = Utc::now();
+        if let Err(err) = self.store.save_thread(&thread) {
+            tracing::warn!(
+                "Failed to persist auto_approve flip for thread {}: {}",
+                thread_id,
+                err
+            );
+        }
     }
 
     #[must_use]
@@ -1808,6 +1923,7 @@ impl RuntimeThreadManager {
             mcp_config_path: self.config.mcp_config_path(),
             skills_dir: self.config.skills_dir(),
             instructions: self.config.instructions_paths(),
+            project_context_pack_enabled: self.config.project_context_pack_enabled(),
             max_steps: 100,
             max_subagents: self.config.max_subagents().clamp(1, MAX_SUBAGENTS),
             features: self.config.features(),
@@ -1921,6 +2037,7 @@ impl RuntimeThreadManager {
         engine: EngineHandle,
     ) -> Result<()> {
         let mut current_message_item: Option<(String, String)> = None;
+        let mut current_reasoning_item: Option<(String, String)> = None;
         let mut tool_items: HashMap<String, String> = HashMap::new();
         let mut compaction_items: HashMap<String, String> = HashMap::new();
         let mut turn_usage: Option<Usage> = None;
@@ -1996,6 +2113,64 @@ impl RuntimeThreadManager {
                 }
                 EngineEvent::MessageComplete { .. } => {
                     if let Some((item_id, text)) = current_message_item.take() {
+                        let mut item = self.store.load_item(&item_id)?;
+                        item.status = TurnItemLifecycleStatus::Completed;
+                        item.summary = summarize_text(&text, SUMMARY_LIMIT);
+                        item.detail = Some(text);
+                        item.ended_at = Some(Utc::now());
+                        self.store.save_item(&item)?;
+                        self.emit_event(
+                            &thread_id,
+                            Some(&turn_id),
+                            Some(&item_id),
+                            "item.completed",
+                            json!({ "item": item }),
+                        )
+                        .await?;
+                    }
+                }
+                EngineEvent::ThinkingStarted { .. } => {
+                    let item_id = format!("item_{}", &Uuid::new_v4().to_string()[..8]);
+                    let item = TurnItemRecord {
+                        schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                        id: item_id.clone(),
+                        turn_id: turn_id.clone(),
+                        kind: TurnItemKind::AgentReasoning,
+                        status: TurnItemLifecycleStatus::InProgress,
+                        summary: String::new(),
+                        detail: Some(String::new()),
+                        metadata: None,
+                        artifact_refs: Vec::new(),
+                        started_at: Some(Utc::now()),
+                        ended_at: None,
+                    };
+                    self.store.save_item(&item)?;
+                    self.attach_item_to_turn(&turn_id, &item.id)?;
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        Some(&item_id),
+                        "item.started",
+                        json!({ "item": item }),
+                    )
+                    .await?;
+                    current_reasoning_item = Some((item_id, String::new()));
+                }
+                EngineEvent::ThinkingDelta { content, .. } => {
+                    if let Some((item_id, text)) = current_reasoning_item.as_mut() {
+                        text.push_str(&content);
+                        self.emit_event(
+                            &thread_id,
+                            Some(&turn_id),
+                            Some(item_id),
+                            "item.delta",
+                            json!({ "delta": content, "kind": "agent_reasoning" }),
+                        )
+                        .await?;
+                    }
+                }
+                EngineEvent::ThinkingComplete { .. } => {
+                    if let Some((item_id, text)) = current_reasoning_item.take() {
                         let mut item = self.store.load_item(&item_id)?;
                         item.status = TurnItemLifecycleStatus::Completed;
                         item.summary = summarize_text(&text, SUMMARY_LIMIT);
@@ -2447,22 +2622,88 @@ impl RuntimeThreadManager {
                         "approval.required",
                         json!({
                             "id": id,
+                            "approval_id": id,
                             "tool_name": tool_name,
                             "description": description,
                         }),
                     )
                     .await?;
 
-                    let (auto_approve, trust_mode) = self
-                        .active_turn_flags(&thread_id, &turn_id)
-                        .await
-                        .unwrap_or((false, false));
-                    match Self::approval_decision(auto_approve, trust_mode, false) {
-                        RuntimeApprovalDecision::ApproveTool => {
+                    let Some((auto_approve, trust_mode)) =
+                        self.active_turn_flags(&thread_id, &turn_id).await
+                    else {
+                        let _ = engine.deny_tool_call(id).await;
+                        continue;
+                    };
+
+                    if auto_approve || trust_mode {
+                        match Self::approval_decision(auto_approve, trust_mode, false) {
+                            RuntimeApprovalDecision::ApproveTool => {
+                                let _ = engine.approve_tool_call(id).await;
+                            }
+                            RuntimeApprovalDecision::DenyTool
+                            | RuntimeApprovalDecision::RetryWithFullAccess => {
+                                let _ = engine.deny_tool_call(id).await;
+                            }
+                        }
+                        continue;
+                    }
+
+                    let rx = self.register_pending_approval(&id);
+                    match tokio::time::timeout(APPROVAL_DECISION_TIMEOUT, rx).await {
+                        Ok(Ok(ExternalApprovalDecision::Allow { remember })) => {
+                            if remember {
+                                self.remember_thread_auto_approve(&thread_id).await;
+                            }
+                            self.emit_event(
+                                &thread_id,
+                                Some(&turn_id),
+                                None,
+                                "approval.decided",
+                                json!({
+                                    "approval_id": id,
+                                    "decision": "allow",
+                                    "remember": remember,
+                                }),
+                            )
+                            .await
+                            .ok();
                             let _ = engine.approve_tool_call(id).await;
                         }
-                        RuntimeApprovalDecision::DenyTool
-                        | RuntimeApprovalDecision::RetryWithFullAccess => {
+                        Ok(Ok(ExternalApprovalDecision::Deny { remember })) => {
+                            self.emit_event(
+                                &thread_id,
+                                Some(&turn_id),
+                                None,
+                                "approval.decided",
+                                json!({
+                                    "approval_id": id,
+                                    "decision": "deny",
+                                    "remember": remember,
+                                }),
+                            )
+                            .await
+                            .ok();
+                            let _ = engine.deny_tool_call(id).await;
+                        }
+                        Ok(Err(_recv_err)) => {
+                            self.cancel_pending_approval(&id);
+                            let _ = engine.deny_tool_call(id).await;
+                        }
+                        Err(_timeout) => {
+                            self.cancel_pending_approval(&id);
+                            self.emit_event(
+                                &thread_id,
+                                Some(&turn_id),
+                                None,
+                                "approval.timeout",
+                                json!({
+                                    "approval_id": id,
+                                    "timeout_secs": APPROVAL_DECISION_TIMEOUT.as_secs(),
+                                }),
+                            )
+                            .await
+                            .ok();
                             let _ = engine.deny_tool_call(id).await;
                         }
                     }
@@ -2586,6 +2827,31 @@ impl RuntimeThreadManager {
         }
 
         if let Some((item_id, text)) = current_message_item.take() {
+            let mut item = self.store.load_item(&item_id)?;
+            if turn_status == RuntimeTurnStatus::Interrupted {
+                item.status = TurnItemLifecycleStatus::Interrupted;
+            } else {
+                item.status = TurnItemLifecycleStatus::Completed;
+            }
+            item.summary = summarize_text(&text, SUMMARY_LIMIT);
+            item.detail = Some(text);
+            item.ended_at = Some(Utc::now());
+            self.store.save_item(&item)?;
+            self.emit_event(
+                &thread_id,
+                Some(&turn_id),
+                Some(&item_id),
+                if item.status == TurnItemLifecycleStatus::Interrupted {
+                    "item.interrupted"
+                } else {
+                    "item.completed"
+                },
+                json!({ "item": item }),
+            )
+            .await?;
+        }
+
+        if let Some((item_id, text)) = current_reasoning_item.take() {
             let mut item = self.store.load_item(&item_id)?;
             if turn_status == RuntimeTurnStatus::Interrupted {
                 item.status = TurnItemLifecycleStatus::Interrupted;
@@ -3087,6 +3353,37 @@ mod tests {
         // Locks the bump in (issue #124). Bump deliberately when persisted
         // shape changes.
         assert_eq!(CURRENT_RUNTIME_SCHEMA_VERSION, 2);
+    }
+
+    #[test]
+    fn store_rejects_path_like_record_ids() {
+        let dir = test_runtime_dir();
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+
+        let err = store
+            .load_thread("../outside")
+            .expect_err("path traversal id should fail");
+        assert!(
+            format!("{err:#}").contains("unsupported characters"),
+            "got: {err:#}"
+        );
+
+        let mut thread = sample_thread("thr_bad/id");
+        let err = store
+            .save_thread(&thread)
+            .expect_err("path separator id should fail");
+        assert!(
+            format!("{err:#}").contains("unsupported characters"),
+            "got: {err:#}"
+        );
+
+        thread.id = " thr_bad".to_string();
+        let err = store
+            .save_thread(&thread)
+            .expect_err("whitespace id should fail");
+        assert!(format!("{err:#}").contains("whitespace"), "got: {err:#}");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -3860,6 +4157,340 @@ mod tests {
 
         let terminal = wait_for_terminal_turn(&manager, &turn.id, Duration::from_secs(2)).await?;
         assert_eq!(terminal.status, RuntimeTurnStatus::Completed);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn approval_required_awaits_external_decision_allow() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = manager
+            .create_thread(CreateThreadRequest {
+                model: None,
+                workspace: None,
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                archived: false,
+                system_prompt: None,
+                task_id: None,
+            })
+            .await?;
+
+        let mut harness = install_mock_engine(&manager, &thread.id).await;
+        let _turn = manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: "needs approval".to_string(),
+                    input_summary: None,
+                    model: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                },
+            )
+            .await?;
+        assert!(matches!(
+            harness.rx_op.recv().await,
+            Some(Op::SendMessage { .. })
+        ));
+
+        harness
+            .tx_event
+            .send(EngineEvent::ApprovalRequired {
+                approval_key: "key1".to_string(),
+                id: "tool_external_allow".to_string(),
+                tool_name: "exec_command".to_string(),
+                description: "external allow".to_string(),
+            })
+            .await?;
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && manager.pending_approvals_count() == 0 {
+            sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(manager.pending_approvals_count(), 1);
+
+        assert!(manager.deliver_external_approval(
+            "tool_external_allow",
+            ExternalApprovalDecision::Allow { remember: false },
+        ));
+        assert_eq!(
+            harness.recv_approval_event().await,
+            Some(MockApprovalEvent::Approved {
+                id: "tool_external_allow".to_string(),
+            })
+        );
+        assert_eq!(manager.pending_approvals_count(), 0);
+
+        harness
+            .tx_event
+            .send(EngineEvent::TurnComplete {
+                usage: Usage::default(),
+                status: TurnOutcomeStatus::Completed,
+                error: None,
+            })
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn approval_required_external_deny_is_denied() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = manager
+            .create_thread(CreateThreadRequest {
+                model: None,
+                workspace: None,
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                archived: false,
+                system_prompt: None,
+                task_id: None,
+            })
+            .await?;
+
+        let mut harness = install_mock_engine(&manager, &thread.id).await;
+        let _turn = manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: "needs approval".to_string(),
+                    input_summary: None,
+                    model: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                },
+            )
+            .await?;
+        assert!(matches!(
+            harness.rx_op.recv().await,
+            Some(Op::SendMessage { .. })
+        ));
+
+        harness
+            .tx_event
+            .send(EngineEvent::ApprovalRequired {
+                approval_key: "key2".to_string(),
+                id: "tool_external_deny".to_string(),
+                tool_name: "exec_command".to_string(),
+                description: "external deny".to_string(),
+            })
+            .await?;
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && manager.pending_approvals_count() == 0 {
+            sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(manager.pending_approvals_count(), 1);
+
+        assert!(manager.deliver_external_approval(
+            "tool_external_deny",
+            ExternalApprovalDecision::Deny { remember: false },
+        ));
+        assert_eq!(
+            harness.recv_approval_event().await,
+            Some(MockApprovalEvent::Denied {
+                id: "tool_external_deny".to_string(),
+            })
+        );
+
+        harness
+            .tx_event
+            .send(EngineEvent::TurnComplete {
+                usage: Usage::default(),
+                status: TurnOutcomeStatus::Completed,
+                error: None,
+            })
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn thinking_delta_emits_agent_reasoning_item() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = manager
+            .create_thread(CreateThreadRequest {
+                model: None,
+                workspace: None,
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: Some(true),
+                archived: false,
+                system_prompt: None,
+                task_id: None,
+            })
+            .await?;
+        let mut harness = install_mock_engine(&manager, &thread.id).await;
+        let mut event_rx = manager.subscribe_events();
+        let _turn = manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: "show your thinking".to_string(),
+                    input_summary: None,
+                    model: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: Some(true),
+                },
+            )
+            .await?;
+        assert!(matches!(
+            harness.rx_op.recv().await,
+            Some(Op::SendMessage { .. })
+        ));
+
+        harness
+            .tx_event
+            .send(EngineEvent::ThinkingStarted { index: 0 })
+            .await?;
+        harness
+            .tx_event
+            .send(EngineEvent::ThinkingDelta {
+                index: 0,
+                content: "Let me reason about this.".to_string(),
+            })
+            .await?;
+        harness
+            .tx_event
+            .send(EngineEvent::ThinkingComplete { index: 0 })
+            .await?;
+        harness
+            .tx_event
+            .send(EngineEvent::TurnComplete {
+                usage: Usage::default(),
+                status: TurnOutcomeStatus::Completed,
+                error: None,
+            })
+            .await?;
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut delta_seen = false;
+        let mut completed_seen = false;
+        while Instant::now() < deadline && (!delta_seen || !completed_seen) {
+            match tokio::time::timeout(Duration::from_millis(200), event_rx.recv()).await {
+                Ok(Ok(record)) => {
+                    if record.event == "item.delta"
+                        && record.payload.get("kind").and_then(|v| v.as_str())
+                            == Some("agent_reasoning")
+                    {
+                        delta_seen = true;
+                        assert_eq!(
+                            record.payload.get("delta").and_then(|v| v.as_str()),
+                            Some("Let me reason about this.")
+                        );
+                    }
+                    if record.event == "item.completed"
+                        && record
+                            .payload
+                            .get("item")
+                            .and_then(|v| v.get("kind"))
+                            .and_then(|v| v.as_str())
+                            == Some("agent_reasoning")
+                    {
+                        completed_seen = true;
+                    }
+                }
+                _ => break,
+            }
+        }
+        assert!(delta_seen, "expected item.delta with kind=agent_reasoning");
+        assert!(
+            completed_seen,
+            "expected item.completed for the reasoning item"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deliver_external_approval_for_unknown_id_returns_false() {
+        let manager = test_manager(test_runtime_dir()).expect("manager");
+        assert!(!manager.deliver_external_approval(
+            "no_such_approval",
+            ExternalApprovalDecision::Allow { remember: false },
+        ));
+        assert_eq!(manager.pending_approvals_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn approval_required_remember_flips_thread_auto_approve() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = manager
+            .create_thread(CreateThreadRequest {
+                model: None,
+                workspace: None,
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                archived: false,
+                system_prompt: None,
+                task_id: None,
+            })
+            .await?;
+        assert!(!manager.store.load_thread(&thread.id)?.auto_approve);
+
+        let mut harness = install_mock_engine(&manager, &thread.id).await;
+        let _turn = manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: "needs approval".to_string(),
+                    input_summary: None,
+                    model: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                },
+            )
+            .await?;
+        assert!(matches!(
+            harness.rx_op.recv().await,
+            Some(Op::SendMessage { .. })
+        ));
+
+        harness
+            .tx_event
+            .send(EngineEvent::ApprovalRequired {
+                approval_key: "key3".to_string(),
+                id: "tool_remember".to_string(),
+                tool_name: "exec_command".to_string(),
+                description: "remember=true".to_string(),
+            })
+            .await?;
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && manager.pending_approvals_count() == 0 {
+            sleep(Duration::from_millis(20)).await;
+        }
+        assert!(manager.deliver_external_approval(
+            "tool_remember",
+            ExternalApprovalDecision::Allow { remember: true },
+        ));
+        let _ = harness.recv_approval_event().await;
+
+        assert!(
+            manager.store.load_thread(&thread.id)?.auto_approve,
+            "remember=true should flip thread auto_approve"
+        );
+
+        harness
+            .tx_event
+            .send(EngineEvent::TurnComplete {
+                usage: Usage::default(),
+                status: TurnOutcomeStatus::Completed,
+                error: None,
+            })
+            .await?;
         Ok(())
     }
 

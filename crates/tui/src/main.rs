@@ -16,6 +16,7 @@ mod acp_server;
 mod audit;
 mod auto_reasoning;
 mod automation_manager;
+mod child_env;
 mod client;
 mod command_safety;
 mod commands;
@@ -58,6 +59,7 @@ mod schema_migration;
 mod seam_manager;
 mod session_manager;
 mod settings;
+mod skill_state;
 mod skills;
 mod snapshot;
 mod task_manager;
@@ -109,8 +111,8 @@ struct Cli {
     feature_toggles: FeatureToggles,
 
     /// Send a one-shot prompt (non-interactive)
-    #[arg(short, long)]
-    prompt: Option<String>,
+    #[arg(short, long, value_name = "PROMPT", num_args = 1..)]
+    prompt: Vec<String>,
 
     /// YOLO mode: enable agent tools + shell execution
     #[arg(long)]
@@ -144,8 +146,9 @@ struct Cli {
     #[arg(short = 'c', long = "continue")]
     continue_session: bool,
 
-    /// Disable the alternate screen buffer (inline mode)
-    #[arg(long = "no-alt-screen")]
+    /// Deprecated compatibility flag; the interactive TUI always owns the
+    /// alternate screen so terminal scrollback cannot hijack the viewport.
+    #[arg(long = "no-alt-screen", hide = true)]
     no_alt_screen: bool,
 
     /// Enable TUI mouse capture for internal scrolling and transcript selection
@@ -263,7 +266,13 @@ enum Commands {
 #[derive(Args, Debug, Clone)]
 struct ExecArgs {
     /// Prompt to send to the model
-    prompt: String,
+    #[arg(
+        value_name = "PROMPT",
+        required = true,
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
+    prompt: Vec<String>,
     /// Override model for this run
     #[arg(long)]
     model: Option<String>,
@@ -273,6 +282,10 @@ struct ExecArgs {
     /// Emit machine-readable JSON output
     #[arg(long, default_value_t = false)]
     json: bool,
+}
+
+fn join_prompt_parts(parts: &[String]) -> String {
+    parts.join(" ")
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -425,6 +438,9 @@ struct ServeArgs {
     /// `DEEPSEEK_RUNTIME_TOKEN` when omitted.
     #[arg(long = "auth-token", value_name = "TOKEN")]
     auth_token: Option<String>,
+    /// Disable runtime API auth when no token is configured. Only use on a trusted loopback.
+    #[arg(long = "insecure")]
+    insecure_no_auth: bool,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -652,6 +668,7 @@ async fn main() -> Result<()> {
                     .model
                     .or_else(|| config.default_text_model.clone())
                     .unwrap_or_else(|| config.default_model());
+                let prompt = join_prompt_parts(&args.prompt);
                 if args.auto || cli.yolo {
                     let workspace = cli.workspace.clone().unwrap_or_else(|| {
                         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
@@ -664,7 +681,7 @@ async fn main() -> Result<()> {
                     run_exec_agent(
                         &config,
                         &model,
-                        &args.prompt,
+                        &prompt,
                         workspace,
                         max_subagents,
                         true,
@@ -673,9 +690,9 @@ async fn main() -> Result<()> {
                     )
                     .await
                 } else if args.json {
-                    run_one_shot_json(&config, &model, &args.prompt).await
+                    run_one_shot_json(&config, &model, &prompt).await
                 } else {
-                    run_one_shot(&config, &model, &args.prompt).await
+                    run_one_shot(&config, &model, &prompt).await
                 }
             }
             Commands::Review(args) => {
@@ -735,6 +752,7 @@ async fn main() -> Result<()> {
                             workers: args.workers.clamp(1, 8),
                             cors_origins,
                             auth_token: args.auth_token,
+                            insecure_no_auth: args.insecure_no_auth,
                         },
                     )
                     .await
@@ -763,21 +781,24 @@ async fn main() -> Result<()> {
 
     // One-shot prompt mode
     let config = load_config_from_cli(&cli)?;
-    if let Some(prompt) = cli.prompt {
+    if !cli.prompt.is_empty() {
+        let prompt = join_prompt_parts(&cli.prompt);
         let model = config.default_model();
         return run_one_shot(&config, &model, &prompt).await;
     }
 
-    // Handle session resume
+    // Handle session resume. Plain `deepseek` starts fresh: interrupted
+    // snapshots are preserved for explicit resume, but never auto-attached.
     let resume_session_id = if cli.continue_session {
         let workspace = resolve_workspace(&cli);
-        latest_session_id_for_workspace(&workspace).ok().flatten()
+        recover_interrupted_checkpoint_for_resume(&workspace)
+            .or_else(|| latest_session_id_for_workspace(&workspace).ok().flatten())
     } else if let Some(id) = cli.resume.clone() {
         Some(id)
     } else if !cli.fresh {
-        // Check for crash-recovery checkpoint (unless --fresh was passed).
         let workspace = resolve_workspace(&cli);
-        try_recover_checkpoint(&workspace)
+        preserve_interrupted_checkpoint_for_explicit_resume(&workspace);
+        None
     } else {
         None
     };
@@ -1716,11 +1737,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         std::io::stdout().flush().ok();
 
         match test_api_connectivity(config).await {
-            Ok(model) => {
+            Ok(()) => {
                 println!(
-                    "\r  {} API connection successful (model: {})",
-                    "✓".truecolor(aqua_r, aqua_g, aqua_b),
-                    model
+                    "\r  {} API connection successful",
+                    "✓".truecolor(aqua_r, aqua_g, aqua_b)
                 );
             }
             Err(e) => {
@@ -2438,16 +2458,8 @@ fn known_deepseek_base_url_kind(base_url: &str) -> Option<DeepSeekBaseUrlKind> {
     }
 }
 
-fn recommended_strict_base_url(config: &Config, base_url: &str) -> &'static str {
-    if matches!(
-        config.api_provider(),
-        crate::config::ApiProvider::DeepseekCN
-    ) || base_url.to_ascii_lowercase().contains("api.deepseeki.com")
-    {
-        "https://api.deepseeki.com/beta"
-    } else {
-        crate::config::DEFAULT_DEEPSEEK_BASE_URL
-    }
+fn recommended_strict_base_url(_config: &Config, _base_url: &str) -> &'static str {
+    crate::config::DEFAULT_DEEPSEEK_BASE_URL
 }
 
 fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
@@ -2463,7 +2475,7 @@ fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
                 && !target.base_url.contains("api.deepseeki.com") =>
         {
             lines.push(
-                "If you are in mainland China, set `provider = \"deepseek-cn\"` or `base_url = \"https://api.deepseeki.com\"` in ~/.deepseek/config.toml, then rerun `deepseek doctor`."
+                "If this is a custom DeepSeek-compatible endpoint, set its HTTPS base URL in ~/.deepseek/config.toml and rerun `deepseek doctor`."
                     .to_string(),
             );
         }
@@ -2536,7 +2548,7 @@ async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
 }
 
 /// Test API connectivity by making a minimal request
-async fn test_api_connectivity(config: &Config) -> Result<String> {
+async fn test_api_connectivity(config: &Config) -> Result<()> {
     use crate::client::DeepSeekClient;
     use crate::models::{ContentBlock, Message, MessageRequest};
 
@@ -2568,7 +2580,7 @@ async fn test_api_connectivity(config: &Config) -> Result<String> {
     // Use tokio timeout to catch hanging requests
     let timeout_duration = std::time::Duration::from_secs(15);
     match tokio::time::timeout(timeout_duration, client.create_message(request)).await {
-        Ok(Ok(_response)) => Ok(model),
+        Ok(Ok(_response)) => Ok(()),
         Ok(Err(e)) => Err(e),
         Err(_) => anyhow::bail!("Request timeout after 15 seconds"),
     }
@@ -3244,7 +3256,7 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
                     println!("Connected to all configured MCP servers.");
                 } else {
                     for (name, err) in errors {
-                        eprintln!("Failed to connect {name}: {err}");
+                        eprintln!("Failed to connect {name}: {err:#}");
                     }
                 }
             }
@@ -3361,7 +3373,7 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
             }
             eprintln!("MCP validation failed:");
             for (name, err) in errors {
-                eprintln!("  - {name}: {err}");
+                eprintln!("  - {name}: {err:#}");
             }
             bail!("one or more MCP servers failed validation");
         }
@@ -3541,9 +3553,7 @@ fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
         .current_dir(&exec_env.cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for (key, value) in &exec_env.env {
-        cmd.env(key, value);
-    }
+    child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
 
     let mut child = cmd
         .spawn()
@@ -3628,28 +3638,20 @@ fn parse_sandbox_policy(
     }
 }
 
-fn should_use_alt_screen(cli: &Cli, config: &Config) -> bool {
-    if cli.no_alt_screen {
-        return false;
-    }
-
-    let mode = config
-        .tui
-        .as_ref()
-        .and_then(|tui| tui.alternate_screen.as_deref())
-        .unwrap_or("auto")
-        .to_ascii_lowercase();
-
-    match mode.as_str() {
-        "always" => true,
-        "never" => false,
-        _ => true,
-    }
+fn should_use_alt_screen(_cli: &Cli, _config: &Config) -> bool {
+    true
 }
 
 fn should_use_mouse_capture(cli: &Cli, config: &Config, use_alt_screen: bool) -> bool {
     let terminal_emulator = std::env::var("TERMINAL_EMULATOR").ok();
-    should_use_mouse_capture_with(cli, config, use_alt_screen, terminal_emulator.as_deref())
+    let wt_session = std::env::var("WT_SESSION").ok().filter(|s| !s.is_empty());
+    should_use_mouse_capture_with(
+        cli,
+        config,
+        use_alt_screen,
+        terminal_emulator.as_deref(),
+        wt_session.as_deref(),
+    )
 }
 
 fn should_use_mouse_capture_with(
@@ -3657,6 +3659,7 @@ fn should_use_mouse_capture_with(
     config: &Config,
     use_alt_screen: bool,
     terminal_emulator: Option<&str>,
+    wt_session: Option<&str>,
 ) -> bool {
     if !use_alt_screen || cli.no_mouse_capture {
         return false;
@@ -3668,21 +3671,28 @@ fn should_use_mouse_capture_with(
         .tui
         .as_ref()
         .and_then(|tui| tui.mouse_capture)
-        .unwrap_or_else(|| default_mouse_capture_enabled(terminal_emulator))
+        .unwrap_or_else(|| default_mouse_capture_enabled(terminal_emulator, wt_session))
 }
 
 /// Whether to enable terminal mouse capture by default for this platform/host.
 ///
-/// Returns `false` on Windows (legacy console mouse-mode reporting is flaky;
-/// `--mouse-capture` opts in) and on JetBrains' JediTerm, which advertises
-/// mouse support but delivers SGR mouse-event escape sequences as raw text
-/// in the input stream — visible to users as garbled characters in the
-/// composer when they move the mouse over the TUI (#878, #898). The user
-/// can still opt back in with `[tui] mouse_capture = true` in
+/// On Windows the default depends on the host: Windows Terminal (which sets
+/// `WT_SESSION`) handles mouse-mode reporting cleanly, so default-on there
+/// gives users in-app text selection and keeps the application's selection
+/// clamped to the transcript area (#1169). Legacy conhost stays default-off
+/// because its mouse-mode reporting can leak SGR escape sequences as raw
+/// text into the composer (#878 / #898).
+///
+/// Off elsewhere only for JetBrains' JediTerm, which advertises mouse
+/// support but forwards the same SGR escape sequences as raw input. The
+/// user can still opt back in with `[tui] mouse_capture = true` in
 /// `~/.deepseek/config.toml` or `--mouse-capture`.
-fn default_mouse_capture_enabled(terminal_emulator: Option<&str>) -> bool {
+fn default_mouse_capture_enabled(
+    terminal_emulator: Option<&str>,
+    wt_session: Option<&str>,
+) -> bool {
     if cfg!(windows) {
-        return false;
+        return wt_session.is_some();
     }
     if matches!(terminal_emulator, Some(t) if t.eq_ignore_ascii_case("JetBrains-JediTerm")) {
         return false;
@@ -3690,27 +3700,12 @@ fn default_mouse_capture_enabled(terminal_emulator: Option<&str>) -> bool {
     true
 }
 
-/// Check for a crash-recovery checkpoint and return the session ID if
-/// recovery is possible *and* the checkpoint belongs to the current
-/// workspace.
-///
-/// The checkpoint must exist and its file mtime must be within 24 hours.
-/// **The checkpoint's workspace must also match the resolved launch workspace
-/// after canonicalisation.** If the workspace doesn't match, the
-/// checkpoint is persisted as a regular session (so the user can find it
-/// via `deepseek sessions` / `deepseek resume <id>`) and cleared, and the
-/// new launch starts fresh — silently importing a session from another
-/// project would leak api_messages, working_set entries, and possibly
-/// secrets across directories (see v0.8.12 cross-workspace bleed report).
-///
-/// On a successful match the checkpoint is persisted as a regular session,
-/// cleared, and a notice is printed to stderr. Returns `None` if there is
-/// nothing to recover or the workspace doesn't match.
-fn try_recover_checkpoint(launch_workspace: &Path) -> Option<String> {
-    let manager = session_manager::SessionManager::default_location().ok()?;
+/// Load a recent crash-recovery checkpoint, pruning stale checkpoints first.
+fn load_recent_checkpoint(
+    manager: &session_manager::SessionManager,
+) -> Option<(session_manager::SavedSession, std::time::Duration)> {
     let session = manager.load_checkpoint().ok().flatten()?;
 
-    // Verify the checkpoint file is recent (within 24 hours).
     let home = dirs::home_dir()?;
     let checkpoint_path = home
         .join(".deepseek")
@@ -3721,10 +3716,35 @@ fn try_recover_checkpoint(launch_workspace: &Path) -> Option<String> {
     let mtime = metadata.modified().ok()?;
     let age = std::time::SystemTime::now().duration_since(mtime).ok()?;
     if age > std::time::Duration::from_secs(24 * 3600) {
-        // Stale checkpoint — clean it up.
         let _ = manager.clear_checkpoint();
         return None;
     }
+
+    Some((session, age))
+}
+
+fn checkpoint_age_label(age: std::time::Duration) -> String {
+    if age.as_secs() < 60 {
+        format!("{}s ago", age.as_secs())
+    } else if age.as_secs() < 3600 {
+        format!("{}m ago", age.as_secs() / 60)
+    } else {
+        format!("{}h ago", age.as_secs() / 3600)
+    }
+}
+
+/// Check for a crash-recovery checkpoint and return the session ID if explicit
+/// recovery was requested *and* the checkpoint belongs to the current
+/// workspace.
+///
+/// The checkpoint must exist and its file mtime must be within 24 hours.
+/// **The checkpoint's workspace must also match the resolved launch workspace
+/// after canonicalisation.** If the workspace doesn't match, the checkpoint is
+/// persisted as a regular session (so the user can find it via
+/// `deepseek sessions` / `deepseek resume <id>`) and cleared, but not loaded.
+fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path) -> Option<String> {
+    let manager = session_manager::SessionManager::default_location().ok()?;
+    let (session, age) = load_recent_checkpoint(&manager)?;
 
     // Refuse to silently restore a session from another workspace. Compare
     // against the resolved launch workspace, not the shell cwd, so callers
@@ -3739,17 +3759,13 @@ fn try_recover_checkpoint(launch_workspace: &Path) -> Option<String> {
         // sessions`, then clear it so the next launch in this folder doesn't
         // re-trip the nag. Print a one-line notice pointing at the explicit
         // resume command — but DO NOT auto-load the session here.
-        let session_id_for_notice = session.metadata.id.clone();
         let _ = manager.save_session(&session);
         let _ = manager.clear_checkpoint();
         eprintln!(
-            "Note: an interrupted session ({}…) from another workspace ({}) is \
-             available. Run `deepseek resume {}` from there to recover it, or \
-             use `deepseek sessions` to list all saved sessions. Starting fresh \
-             in {}.",
-            &session_id_for_notice.chars().take(8).collect::<String>(),
+            "Note: an interrupted session from another workspace ({}) is \
+             available. Run `deepseek sessions` to list saved sessions. Starting \
+             fresh in {}.",
             session_workspace.display(),
-            session_id_for_notice,
             launch_workspace.display(),
         );
         return None;
@@ -3765,17 +3781,43 @@ fn try_recover_checkpoint(launch_workspace: &Path) -> Option<String> {
     // Clear the checkpoint now that it has been recovered.
     let _ = manager.clear_checkpoint();
 
-    // Format age for the notice.
-    let age_str = if age.as_secs() < 60 {
-        format!("{}s ago", age.as_secs())
-    } else if age.as_secs() < 3600 {
-        format!("{}m ago", age.as_secs() / 60)
-    } else {
-        format!("{}h ago", age.as_secs() / 3600)
-    };
+    let age_str = checkpoint_age_label(age);
     eprintln!("Recovered interrupted session ({age_str}). Use --fresh to start fresh.",);
 
     Some(session_id)
+}
+
+/// Preserve an interrupted checkpoint on a normal fresh launch without
+/// attaching it to the new TUI instance. This keeps "open another deepseek in
+/// the same folder" from re-entering the previous in-flight session while still
+/// leaving an explicit resume path.
+fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspace: &Path) {
+    let Some(manager) = session_manager::SessionManager::default_location().ok() else {
+        return;
+    };
+    let Some((session, age)) = load_recent_checkpoint(&manager) else {
+        return;
+    };
+
+    let session_workspace = session.metadata.workspace.clone();
+    let _ = manager.save_session(&session);
+    let _ = manager.clear_checkpoint();
+
+    let age_str = checkpoint_age_label(age);
+    if session_manager::workspace_scope_matches(&session_workspace, launch_workspace) {
+        eprintln!(
+            "Found an in-flight session snapshot ({age_str}). Starting a new \
+             session. Run `deepseek --continue` to resume it."
+        );
+    } else {
+        eprintln!(
+            "Note: an interrupted session from another workspace ({}) is \
+             available. Run `deepseek sessions` to list saved sessions. Starting \
+             fresh in {}.",
+            session_workspace.display(),
+            launch_workspace.display(),
+        );
+    }
 }
 
 /// Load project-level config from `$WORKSPACE/.deepseek/config.toml` and
@@ -4159,6 +4201,7 @@ async fn run_exec_agent(
         mcp_config_path: config.mcp_config_path(),
         skills_dir: config.skills_dir(),
         instructions: config.instructions_paths(),
+        project_context_pack_enabled: config.project_context_pack_enabled(),
         max_steps: 100,
         max_subagents,
         features: config.features(),
@@ -4383,7 +4426,7 @@ mod doctor_endpoint_tests {
     }
 
     #[test]
-    fn doctor_api_target_reports_deepseek_cn_endpoint() {
+    fn doctor_api_target_routes_deepseek_cn_alias_to_beta_endpoint() {
         let config = Config {
             provider: Some("deepseek-cn".to_string()),
             ..Default::default()
@@ -4393,6 +4436,7 @@ mod doctor_endpoint_tests {
 
         assert_eq!(target.provider, "deepseek-cn");
         assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEKCN_BASE_URL);
+        assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEK_BASE_URL);
         assert_eq!(target.model, crate::config::DEFAULT_TEXT_MODEL);
     }
 
@@ -4443,7 +4487,7 @@ mod doctor_endpoint_tests {
     }
 
     #[test]
-    fn strict_tool_mode_doctor_warns_for_deepseek_cn_default_endpoint() {
+    fn strict_tool_mode_doctor_accepts_deepseek_cn_alias_default_endpoint() {
         let config = Config {
             provider: Some("deepseek-cn".to_string()),
             strict_tool_mode: Some(true),
@@ -4452,12 +4496,10 @@ mod doctor_endpoint_tests {
 
         let status = doctor_strict_tool_mode_status(&config);
 
-        assert_eq!(status.status, "fallback_non_beta");
-        assert!(!status.function_strict_sent);
-        assert_eq!(
-            status.recommended_base_url.as_deref(),
-            Some("https://api.deepseeki.com/beta")
-        );
+        assert_eq!(status.status, "ready");
+        assert!(status.function_strict_sent);
+        assert!(status.message.contains("beta endpoint"));
+        assert!(status.recommended_base_url.is_none());
     }
 
     #[test]
@@ -4511,13 +4553,14 @@ mod doctor_endpoint_tests {
     }
 
     #[test]
-    fn timeout_recovery_points_global_deepseek_users_to_cn_endpoint() {
+    fn timeout_recovery_keeps_default_deepseek_users_on_default_endpoint() {
         let config = Config::default();
 
         let text = doctor_timeout_recovery_lines(&config).join("\n");
 
-        assert!(text.contains("api.deepseeki.com"));
-        assert!(text.contains("provider = \"deepseek-cn\""));
+        assert!(text.contains("api.deepseek.com"));
+        assert!(text.contains("custom DeepSeek-compatible endpoint"));
+        assert!(!text.contains("provider = \"deepseek-cn\""));
         assert!(text.contains("deepseek doctor --json"));
     }
 
@@ -4546,6 +4589,34 @@ mod terminal_mode_tests {
     }
 
     #[test]
+    fn prompt_flag_accepts_split_prompt_words_for_windows_cmd_shims() {
+        let cli = parse_cli(&["deepseek", "-p", "hello", "world"]);
+
+        assert_eq!(cli.prompt, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn exec_accepts_split_prompt_words_for_windows_cmd_shims() {
+        let cli = parse_cli(&["deepseek", "exec", "hello", "world"]);
+        let Some(Commands::Exec(args)) = cli.command else {
+            panic!("expected exec command");
+        };
+
+        assert_eq!(args.prompt, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn exec_keeps_flags_before_split_prompt_words() {
+        let cli = parse_cli(&["deepseek", "exec", "--json", "hello", "world"]);
+        let Some(Commands::Exec(args)) = cli.command else {
+            panic!("expected exec command");
+        };
+
+        assert!(args.json);
+        assert_eq!(args.prompt, vec!["hello", "world"]);
+    }
+
+    #[test]
     fn alternate_screen_defaults_on_in_auto_mode() {
         let cli = parse_cli(&["deepseek"]);
         let config = Config::default();
@@ -4554,15 +4625,15 @@ mod terminal_mode_tests {
     }
 
     #[test]
-    fn no_alt_screen_flag_disables_alternate_screen() {
+    fn no_alt_screen_flag_is_accepted_but_keeps_alternate_screen() {
         let cli = parse_cli(&["deepseek", "--no-alt-screen"]);
         let config = Config::default();
 
-        assert!(!should_use_alt_screen(&cli, &config));
+        assert!(should_use_alt_screen(&cli, &config));
     }
 
     #[test]
-    fn config_can_disable_alternate_screen() {
+    fn config_never_is_accepted_but_keeps_alternate_screen() {
         let cli = parse_cli(&["deepseek"]);
         let config = Config {
             tui: Some(crate::config::TuiConfig {
@@ -4576,7 +4647,7 @@ mod terminal_mode_tests {
             ..Config::default()
         };
 
-        assert!(!should_use_alt_screen(&cli, &config));
+        assert!(should_use_alt_screen(&cli, &config));
     }
 
     #[test]
@@ -4585,16 +4656,43 @@ mod terminal_mode_tests {
         let cli = parse_cli(&["deepseek"]);
         let config = Config::default();
 
-        assert!(should_use_mouse_capture_with(&cli, &config, true, None));
+        assert!(should_use_mouse_capture_with(
+            &cli, &config, true, None, None
+        ));
     }
 
     #[test]
     #[cfg(windows)]
-    fn mouse_capture_defaults_off_on_windows_when_alternate_screen_is_active() {
+    fn mouse_capture_defaults_off_on_legacy_windows_console() {
+        // Legacy conhost (no `WT_SESSION`) keeps the v0.8.x default-off
+        // behavior: mouse-mode reporting on legacy console can leak SGR
+        // escapes into the composer.
         let cli = parse_cli(&["deepseek"]);
         let config = Config::default();
 
-        assert!(!should_use_mouse_capture_with(&cli, &config, true, None));
+        assert!(!should_use_mouse_capture_with(
+            &cli, &config, true, None, None
+        ));
+    }
+
+    // #1169: Windows Terminal sets `WT_SESSION` and handles mouse-mode
+    // reporting cleanly, so default-on there gives users in-app text
+    // selection (and the side-effect of clamping selection to the
+    // transcript region instead of the terminal painting across the
+    // sidebar via native selection).
+    #[test]
+    #[cfg(windows)]
+    fn mouse_capture_defaults_on_in_windows_terminal() {
+        let cli = parse_cli(&["deepseek"]);
+        let config = Config::default();
+
+        assert!(should_use_mouse_capture_with(
+            &cli,
+            &config,
+            true,
+            None,
+            Some("{a3a3b3a8-aa00-0000-0000-000000000000}"),
+        ));
     }
 
     #[test]
@@ -4602,7 +4700,9 @@ mod terminal_mode_tests {
         let cli = parse_cli(&["deepseek", "--no-mouse-capture"]);
         let config = Config::default();
 
-        assert!(!should_use_mouse_capture_with(&cli, &config, true, None));
+        assert!(!should_use_mouse_capture_with(
+            &cli, &config, true, None, None
+        ));
     }
 
     #[test]
@@ -4620,7 +4720,9 @@ mod terminal_mode_tests {
             ..Config::default()
         };
 
-        assert!(!should_use_mouse_capture_with(&cli, &config, true, None));
+        assert!(!should_use_mouse_capture_with(
+            &cli, &config, true, None, None
+        ));
     }
 
     #[test]
@@ -4628,7 +4730,9 @@ mod terminal_mode_tests {
         let cli = parse_cli(&["deepseek", "--mouse-capture"]);
         let config = Config::default();
 
-        assert!(should_use_mouse_capture_with(&cli, &config, true, None));
+        assert!(should_use_mouse_capture_with(
+            &cli, &config, true, None, None
+        ));
     }
 
     #[test]
@@ -4646,7 +4750,9 @@ mod terminal_mode_tests {
             ..Config::default()
         };
 
-        assert!(should_use_mouse_capture_with(&cli, &config, true, None));
+        assert!(should_use_mouse_capture_with(
+            &cli, &config, true, None, None
+        ));
     }
 
     #[test]
@@ -4654,7 +4760,9 @@ mod terminal_mode_tests {
         let cli = parse_cli(&["deepseek", "--mouse-capture"]);
         let config = Config::default();
 
-        assert!(!should_use_mouse_capture_with(&cli, &config, false, None));
+        assert!(!should_use_mouse_capture_with(
+            &cli, &config, false, None, None
+        ));
     }
 
     // Issue #878 / #898: JetBrains JediTerm advertises mouse support but
@@ -4674,6 +4782,7 @@ mod terminal_mode_tests {
             &config,
             true,
             Some("JetBrains-JediTerm"),
+            None,
         ));
     }
 
@@ -4689,6 +4798,7 @@ mod terminal_mode_tests {
             &config,
             true,
             Some("jetbrains-jediterm"),
+            None,
         ));
     }
 
@@ -4702,6 +4812,7 @@ mod terminal_mode_tests {
             &config,
             true,
             Some("JetBrains-JediTerm"),
+            None,
         ));
     }
 
@@ -4725,6 +4836,7 @@ mod terminal_mode_tests {
             &config,
             true,
             Some("JetBrains-JediTerm"),
+            None,
         ));
     }
 }
@@ -5278,6 +5390,97 @@ mod setup_helper_tests {
         // Should print and return Ok without error.
         run_setup_clean(&dir, true).unwrap();
         assert!(!dir.exists());
+    }
+
+    fn with_home<T>(home: &Path, f: impl FnOnce() -> T) -> T {
+        let prev_home = std::env::var_os("HOME");
+        let prev_userprofile = std::env::var_os("USERPROFILE");
+        unsafe {
+            std::env::set_var("HOME", home);
+            std::env::set_var("USERPROFILE", home);
+        }
+        let result = f();
+        unsafe {
+            match prev_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match prev_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn plain_launch_preserves_checkpoint_but_starts_fresh() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        with_home(tmp.path(), || {
+            let manager = SessionManager::default_location().expect("manager");
+            let messages = vec![Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "in flight".to_string(),
+                    cache_control: None,
+                }],
+            }];
+            let session = create_saved_session(&messages, "test-model", &workspace, 0, None);
+            let session_id = session.metadata.id.clone();
+            manager.save_checkpoint(&session).expect("save checkpoint");
+
+            preserve_interrupted_checkpoint_for_explicit_resume(&workspace);
+
+            assert!(
+                manager
+                    .load_checkpoint()
+                    .expect("load checkpoint")
+                    .is_none(),
+                "normal launch should clear latest checkpoint after preserving it"
+            );
+            assert!(
+                manager.load_session(&session_id).is_ok(),
+                "normal launch should keep an explicit resume target"
+            );
+        });
+    }
+
+    #[test]
+    fn continue_recovers_same_workspace_checkpoint() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        with_home(tmp.path(), || {
+            let manager = SessionManager::default_location().expect("manager");
+            let messages = vec![Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "continue me".to_string(),
+                    cache_control: None,
+                }],
+            }];
+            let session = create_saved_session(&messages, "test-model", &workspace, 0, None);
+            let session_id = session.metadata.id.clone();
+            manager.save_checkpoint(&session).expect("save checkpoint");
+
+            let recovered = recover_interrupted_checkpoint_for_resume(&workspace);
+
+            assert_eq!(recovered.as_deref(), Some(session_id.as_str()));
+            assert!(
+                manager
+                    .load_checkpoint()
+                    .expect("load checkpoint")
+                    .is_none(),
+                "--continue should consume the checkpoint"
+            );
+            assert!(manager.load_session(&session_id).is_ok());
+        });
     }
 
     #[test]

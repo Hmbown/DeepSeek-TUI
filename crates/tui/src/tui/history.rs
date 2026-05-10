@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
@@ -149,6 +149,7 @@ impl SubAgentCell {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TranscriptRenderOptions {
     pub show_thinking: bool,
+    pub verbose: bool,
     pub show_tool_details: bool,
     pub calm_mode: bool,
     pub low_motion: bool,
@@ -159,6 +160,7 @@ impl Default for TranscriptRenderOptions {
     fn default() -> Self {
         Self {
             show_thinking: true,
+            verbose: false,
             show_tool_details: true,
             calm_mode: false,
             low_motion: false,
@@ -181,7 +183,7 @@ impl HistoryCell {
             HistoryCell::User { content } => render_message(
                 USER_GLYPH,
                 user_label_style(),
-                message_body_style(),
+                user_body_style(),
                 content,
                 width,
             ),
@@ -205,13 +207,30 @@ impl HistoryCell {
                     )
                 }
             }
-            HistoryCell::Error { message, severity } => render_message(
-                error_label_text(*severity),
-                error_label_style(*severity),
-                error_body_style(*severity),
-                message,
-                width,
-            ),
+            HistoryCell::Error { message, severity } => {
+                // Error messages are machine-generated and should not be run
+                // through markdown rendering, which would mangle env-var names
+                // containing underscores (e.g. DEEPSEEK_ALLOW_INSECURE_HTTP
+                // would lose its underscores as italic markers).
+                let label = error_label_text(*severity);
+                let label_style = error_label_style(*severity);
+                let body_style = error_body_style(*severity);
+                let prefix_width = UnicodeWidthStr::width(label);
+                let content_width = width.saturating_sub(2 + prefix_width as u16).max(1);
+                let mut lines = wrap_plain_line(message, body_style, content_width);
+                // Add the label prefix to the first line
+                if let Some(first) = lines.get_mut(0) {
+                    first.spans.insert(0, Span::raw(" "));
+                    first.spans.insert(0, Span::styled(label, label_style));
+                }
+                // Continuation rail for subsequent lines
+                let rail = format!("{}{}", '\u{258F}', " ".repeat(prefix_width));
+                let rail_style = Style::default().fg(palette::TEXT_DIM);
+                for line in lines.iter_mut().skip(1) {
+                    line.spans.insert(0, Span::styled(rail.clone(), rail_style));
+                }
+                lines
+            }
             HistoryCell::Thinking {
                 content,
                 streaming,
@@ -239,7 +258,7 @@ impl HistoryCell {
                 width,
                 *streaming,
                 *duration_secs,
-                !*streaming,
+                !options.verbose,
                 options.low_motion,
             ),
             HistoryCell::Tool(cell) if !options.show_tool_details => {
@@ -268,7 +287,7 @@ impl HistoryCell {
             HistoryCell::User { content } => render_message(
                 USER_GLYPH,
                 user_label_style(),
-                message_body_style(),
+                user_body_style(),
                 content,
                 width,
             ),
@@ -300,7 +319,7 @@ impl HistoryCell {
             HistoryCell::User { content } => render_message(
                 USER_GLYPH,
                 user_label_style(),
-                message_body_style(),
+                user_body_style(),
                 content,
                 width,
             ),
@@ -2081,12 +2100,18 @@ fn render_thinking(
     lines.push(Line::from(header_spans));
 
     let content_width = width.saturating_sub(3).max(1);
-    let body_text = if collapsed {
+    let body_text = if collapsed && streaming {
+        String::new()
+    } else if collapsed {
         extract_reasoning_summary(content).unwrap_or_else(|| content.trim().to_string())
     } else {
         content.to_string()
     };
-    let mut rendered = markdown_render::render_markdown(&body_text, content_width, body_style);
+    let mut rendered = if body_text.trim().is_empty() {
+        Vec::new()
+    } else {
+        markdown_render::render_markdown(&body_text, content_width, body_style)
+    };
     let mut truncated = false;
     if collapsed && rendered.len() > THINKING_SUMMARY_LINE_LIMIT {
         rendered.truncate(THINKING_SUMMARY_LINE_LIMIT);
@@ -2098,10 +2123,7 @@ fn render_thinking(
 
     if rendered.is_empty() && streaming {
         let mut spans = vec![Span::styled(REASONING_RAIL.to_string(), rail_style)];
-        spans.push(Span::styled(
-            "reasoning in progress...",
-            body_style.italic(),
-        ));
+        spans.push(Span::styled("thinking...", body_style.italic()));
         if !low_motion {
             spans.push(Span::styled(format!(" {REASONING_CURSOR}"), cursor_style));
         }
@@ -2144,8 +2166,9 @@ fn render_message(
     let prefix_width_u16 = u16::try_from(prefix_width.saturating_add(2)).unwrap_or(u16::MAX);
     let content_width = usize::from(width.saturating_sub(prefix_width_u16).max(1));
     let mut lines = Vec::new();
-    let rendered = markdown_render::render_markdown(content, content_width as u16, body_style);
-    for (idx, line) in rendered.into_iter().enumerate() {
+    let rendered =
+        markdown_render::render_markdown_tagged(content, content_width as u16, body_style);
+    for (idx, rendered_line) in rendered.into_iter().enumerate() {
         if idx == 0 {
             let mut spans = Vec::new();
             if !prefix.is_empty() {
@@ -2155,11 +2178,13 @@ fn render_message(
                 ));
                 spans.push(Span::raw(" "));
             }
-            spans.extend(line.spans);
+            spans.extend(rendered_line.line.spans);
             lines.push(Line::from(spans));
         } else {
             let indent = if prefix.is_empty() {
                 String::new()
+            } else if rendered_line.is_code {
+                " ".repeat(prefix_width + 1)
             } else {
                 let mut s = String::with_capacity(prefix_width + 1);
                 s.push('\u{258F}');
@@ -2168,7 +2193,7 @@ fn render_message(
             };
             let rail_style = Style::default().fg(palette::TEXT_DIM);
             let mut spans = vec![Span::styled(indent, rail_style)];
-            spans.extend(line.spans);
+            spans.extend(rendered_line.line.spans);
             lines.push(Line::from(spans));
         }
     }
@@ -2638,6 +2663,10 @@ fn user_label_style() -> Style {
     Style::default().fg(palette::TEXT_MUTED)
 }
 
+fn user_body_style() -> Style {
+    Style::default().fg(palette::USER_BODY)
+}
+
 /// Style for the assistant glyph (`●`). When the cell is streaming and
 /// motion is allowed, the foreground pulses on a 2s cycle between 30% and
 /// 100% brightness — the only deliberately animated element in a calm
@@ -2704,7 +2733,7 @@ fn error_body_style(severity: crate::error_taxonomy::ErrorSeverity) -> Style {
 }
 
 fn thinking_style() -> Style {
-    Style::default().fg(palette::TEXT_TOOL_OUTPUT)
+    Style::default().fg(palette::TEXT_REASONING)
 }
 
 fn render_tool_header(
@@ -3645,6 +3674,106 @@ mod tests {
     }
 
     #[test]
+    fn assistant_code_block_lines_do_not_get_transcript_rail() {
+        let cell = HistoryCell::Assistant {
+            content: "SQL:\n```sql\nSELECT\nFROM customers\n```".to_string(),
+            streaming: false,
+        };
+        let visible: Vec<String> = cell
+            .lines(80)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert_eq!(visible[0], format!("{ASSISTANT_GLYPH} SQL:"));
+        for line in visible
+            .iter()
+            .filter(|line| line.contains("SELECT") || line.contains("FROM customers"))
+        {
+            assert!(
+                !line.contains('\u{258F}'),
+                "code block line should not inherit the transcript rail: {line:?}"
+            );
+        }
+    }
+
+    /// Issue #1212 repro: a multi-line SQL fence rendered after a short
+    /// intro paragraph. Every code-block line — not just the first or last —
+    /// must avoid the `▏` rail.
+    #[test]
+    fn assistant_long_code_block_keeps_every_line_rail_free() {
+        let cell = HistoryCell::Assistant {
+            content: "Here's the query:\n```sql\nSELECT\n  c.customer_id,\n  c.name,\n  COUNT(o.order_id) AS order_count\nFROM customers c\nJOIN orders o ON c.customer_id = o.customer_id;\n```".to_string(),
+            streaming: false,
+        };
+        let visible: Vec<String> = cell
+            .lines(80)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        let code_markers = ["SELECT", "customer_id", "name,", "COUNT", "FROM", "JOIN"];
+        for marker in code_markers {
+            let line = visible
+                .iter()
+                .find(|line| line.contains(marker))
+                .unwrap_or_else(|| panic!("expected code line containing {marker:?}"));
+            assert!(
+                !line.contains('\u{258F}'),
+                "code block line containing {marker:?} must not have the transcript rail: {line:?}"
+            );
+        }
+    }
+
+    /// Edge case: a blank line inside a fence is still a code line; it must
+    /// not regress to the rail because the empty body falls through a
+    /// different wrap branch.
+    #[test]
+    fn assistant_code_block_blank_line_keeps_no_rail() {
+        let cell = HistoryCell::Assistant {
+            content: "```\nfn one() {}\n\nfn two() {}\n```".to_string(),
+            streaming: false,
+        };
+        for line in cell.lines(80).iter().skip(1) {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                !text.contains('\u{258F}'),
+                "fence body line must stay rail-free: {text:?}"
+            );
+        }
+    }
+
+    /// Wrapped code lines (a single source line longer than the viewport)
+    /// emit multiple rendered lines from one `Block::Code`. None of them
+    /// should leak the rail.
+    #[test]
+    fn assistant_wrapped_code_lines_keep_no_rail() {
+        let long = "let x = ".to_string() + &"abcdef ".repeat(40);
+        let content = format!("```\n{long}\n```");
+        let cell = HistoryCell::Assistant {
+            content,
+            streaming: false,
+        };
+        for line in cell.lines(40).iter().skip(1) {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                !text.contains('\u{258F}'),
+                "wrapped code line must stay rail-free: {text:?}"
+            );
+        }
+    }
+
+    #[test]
     fn assistant_glyph_holds_full_brightness_when_idle() {
         // Idle (streaming=false) and low_motion both pin the colour to the
         // source sky — pulse only fires when actively streaming.
@@ -3872,6 +4001,38 @@ mod tests {
             !visible.contains(REASONING_CURSOR),
             "low_motion must suppress the streaming cursor: {visible:?}"
         );
+    }
+
+    #[test]
+    fn streaming_thinking_live_collapses_unless_verbose() {
+        let cell = HistoryCell::Thinking {
+            content: "private step one\nprivate step two".to_string(),
+            streaming: true,
+            duration_secs: None,
+        };
+
+        let compact = cell.lines_with_options(
+            80,
+            TranscriptRenderOptions {
+                low_motion: true,
+                ..TranscriptRenderOptions::default()
+            },
+        );
+        let compact_text = lines_text(&compact);
+        assert!(compact_text.contains("thinking..."));
+        assert!(!compact_text.contains("private step one"));
+
+        let verbose = cell.lines_with_options(
+            80,
+            TranscriptRenderOptions {
+                verbose: true,
+                low_motion: true,
+                ..TranscriptRenderOptions::default()
+            },
+        );
+        let verbose_text = lines_text(&verbose);
+        assert!(verbose_text.contains("private step one"));
+        assert!(verbose_text.contains("private step two"));
     }
 
     // === Theme parity tests ===

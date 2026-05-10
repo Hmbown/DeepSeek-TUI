@@ -401,7 +401,6 @@ impl ModalView for ShellControlView {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         use ratatui::{
-            prelude::Stylize,
             style::Style,
             text::{Line, Span},
             widgets::{Block, Borders, Clear, Padding, Paragraph, Widget},
@@ -555,6 +554,9 @@ pub struct ConfigView {
     last_visible_rows: Cell<usize>,
     last_row_hitboxes: RefCell<Vec<(u16, usize)>>,
 }
+
+const CONFIG_MIN_KEY_COLUMN_WIDTH: usize = 19;
+const CONFIG_VALUE_COLUMN_WIDTH: usize = 44;
 
 impl ConfigView {
     pub fn new_for_app(app: &App) -> Self {
@@ -768,6 +770,15 @@ impl ConfigView {
         }
 
         items
+    }
+
+    fn key_column_width(&self) -> usize {
+        self.rows
+            .iter()
+            .map(|row| row.key.chars().count())
+            .max()
+            .unwrap_or(CONFIG_MIN_KEY_COLUMN_WIDTH)
+            .max(CONFIG_MIN_KEY_COLUMN_WIDTH)
     }
 
     fn selected_row_index(&self) -> Option<usize> {
@@ -1028,7 +1039,6 @@ fn config_hint_for_key(key: &str) -> &'static str {
 
 fn render_config_editor_value_line(edit: &ConfigEdit) -> ratatui::text::Line<'static> {
     use ratatui::{
-        prelude::Stylize,
         style::Style,
         text::{Line, Span},
     };
@@ -1185,7 +1195,6 @@ impl ModalView for ConfigView {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         use ratatui::{
-            prelude::Stylize,
             style::Style,
             text::{Line, Span},
             widgets::{Block, Borders, Clear, Padding, Paragraph, Widget},
@@ -1260,6 +1269,7 @@ impl ModalView for ConfigView {
                 self.filter.clone()
             };
 
+            let key_column_width = self.key_column_width();
             let mut lines: Vec<Line> = vec![
                 Line::from(vec![Span::styled(
                     self.tr(MessageId::ConfigTitle),
@@ -1274,8 +1284,17 @@ impl ModalView for ConfigView {
                     ),
                 ]),
                 Line::from(""),
-                Line::from("  Key                 Value                                    Scope"),
-                Line::from("  ----------------------------------------------------------------"),
+                Line::from(format!(
+                    "  {:<key_width$} {:<value_width$} Scope",
+                    "Key",
+                    "Value",
+                    key_width = key_column_width,
+                    value_width = CONFIG_VALUE_COLUMN_WIDTH
+                )),
+                Line::from(format!(
+                    "  {}",
+                    "-".repeat(key_column_width + CONFIG_VALUE_COLUMN_WIDTH + 8)
+                )),
             ];
             let mut row_hitboxes = Vec::new();
 
@@ -1302,12 +1321,14 @@ impl ModalView for ConfigView {
                         } else {
                             Style::default().fg(palette::TEXT_PRIMARY)
                         };
-                        let value = truncate_view_text(&row.value, 44);
+                        let value = truncate_view_text(&row.value, CONFIG_VALUE_COLUMN_WIDTH);
                         let mut line = Line::from(format!(
-                            "  {:<19} {:<44} {}",
+                            "  {:<key_width$} {:<value_width$} {}",
                             row.key,
                             value,
-                            row.scope.label()
+                            row.scope.label(),
+                            key_width = key_column_width,
+                            value_width = CONFIG_VALUE_COLUMN_WIDTH
                         ));
                         line.style = style;
                         lines.push(line);
@@ -1539,7 +1560,6 @@ impl ModalView for SubAgentsView {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         use ratatui::{
-            prelude::Stylize,
             style::Style,
             text::{Line, Span},
             widgets::{Block, Borders, Clear, Padding, Paragraph, Widget},
@@ -1716,7 +1736,6 @@ fn append_subagent_group(
     content_width: usize,
 ) {
     use ratatui::{
-        prelude::Stylize,
         style::Style,
         text::{Line, Span},
     };
@@ -2083,6 +2102,37 @@ mod tests {
         assert!(
             !dump.contains("MISSING"),
             "missing-key marker leaked:\n{dump}"
+        );
+    }
+
+    #[test]
+    fn config_view_keeps_scope_column_aligned_for_long_keys() {
+        let app = create_test_app();
+        let mut view = ConfigView::new_for_app(&app);
+        type_filter(&mut view, "composer");
+        let area = Rect::new(0, 0, 100, 24);
+        let mut buf = Buffer::empty(area);
+
+        view.render(area, &mut buf);
+
+        let dump = buffer_text(&buf, area);
+        assert!(
+            dump.contains("paste_burst_detection"),
+            "long config keys should stay readable:\n{dump}"
+        );
+        let scope_columns = dump
+            .lines()
+            .filter_map(|line| line.find("SAVED").or_else(|| line.find("SESSION")))
+            .collect::<Vec<_>>();
+        assert!(
+            scope_columns.len() >= 3,
+            "expected composer config rows with scopes:\n{dump}"
+        );
+        assert!(
+            scope_columns
+                .iter()
+                .all(|column| *column == scope_columns[0]),
+            "scope column should stay aligned even for long keys:\n{dump}"
         );
     }
 

@@ -1,0 +1,37 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "deepseek-tui-web",
+  "main": "worker.ts",
+  "compatibility_date": "2025-04-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "observability": { "enabled": true },
+  "kv_namespaces": [
+    {
+      "binding": "CURATED_KV",
+      "id": "abaa6a753c9d45bfa5c0afaf26dc67b3"
+    },
+    {
+      "binding": "NEXT_INC_CACHE_KV",
+      "id": "a2e6f324db9b4b03bbc940a4ba246985"
+    }
+  ],
+  "vars": {
+    "GITHUB_REPO": "Hmbown/deepseek-tui",
+    "DEEPSEEK_MODEL": "deepseek-v4-flash"
+  },
+  "triggers": {
+    "crons": [
+      "0 */6 * * *",
+      "*/30 * * * *",
+      "0 0 * * *",
+      "0 9 * * 1"
+    ]
+  },
+  "build": {
+    "command": "npm run build && npx opennextjs-cloudflare build"
+  }
+}

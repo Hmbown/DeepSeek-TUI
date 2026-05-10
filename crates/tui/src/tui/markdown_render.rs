@@ -92,6 +92,17 @@ pub struct ParsedMarkdown {
     blocks: Vec<Block>,
 }
 
+/// Width-dependent rendered line plus the source block kind that produced it.
+///
+/// Most callers only need styled terminal lines, but transcript rendering also
+/// needs to avoid adding its conversational continuation rail in front of code
+/// blocks. Keeping this metadata here avoids guessing from styled spans.
+#[derive(Debug, Clone)]
+pub struct RenderedMarkdownLine {
+    pub line: Line<'static>,
+    pub is_code: bool,
+}
+
 /// Parse markdown source into a width-independent block AST.
 ///
 /// This is a small line-oriented parser tuned for the patterns we render:
@@ -178,8 +189,21 @@ pub fn parse(content: &str) -> ParsedMarkdown {
 /// skip the parse step entirely.
 #[must_use]
 pub fn render_parsed(parsed: &ParsedMarkdown, width: u16, base_style: Style) -> Vec<Line<'static>> {
+    render_parsed_tagged(parsed, width, base_style)
+        .into_iter()
+        .map(|line| line.line)
+        .collect()
+}
+
+/// Render a parsed-markdown AST and preserve per-line source metadata.
+#[must_use]
+pub fn render_parsed_tagged(
+    parsed: &ParsedMarkdown,
+    width: u16,
+    base_style: Style,
+) -> Vec<RenderedMarkdownLine> {
     let width = width.max(1) as usize;
-    let mut out: Vec<Line<'static>> = Vec::with_capacity(parsed.blocks.len());
+    let mut out: Vec<RenderedMarkdownLine> = Vec::with_capacity(parsed.blocks.len());
 
     let mut i = 0;
     while i < parsed.blocks.len() {
@@ -196,11 +220,14 @@ pub fn render_parsed(parsed: &ParsedMarkdown, width: u16, base_style: Style) -> 
             {
                 i += 1;
             }
-            out.extend(render_table_group(
-                &parsed.blocks[start..i],
-                width,
-                base_style,
-            ));
+            out.extend(
+                render_table_group(&parsed.blocks[start..i], width, base_style)
+                    .into_iter()
+                    .map(|line| RenderedMarkdownLine {
+                        line,
+                        is_code: false,
+                    }),
+            );
             continue;
         }
 
@@ -209,44 +236,63 @@ pub fn render_parsed(parsed: &ParsedMarkdown, width: u16, base_style: Style) -> 
                 let style = Style::default()
                     .fg(palette::DEEPSEEK_SKY)
                     .add_modifier(Modifier::BOLD);
-                out.extend(render_wrapped_line(text, width, style, false));
+                out.extend(render_wrapped_line_tagged(text, width, style, false, false));
             }
             Block::HeadingRule => {
-                out.push(Line::from(Span::styled(
-                    "─".repeat(width.min(40)),
-                    Style::default().fg(palette::TEXT_DIM),
-                )));
+                out.push(RenderedMarkdownLine {
+                    line: Line::from(Span::styled(
+                        "─".repeat(width.min(40)),
+                        Style::default().fg(palette::TEXT_DIM),
+                    )),
+                    is_code: false,
+                });
             }
             Block::HorizontalRule => {
-                out.push(Line::from(Span::styled(
-                    "─".repeat(width.min(60)),
-                    Style::default().fg(palette::TEXT_DIM),
-                )));
+                out.push(RenderedMarkdownLine {
+                    line: Line::from(Span::styled(
+                        "─".repeat(width.min(60)),
+                        Style::default().fg(palette::TEXT_DIM),
+                    )),
+                    is_code: false,
+                });
             }
             Block::ListItem { bullet, text } => {
                 let bullet_style = Style::default().fg(palette::DEEPSEEK_SKY);
-                out.extend(render_list_line(
-                    bullet,
-                    text,
-                    width,
-                    bullet_style,
-                    base_style,
-                ));
+                out.extend(
+                    render_list_line(bullet, text, width, bullet_style, base_style)
+                        .into_iter()
+                        .map(|line| RenderedMarkdownLine {
+                            line,
+                            is_code: false,
+                        }),
+                );
             }
             Block::Code { line } => {
                 let code_style = Style::default()
                     .fg(palette::DEEPSEEK_SKY)
                     .add_modifier(Modifier::ITALIC);
-                out.extend(render_wrapped_line(line, width, code_style, true));
+                out.extend(render_wrapped_line_tagged(
+                    line, width, code_style, true, true,
+                ));
             }
             Block::Paragraph { text } => {
                 let link_style = Style::default()
                     .fg(palette::DEEPSEEK_BLUE)
                     .add_modifier(Modifier::UNDERLINED);
-                out.extend(render_line_with_links(text, width, base_style, link_style));
+                out.extend(
+                    render_line_with_links(text, width, base_style, link_style)
+                        .into_iter()
+                        .map(|line| RenderedMarkdownLine {
+                            line,
+                            is_code: false,
+                        }),
+                );
             }
             Block::Blank => {
-                out.push(Line::from(""));
+                out.push(RenderedMarkdownLine {
+                    line: Line::from(""),
+                    is_code: false,
+                });
             }
             Block::TableRow(_) | Block::TableSeparator => unreachable!(),
         }
@@ -254,7 +300,10 @@ pub fn render_parsed(parsed: &ParsedMarkdown, width: u16, base_style: Style) -> 
     }
 
     if out.is_empty() {
-        out.push(Line::from(""));
+        out.push(RenderedMarkdownLine {
+            line: Line::from(""),
+            is_code: false,
+        });
     }
 
     out
@@ -269,6 +318,17 @@ pub fn render_parsed(parsed: &ParsedMarkdown, width: u16, base_style: Style) -> 
 pub fn render_markdown(content: &str, width: u16, base_style: Style) -> Vec<Line<'static>> {
     let parsed = parse(content);
     render_parsed(&parsed, width, base_style)
+}
+
+/// Convenience wrapper: parse + render while keeping per-line source metadata.
+#[must_use]
+pub fn render_markdown_tagged(
+    content: &str,
+    width: u16,
+    base_style: Style,
+) -> Vec<RenderedMarkdownLine> {
+    let parsed = parse(content);
+    render_parsed_tagged(&parsed, width, base_style)
 }
 
 fn parse_heading(line: &str) -> Option<(usize, &str)> {
@@ -305,30 +365,35 @@ fn parse_list_item(line: &str) -> Option<(String, &str)> {
     Some((format!("{}.", &trimmed[..idx]), rest.trim_start()))
 }
 
-fn render_wrapped_line(
+fn render_wrapped_line_tagged(
     line: &str,
     width: usize,
     style: Style,
     indent_code: bool,
-) -> Vec<Line<'static>> {
+    is_code: bool,
+) -> Vec<RenderedMarkdownLine> {
     let prefix = if indent_code { "  " } else { "" };
     let prefix_width = prefix.width();
     let available = width.saturating_sub(prefix_width).max(1);
-    let wrapped = wrap_text(line, available);
+    // Code blocks must preserve leading whitespace (indentation is semantic).
+    // Use hard character-width wrapping instead of word-wrap.
+    let wrapped = if indent_code {
+        wrap_code_line(line, available)
+    } else {
+        wrap_text(line, available)
+    };
     let mut out = Vec::new();
 
     for (idx, chunk) in wrapped.into_iter().enumerate() {
-        if idx == 0 {
-            out.push(Line::from(vec![
-                Span::raw(prefix),
-                Span::styled(chunk, style),
-            ]));
+        let line = if idx == 0 {
+            Line::from(vec![Span::raw(prefix), Span::styled(chunk, style)])
         } else {
-            out.push(Line::from(vec![
+            Line::from(vec![
                 Span::raw(" ".repeat(prefix_width)),
                 Span::styled(chunk, style),
-            ]));
-        }
+            ])
+        };
+        out.push(RenderedMarkdownLine { line, is_code });
     }
 
     out
@@ -430,7 +495,7 @@ fn render_line_with_links(
 }
 
 /// Parse an entire line into (text, style) segments, handling **bold**,
-/// *italic*, `code`, ~~strikethrough~~, [text](url) links, and bare URLs.
+/// *italic*, `code`, ~~strikethrough~~, `[text](url)` links, and bare URLs.
 fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<(String, Style)> {
     let bold_style = base_style.add_modifier(Modifier::BOLD);
     let italic_style = base_style.add_modifier(Modifier::ITALIC);
@@ -582,6 +647,62 @@ fn parse_table_row(line: &str) -> Option<Vec<String>> {
     Some(cells)
 }
 
+/// Word-wrap a single cell's text into one or more visual lines, each
+/// constrained to `col_width` display columns. Whitespace is the preferred
+/// break point; words wider than `col_width` are hard-broken at character
+/// boundaries so wrapping always makes progress (no infinite loop on URLs
+/// or paths). Returns at least one segment.
+fn wrap_cell_text(cell: &str, col_width: usize) -> Vec<String> {
+    if cell.is_empty() || cell.width() <= col_width {
+        return vec![cell.to_string()];
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_w = 0usize;
+
+    let push_word_breaking_chars =
+        |word: &str, current: &mut String, current_w: &mut usize, lines: &mut Vec<String>| {
+            for ch in word.chars() {
+                let cw = ch.width().unwrap_or(1);
+                if *current_w + cw > col_width && *current_w > 0 {
+                    lines.push(std::mem::take(current));
+                    *current_w = 0;
+                }
+                current.push(ch);
+                *current_w += cw;
+            }
+        };
+
+    for word in cell.split_whitespace() {
+        let word_w = word.width();
+        if current_w == 0 {
+            if word_w > col_width {
+                push_word_breaking_chars(word, &mut current, &mut current_w, &mut lines);
+            } else {
+                current.push_str(word);
+                current_w = word_w;
+            }
+        } else if current_w + 1 + word_w <= col_width {
+            current.push(' ');
+            current.push_str(word);
+            current_w += 1 + word_w;
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current_w = 0;
+            if word_w > col_width {
+                push_word_breaking_chars(word, &mut current, &mut current_w, &mut lines);
+            } else {
+                current.push_str(word);
+                current_w = word_w;
+            }
+        }
+    }
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
 fn render_table_row(cells: &[String], width: usize, base_style: Style) -> Vec<Line<'static>> {
     if cells.is_empty() {
         return vec![Line::from("")];
@@ -589,39 +710,35 @@ fn render_table_row(cells: &[String], width: usize, base_style: Style) -> Vec<Li
     let col_width = (width.saturating_sub(3 * cells.len() + 1)) / cells.len();
     let col_width = col_width.max(4);
     let sep_style = Style::default().fg(palette::TEXT_DIM);
-    let mut spans: Vec<Span> = vec![Span::styled("│ ".to_string(), sep_style)];
-    for (i, cell) in cells.iter().enumerate() {
-        let truncated = if cell.width() > col_width {
-            let mut s = String::new();
-            let mut w = 0;
-            for ch in cell.chars() {
-                let cw = ch.width().unwrap_or(1);
-                if w + cw + 1 > col_width {
-                    s.push('…');
-                    break;
-                }
-                s.push(ch);
-                w += cw;
+
+    // Wrap each cell into one or more visual segments. The row's visual
+    // height equals the tallest column. Cells that wrap to fewer segments
+    // get blank-padded continuation lines so column separators stay aligned.
+    let wrapped: Vec<Vec<String>> = cells.iter().map(|c| wrap_cell_text(c, col_width)).collect();
+    let row_height = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
+
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(row_height);
+    for row in 0..row_height {
+        let mut spans: Vec<Span> = vec![Span::styled("│ ".to_string(), sep_style)];
+        for (i, cell_segments) in wrapped.iter().enumerate() {
+            let segment = cell_segments.get(row).map(String::as_str).unwrap_or("");
+            let cell_spans: Vec<(String, Style)> =
+                parse_inline_spans(segment, base_style, link_style());
+            let cell_width: usize = cell_spans.iter().map(|(t, _)| t.width()).sum();
+            let pad = col_width.saturating_sub(cell_width);
+            for (text, style) in cell_spans {
+                spans.push(Span::styled(text, style));
             }
-            s
-        } else {
-            cell.clone()
-        };
-        let cell_spans: Vec<(String, Style)> =
-            parse_inline_spans(&truncated, base_style, link_style());
-        let cell_width: usize = cell_spans.iter().map(|(t, _)| t.width()).sum();
-        let pad = col_width.saturating_sub(cell_width);
-        for (text, style) in cell_spans {
-            spans.push(Span::styled(text, style));
+            spans.push(Span::raw(" ".repeat(pad)));
+            if i + 1 < cells.len() {
+                spans.push(Span::styled(" │ ".to_string(), sep_style));
+            } else {
+                spans.push(Span::styled(" │".to_string(), sep_style));
+            }
         }
-        spans.push(Span::raw(" ".repeat(pad)));
-        if i + 1 < cells.len() {
-            spans.push(Span::styled(" │ ".to_string(), sep_style));
-        } else {
-            spans.push(Span::styled(" │".to_string(), sep_style));
-        }
+        lines.push(Line::from(spans));
     }
-    vec![Line::from(spans)]
+    lines
 }
 
 fn table_col_width(num_cols: usize, term_width: usize) -> usize {
@@ -720,6 +837,48 @@ fn link_style() -> Style {
     Style::default()
         .fg(palette::DEEPSEEK_BLUE)
         .add_modifier(Modifier::UNDERLINED)
+}
+
+/// Hard-wrap a code line at `width` display columns, preserving all
+/// whitespace (including leading indentation). Unlike [`wrap_text`], this
+/// does not split on word boundaries — code indentation is semantic.
+/// Display-column width of a single character for the purposes of terminal
+/// line-wrap calculations.
+///
+/// `UnicodeWidthChar::width` returns `None` for control characters, which
+/// includes `\t`. A tab advances to the next 8-column tab stop, so we model
+/// it as 8 columns here (a safe over-estimate that avoids terminal overflow).
+/// Other control characters are counted as 1 column.
+fn char_display_width(ch: char, col: usize) -> usize {
+    match ch {
+        '\t' => 8 - (col % 8), // advance to next 8-column tab stop
+        _ => ch.width().unwrap_or(1),
+    }
+}
+
+/// Hard-wrap a code line at `width` display columns, preserving all
+/// whitespace (including leading indentation). Unlike [`wrap_text`], this
+/// does not split on word boundaries — code indentation is semantic.
+fn wrap_code_line(line: &str, width: usize) -> Vec<String> {
+    if width == 0 || line.is_empty() {
+        return vec![line.to_string()];
+    }
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+
+    for ch in line.chars() {
+        let ch_width = char_display_width(ch, current_width);
+        if current_width + ch_width > width && !current.is_empty() {
+            chunks.push(current);
+            current = String::new();
+            current_width = 0;
+        }
+        current.push(ch);
+        current_width += ch_width;
+    }
+    chunks.push(current);
+    chunks
 }
 
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
@@ -843,6 +1002,77 @@ mod tests {
             })
             .collect();
         assert_eq!(code_lines, vec!["code line one", "code line two"]);
+    }
+
+    #[test]
+    fn code_block_indentation_is_preserved_in_render() {
+        // Leading whitespace in code blocks is semantic — indented lines must
+        // not be stripped to column zero when rendered.
+        let md = "```\nfn main() {\n    println!(\"hi\");\n}\n```\n";
+        let lines = render_markdown(md, 80, Style::default());
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        // The indented line must start with spaces (the 2-space code prefix
+        // plus the 4-space source indentation).
+        let indented = text
+            .iter()
+            .find(|t| t.contains("println"))
+            .expect("should find println line");
+        assert!(
+            indented.starts_with("      "),
+            "expected 6+ leading spaces (2 block prefix + 4 indent), got: {indented:?}"
+        );
+    }
+
+    #[test]
+    fn wrap_code_line_preserves_leading_whitespace() {
+        // A short line must not be modified.
+        assert_eq!(wrap_code_line("    let x = 1;", 80), vec!["    let x = 1;"]);
+
+        // A line that exceeds the width must be hard-wrapped, keeping the
+        // leading whitespace on the first chunk.
+        let chunks = wrap_code_line("    abcdefgh", 8);
+        assert_eq!(chunks[0], "    abcd", "first chunk keeps leading spaces");
+        assert_eq!(chunks[1], "efgh");
+
+        // Empty line produces one empty chunk.
+        assert_eq!(wrap_code_line("", 80), vec![""]);
+    }
+
+    #[test]
+    fn wrap_code_line_tab_counts_toward_width() {
+        // tab (8 cols) + "xy" (2 cols) = 10 ≤ 10 — fits on one line.
+        let chunks = wrap_code_line("\txy", 10);
+        assert_eq!(chunks, vec!["\txy"], "tab + 2 chars fits in width 10");
+
+        // tab (8 cols) + "x" (1 col) = 9 ≤ 9 — "x" fits; "y" overflows.
+        let chunks = wrap_code_line("\txy", 9);
+        assert_eq!(chunks[0], "\tx", "tab + first char fits exactly");
+        assert_eq!(chunks[1], "y", "second char wraps");
+
+        // tab alone (8 cols) fits in width 8; the next "x" overflows.
+        let chunks = wrap_code_line("\tx", 8);
+        assert_eq!(chunks[0], "\t");
+        assert_eq!(chunks[1], "x");
+    }
+
+    #[test]
+    fn char_display_width_tab_uses_tab_stop() {
+        // At column 0 a tab fills to column 8.
+        assert_eq!(char_display_width('\t', 0), 8);
+        // At column 4 a tab fills to column 8 (4 remaining).
+        assert_eq!(char_display_width('\t', 4), 4);
+        // At column 8 a tab fills to the next stop at 16 (8 columns).
+        assert_eq!(char_display_width('\t', 8), 8);
+        // Regular ASCII is 1.
+        assert_eq!(char_display_width('a', 0), 1);
     }
 
     #[test]
@@ -981,5 +1211,85 @@ mod tests {
             text.contains('\u{2524}'),
             "middle-right junction missing: {text:?}"
         );
+    }
+
+    /// Cells longer than the per-column width must word-wrap to multiple
+    /// lines instead of getting truncated with `…`. Truncation silently
+    /// drops content the user can never see — particularly bad in narrow
+    /// Windows terminals or with verbose English/Chinese instructional
+    /// tables (the common LLM-output case).
+    #[test]
+    fn table_cell_wider_than_column_wraps_instead_of_truncating() {
+        let src = "| Feature | How to verify |\n\
+                   |---|---|\n\
+                   | Workspace-local commands | Drop a .deepseek/commands/foo.md in any project, run deepseek from there, type /foo — should dispatch |\n";
+        let lines = render_markdown(src, 80, Style::default());
+        let combined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+
+        assert!(
+            !combined.contains('…'),
+            "table cell was truncated with `…` instead of wrapping; got: {combined:?}"
+        );
+        assert!(
+            combined.contains("type /foo"),
+            "tail of long cell was lost; got: {combined:?}"
+        );
+        assert!(
+            combined.contains("Workspace-local commands"),
+            "short cell content lost; got: {combined:?}"
+        );
+    }
+
+    /// Wrapped table rows must keep column separators on every visual
+    /// line so the columns remain visually aligned across all wrapped
+    /// segments. A wrapped row's continuation lines should still show
+    /// the `│` separator pipes at the same column positions.
+    #[test]
+    fn wrapped_table_row_preserves_column_separators() {
+        let src = "| A | B |\n\
+                   |---|---|\n\
+                   | short | this is a very very long second cell that absolutely must wrap to a new visual line because it cannot fit in the column allocated to it at this terminal width |\n";
+        let lines = render_markdown(src, 60, Style::default());
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        // Every line in the rendered table — including wrapped continuation
+        // lines — must show the pipe column separator. We identify table
+        // body lines as ones that start with the row separator `│`.
+        let body_lines: Vec<&String> = rendered.iter().filter(|s| s.starts_with('│')).collect();
+
+        assert!(
+            body_lines.len() >= 3,
+            "expected at least header + multi-line data row (3+ body lines), got {}: {:?}",
+            body_lines.len(),
+            body_lines
+        );
+
+        for line in &body_lines {
+            assert!(
+                line.matches('│').count() >= 3,
+                "every wrapped table line should have N+1 column separators \
+                 for N columns; got fewer in: {line:?}"
+            );
+        }
+
+        // All of the long cell's content must appear across the wrapped lines.
+        let combined: String = rendered.join("\n");
+        for fragment in ["this is a very very long", "must wrap", "terminal width"] {
+            assert!(
+                combined.contains(fragment),
+                "fragment {fragment:?} missing from wrapped output:\n{combined}"
+            );
+        }
     }
 }

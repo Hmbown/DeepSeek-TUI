@@ -5,17 +5,22 @@
 //! - Automatic tool discovery via `tools/list`
 //! - Configurable timeouts per-server and globally
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use reqwest::StatusCode;
+use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::sync::Mutex as TokioMutex;
 
+use crate::child_env;
 use crate::network_policy::{Decision, NetworkPolicyDecider, host_from_url};
 use crate::utils::write_atomic;
 
@@ -23,6 +28,19 @@ use crate::utils::write_atomic;
 
 /// Bytes of a non-2xx response body to surface in connection errors.
 const ERROR_BODY_PREVIEW_BYTES: usize = 200;
+
+fn validate_mcp_config_path(path: &Path) -> Result<()> {
+    if path.as_os_str().is_empty() {
+        anyhow::bail!("MCP config path cannot be empty");
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        anyhow::bail!("MCP config path cannot contain '..' components");
+    }
+    Ok(())
+}
 
 /// Mask a URL so any embedded credentials in the userinfo portion (e.g.
 /// `https://user:secret@host`) are replaced with `***`. Failures fall back to
@@ -258,8 +276,8 @@ pub enum ConnectionState {
 
 #[async_trait::async_trait]
 pub trait McpTransport: Send + Sync {
-    async fn send(&mut self, msg: serde_json::Value) -> Result<()>;
-    async fn recv(&mut self) -> Result<serde_json::Value>;
+    async fn send(&mut self, msg: Vec<u8>) -> Result<()>;
+    async fn recv(&mut self) -> Result<Vec<u8>>;
 
     /// Graceful shutdown — stdio transports send SIGTERM to the child and
     /// give it a brief window to exit before tokio's `kill_on_drop` fires
@@ -272,6 +290,10 @@ pub struct StdioTransport {
     child: Child,
     stdin: ChildStdin,
     reader: tokio::io::BufReader<ChildStdout>,
+    /// Tail of stderr lines from the spawned MCP server. A background task
+    /// drains the child's stderr into this buffer so a mid-run crash leaves
+    /// some context behind instead of `Stdio::null` swallowing it.
+    stderr_tail: Arc<StderrTail>,
 }
 
 /// How long `StdioTransport::shutdown` waits for the child to exit on SIGTERM
@@ -279,6 +301,54 @@ pub struct StdioTransport {
 /// can't stall TUI exit; well-behaved servers almost always exit within
 /// a few hundred ms.
 const STDIO_SHUTDOWN_GRACE: Duration = Duration::from_millis(2_000);
+
+/// How many lines of MCP-server stderr to keep around for crash diagnostics.
+/// Bounded so a chatty server can't grow this without limit; large enough to
+/// catch typical Node/Python startup or panic output.
+const STDERR_TAIL_CAPACITY: usize = 64;
+
+/// Bounded ring buffer for the most recent stderr lines from a spawned MCP
+/// server. Used by `StdioTransport` to surface server-side context when the
+/// transport read side fails (server crashed, exited early, etc).
+#[derive(Default)]
+pub struct StderrTail {
+    lines: TokioMutex<VecDeque<String>>,
+}
+
+impl StderrTail {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            lines: TokioMutex::new(VecDeque::with_capacity(STDERR_TAIL_CAPACITY)),
+        })
+    }
+
+    async fn push(&self, line: String) {
+        let mut buf = self.lines.lock().await;
+        if buf.len() >= STDERR_TAIL_CAPACITY {
+            buf.pop_front();
+        }
+        buf.push_back(line);
+    }
+
+    async fn snapshot(&self) -> Vec<String> {
+        self.lines.lock().await.iter().cloned().collect()
+    }
+}
+
+/// Format the captured stderr tail for inclusion in an error message. Empty
+/// tails return `None` so the caller can fall back to its original message.
+async fn format_stderr_context(tail: &StderrTail) -> Option<String> {
+    let lines = tail.snapshot().await;
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "MCP server stderr (last {} line{}):\n{}",
+        lines.len(),
+        if lines.len() == 1 { "" } else { "s" },
+        lines.join("\n"),
+    ))
+}
 
 /// Best-effort SIGTERM. On Unix uses `libc::kill`; on Windows there's no
 /// equivalent so we let `kill_on_drop` (TerminateProcess) handle it via the
@@ -307,19 +377,30 @@ fn send_sigterm(child: &Child) -> bool {
 
 #[async_trait::async_trait]
 impl McpTransport for StdioTransport {
-    async fn send(&mut self, msg: serde_json::Value) -> Result<()> {
-        let line = serde_json::to_string(&msg)? + "\n";
-        self.stdin.write_all(line.as_bytes()).await?;
+    async fn send(&mut self, mut msg: Vec<u8>) -> Result<()> {
+        msg.push(b'\n');
+        self.stdin.write_all(&msg).await?;
         self.stdin.flush().await?;
         Ok(())
     }
 
-    async fn recv(&mut self) -> Result<serde_json::Value> {
+    async fn recv(&mut self) -> Result<Vec<u8>> {
         let mut line = String::new();
         loop {
             line.clear();
-            let bytes = self.reader.read_line(&mut line).await?;
+            let bytes = match self.reader.read_line(&mut line).await {
+                Ok(b) => b,
+                Err(err) => {
+                    if let Some(stderr) = format_stderr_context(&self.stderr_tail).await {
+                        anyhow::bail!("Stdio transport read error: {err}\n{stderr}");
+                    }
+                    return Err(err.into());
+                }
+            };
             if bytes == 0 {
+                if let Some(stderr) = format_stderr_context(&self.stderr_tail).await {
+                    anyhow::bail!("Stdio transport closed\n{stderr}");
+                }
                 anyhow::bail!("Stdio transport closed");
             }
 
@@ -328,9 +409,7 @@ impl McpTransport for StdioTransport {
                 continue;
             }
 
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                return Ok(value);
-            }
+            return Ok(trimmed.as_bytes().to_vec());
         }
     }
 
@@ -358,7 +437,37 @@ pub struct SseTransport {
     client: reqwest::Client,
     base_url: String,
     endpoint_url: Option<String>,
-    receiver: tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+    receiver: tokio::sync::mpsc::UnboundedReceiver<SseInbound>,
+    pending_messages: VecDeque<Vec<u8>>,
+}
+
+enum SseInbound {
+    Endpoint(String),
+    Message(Vec<u8>),
+}
+
+struct HttpTransport {
+    mode: HttpTransportMode,
+    client: reqwest::Client,
+    base_url: String,
+    cancel_token: tokio_util::sync::CancellationToken,
+    endpoint_timeout: Duration,
+}
+
+enum HttpTransportMode {
+    Streamable(StreamableHttpTransport),
+    Sse(SseTransport),
+}
+
+struct StreamableHttpTransport {
+    client: reqwest::Client,
+    url: String,
+    pending_messages: VecDeque<Vec<u8>>,
+}
+
+enum StreamableSendError {
+    Incompatible(String),
+    Other(anyhow::Error),
 }
 
 impl SseTransport {
@@ -366,10 +475,12 @@ impl SseTransport {
         client: reqwest::Client,
         url: String,
         cancel_token: tokio_util::sync::CancellationToken,
+        endpoint_timeout: Duration,
     ) -> Result<Self> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let client_clone = client.clone();
         let url_clone = url.clone();
+        let wait_cancel_token = cancel_token.clone();
 
         tokio::spawn(async move {
             if cancel_token.is_cancelled() {
@@ -402,18 +513,23 @@ impl SseTransport {
             }
         });
 
-        Ok(Self {
+        let mut transport = Self {
             client,
             base_url: url,
             endpoint_url: None,
             receiver: rx,
-        })
+            pending_messages: VecDeque::new(),
+        };
+        transport
+            .wait_for_endpoint(&wait_cancel_token, endpoint_timeout)
+            .await?;
+        Ok(transport)
     }
 
     async fn run_sse_loop(
         client: reqwest::Client,
         url: String,
-        tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+        tx: tokio::sync::mpsc::UnboundedSender<SseInbound>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<()> {
         let response = client.get(&url).send().await.with_context(|| {
@@ -475,15 +591,10 @@ impl SseTransport {
 
                 match event_type {
                     "endpoint" => {
-                        // Special internal message to set endpoint
-                        let _ = tx.send(serde_json::json!({
-                            "__internal_sse_endpoint__": data
-                        }));
+                        let _ = tx.send(SseInbound::Endpoint(data));
                     }
-                    "message" => {
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
-                            let _ = tx.send(val);
-                        }
+                    "message" if !data.trim().is_empty() => {
+                        let _ = tx.send(SseInbound::Message(data.into_bytes()));
                     }
                     _ => {}
                 }
@@ -491,38 +602,281 @@ impl SseTransport {
         }
         Ok(())
     }
+
+    async fn wait_for_endpoint(
+        &mut self,
+        cancel_token: &tokio_util::sync::CancellationToken,
+        endpoint_timeout: Duration,
+    ) -> Result<()> {
+        let timeout = tokio::time::sleep(endpoint_timeout);
+        tokio::pin!(timeout);
+
+        loop {
+            let msg = tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    anyhow::bail!("SSE transport cancelled before endpoint was discovered");
+                }
+                _ = &mut timeout => {
+                    anyhow::bail!(
+                        "SSE endpoint not received within {}ms",
+                        endpoint_timeout.as_millis()
+                    );
+                }
+                msg = self.receiver.recv() => {
+                    msg.context("SSE transport closed before endpoint was discovered")?
+                }
+            };
+
+            match msg {
+                SseInbound::Endpoint(endpoint) => {
+                    self.store_endpoint(&endpoint)?;
+                    return Ok(());
+                }
+                SseInbound::Message(msg) => self.pending_messages.push_back(msg),
+            }
+        }
+    }
+
+    fn store_endpoint(&mut self, endpoint: &str) -> Result<()> {
+        self.endpoint_url = Some(Self::resolve_endpoint_url(&self.base_url, endpoint)?);
+        Ok(())
+    }
+
+    fn resolve_endpoint_url(base_url: &str, endpoint_url: &str) -> Result<String> {
+        if endpoint_url.starts_with("http://") || endpoint_url.starts_with("https://") {
+            return Ok(endpoint_url.to_string());
+        }
+        let base = reqwest::Url::parse(base_url)?;
+        let joined = base.join(endpoint_url)?;
+        Ok(joined.to_string())
+    }
+}
+
+impl HttpTransport {
+    fn new(
+        client: reqwest::Client,
+        url: String,
+        cancel_token: tokio_util::sync::CancellationToken,
+        endpoint_timeout: Duration,
+    ) -> Self {
+        Self {
+            mode: HttpTransportMode::Streamable(StreamableHttpTransport::new(
+                client.clone(),
+                url.clone(),
+            )),
+            client,
+            base_url: url,
+            cancel_token,
+            endpoint_timeout,
+        }
+    }
+
+    async fn switch_to_sse_and_send(&mut self, msg: Vec<u8>) -> Result<()> {
+        let mut sse = SseTransport::connect(
+            self.client.clone(),
+            self.base_url.clone(),
+            self.cancel_token.clone(),
+            self.endpoint_timeout,
+        )
+        .await?;
+        sse.send(msg).await?;
+        self.mode = HttpTransportMode::Sse(sse);
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl McpTransport for HttpTransport {
+    async fn send(&mut self, msg: Vec<u8>) -> Result<()> {
+        match &mut self.mode {
+            HttpTransportMode::Streamable(transport) => match transport.send(msg.clone()).await {
+                Ok(()) => Ok(()),
+                Err(StreamableSendError::Incompatible(detail)) => {
+                    tracing::debug!(
+                        "MCP Streamable HTTP unavailable; falling back to SSE endpoint discovery: {}",
+                        detail
+                    );
+                    self.switch_to_sse_and_send(msg).await
+                }
+                Err(StreamableSendError::Other(err)) => Err(err),
+            },
+            HttpTransportMode::Sse(transport) => transport.send(msg).await,
+        }
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>> {
+        match &mut self.mode {
+            HttpTransportMode::Streamable(transport) => transport.recv().await,
+            HttpTransportMode::Sse(transport) => transport.recv().await,
+        }
+    }
+
+    async fn shutdown(&mut self) {
+        if let HttpTransportMode::Sse(transport) = &mut self.mode {
+            transport.shutdown().await;
+        }
+    }
+}
+
+impl StreamableHttpTransport {
+    fn new(client: reqwest::Client, url: String) -> Self {
+        Self {
+            client,
+            url,
+            pending_messages: VecDeque::new(),
+        }
+    }
+
+    async fn send(&mut self, msg: Vec<u8>) -> std::result::Result<(), StreamableSendError> {
+        let response = self
+            .client
+            .post(&self.url)
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .body(msg)
+            .send()
+            .await
+            .map_err(|err| StreamableSendError::Other(err.into()))?;
+
+        let status = response.status();
+        if status == StatusCode::ACCEPTED || status == StatusCode::NO_CONTENT {
+            return Ok(());
+        }
+
+        if !status.is_success() {
+            let body_excerpt = bounded_body_excerpt(response, ERROR_BODY_PREVIEW_BYTES).await;
+            if is_streamable_http_incompatible_status(status) {
+                return Err(StreamableSendError::Incompatible(format!(
+                    "status={status} body={body_excerpt}"
+                )));
+            }
+            return Err(StreamableSendError::Other(anyhow::anyhow!(
+                "MCP Streamable HTTP rejected (transport=http url={} status={}): {}",
+                mask_url_secrets(&self.url),
+                status,
+                body_excerpt,
+            )));
+        }
+
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = response
+            .text()
+            .await
+            .map_err(|err| StreamableSendError::Other(err.into()))?;
+        self.store_response_body(content_type.as_deref(), &body)
+            .map_err(StreamableSendError::Other)
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>> {
+        self.pending_messages
+            .pop_front()
+            .context("MCP Streamable HTTP response queue is empty")
+    }
+
+    fn store_response_body(&mut self, content_type: Option<&str>, body: &str) -> Result<()> {
+        if body.trim().is_empty() {
+            return Ok(());
+        }
+
+        let is_event_stream = content_type
+            .map(|value| value.to_ascii_lowercase().contains("text/event-stream"))
+            .unwrap_or(false)
+            || body.trim_start().starts_with("event:")
+            || body.trim_start().starts_with("data:");
+
+        if is_event_stream {
+            for msg in parse_sse_message_data(body) {
+                self.pending_messages.push_back(msg);
+            }
+            return Ok(());
+        }
+
+        self.pending_messages.push_back(body.as_bytes().to_vec());
+        Ok(())
+    }
+}
+
+fn is_streamable_http_incompatible_status(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::NOT_FOUND
+            | StatusCode::METHOD_NOT_ALLOWED
+            | StatusCode::NOT_ACCEPTABLE
+            | StatusCode::UNSUPPORTED_MEDIA_TYPE
+            | StatusCode::NOT_IMPLEMENTED
+    )
+}
+
+fn parse_sse_message_data(body: &str) -> Vec<Vec<u8>> {
+    let normalized = body.replace("\r\n", "\n");
+    let mut messages = Vec::new();
+
+    for block in normalized.split("\n\n") {
+        let mut event_type = "message";
+        let mut data = String::new();
+
+        for line in block.lines() {
+            if let Some(value) = sse_field_value(line, "event:") {
+                event_type = value;
+            } else if let Some(value) = sse_field_value(line, "data:") {
+                if !data.is_empty() {
+                    data.push('\n');
+                }
+                data.push_str(value);
+            }
+        }
+
+        if event_type != "message" || data.trim().is_empty() {
+            continue;
+        }
+
+        messages.push(data.trim().as_bytes().to_vec());
+    }
+
+    messages
+}
+
+fn sse_field_value<'a>(line: &'a str, field: &str) -> Option<&'a str> {
+    let value = line.strip_prefix(field)?;
+    Some(value.strip_prefix(' ').unwrap_or(value))
 }
 
 #[async_trait::async_trait]
 impl McpTransport for SseTransport {
-    async fn send(&mut self, msg: serde_json::Value) -> Result<()> {
+    async fn send(&mut self, msg: Vec<u8>) -> Result<()> {
         let endpoint = self
             .endpoint_url
             .as_ref()
             .context("SSE endpoint not yet discovered")?;
-        let response = self.client.post(endpoint).json(&msg).send().await?;
+        let response = self
+            .client
+            .post(endpoint)
+            .header(CONTENT_TYPE, "application/json")
+            .body(msg)
+            .send()
+            .await?;
         if !response.status().is_success() {
             anyhow::bail!("Failed to send message via SSE POST: {}", response.status());
         }
         Ok(())
     }
 
-    async fn recv(&mut self) -> Result<serde_json::Value> {
+    async fn recv(&mut self) -> Result<Vec<u8>> {
         loop {
-            let msg = self.receiver.recv().await.context("SSE transport closed")?;
-            if let Some(endpoint) = msg.get("__internal_sse_endpoint__") {
-                let url_str = endpoint.as_str().context("Invalid endpoint format")?;
-                // Handle relative vs absolute URLs
-                if url_str.starts_with("http") {
-                    self.endpoint_url = Some(url_str.to_string());
-                } else {
-                    let base = reqwest::Url::parse(&self.base_url)?;
-                    let joined = base.join(url_str)?;
-                    self.endpoint_url = Some(joined.to_string());
-                }
-                continue;
+            if let Some(msg) = self.pending_messages.pop_front() {
+                return Ok(msg);
             }
-            return Ok(msg);
+
+            match self.receiver.recv().await.context("SSE transport closed")? {
+                SseInbound::Endpoint(endpoint) => {
+                    self.store_endpoint(&endpoint)?;
+                }
+                SseInbound::Message(msg) => return Ok(msg),
+            }
         }
     }
 }
@@ -583,18 +937,26 @@ impl McpConnection {
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(connect_timeout_secs))
                 .build()?;
-            Box::new(SseTransport::connect(client, url.clone(), cancel_token.clone()).await?)
+            Box::new(HttpTransport::new(
+                client,
+                url.clone(),
+                cancel_token.clone(),
+                Duration::from_secs(connect_timeout_secs),
+            ))
         } else if let Some(command) = &config.command {
             let mut cmd = tokio::process::Command::new(command);
             cmd.args(&config.args)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
                 .kill_on_drop(true);
 
-            for (key, value) in &config.env {
-                cmd.env(key, value);
-            }
+            // MCP stdio servers are user-configured integrations. Use the
+            // wider MCP allowlist so common Node/Python/proxy/CA-bundle
+            // bootstrap variables (NVM_DIR, NODE_OPTIONS, NPM_CONFIG_*,
+            // HTTP(S)_PROXY, …) reach the child. See `sanitized_mcp_env`
+            // and #1244 for context.
+            child_env::apply_to_tokio_command_mcp(&mut cmd, child_env::string_map_env(&config.env));
 
             let mut child = cmd.spawn().with_context(|| {
                 let env_keys: Vec<&str> = config.env.keys().map(String::as_str).collect();
@@ -606,11 +968,28 @@ impl McpConnection {
 
             let stdin = child.stdin.take().context("Failed to get MCP stdin")?;
             let stdout = child.stdout.take().context("Failed to get MCP stdout")?;
+            let stderr = child.stderr.take().context("Failed to get MCP stderr")?;
+
+            // Drain stderr into a bounded ring buffer so a crash mid-run
+            // leaves diagnostic breadcrumbs instead of disappearing into
+            // `Stdio::null`. The task exits naturally when the child closes
+            // its stderr (kill_on_drop / exit / explicit shutdown).
+            let stderr_tail = StderrTail::new();
+            {
+                let tail = Arc::clone(&stderr_tail);
+                tokio::spawn(async move {
+                    let mut lines = tokio::io::BufReader::new(stderr).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        tail.push(line).await;
+                    }
+                });
+            }
 
             Box::new(StdioTransport {
                 child,
                 stdin,
                 reader: tokio::io::BufReader::new(stdout),
+                stderr_tail,
             })
         } else {
             anyhow::bail!(
@@ -696,94 +1075,164 @@ impl McpConnection {
 
     /// Discover available tools from the MCP server
     async fn discover_tools(&mut self) -> Result<()> {
-        let list_id = self.next_id();
-        self.send(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": list_id,
-            "method": "tools/list",
-            "params": {}
-        }))
-        .await?;
+        let mut cursor: Option<String> = None;
+        loop {
+            let list_id = self.next_id();
+            let params = match &cursor {
+                Some(c) => serde_json::json!({ "cursor": c }),
+                None => serde_json::json!({}),
+            };
+            self.send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": list_id,
+                "method": "tools/list",
+                "params": params
+            }))
+            .await?;
 
-        let response = self.recv(list_id).await?;
+            let response = self.recv(list_id).await?;
+            let Some(result) = response.get("result") else {
+                break;
+            };
 
-        if let Some(result) = response.get("result")
-            && let Some(tools) = result.get("tools")
-        {
-            self.tools = serde_json::from_value(tools.clone()).unwrap_or_default();
+            if let Some(tools) = result.get("tools") {
+                let page: Vec<McpTool> = serde_json::from_value(tools.clone()).unwrap_or_default();
+                self.tools.extend(page);
+            }
+
+            cursor = result
+                .get("nextCursor")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
         }
-
+        // Sort by tool name so the order the model sees doesn't depend on
+        // server-side pagination ordering — keeps the prompt prefix stable
+        // for cache-hit purposes (#1319).
+        self.tools.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(())
     }
 
     /// Discover available resources from the MCP server
     async fn discover_resources(&mut self) -> Result<()> {
-        let list_id = self.next_id();
-        self.send(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": list_id,
-            "method": "resources/list",
-            "params": {}
-        }))
-        .await?;
+        let mut cursor: Option<String> = None;
+        loop {
+            let list_id = self.next_id();
+            let params = match &cursor {
+                Some(c) => serde_json::json!({ "cursor": c }),
+                None => serde_json::json!({}),
+            };
+            self.send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": list_id,
+                "method": "resources/list",
+                "params": params
+            }))
+            .await?;
 
-        let response = self.recv(list_id).await?;
+            let response = self.recv(list_id).await?;
+            let Some(result) = response.get("result") else {
+                break;
+            };
 
-        if let Some(result) = response.get("result")
-            && let Some(resources) = result.get("resources")
-        {
-            self.resources = serde_json::from_value(resources.clone()).unwrap_or_default();
+            if let Some(resources) = result.get("resources") {
+                let page: Vec<McpResource> =
+                    serde_json::from_value(resources.clone()).unwrap_or_default();
+                self.resources.extend(page);
+            }
+
+            cursor = result
+                .get("nextCursor")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
         }
-
         Ok(())
     }
 
     /// Discover available resource templates from the MCP server
     async fn discover_resource_templates(&mut self) -> Result<()> {
-        let list_id = self.next_id();
-        self.send(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": list_id,
-            "method": "resources/templates/list",
-            "params": {}
-        }))
-        .await?;
+        let mut cursor: Option<String> = None;
+        loop {
+            let list_id = self.next_id();
+            let params = match &cursor {
+                Some(c) => serde_json::json!({ "cursor": c }),
+                None => serde_json::json!({}),
+            };
+            self.send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": list_id,
+                "method": "resources/templates/list",
+                "params": params
+            }))
+            .await?;
 
-        let response = self.recv(list_id).await?;
+            let response = self.recv(list_id).await?;
+            let Some(result) = response.get("result") else {
+                break;
+            };
 
-        if let Some(result) = response.get("result") {
             let templates = result
                 .get("resourceTemplates")
                 .or_else(|| result.get("templates"))
                 .or_else(|| result.get("resource_templates"));
             if let Some(templates) = templates {
-                self.resource_templates =
+                let page: Vec<McpResourceTemplate> =
                     serde_json::from_value(templates.clone()).unwrap_or_default();
+                self.resource_templates.extend(page);
+            }
+
+            cursor = result
+                .get("nextCursor")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            if cursor.is_none() {
+                break;
             }
         }
-
         Ok(())
     }
 
     /// Discover available prompts from the MCP server
     async fn discover_prompts(&mut self) -> Result<()> {
-        let list_id = self.next_id();
-        self.send(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": list_id,
-            "method": "prompts/list",
-            "params": {}
-        }))
-        .await?;
+        let mut cursor: Option<String> = None;
+        loop {
+            let list_id = self.next_id();
+            let params = match &cursor {
+                Some(c) => serde_json::json!({ "cursor": c }),
+                None => serde_json::json!({}),
+            };
+            self.send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": list_id,
+                "method": "prompts/list",
+                "params": params
+            }))
+            .await?;
 
-        let response = self.recv(list_id).await?;
+            let response = self.recv(list_id).await?;
+            let Some(result) = response.get("result") else {
+                break;
+            };
 
-        if let Some(result) = response.get("result")
-            && let Some(prompts) = result.get("prompts")
-        {
-            self.prompts = serde_json::from_value(prompts.clone()).unwrap_or_default();
+            if let Some(prompts) = result.get("prompts") {
+                let page: Vec<McpPrompt> =
+                    serde_json::from_value(prompts.clone()).unwrap_or_default();
+                self.prompts.extend(page);
+            }
+
+            cursor = result
+                .get("nextCursor")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
         }
-
         Ok(())
     }
 
@@ -933,13 +1382,17 @@ impl McpConnection {
     }
 
     async fn send(&mut self, msg: serde_json::Value) -> Result<()> {
-        self.transport.send(msg).await
+        let bytes = serde_json::to_vec(&msg).context("Failed to serialize MCP JSON-RPC message")?;
+        self.transport.send(bytes).await
     }
 
     async fn recv(&mut self, expected_id: u64) -> Result<serde_json::Value> {
         loop {
-            let value = self.transport.recv().await.inspect_err(|_e| {
+            let bytes = self.transport.recv().await.inspect_err(|_e| {
                 self.state = ConnectionState::Disconnected;
+            })?;
+            let value: serde_json::Value = serde_json::from_slice(&bytes).with_context(|| {
+                format!("Invalid MCP JSON-RPC message from server '{}'", self.name)
             })?;
 
             // Check if this is a response with the expected id
@@ -985,6 +1438,7 @@ impl McpPool {
 
     /// Create a pool from a configuration file path
     pub fn from_config_path(path: &std::path::Path) -> Result<Self> {
+        validate_mcp_config_path(path)?;
         let config = if path.exists() {
             let contents = fs::read_to_string(path)
                 .with_context(|| format!("Failed to read MCP config: {}", path.display()))?;
@@ -1091,6 +1545,9 @@ impl McpPool {
                 tools.push((format!("mcp_{}_{}", server, tool.name), tool));
             }
         }
+        // Sort by prefixed name so iteration order across servers is
+        // deterministic for prefix-cache stability (#1319).
+        tools.sort_by(|a, b| a.0.cmp(&b.0));
         tools
     }
 
@@ -1366,6 +1823,9 @@ impl McpPool {
             });
         }
 
+        // Sort by name for prefix-cache stability — the tool block sent to
+        // the model needs to be deterministic across runs (#1319).
+        api_tools.sort_by(|a, b| a.name.cmp(&b.name));
         api_tools
     }
 
@@ -1544,6 +2004,7 @@ pub struct McpManagerSnapshot {
 }
 
 pub fn load_config(path: &Path) -> Result<McpConfig> {
+    validate_mcp_config_path(path)?;
     if !path.exists() {
         return Ok(McpConfig::default());
     }
@@ -1554,6 +2015,7 @@ pub fn load_config(path: &Path) -> Result<McpConfig> {
 }
 
 pub fn save_config(path: &Path, cfg: &McpConfig) -> Result<()> {
+    validate_mcp_config_path(path)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| {
             format!("Failed to create MCP config directory {}", parent.display())
@@ -1685,7 +2147,7 @@ pub async fn discover_manager_snapshot(
         .connect_all()
         .await
         .into_iter()
-        .map(|(name, err)| (name, err.to_string()))
+        .map(|(name, err)| (name, format!("{err:#}")))
         .collect::<HashMap<_, _>>();
     Ok(snapshot_from_config(
         path,
@@ -1845,6 +2307,8 @@ pub fn format_tool_result(result: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_mcp_config_defaults() {
@@ -1908,6 +2372,15 @@ mod tests {
         assert_eq!(snapshot.servers[0].name, "disabled");
         assert!(!snapshot.servers[0].enabled);
         assert_eq!(snapshot.servers[0].error.as_deref(), Some("disabled"));
+    }
+
+    #[test]
+    fn test_mcp_config_rejects_traversal_path() {
+        let err = load_config(Path::new("../mcp.json")).expect_err("traversal path should fail");
+        assert!(
+            format!("{err:#}").contains("cannot contain '..'"),
+            "got: {err:#}"
+        );
     }
 
     #[test]
@@ -2015,11 +2488,376 @@ mod tests {
         assert!(formatted.contains("[image content]"));
     }
 
+    struct ScriptedValueTransport {
+        sent: Arc<Mutex<Vec<serde_json::Value>>>,
+        responses: VecDeque<Vec<u8>>,
+    }
+
+    #[async_trait::async_trait]
+    impl McpTransport for ScriptedValueTransport {
+        async fn send(&mut self, msg: Vec<u8>) -> Result<()> {
+            self.sent
+                .lock()
+                .unwrap()
+                .push(serde_json::from_slice(&msg)?);
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> Result<Vec<u8>> {
+            self.responses
+                .pop_front()
+                .context("scripted transport exhausted")
+        }
+    }
+
+    struct HangingValueTransport {
+        sent: Arc<Mutex<Vec<serde_json::Value>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl McpTransport for HangingValueTransport {
+        async fn send(&mut self, msg: Vec<u8>) -> Result<()> {
+            self.sent
+                .lock()
+                .unwrap()
+                .push(serde_json::from_slice(&msg)?);
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> Result<Vec<u8>> {
+            std::future::pending().await
+        }
+    }
+
+    fn test_server_config() -> McpServerConfig {
+        McpServerConfig {
+            command: Some("mock".to_string()),
+            args: Vec::new(),
+            env: HashMap::new(),
+            url: None,
+            connect_timeout: None,
+            execute_timeout: None,
+            read_timeout: None,
+            disabled: false,
+            enabled: true,
+            required: false,
+            enabled_tools: Vec::new(),
+            disabled_tools: Vec::new(),
+        }
+    }
+
+    fn test_connection(transport: Box<dyn McpTransport>) -> McpConnection {
+        McpConnection {
+            name: "mock".to_string(),
+            transport,
+            tools: Vec::new(),
+            resources: Vec::new(),
+            resource_templates: Vec::new(),
+            prompts: Vec::new(),
+            request_id: AtomicU64::new(1),
+            state: ConnectionState::Ready,
+            config: test_server_config(),
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+        }
+    }
+
+    fn json_frame(value: serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(&value).unwrap()
+    }
+
+    #[tokio::test]
+    async fn call_method_skips_notifications_and_unmatched_responses() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let transport = ScriptedValueTransport {
+            sent: Arc::clone(&sent),
+            responses: VecDeque::from([
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/progress",
+                    "params": {"progress": 0.5}
+                })),
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 99,
+                    "result": {"ignored": true}
+                })),
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {"ok": true}
+                })),
+            ]),
+        };
+        let mut conn = test_connection(Box::new(transport));
+
+        let result = conn
+            .call_method("tools/call", serde_json::json!({"name": "echo"}), 1)
+            .await
+            .unwrap();
+
+        assert_eq!(result, serde_json::json!({"ok": true}));
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["jsonrpc"], "2.0");
+        assert_eq!(sent[0]["id"], 1);
+        assert_eq!(sent[0]["method"], "tools/call");
+    }
+
+    #[tokio::test]
+    async fn call_method_times_out_while_waiting_for_response() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let mut conn = test_connection(Box::new(HangingValueTransport {
+            sent: Arc::clone(&sent),
+        }));
+
+        let err = conn
+            .call_method("tools/call", serde_json::json!({"name": "echo"}), 0)
+            .await
+            .expect_err("hung receive should time out");
+
+        assert!(
+            err.to_string()
+                .contains("MCP method 'tools/call' on server 'mock' timed out after 0s"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(sent.lock().unwrap().len(), 1);
+    }
+
     #[tokio::test]
     async fn test_mcp_pool_empty_config() {
         let pool = McpPool::new(McpConfig::default());
         assert!(pool.server_names().is_empty());
         assert!(pool.all_tools().is_empty());
+    }
+
+    /// #1319: discovered tools must be sorted by name so the prompt prefix
+    /// is stable across runs (cache-hit stability), even when the server
+    /// returns them in arbitrary or paginated order.
+    #[tokio::test]
+    async fn discover_tools_sorts_by_name_for_cache_stability() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let transport = ScriptedValueTransport {
+            sent: Arc::clone(&sent),
+            responses: VecDeque::from([
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "tools": [
+                            { "name": "zeta", "inputSchema": {} },
+                            { "name": "alpha", "inputSchema": {} }
+                        ],
+                        "nextCursor": "page-2"
+                    }
+                })),
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "result": {
+                        "tools": [
+                            { "name": "mu", "inputSchema": {} },
+                            { "name": "beta", "inputSchema": {} }
+                        ]
+                    }
+                })),
+            ]),
+        };
+        let mut conn = test_connection(Box::new(transport));
+        conn.discover_tools().await.expect("discover");
+
+        let names: Vec<&str> = conn.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["alpha", "beta", "mu", "zeta"],
+            "tools must be sorted by name regardless of server order or pagination"
+        );
+    }
+
+    /// #1244: when an MCP stdio server fails to spawn, the underlying OS
+    /// error (e.g. ENOENT for a missing binary) must reach the user via the
+    /// snapshot.error string. Regression test for `err.to_string()` dropping
+    /// the anyhow chain — without `{err:#}` the user sees only the opaque
+    /// wrapper "MCP stdio spawn failed (...)" and has nothing to act on.
+    #[tokio::test]
+    async fn discover_snapshot_includes_underlying_spawn_error_in_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "broken": {
+                        "command": "deepseek-tui-test-this-binary-does-not-exist-9f8e7d6c5b4a",
+                        "args": []
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let snapshot = discover_manager_snapshot(&path, None, false).await.unwrap();
+        let server = snapshot
+            .servers
+            .iter()
+            .find(|s| s.name == "broken")
+            .expect("broken server should appear in snapshot");
+        let err = server
+            .error
+            .as_deref()
+            .expect("broken server should have an error");
+        let lowered = err.to_lowercase();
+        assert!(
+            lowered.contains("os error")
+                || lowered.contains("not found")
+                || lowered.contains("no such"),
+            "expected underlying spawn error in chain, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_sse_message_data_extracts_message_events() {
+        let body = "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\r\n\r\n";
+        let messages = parse_sse_message_data(body);
+        assert_eq!(messages.len(), 1);
+        let value: serde_json::Value = serde_json::from_slice(&messages[0]).unwrap();
+        assert_eq!(value["id"], 1);
+        assert!(value.get("result").is_some());
+    }
+
+    #[tokio::test]
+    async fn mcp_connection_supports_streamable_http_event_stream_responses() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+
+        async fn read_http_request(socket: &mut TcpStream) -> String {
+            let mut request = Vec::new();
+            let mut buf = [0; 1024];
+            let header_end = loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                assert!(n > 0, "client closed before headers completed");
+                request.extend_from_slice(&buf[..n]);
+                if let Some(pos) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break pos + 4;
+                }
+            };
+
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            let total_len = header_end + content_length;
+            while request.len() < total_len {
+                let n = socket.read(&mut buf).await.unwrap();
+                assert!(n > 0, "client closed before body completed");
+                request.extend_from_slice(&buf[..n]);
+            }
+
+            String::from_utf8(request).unwrap()
+        }
+
+        async fn write_json_sse(socket: &mut TcpStream, response: serde_json::Value) {
+            let body = format!("event: message\ndata: {response}\n\n");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..6 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let request = read_http_request(&mut socket).await;
+                    assert!(request.starts_with("POST /mcp "));
+                    assert!(
+                        request.contains("Accept: application/json, text/event-stream")
+                            || request.contains("accept: application/json, text/event-stream")
+                    );
+                    let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+                    let value: serde_json::Value = serde_json::from_str(body).unwrap();
+                    let method = value["method"].as_str().unwrap();
+
+                    if method == "notifications/initialized" {
+                        socket
+                            .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n")
+                            .await
+                            .unwrap();
+                        return;
+                    }
+
+                    let id = value["id"].clone();
+                    let result = match method {
+                        "initialize" => serde_json::json!({
+                            "protocolVersion": "2024-11-05",
+                            "serverInfo": {"name": "mock-streamable", "version": "1.0.0"},
+                            "capabilities": {"tools": {}, "resources": {}, "prompts": {}}
+                        }),
+                        "tools/list" => serde_json::json!({
+                            "tools": [{
+                                "name": "read_wiki_structure",
+                                "description": "Read wiki structure",
+                                "inputSchema": {"type": "object"}
+                            }]
+                        }),
+                        "resources/list" => serde_json::json!({"resources": []}),
+                        "resources/templates/list" => {
+                            serde_json::json!({"resourceTemplates": []})
+                        }
+                        "prompts/list" => serde_json::json!({"prompts": []}),
+                        other => panic!("unexpected method: {other}"),
+                    };
+                    write_json_sse(
+                        &mut socket,
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": result
+                        }),
+                    )
+                    .await;
+                });
+            }
+        });
+
+        let config = McpServerConfig {
+            command: None,
+            args: vec![],
+            env: HashMap::new(),
+            url: Some(format!("http://{addr}/mcp")),
+            connect_timeout: Some(2),
+            execute_timeout: None,
+            read_timeout: None,
+            disabled: false,
+            enabled: true,
+            required: false,
+            enabled_tools: Vec::new(),
+            disabled_tools: Vec::new(),
+        };
+
+        let conn = McpConnection::connect_with_policy(
+            "deepwiki".to_string(),
+            config,
+            &McpTimeouts::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(conn.state(), ConnectionState::Ready);
+        assert_eq!(conn.tools().len(), 1);
+        assert_eq!(conn.tools()[0].name, "read_wiki_structure");
+
+        server.abort();
     }
 
     #[test]
@@ -2079,6 +2917,7 @@ mod tests {
             child,
             stdin,
             reader: tokio::io::BufReader::new(stdout),
+            stderr_tail: StderrTail::new(),
         };
 
         // shutdown() should send SIGTERM and complete within the grace window.
@@ -2101,5 +2940,149 @@ mod tests {
             !still_alive,
             "child {pid} survived StdioTransport::shutdown — SIGTERM not delivered"
         );
+    }
+
+    /// Mid-run MCP server crash: the v0.8.x spawn path used `Stdio::null` for
+    /// stderr, so a server that died with a useful stderr message left the
+    /// caller with only "Stdio transport closed". Now stderr is piped into a
+    /// bounded ring buffer and surfaced when the read side fails.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_transport_recv_error_includes_stderr_tail() {
+        use tokio::process::Command as TokioCommand;
+
+        let mut cmd = TokioCommand::new("sh");
+        cmd.arg("-c")
+            .arg("echo 'mcp-server: failed to load plugin' 1>&2; exit 1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+
+        let mut child = cmd.spawn().expect("spawn sh");
+        let stdin = child.stdin.take().expect("stdin");
+        let stdout = child.stdout.take().expect("stdout");
+        let stderr = child.stderr.take().expect("stderr");
+
+        let stderr_tail = StderrTail::new();
+        {
+            let tail = Arc::clone(&stderr_tail);
+            tokio::spawn(async move {
+                let mut lines = tokio::io::BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    tail.push(line).await;
+                }
+            });
+        }
+
+        let mut transport = StdioTransport {
+            child,
+            stdin,
+            reader: tokio::io::BufReader::new(stdout),
+            stderr_tail,
+        };
+
+        // Give the subprocess time to write its stderr line and exit.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let err = transport
+            .recv()
+            .await
+            .expect_err("expected transport closed error");
+        let err_str = format!("{err}");
+        assert!(
+            err_str.contains("Stdio transport closed"),
+            "missing closed marker in: {err_str}"
+        );
+        assert!(
+            err_str.contains("mcp-server: failed to load plugin"),
+            "stderr context missing from error: {err_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sse_connect_waits_for_endpoint_before_first_send() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering as AtomicOrdering},
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let post_seen = Arc::new(AtomicBool::new(false));
+        let server_post_seen = Arc::clone(&post_seen);
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let server_cancel = cancel_token.clone();
+
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let post_seen = Arc::clone(&server_post_seen);
+                let server_cancel = server_cancel.clone();
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut buf = [0; 1024];
+                    loop {
+                        let n = socket.read(&mut buf).await.unwrap();
+                        if n == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&buf[..n]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let request = String::from_utf8_lossy(&request);
+                    if request.starts_with("GET /sse ") {
+                        socket
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n",
+                            )
+                            .await
+                            .unwrap();
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                        socket
+                            .write_all(b"event: endpoint\ndata: /messages\n\n")
+                            .await
+                            .unwrap();
+                        server_cancel.cancelled().await;
+                    } else if request.starts_with("POST /messages ") {
+                        post_seen.store(true, AtomicOrdering::SeqCst);
+                        socket
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                            .await
+                            .unwrap();
+                    }
+                });
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/sse");
+        let mut transport =
+            SseTransport::connect(client, url, cancel_token.clone(), Duration::from_secs(2))
+                .await
+                .unwrap();
+
+        transport
+            .send(json_frame(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize"
+            })))
+            .await
+            .unwrap();
+
+        assert!(
+            post_seen.load(AtomicOrdering::SeqCst),
+            "first SSE send should POST to the discovered endpoint"
+        );
+
+        cancel_token.cancel();
+        server.abort();
     }
 }

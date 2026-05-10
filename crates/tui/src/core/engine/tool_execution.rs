@@ -4,7 +4,7 @@
 //! parallel-tool fanout out of `engine.rs`; the turn loop still owns planning,
 //! approval, and how tool results are written back into session state.
 
-use std::{fs::OpenOptions, io::Write};
+use std::{fs::OpenOptions, io::Write, sync::Arc, time::Duration};
 
 use super::*;
 
@@ -21,9 +21,11 @@ use super::*;
 /// after. That worked on the happy path, but if the tool's future was dropped
 /// — Ctrl+C cancellation, sub-agent abort, parent task cancelled while the
 /// tool was awaiting — the second `await` never reached and `ResumeEvents`
-/// was never sent. The terminal stayed paused: parent shell scrollbar took
-/// over, mouse wheel scrolled the host terminal instead of the transcript,
-/// and the TUI rendered as if into a regular cooked-mode buffer.
+/// was never sent. It also let interactive children start before the UI had
+/// actually left alt-screen/raw mode. Both failures strand the TUI in a
+/// regular shell scrollback: the parent shell scrollbar takes over, mouse
+/// wheel scrolls the host terminal instead of the transcript, and the TUI
+/// renders at the bottom of cooked-mode output.
 ///
 /// `Drop` runs synchronously and can't await, so we first use `try_send` on a
 /// **clone of the event channel** to push `ResumeEvents` non-blockingly. If the
@@ -42,9 +44,35 @@ impl InteractiveTerminalGuard {
             return Self { tx: None };
         }
         // Best-effort: if the receiver is gone the TUI has already shut down
-        // and there's nothing to restore. Either way we still arm the guard
-        // so `Drop` symmetrically tries the resume.
-        let _ = tx.send(Event::PauseEvents).await;
+        // and there's nothing to restore. If the event is delivered, wait for
+        // the UI to actually release the terminal before starting the child.
+        let ack = Arc::new(tokio::sync::Notify::new());
+        match tx
+            .send(Event::PauseEvents {
+                ack: Some(ack.clone()),
+            })
+            .await
+        {
+            Ok(()) => {
+                if tokio::time::timeout(Duration::from_millis(750), ack.notified())
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!(
+                        target: "engine.tool_execution",
+                        "InteractiveTerminalGuard: timed out waiting for terminal pause ack; \
+                         continuing with interactive tool"
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::debug!(
+                    target: "engine.tool_execution",
+                    ?err,
+                    "InteractiveTerminalGuard: event channel closed before PauseEvents"
+                );
+            }
+        }
         Self { tx: Some(tx) }
     }
 }
@@ -302,6 +330,37 @@ mod tests {
         let resumed = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("queued resume event")
+            .expect("event channel still open");
+        assert!(matches!(resumed, Event::ResumeEvents));
+    }
+
+    #[tokio::test]
+    async fn terminal_guard_waits_for_pause_ack_before_returning() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let task = tokio::spawn(InteractiveTerminalGuard::engage(tx, true));
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("pause event")
+            .expect("event channel still open");
+        let ack = match event {
+            Event::PauseEvents { ack: Some(ack) } => ack,
+            other => panic!("expected PauseEvents with ack, got {other:?}"),
+        };
+
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished(), "guard returned before pause ack");
+
+        ack.notify_one();
+        let guard = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("guard returned after ack")
+            .expect("guard task joined");
+
+        drop(guard);
+        let resumed = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("resume event")
             .expect("event channel still open");
         assert!(matches!(resumed, Event::ResumeEvents));
     }

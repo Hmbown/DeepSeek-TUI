@@ -346,9 +346,15 @@ fn validate_base_url_security(base_url: &str) -> Result<()> {
 
     if base_url.starts_with("http://") {
         anyhow::bail!(
-            "Refusing insecure base URL '{}'. Use HTTPS or set {}=1 to override for trusted environments.",
-            base_url,
-            ALLOW_INSECURE_HTTP_ENV
+            "Refusing insecure base URL '{base_url}'.\n\
+             \n\
+             Loopback hosts (localhost, 127.0.0.1, [::1]) are auto-allowed.\n\
+             For other trusted local hosts (LAN, llama.cpp on a private IP, etc.)\n\
+             set the env var `{env}=1` in the shell that runs deepseek and re-run.\n\
+             \n\
+             Example: `{env}=1 deepseek` (note the underscores).",
+            base_url = base_url,
+            env = ALLOW_INSECURE_HTTP_ENV,
         );
     }
 
@@ -394,11 +400,16 @@ pub(super) fn api_url(base_url: &str, path: &str) -> String {
     if path.starts_with("beta/") {
         return format!("{}/{}", unversioned_base_url(base_url), path);
     }
-    format!(
-        "{}/{}",
-        versioned_base_url(base_url).trim_end_matches('/'),
-        path
-    )
+    let mut versioned = versioned_base_url(base_url);
+    // The /beta suffix is not a real API version — it is an
+    // opt-in surface for beta features.  Only paths with an
+    // explicit `beta/` prefix should hit the beta surface;
+    // everything else (models, chat/completions, health, …)
+    // must go to the standard /v1 surface.
+    if versioned.ends_with("beta") {
+        versioned = format!("{}/v1", unversioned_base_url(base_url));
+    }
+    format!("{}/{}", versioned.trim_end_matches('/'), path)
 }
 
 // === DeepSeekClient ===
@@ -886,6 +897,9 @@ pub(super) fn parse_usage(usage: Option<&Value>) -> Usage {
         })
         .and_then(Value::as_u64)
         .unwrap_or(0);
+    let total_tokens = usage
+        .and_then(|u| u.get("total_tokens"))
+        .and_then(Value::as_u64);
     let reasoning_tokens_raw = usage
         .and_then(|u| u.get("completion_tokens_details"))
         .and_then(|details| details.get("reasoning_tokens"))
@@ -894,6 +908,10 @@ pub(super) fn parse_usage(usage: Option<&Value>) -> Usage {
         && let Some(reasoning_tokens) = reasoning_tokens_raw
     {
         output_tokens = reasoning_tokens;
+    } else if output_tokens == 0
+        && let Some(total_tokens) = total_tokens
+    {
+        output_tokens = total_tokens.saturating_sub(input_tokens);
     }
     let cached_tokens = usage
         .and_then(|u| u.get("prompt_tokens_details"))
@@ -974,6 +992,16 @@ impl DeepSeekClient {
 
 mod chat;
 
+pub(crate) use chat::PromptInspection;
+
+pub(crate) fn inspect_prompt_for_request(request: &MessageRequest) -> PromptInspection {
+    chat::inspect_prompt_for_request(request)
+}
+
+pub(crate) fn build_cache_warmup_request(request: &MessageRequest) -> MessageRequest {
+    chat::build_cache_warmup_request(request)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1042,9 +1070,11 @@ mod tests {
             api_url("https://api.deepseek.com/v1", "chat/completions"),
             "https://api.deepseek.com/v1/chat/completions"
         );
+        // Non-beta paths from a /beta base URL route to /v1.
+        // Only paths with an explicit beta/ prefix use the beta surface.
         assert_eq!(
             api_url("https://api.deepseek.com/beta", "chat/completions"),
-            "https://api.deepseek.com/beta/chat/completions"
+            "https://api.deepseek.com/v1/chat/completions"
         );
         assert_eq!(
             api_url(
@@ -1068,6 +1098,33 @@ mod tests {
         assert_eq!(
             api_url("https://api.deepseek.com/beta", "beta/completions"),
             "https://api.deepseek.com/beta/completions"
+        );
+    }
+
+    #[test]
+    fn api_url_routes_models_and_non_beta_paths_to_v1() {
+        // The /models endpoint only exists at /v1/models, never at
+        // /beta/models. Non-beta paths from a /beta base URL must
+        // still route to /v1.
+        assert_eq!(
+            api_url("https://api.deepseek.com", "models"),
+            "https://api.deepseek.com/v1/models"
+        );
+        assert_eq!(
+            api_url("https://api.deepseek.com/v1", "models"),
+            "https://api.deepseek.com/v1/models"
+        );
+        assert_eq!(
+            api_url("https://api.deepseek.com/beta", "models"),
+            "https://api.deepseek.com/v1/models"
+        );
+        // explicit v<N> versions other than /v1 should be preserved
+        assert_eq!(
+            api_url(
+                "https://openai-compatible.example/api/coding/paas/v4",
+                "models"
+            ),
+            "https://openai-compatible.example/api/coding/paas/v4/models"
         );
     }
 
@@ -1239,7 +1296,12 @@ mod tests {
     }
 
     #[test]
-    fn chat_messages_omit_prior_non_tool_reasoning_after_new_user_turn() {
+    fn chat_messages_keep_prior_non_tool_reasoning_after_new_user_turn() {
+        // The serialized JSON for a stored assistant message MUST be a pure
+        // function of that message — never of what comes after it. DeepSeek's
+        // prompt cache hashes the leading bytes of every request; flipping
+        // `reasoning_content` on/off across turns rewrites historical bytes
+        // and busts the prefix cache from that message onwards. (#583)
         let messages = vec![
             Message {
                 role: "user".to_string(),
@@ -1279,9 +1341,68 @@ mod tests {
             assistant.get("content").and_then(Value::as_str),
             Some("Final answer")
         );
-        assert!(
-            assistant.get("reasoning_content").is_none(),
-            "non-tool reasoning from previous turns should not be replayed"
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("Internal explanation plan"),
+            "reasoning_content must be preserved across follow-up user turns to keep DeepSeek's prefix cache warm"
+        );
+    }
+
+    #[test]
+    fn chat_messages_assistant_json_is_byte_stable_across_follow_up_user_turn() {
+        // Direct prefix-cache regression: the JSON for the assistant message
+        // built on turn N must equal the JSON for the same assistant message
+        // built on turn N+1, after a new user message has been appended.
+        let assistant = Message {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "I should explain step by step.".to_string(),
+                },
+                ContentBlock::Text {
+                    text: "Here is the explanation.".to_string(),
+                    cache_control: None,
+                },
+            ],
+        };
+        let user_initial = Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "Explain it".to_string(),
+                cache_control: None,
+            }],
+        };
+        let user_follow_up = Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "Next question".to_string(),
+                cache_control: None,
+            }],
+        };
+
+        let turn_n = build_chat_messages(
+            None,
+            &[user_initial.clone(), assistant.clone()],
+            "deepseek-v4-pro",
+        );
+        let turn_n_plus_1 = build_chat_messages(
+            None,
+            &[user_initial, assistant, user_follow_up],
+            "deepseek-v4-pro",
+        );
+
+        let assistant_n = turn_n
+            .iter()
+            .find(|v| v.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant present in turn N");
+        let assistant_n1 = turn_n_plus_1
+            .iter()
+            .find(|v| v.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant present in turn N+1");
+
+        assert_eq!(
+            assistant_n, assistant_n1,
+            "assistant message JSON must be byte-identical across turns or DeepSeek's prefix cache breaks"
         );
     }
 
@@ -1333,6 +1454,267 @@ mod tests {
             out.iter()
                 .any(|value| value.get("role").and_then(Value::as_str) == Some("tool")),
             "matching tool result should remain"
+        );
+    }
+
+    #[test]
+    fn prompt_builder_keeps_system_first_and_current_user_input_last() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![
+                Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "Previous answer".to_string(),
+                        cache_control: None,
+                    }],
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: vec![
+                        ContentBlock::Text {
+                            text: "<turn_meta>\nCurrent local date: 2026-05-08\n</turn_meta>"
+                                .to_string(),
+                            cache_control: None,
+                        },
+                        ContentBlock::Text {
+                            text: "Current user question".to_string(),
+                            cache_control: None,
+                        },
+                    ],
+                },
+            ],
+            max_tokens: 1024,
+            system: Some(SystemPrompt::Text(
+                "Stable mode, project rules, and tool policy".to_string(),
+            )),
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some("max".to_string()),
+            stream: None,
+            temperature: None,
+            top_p: None,
+        };
+
+        let out = build_chat_messages_for_request(&request);
+
+        assert_eq!(out[0].get("role").and_then(Value::as_str), Some("system"));
+        assert_eq!(
+            out[0].get("content").and_then(Value::as_str),
+            Some("Stable mode, project rules, and tool policy")
+        );
+        let last = out.last().expect("latest user message");
+        assert_eq!(last.get("role").and_then(Value::as_str), Some("user"));
+        assert!(
+            last.get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|content| content.ends_with("Current user question")),
+            "current-turn user input must be at the tail of the wire prompt: {last:?}"
+        );
+    }
+
+    #[test]
+    fn prompt_inspect_reports_stable_layers_and_dynamic_user_task() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![
+                Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "Prior answer".to_string(),
+                        cache_control: None,
+                    }],
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "Current task".to_string(),
+                        cache_control: None,
+                    }],
+                },
+            ],
+            max_tokens: 1024,
+            system: Some(SystemPrompt::Text(
+                "Base policy\n\n<project_instructions source=\"AGENTS.md\">\nRules\n</project_instructions>\n\n## Project Context Pack\n\n<project_context_pack>\n{}\n</project_context_pack>\n\n## Environment\n\n- lang: en"
+                    .to_string(),
+            )),
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some("max".to_string()),
+            stream: None,
+            temperature: None,
+            top_p: None,
+        };
+
+        let inspection = inspect_prompt_for_request(&request);
+
+        assert_eq!(inspection.base_static_prefix_hash.len(), 64);
+        assert_eq!(inspection.full_request_prefix_hash.len(), 64);
+        assert!(inspection.layers.iter().any(|layer| {
+            layer.name == "Global system prefix"
+                && layer.stability.label() == "static"
+                && layer.char_len == "Base policy".chars().count()
+                && layer.sha256.len() == 64
+        }));
+        assert!(inspection.layers.iter().any(|layer| {
+            layer.name == "Project context" && layer.stability.label() == "static"
+        }));
+        assert!(inspection.layers.iter().any(|layer| {
+            layer.name == "Project context pack" && layer.stability.label() == "static"
+        }));
+        assert!(inspection.layers.iter().any(|layer| {
+            layer.name == "Message #1 assistant" && layer.stability.label() == "history"
+        }));
+        assert!(
+            inspection.layers.last().is_some_and(
+                |layer| layer.name == "User task" && layer.stability.label() == "dynamic"
+            )
+        );
+    }
+
+    #[test]
+    fn prompt_inspect_keeps_static_base_hash_across_different_user_tasks() {
+        fn request_with_user_task(task: &str) -> MessageRequest {
+            MessageRequest {
+                model: "deepseek-v4-pro".to_string(),
+                messages: vec![
+                    Message {
+                        role: "assistant".to_string(),
+                        content: vec![ContentBlock::Text {
+                            text: "Prior answer".to_string(),
+                            cache_control: None,
+                        }],
+                    },
+                    Message {
+                        role: "user".to_string(),
+                        content: vec![ContentBlock::Text {
+                            text: task.to_string(),
+                            cache_control: None,
+                        }],
+                    },
+                ],
+                max_tokens: 1024,
+                system: Some(SystemPrompt::Text(
+                    "Base policy\n\n## Environment\n\n- shell: powershell\n\n## Skills\n\n- rust\n\n## Context Management\n\nKeep concise\n\n## Compact\n\nTemplate"
+                        .to_string(),
+                )),
+                tools: None,
+                tool_choice: None,
+                metadata: None,
+                thinking: None,
+                reasoning_effort: Some("max".to_string()),
+                stream: None,
+                temperature: None,
+                top_p: None,
+            }
+        }
+
+        let first = inspect_prompt_for_request(&request_with_user_task("First task"));
+        let second = inspect_prompt_for_request(&request_with_user_task("Second task"));
+        let mut changed_history_request = request_with_user_task("Second task");
+        changed_history_request.messages[0] = Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "Different prior answer".to_string(),
+                cache_control: None,
+            }],
+        };
+        let changed_history = inspect_prompt_for_request(&changed_history_request);
+
+        assert_eq!(
+            first.base_static_prefix_hash,
+            second.base_static_prefix_hash
+        );
+        assert_eq!(
+            first.full_request_prefix_hash, second.full_request_prefix_hash,
+            "full request prefix excludes the final dynamic user task"
+        );
+        assert_ne!(
+            second.full_request_prefix_hash, changed_history.full_request_prefix_hash,
+            "full request prefix can change when session history changes"
+        );
+        assert!(
+            second.layers.last().is_some_and(
+                |layer| layer.name == "User task" && layer.stability.label() == "dynamic"
+            ),
+            "current user task must remain the final layer"
+        );
+        assert!(second.layers.iter().any(|layer| {
+            layer.name == "Message #1 assistant" && layer.stability.label() == "history"
+        }));
+        assert!(!second.layers.iter().any(
+            |layer| layer.name.starts_with("Message #") && layer.stability.label() == "static"
+        ));
+    }
+
+    #[test]
+    fn cache_warmup_request_reuses_stable_prefix_and_fixed_user_tail() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![
+                Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "Stable prior answer".to_string(),
+                        cache_control: None,
+                    }],
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "Dynamic latest user task".to_string(),
+                        cache_control: None,
+                    }],
+                },
+            ],
+            max_tokens: 1024,
+            system: Some(SystemPrompt::Text(
+                "Base policy\n\n<project_instructions source=\"AGENTS.md\">\nStable project rules\n</project_instructions>\n\n## Previous Session Handoff\n\nDynamic handoff"
+                    .to_string(),
+            )),
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some("max".to_string()),
+            stream: Some(true),
+            temperature: Some(0.7),
+            top_p: None,
+        };
+
+        let warmup = build_cache_warmup_request(&request);
+
+        assert_eq!(warmup.max_tokens, 8);
+        assert_eq!(warmup.temperature, Some(0.0));
+        assert_eq!(warmup.reasoning_effort.as_deref(), Some("max"));
+        assert_eq!(warmup.messages.len(), 2);
+        assert_eq!(warmup.messages[0].role, "assistant");
+        assert_eq!(warmup.messages[1].role, "user");
+        assert_eq!(
+            warmup.messages[1].content,
+            vec![ContentBlock::Text {
+                text: "请只回复 OK".to_string(),
+                cache_control: None,
+            }]
+        );
+
+        let wire = build_chat_messages_for_request(&warmup);
+        let system = wire
+            .first()
+            .and_then(|value| value.get("content"))
+            .and_then(Value::as_str)
+            .expect("warmup system prompt");
+        assert!(system.contains("Stable project rules"));
+        assert!(!system.contains("Dynamic handoff"));
+        assert!(
+            !wire
+                .iter()
+                .any(|value| value.to_string().contains("Dynamic latest user task")),
+            "warmup must not include the dynamic latest user task"
         );
     }
 
@@ -2006,6 +2388,21 @@ mod tests {
                 .expect("DeepSeek V4 Pro pricing should apply")
                 > 0.0
         );
+    }
+
+    #[test]
+    fn parse_usage_derives_completion_tokens_from_total_tokens_when_needed() {
+        let usage = parse_usage(Some(&json!({
+            "prompt_tokens": 100,
+            "total_tokens": 125,
+            "prompt_cache_hit_tokens": 70,
+            "prompt_cache_miss_tokens": 30
+        })));
+
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 25);
+        assert_eq!(usage.prompt_cache_hit_tokens, Some(70));
+        assert_eq!(usage.prompt_cache_miss_tokens, Some(30));
     }
 
     #[test]

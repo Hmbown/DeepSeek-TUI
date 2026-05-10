@@ -19,10 +19,10 @@ pub const LIGHT_REASONING_RGB: (u8, u8, u8) = (254, 243, 199); // #FEF3C7
 pub const LIGHT_SUCCESS_RGB: (u8, u8, u8) = (220, 252, 231); // #DCFCE7
 pub const LIGHT_ERROR_RGB: (u8, u8, u8) = (254, 226, 226); // #FEE2E2
 pub const LIGHT_TEXT_BODY_RGB: (u8, u8, u8) = (15, 23, 42); // #0F172A
-pub const LIGHT_TEXT_MUTED_RGB: (u8, u8, u8) = (71, 85, 105); // #475569
-pub const LIGHT_TEXT_HINT_RGB: (u8, u8, u8) = (100, 116, 139); // #64748B
-pub const LIGHT_TEXT_SOFT_RGB: (u8, u8, u8) = (51, 65, 85); // #334155
-pub const LIGHT_BORDER_RGB: (u8, u8, u8) = (148, 163, 184); // #94A3B8
+pub const LIGHT_TEXT_MUTED_RGB: (u8, u8, u8) = (51, 65, 85); // #334155
+pub const LIGHT_TEXT_HINT_RGB: (u8, u8, u8) = (71, 85, 105); // #475569
+pub const LIGHT_TEXT_SOFT_RGB: (u8, u8, u8) = (30, 41, 59); // #1E293B
+pub const LIGHT_BORDER_RGB: (u8, u8, u8) = (71, 85, 105); // #475569
 pub const LIGHT_SELECTION_RGB: (u8, u8, u8) = (219, 234, 254); // #DBEAFE
 
 // New semantic colors
@@ -107,17 +107,20 @@ pub const LIGHT_SELECTION_BG: Color = Color::Rgb(
     LIGHT_SELECTION_RGB.2,
 );
 
-pub const TEXT_BODY: Color = Color::White;
-pub const TEXT_SECONDARY: Color = Color::Rgb(192, 192, 192); // #C0C0C0
-pub const TEXT_HINT: Color = Color::Rgb(160, 160, 160); // #A0A0A0
+pub const TEXT_BODY: Color = Color::Rgb(226, 232, 240); // #E2E8F0
+pub const TEXT_SECONDARY: Color = Color::Rgb(177, 190, 207); // #B1BECF
+pub const TEXT_HINT: Color = Color::Rgb(135, 151, 171); // #8797AB
 pub const TEXT_ACCENT: Color = DEEPSEEK_SKY;
 pub const SELECTION_TEXT: Color = Color::White;
-pub const TEXT_SOFT: Color = Color::Rgb(214, 223, 235); // #D6DFEB
+pub const TEXT_SOFT: Color = Color::Rgb(217, 226, 238); // #D9E2EE
+pub const TEXT_REASONING: Color = Color::Rgb(211, 170, 112); // #D3AA70
 
 // Compatibility aliases for existing call sites.
 pub const TEXT_PRIMARY: Color = TEXT_BODY;
 pub const TEXT_MUTED: Color = TEXT_SECONDARY;
 pub const TEXT_DIM: Color = TEXT_HINT;
+pub const USER_BODY: Color = Color::Rgb(74, 222, 128); // #4ADE80 green
+pub const LIGHT_USER_BODY: Color = Color::Rgb(21, 128, 61); // #15803D green
 
 // New semantic colors for UI theming
 pub const BORDER_COLOR: Color =
@@ -135,6 +138,7 @@ pub const SURFACE_PANEL: Color = Color::Rgb(21, 33, 52); // #152134
 #[allow(dead_code)]
 pub const SURFACE_ELEVATED: Color = Color::Rgb(28, 42, 64); // #1C2A40
 pub const SURFACE_REASONING: Color = Color::Rgb(54, 44, 26); // #362C1A
+pub const SURFACE_REASONING_TINT: Color = Color::Rgb(16, 24, 37); // #101825
 #[allow(dead_code)]
 pub const SURFACE_REASONING_ACTIVE: Color = Color::Rgb(68, 53, 28); // #44351C
 #[allow(dead_code)]
@@ -148,10 +152,10 @@ pub const SURFACE_ERROR: Color = Color::Rgb(63, 27, 36); // #3F1B24
 pub const DIFF_ADDED_BG: Color = Color::Rgb(18, 52, 38); // #123426 dark green tint
 pub const DIFF_DELETED_BG: Color = Color::Rgb(52, 22, 28); // #34161C dark red tint
 pub const DIFF_ADDED: Color = Color::Rgb(87, 199, 133); // #57C785
-pub const ACCENT_REASONING_LIVE: Color = Color::Rgb(146, 198, 248); // #92C6F8
+pub const ACCENT_REASONING_LIVE: Color = Color::Rgb(224, 153, 72); // #E09948
 pub const ACCENT_TOOL_LIVE: Color = Color::Rgb(133, 184, 234); // #85B8EA
 pub const ACCENT_TOOL_ISSUE: Color = Color::Rgb(192, 143, 153); // #C08F99
-pub const TEXT_TOOL_OUTPUT: Color = Color::Rgb(205, 216, 228); // #CDD8E4
+pub const TEXT_TOOL_OUTPUT: Color = Color::Rgb(191, 205, 220); // #BFCEDC
 
 // Legacy status colors - keep for backward compatibility
 pub const STATUS_SUCCESS: Color = DEEPSEEK_SKY;
@@ -341,12 +345,14 @@ pub fn adapt_fg_for_palette_mode(color: Color, _bg: Color, mode: PaletteMode) ->
         LIGHT_BORDER
     } else if color == TEXT_ACCENT || color == DEEPSEEK_SKY || color == ACCENT_TOOL_LIVE {
         DEEPSEEK_BLUE
-    } else if color == ACCENT_REASONING_LIVE {
+    } else if color == TEXT_REASONING || color == ACCENT_REASONING_LIVE {
         Color::Rgb(146, 64, 14)
     } else if color == ACCENT_TOOL_ISSUE {
         Color::Rgb(159, 18, 57)
     } else if color == DIFF_ADDED {
         Color::Rgb(22, 101, 52)
+    } else if color == USER_BODY {
+        LIGHT_USER_BODY
     } else {
         color
     }
@@ -368,7 +374,10 @@ pub fn adapt_bg_for_palette_mode(color: Color, mode: PaletteMode) -> Color {
         LIGHT_PANEL
     } else if color == SURFACE_ELEVATED || color == SURFACE_TOOL_ACTIVE {
         LIGHT_ELEVATED
-    } else if color == SURFACE_REASONING || color == SURFACE_REASONING_ACTIVE {
+    } else if color == SURFACE_REASONING
+        || color == SURFACE_REASONING_TINT
+        || color == SURFACE_REASONING_ACTIVE
+    {
         LIGHT_REASONING
     } else if color == SURFACE_SUCCESS {
         LIGHT_SUCCESS
@@ -476,6 +485,7 @@ pub fn adapt_bg(color: Color, depth: ColorDepth) -> Color {
 /// Mix two RGB colors at `alpha` (0.0 = `bg`, 1.0 = `fg`). Anything that's not
 /// RGB falls back to `fg` — there's no meaningful alpha blend on a named
 /// palette entry.
+#[allow(dead_code)]
 #[must_use]
 pub fn blend(fg: Color, bg: Color, alpha: f32) -> Color {
     let alpha = alpha.clamp(0.0, 1.0);
@@ -500,10 +510,7 @@ pub fn blend(fg: Color, bg: Color, alpha: f32) -> Color {
 pub fn reasoning_surface_tint(depth: ColorDepth) -> Option<Color> {
     match depth {
         ColorDepth::Ansi16 => None,
-        _ => Some(adapt_bg(
-            blend(SURFACE_REASONING, DEEPSEEK_INK, 0.12),
-            depth,
-        )),
+        _ => Some(adapt_bg(SURFACE_REASONING_TINT, depth)),
     }
 }
 
@@ -645,8 +652,9 @@ fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
 mod tests {
     use super::{
         ACCENT_REASONING_LIVE, ColorDepth, DEEPSEEK_INK, DEEPSEEK_RED, DEEPSEEK_SKY,
-        DEEPSEEK_SLATE, LIGHT_PANEL, LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT,
-        LIGHT_UI_THEME, PaletteMode, SURFACE_REASONING, TEXT_HINT, UI_THEME, adapt_bg,
+        DEEPSEEK_SLATE, LIGHT_PANEL, LIGHT_REASONING, LIGHT_SURFACE, LIGHT_TEXT_BODY,
+        LIGHT_TEXT_HINT, LIGHT_UI_THEME, PaletteMode, SURFACE_REASONING, SURFACE_REASONING_TINT,
+        TEXT_BODY, TEXT_HINT, TEXT_REASONING, TEXT_TOOL_OUTPUT, UI_THEME, adapt_bg,
         adapt_bg_for_palette_mode, adapt_color, adapt_fg_for_palette_mode, blend, nearest_ansi16,
         normalize_hex_rgb_color, parse_hex_rgb_color, pulse_brightness, reasoning_surface_tint,
         rgb_to_ansi256,
@@ -673,6 +681,15 @@ mod tests {
         assert_eq!(theme, LIGHT_UI_THEME);
         assert_eq!(theme.surface_bg, LIGHT_SURFACE);
         assert_eq!(theme.text_body, LIGHT_TEXT_BODY);
+    }
+
+    #[test]
+    fn dark_palette_uses_soft_body_text_and_warm_reasoning() {
+        assert_eq!(TEXT_BODY, Color::Rgb(226, 232, 240));
+        assert_eq!(TEXT_REASONING, Color::Rgb(211, 170, 112));
+        assert_eq!(ACCENT_REASONING_LIVE, Color::Rgb(224, 153, 72));
+        assert_ne!(TEXT_REASONING, TEXT_TOOL_OUTPUT);
+        assert_ne!(TEXT_BODY, Color::White);
     }
 
     #[test]
@@ -775,6 +792,25 @@ mod tests {
             reasoning_surface_tint(ColorDepth::Ansi256),
             Some(Color::Indexed(_))
         ));
+    }
+
+    #[test]
+    fn light_palette_maps_reasoning_tint_to_light_surface() {
+        assert_eq!(
+            blend(SURFACE_REASONING, DEEPSEEK_INK, 0.12),
+            SURFACE_REASONING_TINT
+        );
+        assert_eq!(
+            adapt_bg_for_palette_mode(SURFACE_REASONING_TINT, PaletteMode::Light),
+            LIGHT_REASONING
+        );
+        assert_eq!(
+            adapt_bg_for_palette_mode(
+                reasoning_surface_tint(ColorDepth::TrueColor).expect("truecolor tint"),
+                PaletteMode::Light,
+            ),
+            LIGHT_REASONING
+        );
     }
 
     #[test]

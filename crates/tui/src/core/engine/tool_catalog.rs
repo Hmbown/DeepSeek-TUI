@@ -35,8 +35,8 @@ pub(super) fn should_default_defer_tool(name: &str, mode: AppMode) -> bool {
 
     // Shell exec tools are kept active in Agent so the model can run
     // verification commands (build/test/git/cargo) without first having to
-    // discover them through ToolSearch. Plan mode may register shell tools,
-    // but keeps most shell execution deferred and network-restricted.
+    // discover them through ToolSearch. Plan mode does not register shell
+    // execution tools.
     let always_loaded_in_action_modes = matches!(mode, AppMode::Agent)
         && matches!(
             name,
@@ -118,8 +118,8 @@ pub(super) fn build_model_tool_catalog(
     native_tools
 }
 
-pub(super) fn ensure_advanced_tooling(catalog: &mut Vec<Tool>) {
-    if !catalog.iter().any(|t| t.name == CODE_EXECUTION_TOOL_NAME) {
+pub(super) fn ensure_advanced_tooling(catalog: &mut Vec<Tool>, mode: AppMode) {
+    if mode != AppMode::Plan && !catalog.iter().any(|t| t.name == CODE_EXECUTION_TOOL_NAME) {
         catalog.push(Tool {
             tool_type: Some(CODE_EXECUTION_TOOL_TYPE.to_string()),
             name: CODE_EXECUTION_TOOL_NAME.to_string(),

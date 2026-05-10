@@ -1,0 +1,343 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------- root tokens — DeepSeek-aligned ---------- */
+:root {
+  --paper: #ffffff;
+  --paper-deep: #f4f6fb;
+  --paper-edge: #e5e8f0;
+  --paper-line: #0e0e10;
+  --paper-line-soft: #d4d8e2;
+  --ink: #0e0e10;
+  --ink-soft: #2e2e33;
+  --ink-mute: #6b7280;
+  --indigo: #4d6bfe;
+  --indigo-deep: #3a52cc;
+  --indigo-pale: #e9eefe;
+  --ochre: #9c7a3f;
+  --jade: #0ab68b;
+  --cobalt: #1f3a8a;
+}
+
+/* ---------- base ---------- */
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  max-width: 100%;
+  overflow-x: clip;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body), "IBM Plex Sans", "Noto Sans SC", system-ui, sans-serif;
+  font-feature-settings: "ss01", "cv11", "tnum";
+  max-width: 100%;
+  overflow-x: clip;
+  position: relative;
+}
+
+/* faint vertical column rule — desktop only, printed-almanac feel.
+   Hidden on phones because it slices visibly through narrow content. */
+@media (min-width: 1024px) {
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background-image: linear-gradient(
+      to right,
+      transparent 0,
+      transparent calc(50% - 0.5px),
+      rgba(14,14,16,0.04) calc(50% - 0.5px),
+      rgba(14,14,16,0.04) calc(50% + 0.5px),
+      transparent calc(50% + 0.5px)
+    );
+    pointer-events: none;
+    z-index: 0;
+  }
+}
+
+main, header, footer, nav { position: relative; z-index: 1; }
+
+/* ---------- type ---------- */
+.font-display { font-family: var(--font-display), "Fraunces", "Noto Serif SC", Georgia, serif; }
+.font-cjk { font-family: "Noto Serif SC", "Source Han Serif SC", serif; }
+
+/* CJK paragraph rhythm — looser leading, wider tracking for body; tighter for headings */
+.cjk-body {
+  line-height: 1.9;
+  letter-spacing: 0.02em;
+  word-break: break-all;
+}
+.cjk-heading {
+  letter-spacing: -0.01em;
+}
+.cjk-prose p {
+  line-height: 1.9;
+  letter-spacing: 0.02em;
+}
+/* Full-width punctuation should use CJK spacing */
+.cjk-prose {
+  font-feature-settings: "halt", "pwid";
+}
+.font-mono { font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace; }
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display), "Fraunces", "Noto Serif SC", Georgia, serif;
+  font-weight: 600;
+  letter-spacing: -0.018em;
+  color: var(--ink);
+}
+
+h1 { font-size: clamp(2.1rem, 5vw, 4.2rem); line-height: 1; word-break: keep-all; overflow-wrap: anywhere; }
+h2 { font-size: clamp(1.5rem, 2.8vw, 2.4rem); line-height: 1.1; word-break: keep-all; overflow-wrap: anywhere; }
+h3 { font-size: 1.18rem; line-height: 1.25; }
+
+@media (max-width: 640px) {
+  h1 .font-cjk {
+    display: inline-block;
+    font-size: clamp(1.6rem, 7.5vw, 2.2rem);
+    overflow-wrap: anywhere;
+  }
+  /* prevent latin/CJK heading from blowing past the viewport */
+  h1, h2 { hyphens: auto; }
+}
+
+/* ---------- structural primitives ---------- */
+/* Hairlines stay charcoal but softened with a touch of opacity so a pure-white
+   background doesn't read as harsh black-on-white office stationery. */
+.hairline { border-color: rgba(14,14,16,0.18); }
+.hairline-t { border-top: 1px solid rgba(14,14,16,0.18); }
+.hairline-b { border-bottom: 1px solid rgba(14,14,16,0.18); }
+.hairline-l { border-left: 1px solid rgba(14,14,16,0.18); }
+.hairline-r { border-right: 1px solid rgba(14,14,16,0.18); }
+
+.double-rule {
+  background-image:
+    linear-gradient(rgba(14,14,16,0.18), rgba(14,14,16,0.18)),
+    linear-gradient(rgba(14,14,16,0.18), rgba(14,14,16,0.18));
+  background-size: 100% 1px, 100% 1px;
+  background-position: top, bottom;
+  background-repeat: no-repeat;
+  padding: 0.45rem 0;
+}
+
+.col-rule > * + * {
+  border-left: 1px solid rgba(14,14,16,0.18);
+}
+/* Single-column phones: drop the column rules so cards stack flush. */
+@media (max-width: 767px) {
+  .col-rule > * + * { border-left: 0; border-top: 1px solid rgba(14,14,16,0.18); }
+}
+
+/* small-caps eyebrow */
+.eyebrow {
+  font-family: var(--font-mono), "JetBrains Mono", monospace;
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
+/* ---------- the seal — ink-stamped, not vermillion ---------- */
+.seal {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: "Noto Serif SC", serif;
+  font-weight: 700;
+  width: 2.6rem;
+  height: 2.6rem;
+  border-radius: 1px;
+  letter-spacing: -0.04em;
+  box-shadow:
+    inset 0 0 0 1px rgba(244,241,232,0.18),
+    inset 0 0 0 3px var(--ink);
+  transform: rotate(-1.5deg);
+  position: relative;
+}
+.seal::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  background:
+    radial-gradient(rgba(244,241,232,0.35) 1px, transparent 1px) 0 0 / 4px 4px;
+  mix-blend-mode: screen;
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+/* indigo-stamped variant — used sparingly for the brand mark / featured anchor */
+.seal-indigo {
+  background: var(--indigo);
+  box-shadow:
+    inset 0 0 0 1px rgba(244,241,232,0.22),
+    inset 0 0 0 3px var(--indigo);
+}
+
+/* ---------- pills / status ---------- */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.12rem 0.45rem;
+  font-family: var(--font-mono), monospace;
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid var(--paper-line);
+  background: var(--paper);
+  color: var(--ink);
+}
+.pill-hot { background: var(--indigo); color: var(--paper); border-color: var(--indigo); }
+.pill-new { background: var(--paper); color: var(--ink); border-color: var(--ink); }
+.pill-jade { background: var(--jade); color: var(--paper); border-color: var(--jade); }
+.pill-ochre { background: var(--ochre); color: var(--paper); border-color: var(--ochre); }
+.pill-ghost { background: transparent; color: var(--ink-mute); border-color: var(--ink-mute); }
+
+/* ---------- numbers ---------- */
+.tabular { font-variant-numeric: tabular-nums; }
+.bignum {
+  font-family: var(--font-display), "Fraunces", serif;
+  font-weight: 600;
+  font-size: 2.2rem;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- code blocks ---------- */
+pre.code-block {
+  background: #0e0e10;
+  color: #e6e8f0;
+  max-width: 100%;
+  min-width: 0;
+  padding: 1rem 1.1rem;
+  font-family: var(--font-mono), monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  border: 1px solid rgba(14,14,16,0.18);
+  overflow-x: auto;
+  position: relative;
+  white-space: pre;
+  -webkit-overflow-scrolling: touch;
+}
+pre.code-block::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--indigo) 0 70%, var(--jade) 70% 100%);
+}
+pre.code-block .prompt { color: var(--indigo); }
+pre.code-block .comment { color: #8b8f9a; }
+pre.code-block .key { color: var(--ochre); }
+
+@media (max-width: 640px) {
+  pre.code-block { font-size: 0.76rem; padding: 0.85rem 0.95rem; }
+}
+
+code.inline {
+  background: var(--paper-deep);
+  border: 1px solid rgba(14,14,16,0.14);
+  padding: 0.05rem 0.32rem;
+  font-family: var(--font-mono), monospace;
+  font-size: 0.85em;
+  border-radius: 2px;
+}
+
+/* ---------- nav link ---------- */
+.nav-link {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  position: relative;
+  padding: 0.25rem 0;
+}
+.nav-link::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: -2px;
+  height: 2px;
+  background: var(--indigo);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 180ms ease;
+}
+.nav-link:hover::after, .nav-link[aria-current="page"]::after { transform: scaleX(1); }
+
+/* ---------- ticker ---------- */
+.ticker-track {
+  display: inline-flex;
+  gap: 3rem;
+  white-space: nowrap;
+  animation: ticker 80s linear infinite;
+  padding-right: 3rem;
+}
+@keyframes ticker {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+/* ---------- decorative big CJK in margin ---------- */
+.margin-glyph {
+  font-family: "Noto Serif SC", serif;
+  font-weight: 700;
+  color: var(--ink);
+  opacity: 0.04;
+  font-size: 18rem;
+  line-height: 0.9;
+  pointer-events: none;
+  user-select: none;
+  position: absolute;
+}
+
+/* ---------- focus + selection ---------- */
+::selection { background: var(--indigo); color: var(--paper); }
+:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
+
+/* ---------- link reset ---------- */
+a { color: inherit; text-decoration: none; }
+a.body-link {
+  color: var(--ink);
+  background-image: linear-gradient(var(--indigo), var(--indigo));
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 100% 1px;
+  transition: background-size 180ms ease;
+}
+a.body-link:hover { background-size: 100% 6px; color: var(--ink); }
+
+/* ---------- mermaid container ----------
+   Mermaid renders its own SVG; we just give it room to breathe and a
+   horizontal scroll on phones so the diagram never overflows the viewport. */
+.mermaid-frame {
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.mermaid-frame svg {
+  display: block;
+  margin: 0 auto;
+  height: auto;
+  max-width: 100%;
+}
+
+/* ---------- mobile-only adjustments ---------- */
+@media (max-width: 640px) {
+  /* Big CJK margin glyph already hidden via tailwind's `hidden lg:block`,
+     but re-assert that nothing hits the viewport edge. */
+  .margin-glyph { display: none; }
+
+  /* Ticker text gets cramped on phones — shrink + tighten gaps */
+  .ticker-track { gap: 1.5rem; padding-right: 1.5rem; }
+}
+
+/* Anchor fallback; page-level scroll-mt utilities should be able to override it. */
+:where([id]) { scroll-margin-top: 5rem; }

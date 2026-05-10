@@ -366,6 +366,27 @@ pub struct ExecApprovalRequestEvent {
     pub available_decisions: Vec<ReviewDecision>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseChannel {
+    #[default]
+    Text,
+    Reasoning,
+}
+
+impl ResponseChannel {
+    pub const fn is_text(&self) -> bool {
+        matches!(self, ResponseChannel::Text)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalDecisionRequest {
+    pub decision: String,
+    #[serde(default)]
+    pub remember: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventFrame {
@@ -375,6 +396,8 @@ pub enum EventFrame {
     ResponseDelta {
         response_id: String,
         delta: String,
+        #[serde(default, skip_serializing_if = "ResponseChannel::is_text")]
+        channel: ResponseChannel,
     },
     ResponseEnd {
         response_id: String,

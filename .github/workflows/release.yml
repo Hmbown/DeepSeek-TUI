@@ -10,6 +10,9 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
@@ -50,8 +53,42 @@ jobs:
       - name: Lockfile drift guard
         run: git diff --exit-code -- Cargo.lock
 
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      source_ref: ${{ steps.release.outputs.source_ref }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve release source
+        id: release
+        shell: bash
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            tag="v${{ inputs.version }}"
+            git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
+            sha="$(git rev-list -n 1 "${tag}")"
+            source_ref="${tag}"
+          else
+            tag="${GITHUB_REF_NAME}"
+            sha="${GITHUB_SHA}"
+            source_ref="${GITHUB_REF_NAME}"
+          fi
+
+          if [ -z "${sha}" ]; then
+            echo "Unable to resolve release source for ${tag}" >&2
+            exit 1
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "source_ref=${source_ref}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
   build:
-    needs: parity
+    needs: [parity, resolve]
     # `parity` is gated to tag-push events. On manual `workflow_dispatch`,
     # parity is skipped, so let `build` proceed when parity either succeeded
     # or was skipped — but never when it actually failed or the run was
@@ -106,6 +143,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.source_ref }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -121,6 +160,8 @@ jobs:
           sudo apt-get install -y libdbus-1-dev pkg-config
       - name: Build
         shell: bash
+        env:
+          DEEPSEEK_BUILD_SHA: ${{ needs.resolve.outputs.sha }}
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Rename binary
         shell: bash
@@ -137,18 +178,22 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_name }}
   docker:
-    needs: build
+    needs: [build, resolve]
     if: ${{ !cancelled() && needs.build.result == 'success' }}
-    # Docker/GHCR is experimental and not a supported release channel yet.
-    # Keep binary GitHub Releases publishable while the arm64 image build path
-    # is hardened separately.
-    continue-on-error: true
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.source_ref }}
+          path: source
+      - name: Checkout release infrastructure
+        uses: actions/checkout@v4
+        with:
+          path: infra
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
@@ -159,31 +204,44 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Normalize image name
+        id: image
+        shell: bash
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: |
-            ghcr.io/${{ github.repository }}
+            ${{ steps.image.outputs.name }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern=v{{major}}
             type=ref,event=tag
+            type=semver,pattern={{version}},value=${{ needs.resolve.outputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.resolve.outputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=semver,pattern=v{{major}},value=${{ needs.resolve.outputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=v${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=latest
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: source
+          file: infra/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            DEEPSEEK_BUILD_SHA=${{ needs.resolve.outputs.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   release:
-    needs: build
-    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    needs: [build, docker, resolve]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.docker.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -191,6 +249,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: deepseek*
       - name: List artifacts
         run: find artifacts -type f
       - name: Generate checksum manifest
@@ -207,6 +266,7 @@ jobs:
           cat "${manifest}"
       - uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ needs.resolve.outputs.tag }}
           files: artifacts/*/*
           prerelease: false
           body: |
@@ -219,6 +279,17 @@ jobs:
             ```
 
             The wrapper downloads both binaries from this Release and places them in the same directory.
+
+            ### Docker / GHCR
+
+            ```bash
+            docker run --rm -it \
+              -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+              -v ~/.deepseek:/home/deepseek/.deepseek \
+              ghcr.io/hmbown/deepseek-tui:${{ needs.resolve.outputs.tag }}
+            ```
+
+            The image ships the `deepseek` dispatcher and `deepseek-tui` runtime. The `latest` tag is also updated on release.
 
             ### Cargo (Linux / macOS)
 

@@ -103,12 +103,18 @@ impl SkillRegistry {
     #[must_use]
     pub fn discover(dir: &Path) -> Self {
         let mut registry = Self::default();
-        if !dir.exists() {
+        let Ok(canonical_dir) = fs::canonicalize(dir) else {
+            return registry;
+        };
+        if !canonical_dir.is_dir() {
             return registry;
         }
 
         let mut visited = HashSet::new();
         Self::discover_recursive(dir, 0, &mut registry, &mut visited);
+        registry
+            .skills
+            .sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
         registry
     }
 
@@ -248,7 +254,17 @@ impl SkillRegistry {
                     continue;
                 }
                 if let Some((key, value)) = line.split_once(':') {
-                    metadata.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
+                    let value = value.trim();
+                    let unquoted = if (value.starts_with('"')
+                        && value.ends_with('"')
+                        && value.len() >= 2)
+                        || (value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2)
+                    {
+                        &value[1..value.len() - 1]
+                    } else {
+                        value
+                    };
+                    metadata.insert(key.trim().to_ascii_lowercase(), unquoted.to_string());
                 }
             }
 
@@ -393,8 +409,12 @@ pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
 
 fn existing_skill_dirs(candidates: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     let mut out = Vec::new();
+    let mut seen = HashSet::new();
     for path in candidates {
-        if path.is_dir() && !out.iter().any(|p: &PathBuf| p == &path) {
+        let Ok(canonical_path) = fs::canonicalize(&path) else {
+            continue;
+        };
+        if canonical_path.is_dir() && seen.insert(canonical_path) {
             out.push(path);
         }
     }
@@ -413,6 +433,31 @@ fn existing_skill_dirs(candidates: impl IntoIterator<Item = PathBuf>) -> Vec<Pat
 pub fn discover_in_workspace(workspace: &Path) -> SkillRegistry {
     let mut merged = SkillRegistry::default();
     for dir in skills_directories(workspace) {
+        let registry = SkillRegistry::discover(&dir);
+        for skill in registry.skills {
+            if !merged.skills.iter().any(|s| s.name == skill.name) {
+                merged.skills.push(skill);
+            }
+        }
+        for warning in registry.warnings {
+            merged.warnings.push(warning);
+        }
+    }
+    merged
+}
+
+/// Discover skills from the workspace search set plus the configured install
+/// directory. Workspace/global directories keep their normal precedence; a
+/// custom configured directory is appended when it is outside that set.
+#[must_use]
+pub fn discover_for_workspace_and_dir(workspace: &Path, skills_dir: &Path) -> SkillRegistry {
+    let mut dirs = skills_directories(workspace);
+    if skills_dir.is_dir() && !dirs.iter().any(|p| p == skills_dir) {
+        dirs.push(skills_dir.to_path_buf());
+    }
+
+    let mut merged = SkillRegistry::default();
+    for dir in dirs {
         let registry = SkillRegistry::discover(&dir);
         for skill in registry.skills {
             if !merged.skills.iter().any(|s| s.name == skill.name) {
@@ -454,9 +499,6 @@ fn render_skills_block(registry: &SkillRegistry) -> Option<String> {
         return None;
     }
 
-    let mut skills = registry.list().to_vec();
-    skills.sort_by(|a, b| a.name.cmp(&b.name));
-
     let mut out = String::new();
     out.push_str("## Skills\n");
     out.push_str(
@@ -468,7 +510,7 @@ instructions when using a specific skill.\n\n",
     out.push_str("### Available skills\n");
 
     let mut omitted = 0usize;
-    for skill in skills {
+    for skill in registry.list() {
         // Use the real on-disk path captured at discovery — the directory
         // name can differ from the frontmatter `name` for community
         // installs, in which case `<dir>/<name>/SKILL.md` would not exist
@@ -725,6 +767,48 @@ mod tests {
         assert!(
             rendered.chars().count() < super::MAX_AVAILABLE_SKILLS_CHARS + 4_000,
             "rendered length should stay near the budget"
+        );
+    }
+
+    #[test]
+    fn render_skills_block_preserves_registry_precedence_under_prompt_budget() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut registry = super::SkillRegistry::default();
+        registry.skills.push(super::Skill {
+            name: "workspace-priority".to_string(),
+            description: "must survive truncation".to_string(),
+            body: "body".to_string(),
+            path: tmpdir
+                .path()
+                .join(".claude")
+                .join("skills")
+                .join("workspace-priority")
+                .join("SKILL.md"),
+        });
+
+        let big_desc = "y".repeat(super::MAX_SKILL_DESCRIPTION_CHARS - 20);
+        for i in 0..200 {
+            registry.skills.push(super::Skill {
+                name: format!("aaa-global-{i:03}"),
+                description: big_desc.clone(),
+                body: "body".to_string(),
+                path: tmpdir
+                    .path()
+                    .join(".deepseek")
+                    .join("skills")
+                    .join(format!("aaa-global-{i:03}"))
+                    .join("SKILL.md"),
+            });
+        }
+
+        let rendered = super::render_skills_block(&registry).expect("skill context");
+        assert!(
+            rendered.contains("workspace-priority"),
+            "higher-precedence workspace skills must not be reordered behind globals:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("additional skills omitted from this prompt budget"),
+            "fixture should exceed prompt budget"
         );
     }
 

@@ -20,10 +20,7 @@ use tempfile::TempDir;
 fn format_resume_hint_uses_canonical_resume_command() {
     assert_eq!(
         format_resume_hint(Some("019dd9d6-4f44-7c83-9863-59674a12b827")),
-        Some(
-            "To continue this session, run deepseek resume 019dd9d6-4f44-7c83-9863-59674a12b827"
-                .to_string()
-        )
+        Some("To continue this session, run deepseek --continue".to_string())
     );
 }
 
@@ -31,6 +28,80 @@ fn format_resume_hint_uses_canonical_resume_command() {
 fn format_resume_hint_omits_missing_session_id() {
     assert_eq!(format_resume_hint(None), None);
     assert_eq!(format_resume_hint(Some("   ")), None);
+}
+
+#[test]
+fn focus_gained_forces_terminal_viewport_recapture() {
+    assert!(terminal_event_needs_viewport_recapture(&Event::FocusGained));
+    assert!(!terminal_event_needs_viewport_recapture(&Event::FocusLost));
+}
+
+// ANSI byte sequences are only written on platforms where crossterm uses the
+// ANSI execution path. On Windows the same logical commands route through the
+// WinAPI console backend and never reach the writer, so byte-level assertions
+// here only make sense on non-Windows targets.
+#[cfg(not(windows))]
+#[test]
+fn recover_terminal_modes_emits_expected_csi_sequences_with_gating() {
+    let mut all_on: Vec<u8> = Vec::new();
+    let mut all_off: Vec<u8> = Vec::new();
+    recover_terminal_modes(&mut all_on, true, true);
+    recover_terminal_modes(&mut all_off, false, false);
+    let on = String::from_utf8_lossy(&all_on);
+    let off = String::from_utf8_lossy(&all_off);
+
+    assert!(
+        on.contains("\x1b[?1004h") && off.contains("\x1b[?1004h"),
+        "EnableFocusChange must be re-armed regardless of gating"
+    );
+    assert!(
+        on.contains("\x1b[>1u") && off.contains("\x1b[>1u"),
+        "Kitty keyboard disambiguation flag must be re-pushed regardless of gating"
+    );
+
+    assert!(
+        on.contains("\x1b[?1000h"),
+        "EnableMouseCapture missing when use_mouse_capture=true"
+    );
+    assert!(
+        !off.contains("\x1b[?1000h"),
+        "EnableMouseCapture must be gated by use_mouse_capture"
+    );
+
+    assert!(
+        on.contains("\x1b[?2004h"),
+        "EnableBracketedPaste missing when use_bracketed_paste=true"
+    );
+    assert!(
+        !off.contains("\x1b[?2004h"),
+        "EnableBracketedPaste must be gated by use_bracketed_paste"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn recover_terminal_modes_runs_without_panic_on_windows() {
+    let mut buf: Vec<u8> = Vec::new();
+    recover_terminal_modes(&mut buf, true, true);
+    recover_terminal_modes(&mut buf, false, false);
+}
+
+#[test]
+fn terminal_origin_reset_resets_scroll_region_origin_and_clears() {
+    assert!(
+        TERMINAL_ORIGIN_RESET.starts_with(b"\x1b[r\x1b[?6l"),
+        "must reset scroll margins and origin mode before repaint"
+    );
+    assert!(
+        TERMINAL_ORIGIN_RESET.ends_with(b"\x1b[H\x1b[2J\x1b[3J"),
+        "must home the cursor and clear the viewport"
+    );
+    assert!(
+        TERMINAL_ORIGIN_RESET
+            .windows(b"\x1b[3J".len())
+            .any(|sequence| sequence == b"\x1b[3J"),
+        "must erase saved scrollback when reclaiming the viewport"
+    );
 }
 
 #[test]
@@ -59,6 +130,17 @@ fn composer_newline_shortcuts_do_not_steal_ctrl_enter() {
         KeyCode::Enter,
         KeyModifiers::CONTROL | KeyModifiers::SHIFT,
     )));
+}
+
+#[test]
+fn word_cursor_modifier_accepts_control_and_alt() {
+    assert!(is_word_cursor_modifier(KeyModifiers::CONTROL));
+    assert!(is_word_cursor_modifier(KeyModifiers::ALT));
+    assert!(is_word_cursor_modifier(
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT
+    ));
+    assert!(!is_word_cursor_modifier(KeyModifiers::NONE));
+    assert!(!is_word_cursor_modifier(KeyModifiers::SHIFT));
 }
 
 #[test]
@@ -139,7 +221,7 @@ fn selection_to_text_handles_multiline_and_reversed_endpoints() {
         column: 6,
     });
 
-    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\n▏ gam"));
+    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\ngam"));
 }
 
 #[test]
@@ -193,10 +275,19 @@ fn selection_to_text_copies_rendered_transcript_block() {
 
     let selected = selection_to_text(&app).expect("selection text");
     assert!(selected.contains("Note copy system"), "{selected:?}");
-    assert!(selected.contains("▎ copy user"), "{selected:?}");
+    assert!(selected.contains("copy user"), "{selected:?}");
     assert!(selected.contains("copy thinking"), "{selected:?}");
     assert!(selected.contains("tool output line"), "{selected:?}");
-    assert!(selected.contains("● copy assistant"), "{selected:?}");
+    assert!(selected.contains("copy assistant"), "{selected:?}");
+    // #1163: tool-card middle lines are rendered with a `│ ` left rail
+    // glyph, but that decoration must not leak into copied text. Assert
+    // no isolated rail glyph survives at the start of any line.
+    for (idx, line) in selected.lines().enumerate() {
+        assert!(
+            !line.starts_with("\u{2502} "),
+            "line {idx} retained tool-card rail prefix: {line:?}"
+        );
+    }
 }
 
 #[test]
@@ -300,6 +391,372 @@ fn jump_to_latest_button_click_scrolls_to_tail() {
     assert!(app.viewport.jump_to_latest_button_area.is_none());
     assert!(!app.user_scrolled_during_stream);
     assert!(!app.viewport.transcript_selection.dragging);
+}
+
+/// Clicking the transcript scrollbar gutter starts a scrollbar drag (not
+/// text selection) so the visible thumb remains interactive for users who
+/// prefer mouse-based navigation.
+#[test]
+fn transcript_scrollbar_gutter_starts_scrollbar_drag() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Assistant {
+        content: "alpha beta".to_string(),
+        streaming: false,
+    }];
+    app.resync_history_revisions();
+    app.viewport.transcript_cache.ensure(
+        &app.history,
+        &app.history_revisions,
+        80,
+        app.transcript_render_options(),
+    );
+    app.viewport.last_transcript_area = Some(Rect {
+        x: 2,
+        y: 5,
+        width: 20,
+        height: 10,
+    });
+    app.viewport.last_transcript_visible = 10;
+    app.viewport.last_transcript_total = 110;
+    app.viewport.transcript_scroll = TranscriptScroll::to_bottom();
+    app.user_scrolled_during_stream = false;
+
+    // Left-down on the scrollbar gutter (column == right edge) starts a
+    // scrollbar drag, not a transcript selection.
+    let events = handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 21,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(events.is_empty());
+    assert!(
+        app.viewport.transcript_scrollbar_dragging,
+        "gutter click should start scrollbar drag"
+    );
+    assert!(
+        !app.viewport.transcript_selection.dragging,
+        "gutter click should NOT start text selection"
+    );
+
+    // Drag moves the viewport (no assertion on exact scroll position — the
+    // mapping depends on area geometry).
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 21,
+            row: 14,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert!(app.viewport.transcript_scrollbar_dragging);
+
+    // Left-up ends the scrollbar drag.
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 21,
+            row: 14,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(!app.viewport.transcript_scrollbar_dragging);
+}
+
+#[test]
+fn left_down_inside_transcript_starts_selection() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Assistant {
+        content: "alpha beta".to_string(),
+        streaming: false,
+    }];
+    app.resync_history_revisions();
+    app.viewport.last_transcript_area = Some(Rect {
+        x: 2,
+        y: 5,
+        width: 20,
+        height: 10,
+    });
+    app.viewport.last_transcript_visible = 10;
+    app.viewport.last_transcript_total = 110;
+
+    let events = handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(events.is_empty());
+    assert!(app.viewport.transcript_selection.dragging);
+}
+
+#[test]
+fn drag_below_viewport_arms_autoscroll_down() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Assistant {
+        content: "alpha beta".to_string(),
+        streaming: false,
+    }];
+    app.resync_history_revisions();
+    app.viewport.transcript_cache.ensure(
+        &app.history,
+        &app.history_revisions,
+        80,
+        app.transcript_render_options(),
+    );
+    app.viewport.last_transcript_area = Some(Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 8,
+    });
+    app.viewport.last_transcript_total = app.viewport.transcript_cache.total_lines();
+    app.viewport.transcript_selection.dragging = true;
+    app.viewport.transcript_selection.anchor = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 0,
+    });
+    app.viewport.transcript_selection.head = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 0,
+    });
+
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 4,
+            row: 12, // below area.y + area.height (= 8)
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    let state = app.viewport.selection_autoscroll.expect("autoscroll armed");
+    assert_eq!(state.direction, 1);
+    assert_eq!(state.column, 4);
+}
+
+#[test]
+fn drag_above_viewport_arms_autoscroll_up() {
+    let mut app = create_test_app();
+    app.viewport.last_transcript_area = Some(Rect {
+        x: 5,
+        y: 4,
+        width: 40,
+        height: 6,
+    });
+    app.viewport.transcript_selection.dragging = true;
+    app.viewport.transcript_selection.anchor = Some(TranscriptSelectionPoint {
+        line_index: 5,
+        column: 0,
+    });
+    app.viewport.transcript_selection.head = Some(TranscriptSelectionPoint {
+        line_index: 5,
+        column: 0,
+    });
+
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 50, // outside horizontally too — clamped to area.x + width - 1
+            row: 1,     // above area.y (= 4)
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    let state = app.viewport.selection_autoscroll.expect("autoscroll armed");
+    assert_eq!(state.direction, -1);
+    assert_eq!(state.column, 5 + 40 - 1);
+}
+
+#[test]
+fn drag_back_inside_disarms_autoscroll() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Assistant {
+        content: "alpha beta".to_string(),
+        streaming: false,
+    }];
+    app.resync_history_revisions();
+    app.viewport.transcript_cache.ensure(
+        &app.history,
+        &app.history_revisions,
+        80,
+        app.transcript_render_options(),
+    );
+    app.viewport.last_transcript_area = Some(Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 8,
+    });
+    app.viewport.last_transcript_total = app.viewport.transcript_cache.total_lines();
+    app.viewport.transcript_selection.dragging = true;
+    app.viewport.transcript_selection.anchor = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 0,
+    });
+    app.viewport.transcript_selection.head = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 0,
+    });
+    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
+        direction: 1,
+        column: 4,
+        next_tick: Instant::now(),
+    });
+
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 6,
+            row: 0, // inside area
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(app.viewport.selection_autoscroll.is_none());
+    let head = app
+        .viewport
+        .transcript_selection
+        .head
+        .expect("head present");
+    assert_eq!(head.column, 6);
+}
+
+#[test]
+fn mouse_up_clears_selection_autoscroll() {
+    let mut app = create_test_app();
+    app.viewport.transcript_selection.dragging = true;
+    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
+        direction: -1,
+        column: 0,
+        next_tick: Instant::now(),
+    });
+
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(app.viewport.selection_autoscroll.is_none());
+    assert!(!app.viewport.transcript_selection.dragging);
+}
+
+#[test]
+fn tick_selection_autoscroll_advances_pending_scroll_when_due() {
+    let mut app = create_test_app();
+    app.viewport.last_transcript_area = Some(Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 8,
+    });
+    app.viewport.last_transcript_total = 200;
+    app.viewport.transcript_selection.dragging = true;
+    app.viewport.transcript_selection.anchor = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 0,
+    });
+    app.viewport.transcript_selection.head = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 0,
+    });
+    let earlier = Instant::now() - Duration::from_millis(100);
+    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
+        direction: 1,
+        column: 10,
+        next_tick: earlier,
+    });
+
+    tick_selection_autoscroll(&mut app);
+
+    assert_eq!(app.viewport.pending_scroll_delta, 1);
+    assert!(app.user_scrolled_during_stream);
+    let next_tick = app
+        .viewport
+        .selection_autoscroll
+        .expect("still armed")
+        .next_tick;
+    assert!(next_tick > earlier);
+    let head = app
+        .viewport
+        .transcript_selection
+        .head
+        .expect("head extended");
+    // Edge row for direction = +1 is the bottom of area (height - 1 = 7),
+    // so head.line_index should equal last_transcript_top + 7.
+    assert_eq!(head.line_index, 7);
+    assert_eq!(head.column, 10);
+}
+
+#[test]
+fn tick_selection_autoscroll_respects_cadence() {
+    let mut app = create_test_app();
+    app.viewport.last_transcript_area = Some(Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 8,
+    });
+    app.viewport.transcript_selection.dragging = true;
+    let future = Instant::now() + Duration::from_secs(60);
+    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
+        direction: 1,
+        column: 0,
+        next_tick: future,
+    });
+
+    tick_selection_autoscroll(&mut app);
+
+    assert_eq!(app.viewport.pending_scroll_delta, 0);
+    assert_eq!(
+        app.viewport
+            .selection_autoscroll
+            .expect("still armed")
+            .next_tick,
+        future,
+        "next_tick must not advance before its deadline"
+    );
+}
+
+#[test]
+fn tick_selection_autoscroll_clears_when_drag_ended() {
+    let mut app = create_test_app();
+    app.viewport.last_transcript_area = Some(Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 8,
+    });
+    app.viewport.transcript_selection.dragging = false;
+    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
+        direction: 1,
+        column: 0,
+        next_tick: Instant::now() - Duration::from_millis(100),
+    });
+
+    tick_selection_autoscroll(&mut app);
+
+    assert!(app.viewport.selection_autoscroll.is_none());
+    assert_eq!(app.viewport.pending_scroll_delta, 0);
 }
 
 #[test]
@@ -757,7 +1214,7 @@ fn active_tool_status_label_summarizes_live_tool_group() {
     assert!(label.contains("run cargo test"));
     assert!(label.contains("1 active"));
     assert!(label.contains("1 done"));
-    assert!(label.contains("Alt+V"));
+    assert!(label.contains(tool_details_shortcut_label()));
 }
 
 #[test]
@@ -950,6 +1407,61 @@ async fn dispatch_user_message_failed_send_clears_loading_state() {
         "failed dispatch must not leave the composer in a permanent busy state"
     );
     assert!(app.last_send_at.is_none());
+    assert!(app.dispatch_started_at.is_none());
+}
+
+#[test]
+fn turn_liveness_watchdog_clears_stale_dispatch() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.dispatch_started_at =
+        Some(Instant::now() - DISPATCH_WATCHDOG_TIMEOUT - Duration::from_millis(1));
+
+    let recovered = reconcile_turn_liveness(&mut app, Instant::now(), false);
+
+    assert!(recovered);
+    assert!(!app.is_loading);
+    assert!(app.dispatch_started_at.is_none());
+    let toast = app.status_toasts.back().expect("watchdog toast");
+    assert_eq!(toast.level, StatusToastLevel::Error);
+    assert!(toast.text.contains("Turn dispatch timed out"));
+}
+
+#[test]
+fn turn_liveness_reconciles_completed_busy_state() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.runtime_turn_status = Some("completed".to_string());
+    app.dispatch_started_at = Some(Instant::now());
+
+    let recovered = reconcile_turn_liveness(&mut app, Instant::now(), false);
+
+    assert!(recovered);
+    assert!(!app.is_loading);
+    assert!(app.dispatch_started_at.is_none());
+    let toast = app.status_toasts.back().expect("reconciliation toast");
+    assert_eq!(toast.level, StatusToastLevel::Warning);
+    assert!(
+        toast
+            .text
+            .contains("Recovered from an inconsistent busy state")
+    );
+}
+
+#[test]
+fn turn_liveness_leaves_active_turn_running() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.runtime_turn_status = Some("in_progress".to_string());
+    app.dispatch_started_at =
+        Some(Instant::now() - DISPATCH_WATCHDOG_TIMEOUT - Duration::from_secs(10));
+
+    let recovered = reconcile_turn_liveness(&mut app, Instant::now(), false);
+
+    assert!(!recovered);
+    assert!(app.is_loading);
+    assert!(app.dispatch_started_at.is_some());
+    assert!(app.status_toasts.is_empty());
 }
 
 #[test]
@@ -1298,9 +1810,20 @@ fn footer_auxiliary_spans_show_cache_when_compact() {
     app.session.last_prompt_cache_miss_tokens = Some(12_000);
     app.session.session_cost = 12.34;
 
-    let compact = spans_text(&footer_auxiliary_spans(&app, 14));
-    assert!(compact.contains("cache"));
+    let compact = spans_text(&footer_auxiliary_spans(&app, 48));
+    assert!(compact.contains("Cache: 75.0% hit"));
     assert!(!compact.contains('$'));
+}
+
+#[test]
+fn footer_auxiliary_spans_show_cache_unavailable_when_provider_omits_cache_fields() {
+    let mut app = create_test_app();
+    app.session.last_prompt_tokens = Some(48_000);
+    app.session.last_completion_tokens = Some(2_000);
+
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 72));
+
+    assert!(roomy.contains("Cache: unavailable"));
 }
 
 #[test]
@@ -1311,8 +1834,8 @@ fn footer_auxiliary_spans_show_cache_and_cost_when_roomy() {
     app.session.last_prompt_cache_miss_tokens = Some(12_000);
     app.session.session_cost = 12.34;
 
-    let roomy = spans_text(&footer_auxiliary_spans(&app, 32));
-    assert!(roomy.contains("cache hit 75%"));
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 72));
+    assert!(roomy.contains("Cache: 75.0% hit | hit 36000 | miss 12000"));
     assert!(roomy.contains("$12.34"));
     assert!(
         !roomy.contains("ctx"),
@@ -1582,6 +2105,24 @@ fn test_esc_closes_slash_menu_before_other_actions() {
 }
 
 #[test]
+fn history_arrow_does_not_steal_open_menus() {
+    let mut app = create_test_app();
+    app.input_history.push("previous prompt".to_string());
+    app.input = "/".to_string();
+    app.cursor_position = 1;
+
+    assert!(!handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        true,
+        false,
+    ));
+
+    assert_eq!(app.input, "/");
+    assert!(app.history_index.is_none());
+}
+
+#[test]
 fn test_ctrl_c_cancels_streaming_sets_status() {
     let mut app = create_test_app();
     app.is_loading = true;
@@ -1677,6 +2218,39 @@ fn visible_slash_menu_entries_excludes_removed_commands() {
     assert!(entries.iter().any(|entry| entry.name == "/links"));
     assert!(!entries.iter().any(|entry| entry.name == "/set"));
     assert!(!entries.iter().any(|entry| entry.name == "/deepseek"));
+}
+
+#[test]
+fn slash_menu_up_wraps_from_first_to_last() {
+    let mut app = create_test_app();
+    app.input = "/".to_string();
+    app.cursor_position = 1;
+    app.input_history.push("previous prompt".to_string());
+
+    let entries = visible_slash_menu_entries(&app, 128);
+    assert!(entries.len() > 1);
+
+    app.slash_menu_selected = 0;
+    select_previous_slash_menu_entry(&mut app, entries.len());
+
+    assert_eq!(app.slash_menu_selected, entries.len() - 1);
+    assert_eq!(app.input, "/");
+}
+
+#[test]
+fn slash_menu_down_wraps_from_last_to_first() {
+    let mut app = create_test_app();
+    app.input = "/".to_string();
+    app.cursor_position = 1;
+
+    let entries = visible_slash_menu_entries(&app, 128);
+    assert!(entries.len() > 1);
+
+    app.slash_menu_selected = entries.len() - 1;
+    select_next_slash_menu_entry(&mut app, entries.len());
+
+    assert_eq!(app.slash_menu_selected, 0);
+    assert_eq!(app.input, "/");
 }
 
 #[test]
@@ -2031,10 +2605,24 @@ fn detail_target_prefers_visible_tool_card() {
     app.viewport.last_transcript_visible = 6;
 
     assert_eq!(detail_target_cell_index(&app), Some(1));
+    let expected = format!("{} details: file_search", tool_details_shortcut_label());
     assert_eq!(
         selected_detail_footer_label(&app).as_deref(),
-        Some("Alt+V details: file_search")
+        Some(expected.as_str())
     );
+}
+
+#[test]
+fn macos_option_v_glyph_is_treated_as_details_shortcut_only_on_macos() {
+    let option_v = KeyEvent::new(KeyCode::Char('\u{221A}'), KeyModifiers::NONE);
+    assert!(is_macos_option_v_legacy_key_for_platform(&option_v, true));
+    assert!(!is_macos_option_v_legacy_key_for_platform(&option_v, false));
+
+    let modified = KeyEvent::new(KeyCode::Char('\u{221A}'), KeyModifiers::SHIFT);
+    assert!(!is_macos_option_v_legacy_key_for_platform(&modified, true));
+
+    let plain_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE);
+    assert!(!is_macos_option_v_legacy_key_for_platform(&plain_v, true));
 }
 
 #[test]
@@ -3079,6 +3667,36 @@ fn flush_active_cell_finalizes_unclosed_thinking_block() {
 }
 
 #[test]
+fn engine_error_finalizes_active_thinking_block() {
+    use crate::error_taxonomy::StreamError;
+
+    let mut app = create_test_app();
+    let entry_idx = ensure_streaming_thinking_active_entry(&mut app);
+    app.thinking_started_at = Some(Instant::now());
+    app.streaming_state.start_thinking(0, None);
+    app.streaming_state.push_content(0, "partial reasoning");
+
+    apply_engine_error_to_app(
+        &mut app,
+        StreamError::Stall { timeout_secs: 60 }.into_envelope(),
+    );
+
+    let active = app.active_cell.as_ref().expect("active thinking remains");
+    let HistoryCell::Thinking {
+        content, streaming, ..
+    } = &active.entries()[entry_idx]
+    else {
+        panic!("expected active thinking cell");
+    };
+    assert!(!*streaming, "error path must stop the thinking spinner");
+    assert!(
+        content.contains("partial reasoning"),
+        "error path must drain pending thinking tail"
+    );
+    assert!(app.streaming_thinking_active_entry.is_none());
+}
+
+#[test]
 fn second_thinking_block_appends_new_entry_in_same_active_cell() {
     // Real V4 turns can emit Thinking → Tool → Thinking → Tool before any
     // prose; the second thinking block should land as a fresh entry inside
@@ -3116,6 +3734,47 @@ fn second_thinking_block_appends_new_entry_in_same_active_cell() {
         app.history.is_empty(),
         "the group still hasn't flushed — no prose yet"
     );
+}
+
+#[test]
+fn new_thinking_block_drains_pending_tail_from_previous_block() {
+    let mut app = create_test_app();
+
+    assert!(!start_streaming_thinking_block(&mut app));
+    let first_idx = app
+        .streaming_thinking_active_entry
+        .expect("first thinking entry active");
+    app.reasoning_buffer.push_str("first tail");
+    app.streaming_state.push_content(0, "first tail");
+
+    assert!(start_streaming_thinking_block(&mut app));
+    let second_idx = app
+        .streaming_thinking_active_entry
+        .expect("second thinking entry active");
+
+    let active = app.active_cell.as_ref().expect("active cell exists");
+    assert_ne!(first_idx, second_idx);
+
+    let HistoryCell::Thinking {
+        content, streaming, ..
+    } = &active.entries()[first_idx]
+    else {
+        panic!("expected first thinking cell");
+    };
+    assert!(!*streaming, "previous thinking block should be finalized");
+    assert!(
+        content.contains("first tail"),
+        "pending text must survive a new ThinkingStarted event"
+    );
+
+    assert!(matches!(
+        active.entries()[second_idx],
+        HistoryCell::Thinking {
+            streaming: true,
+            ..
+        }
+    ));
+    assert_eq!(app.last_reasoning.as_deref(), Some("first tail"));
 }
 
 // ---- per-child prompt wiring ----
@@ -3516,6 +4175,27 @@ fn render_footer_from_drops_only_unselected_clusters() {
     );
 }
 
+#[test]
+fn render_footer_from_git_branch_item_renders_workspace_branch() {
+    let repo = init_git_repo();
+    let checkout = Command::new("git")
+        .args(["checkout", "-b", "feature/statusline"])
+        .current_dir(repo.path())
+        .output()
+        .expect("git checkout should run");
+    assert!(
+        checkout.status.success(),
+        "git checkout failed: {}",
+        String::from_utf8_lossy(&checkout.stderr)
+    );
+
+    let mut app = create_test_app();
+    app.workspace = repo.path().to_path_buf();
+
+    let props = render_footer_from(&app, &[crate::config::StatusItem::GitBranch], None);
+    assert_eq!(spans_text(&props.cache), "feature/statusline");
+}
+
 /// Regression for issue #244: visible session spend must not decrease.
 /// Sub-agent token usage events arrive out of order and may be reconciled
 /// later (cache adjustments, provisional → final swap). The displayed total
@@ -3617,35 +4297,55 @@ fn checklist_write_renders_dedicated_card() {
     );
 }
 
-// ---- scroll_with_arrows ----
+// ---- composer arrow history ----
 
 #[test]
-fn scroll_with_arrows_returns_true_when_input_empty() {
-    let app = create_test_app();
-    assert!(
-        super::should_scroll_with_arrows(&app),
-        "empty composer: Up/Down should scroll transcript"
-    );
+fn history_arrow_handles_empty_input() {
+    let mut app = create_test_app();
+    app.input_history.push("previous prompt".to_string());
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
+    assert_eq!(app.input, "previous prompt");
 }
 
 #[test]
-fn scroll_with_arrows_returns_true_when_input_only_whitespace() {
+fn history_arrow_handles_whitespace_input() {
     let mut app = create_test_app();
     app.input = "   ".to_string();
-    assert!(
-        super::should_scroll_with_arrows(&app),
-        "whitespace-only composer: Up/Down should scroll transcript"
-    );
+    app.cursor_position = app.input.chars().count();
+    app.input_history.push("previous prompt".to_string());
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
+    assert_eq!(app.input, "previous prompt");
 }
 
 #[test]
-fn scroll_with_arrows_returns_false_when_input_has_text() {
+fn history_arrow_handles_nonempty_input() {
     let mut app = create_test_app();
     app.input = "hello".to_string();
-    assert!(
-        !super::should_scroll_with_arrows(&app),
-        "text in composer: Up/Down should navigate history"
-    );
+    app.cursor_position = app.input.chars().count();
+    app.input_history.push("previous prompt".to_string());
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
+    assert_eq!(app.input, "previous prompt");
 }
 
 #[test]

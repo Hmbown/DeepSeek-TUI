@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 #[cfg(unix)]
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
@@ -250,6 +250,10 @@ pub struct NetworkPolicyToml {
     /// Hosts that are always denied. Deny entries win over allow entries.
     #[serde(default)]
     pub deny: Vec<String>,
+    /// Hostnames whose DNS may resolve to fake-IP/private proxy ranges in an
+    /// explicitly trusted proxy setup. Literal IP URLs remain blocked.
+    #[serde(default)]
+    pub proxy: Vec<String>,
     /// Whether to record one audit-log line per outbound network call.
     #[serde(default = "default_network_audit")]
     pub audit: bool,
@@ -269,6 +273,7 @@ impl Default for NetworkPolicyToml {
             default: default_network_decision(),
             allow: Vec::new(),
             deny: Vec::new(),
+            proxy: Vec::new(),
             audit: default_network_audit(),
         }
     }
@@ -444,6 +449,17 @@ impl ConfigToml {
             }
             _ => self.extras.get(key).map(toml::Value::to_string),
         }
+    }
+
+    #[must_use]
+    pub fn get_display_value(&self, key: &str) -> Option<String> {
+        self.get_value(key).map(|value| {
+            if is_sensitive_config_key(key) {
+                redact_secret(&value)
+            } else {
+                value
+            }
+        })
     }
 
     pub fn set_value(&mut self, key: &str, value: &str) -> Result<()> {
@@ -819,7 +835,8 @@ impl ConfigToml {
     ///
     /// This method keeps library callers prompt-free: CLI flag → config file
     /// → environment. Call `resolve_runtime_options_with_secrets` when a
-    /// user-facing dispatcher should recover OS-keyring credentials.
+    /// user-facing dispatcher should recover credentials from the configured
+    /// secret store.
     #[must_use]
     pub fn resolve_runtime_options(&self, cli: &CliRuntimeOverrides) -> ResolvedRuntimeOptions {
         let no_keyring = Secrets::new(std::sync::Arc::new(
@@ -830,7 +847,7 @@ impl ConfigToml {
 
     /// Resolve runtime options using an explicit secrets façade.
     ///
-    /// API-key precedence is **CLI flag → config-file → keyring → environment**.
+    /// API-key precedence is **CLI flag → config-file → secret store → environment**.
     #[must_use]
     pub fn resolve_runtime_options_with_secrets(
         &self,
@@ -853,8 +870,8 @@ impl ConfigToml {
         // CLI flag wins outright. Otherwise: config-file → injected secrets/env.
         // This makes `deepseek auth set` a reliable fix even when the user's
         // shell still exports an old key. When the file is empty, the injected
-        // secrets façade recovers older OS-keyring credentials before falling
-        // back to ambient env.
+        // secrets façade recovers configured secret-store credentials before
+        // falling back to ambient env.
         let from_file = provider_cfg.api_key.clone().or(root_deepseek_api_key);
         let (api_key, api_key_source) = if let Some(value) = cli.api_key.clone() {
             (Some(value), Some(RuntimeApiKeySource::Cli))
@@ -888,6 +905,11 @@ impl ConfigToml {
                 ProviderKind::Ollama => DEFAULT_OLLAMA_BASE_URL.to_string(),
             });
 
+        let explicit_model = cli.model.is_some()
+            || env.model.is_some()
+            || provider_cfg.model.is_some()
+            || root_deepseek_model.is_some()
+            || self.model.is_some();
         let model = cli
             .model
             .clone()
@@ -895,18 +917,13 @@ impl ConfigToml {
             .or_else(|| provider_cfg.model.clone())
             .or(root_deepseek_model)
             .or_else(|| self.model.clone())
-            .unwrap_or_else(|| match provider {
-                ProviderKind::Deepseek => DEFAULT_DEEPSEEK_MODEL.to_string(),
-                ProviderKind::NvidiaNim => DEFAULT_NVIDIA_NIM_MODEL.to_string(),
-                ProviderKind::Openai => DEFAULT_OPENAI_MODEL.to_string(),
-                ProviderKind::Openrouter => DEFAULT_OPENROUTER_MODEL.to_string(),
-                ProviderKind::Novita => DEFAULT_NOVITA_MODEL.to_string(),
-                ProviderKind::Fireworks => DEFAULT_FIREWORKS_MODEL.to_string(),
-                ProviderKind::Sglang => DEFAULT_SGLANG_MODEL.to_string(),
-                ProviderKind::Vllm => DEFAULT_VLLM_MODEL.to_string(),
-                ProviderKind::Ollama => DEFAULT_OLLAMA_MODEL.to_string(),
-            });
-        let model = normalize_model_for_provider(provider, &model);
+            .unwrap_or_else(|| default_model_for_provider(provider).to_string());
+        let model =
+            if explicit_model && provider_preserves_custom_base_url_model(provider, &base_url) {
+                model.trim().to_string()
+            } else {
+                normalize_model_for_provider(provider, &model)
+            };
 
         let mut http_headers = self.http_headers.clone();
         http_headers.extend(provider_cfg.http_headers.clone());
@@ -1041,6 +1058,45 @@ fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> String {
         ) => DEFAULT_VLLM_FLASH_MODEL.to_string(),
         _ => model.to_string(),
     }
+}
+
+fn default_model_for_provider(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Deepseek => DEFAULT_DEEPSEEK_MODEL,
+        ProviderKind::NvidiaNim => DEFAULT_NVIDIA_NIM_MODEL,
+        ProviderKind::Openai => DEFAULT_OPENAI_MODEL,
+        ProviderKind::Openrouter => DEFAULT_OPENROUTER_MODEL,
+        ProviderKind::Novita => DEFAULT_NOVITA_MODEL,
+        ProviderKind::Fireworks => DEFAULT_FIREWORKS_MODEL,
+        ProviderKind::Sglang => DEFAULT_SGLANG_MODEL,
+        ProviderKind::Vllm => DEFAULT_VLLM_MODEL,
+        ProviderKind::Ollama => DEFAULT_OLLAMA_MODEL,
+    }
+}
+
+fn default_base_url_for_provider(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Deepseek => DEFAULT_DEEPSEEK_BASE_URL,
+        ProviderKind::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
+        ProviderKind::Openai => DEFAULT_OPENAI_BASE_URL,
+        ProviderKind::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
+        ProviderKind::Novita => DEFAULT_NOVITA_BASE_URL,
+        ProviderKind::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
+        ProviderKind::Sglang => DEFAULT_SGLANG_BASE_URL,
+        ProviderKind::Vllm => DEFAULT_VLLM_BASE_URL,
+        ProviderKind::Ollama => DEFAULT_OLLAMA_BASE_URL,
+    }
+}
+
+fn base_url_is_custom_for_provider(provider: ProviderKind, base_url: &str) -> bool {
+    let actual = base_url.trim_end_matches('/');
+    let default = default_base_url_for_provider(provider).trim_end_matches('/');
+    actual != default
+}
+
+fn provider_preserves_custom_base_url_model(provider: ProviderKind, base_url: &str) -> bool {
+    matches!(provider, ProviderKind::Openrouter)
+        && base_url_is_custom_for_provider(provider, base_url)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1185,16 +1241,19 @@ pub fn default_secrets() -> &'static Secrets {
 }
 
 pub fn resolve_config_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(path) = explicit {
-        return Ok(path);
-    }
-    if let Ok(path) = std::env::var("DEEPSEEK_CONFIG_PATH") {
+    let path = if let Some(path) = explicit {
+        path
+    } else if let Ok(path) = std::env::var("DEEPSEEK_CONFIG_PATH") {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
+            PathBuf::from(trimmed)
+        } else {
+            return default_config_path();
         }
-    }
-    default_config_path()
+    } else {
+        return default_config_path();
+    };
+    normalize_config_file_path(path)
 }
 
 pub fn default_config_path() -> Result<PathBuf> {
@@ -1261,6 +1320,35 @@ fn redact_secret(secret: &str) -> String {
         .rev()
         .collect();
     format!("{prefix}***{suffix}")
+}
+
+#[must_use]
+pub fn is_sensitive_config_key(key: &str) -> bool {
+    matches!(
+        key,
+        "api_key" | "auth.chatgpt_access_token" | "auth.device_code_session"
+    ) || key.ends_with(".api_key")
+}
+
+fn normalize_config_file_path(path: PathBuf) -> Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        bail!("config path cannot be empty");
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        bail!("config path cannot contain '..' components");
+    }
+    if path.file_name().is_none() {
+        bail!("config path must include a file name");
+    }
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    Ok(std::env::current_dir()
+        .context("failed to resolve current directory for config path")?
+        .join(path))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1363,6 +1451,21 @@ mod tests {
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn network_policy_toml_deserializes_proxy_hosts() {
+        let policy: NetworkPolicyToml = toml::from_str(
+            r#"
+            default = "allow"
+            proxy = ["github.com", ".githubusercontent.com"]
+            "#,
+        )
+        .expect("network policy toml");
+
+        assert_eq!(policy.default, "allow");
+        assert_eq!(policy.proxy, ["github.com", ".githubusercontent.com"]);
+        assert!(policy.audit);
     }
 
     struct EnvGuard {
@@ -1526,13 +1629,13 @@ mod tests {
             ..ConfigToml::default()
         };
         config.providers.deepseek.api_key = Some("provider-key".to_string());
-        config.providers.deepseek.base_url = Some("https://api.deepseeki.com".to_string());
+        config.providers.deepseek.base_url = Some("https://gateway.example/v1".to_string());
         config.providers.deepseek.model = Some("deepseek-v4-flash".to_string());
 
         let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
 
         assert_eq!(resolved.api_key.as_deref(), Some("provider-key"));
-        assert_eq!(resolved.base_url, "https://api.deepseeki.com");
+        assert_eq!(resolved.base_url, "https://gateway.example/v1");
         assert_eq!(resolved.model, "deepseek-v4-flash");
     }
 
@@ -1547,7 +1650,7 @@ mod tests {
             ..ConfigToml::default()
         };
         config.providers.deepseek.api_key = Some("provider-key".to_string());
-        config.providers.deepseek.base_url = Some("https://api.deepseeki.com".to_string());
+        config.providers.deepseek.base_url = Some("https://gateway.example/v1".to_string());
         config.providers.deepseek.model = Some("deepseek-v4-flash".to_string());
         config
             .http_headers
@@ -1566,7 +1669,7 @@ mod tests {
         let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
 
         assert_eq!(resolved.api_key.as_deref(), Some("provider-key"));
-        assert_eq!(resolved.base_url, "https://api.deepseeki.com");
+        assert_eq!(resolved.base_url, "https://gateway.example/v1");
         assert_eq!(resolved.model, "deepseek-v4-flash");
         assert_eq!(
             resolved
@@ -1740,6 +1843,38 @@ mod tests {
     }
 
     #[test]
+    fn get_display_value_redacts_sensitive_keys() {
+        let mut config = ConfigToml {
+            api_key: Some("sk-deepseek-secret".to_string()),
+            chatgpt_access_token: Some("chatgpt-access-secret".to_string()),
+            ..ConfigToml::default()
+        };
+        config.providers.openrouter.api_key = Some("openrouter-secret-value".to_string());
+        config.model = Some("deepseek-v4-pro".to_string());
+
+        assert_eq!(
+            config.get_display_value("api_key").as_deref(),
+            Some("sk-d***cret")
+        );
+        assert_eq!(
+            config
+                .get_display_value("auth.chatgpt_access_token")
+                .as_deref(),
+            Some("chat***cret")
+        );
+        assert_eq!(
+            config
+                .get_display_value("providers.openrouter.api_key")
+                .as_deref(),
+            Some("open***alue")
+        );
+        assert_eq!(
+            config.get_display_value("model").as_deref(),
+            Some("deepseek-v4-pro")
+        );
+    }
+
+    #[test]
     fn list_values_redacts_unicode_api_key_without_byte_slicing() {
         let config = ConfigToml {
             api_key: Some("密钥密钥密钥密钥123456789".to_string()),
@@ -1752,6 +1887,13 @@ mod tests {
             values.get("api_key").map(String::as_str),
             Some("密钥密钥***6789")
         );
+    }
+
+    #[test]
+    fn normalize_config_file_path_rejects_traversal() {
+        let err = normalize_config_file_path(PathBuf::from("../config.toml"))
+            .expect_err("traversal path should fail");
+        assert!(format!("{err:#}").contains("cannot contain '..'"));
     }
 
     #[cfg(unix)]
@@ -2078,6 +2220,24 @@ mod tests {
 
         assert_eq!(resolved.api_key.as_deref(), Some("file-key"));
         assert_eq!(resolved.base_url, "https://or-mirror.example/v1");
+    }
+
+    #[test]
+    fn openrouter_custom_base_url_preserves_provider_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let mut config = ConfigToml {
+            provider: ProviderKind::Openrouter,
+            ..ConfigToml::default()
+        };
+        config.providers.openrouter.base_url = Some("https://gateway.example.com/v1".to_string());
+        config.providers.openrouter.model = Some("DeepSeek-V4-Pro".to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Openrouter);
+        assert_eq!(resolved.base_url, "https://gateway.example.com/v1");
+        assert_eq!(resolved.model, "DeepSeek-V4-Pro");
     }
 
     #[test]

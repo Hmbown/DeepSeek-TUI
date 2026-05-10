@@ -15,8 +15,9 @@ use deepseek_mcp::{
 };
 use deepseek_protocol::{
     AppResponse, EventFrame, ExecApprovalRequestEvent, PromptRequest, PromptResponse,
-    ReviewDecision, Thread, ThreadForkParams, ThreadListParams, ThreadReadParams, ThreadRequest,
-    ThreadResponse, ThreadResumeParams, ThreadSetNameParams, ThreadStatus, ToolPayload,
+    ResponseChannel, ReviewDecision, Thread, ThreadForkParams, ThreadListParams, ThreadReadParams,
+    ThreadRequest, ThreadResponse, ThreadResumeParams, ThreadSetNameParams, ThreadStatus,
+    ToolPayload,
 };
 use deepseek_state::{
     JobStateRecord, JobStateStatus, SessionSource, StateStore, ThreadListFilters, ThreadMetadata,
@@ -913,6 +914,7 @@ impl Runtime {
                         EventFrame::ResponseDelta {
                             response_id: response_id.clone(),
                             delta: "queued".to_string(),
+                            channel: ResponseChannel::Text,
                         },
                         EventFrame::ResponseEnd { response_id },
                     ],
@@ -992,6 +994,7 @@ impl Runtime {
                 EventFrame::ResponseDelta {
                     response_id: response_id.clone(),
                     delta: "model-selected".to_string(),
+                    channel: ResponseChannel::Text,
                 },
                 EventFrame::ResponseEnd { response_id },
             ],
@@ -1252,6 +1255,7 @@ impl Runtime {
                         "at": entry.at
                     })
                     .to_string(),
+                    channel: ResponseChannel::Text,
                 })
             })
             .collect::<Vec<_>>();
