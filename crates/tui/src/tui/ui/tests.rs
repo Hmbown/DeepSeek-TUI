@@ -2165,7 +2165,7 @@ fn should_auto_compact_before_send_respects_threshold_and_setting() {
     let big_buffer = vec![Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
-            text: "context ".repeat(400_000),
+            text: "hello ".repeat(900_000),
             cache_control: None,
         }],
     }];

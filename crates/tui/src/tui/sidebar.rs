@@ -167,7 +167,10 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(ratatui::style::Modifier::BOLD),
         )));
         if let Some(budget) = app.goal.goal_token_budget {
-            let used = app.session.total_conversation_tokens;
+            let used = crate::compaction::estimate_input_tokens_conservative(
+                &app.api_messages,
+                app.system_prompt.as_ref(),
+            );
             let pct = if budget > 0 {
                 ((used as f64 / budget as f64) * 100.0).min(100.0)
             } else {
@@ -182,7 +185,7 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
                 pct
             );
             lines.push(Line::from(Span::styled(
-                format!("  tokens: {used}/{budget} {}", bar),
+                format!("  est. tokens: {used}/{budget} {}", bar),
                 Style::default().fg(palette::TEXT_MUTED),
             )));
         }
@@ -650,7 +653,10 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
     ]));
 
     // ── Token usage ──────────────────────────────────────────────
-    let total_tokens = app.session.total_conversation_tokens;
+    let total_tokens = crate::compaction::estimate_input_tokens_conservative(
+        &app.api_messages,
+        app.system_prompt.as_ref(),
+    );
     let window = crate::models::context_window_for_model(&app.model).unwrap_or(1_048_576);
     let pct = if window > 0 {
         ((total_tokens as f64 / window as f64) * 100.0).clamp(0.0, 100.0)
@@ -667,7 +673,7 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
     );
     lines.push(Line::from(Span::styled(
         format!(
-            "context: {}/{} tokens  {}",
+            "est. context: {}/{} tokens  {}",
             total_tokens,
             window,
             truncate_line_to_width(&bar, content_width.saturating_sub(32).max(8))
