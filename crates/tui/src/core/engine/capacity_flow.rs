@@ -962,18 +962,18 @@ impl Engine {
 
     pub(super) fn rehydrate_latest_canonical_state(&mut self) {
         // First try: load from current session
-        if let Ok(records) = load_last_k_capacity_records(&self.session.id, 1) {
-            if let Some(last) = records.last() {
-                let pointer = format!("memory://{}/{}", self.session.id, last.id);
-                let prompt = self.canonical_prompt(
-                    &last.canonical_state,
-                    &pointer,
-                    GuardrailAction::NoIntervention,
-                    Some("Rehydrated canonical state from memory."),
-                );
-                self.merge_compaction_summary(Some(prompt));
-                return;
-            }
+        if let Ok(records) = load_last_k_capacity_records(&self.session.id, 1)
+            && let Some(last) = records.last()
+        {
+            let pointer = format!("memory://{}/{}", self.session.id, last.id);
+            let prompt = self.canonical_prompt(
+                &last.canonical_state,
+                &pointer,
+                GuardrailAction::NoIntervention,
+                Some("Rehydrated canonical state from memory."),
+            );
+            self.merge_compaction_summary(Some(prompt));
+            return;
         }
 
         // Second try: build canonical state from previous session JSON.
@@ -1011,12 +1011,19 @@ impl Engine {
 
         let manager = match SessionManager::default_location() {
             Ok(m) => m,
-            Err(_) => return false,
+            Err(e) => {
+                tracing::debug!("Session manager init failed, skipping tier-2 rehydration: {e}");
+                return false;
+            }
         };
 
         let latest = match manager.get_latest_session_for_workspace(&self.session.workspace) {
             Ok(Some(m)) => m,
-            _ => return false,
+            Ok(None) => return false,
+            Err(e) => {
+                tracing::debug!("No previous session found for workspace, skipping tier-2: {e}");
+                return false;
+            }
         };
 
         if latest.id == self.session.id {
@@ -1025,11 +1032,13 @@ impl Engine {
 
         let saved = match manager.load_session(&latest.id) {
             Ok(s) => s,
-            Err(_) => return false,
+            Err(e) => {
+                tracing::debug!("Failed to load session {}, skipping tier-2: {e}", latest.id);
+                return false;
+            }
         };
 
-        let canonical =
-            build_canonical_state_from_session(&saved, &self.session.workspace);
+        let canonical = build_canonical_state_from_session(&saved, &self.session.workspace);
         let pointer = format!("session://{}", latest.id);
         let prompt = self.canonical_prompt(
             &canonical,
@@ -1046,14 +1055,10 @@ impl Engine {
 /// recovery. Extracts goal, confirmed_facts, open_loops, and pending_actions
 /// from the last 12 messages, mirroring `Engine::build_canonical_state()` but
 /// operating on persisted (offline) data without a turn context.
-fn build_canonical_state_from_session(
-    saved: &SavedSession,
-    workspace: &Path,
-) -> CanonicalState {
+fn build_canonical_state_from_session(saved: &SavedSession, workspace: &Path) -> CanonicalState {
     let total = saved.messages.len();
     let start = total.saturating_sub(12);
 
-    // Goal: last user text message (skip <turn_meta> metadata blocks)
     let goal = saved
         .messages
         .iter()
@@ -1071,28 +1076,25 @@ fn build_canonical_state_from_session(
         })
         .unwrap_or_else(|| "Continue current task".to_string());
 
-    // Constraints
     let constraints = vec![
         format!("model={}", saved.metadata.model),
         format!("workspace={}", workspace.display()),
     ];
 
-    // Confirmed facts: text and non-error tool results from last N messages.
-    // Skip <turn_meta> metadata blocks and thinking blocks.
     let mut confirmed_facts = Vec::new();
     for msg in saved.messages[start..].iter() {
         for block in &msg.content {
             match block {
                 ContentBlock::Text { text, .. } if !text.contains("<turn_meta>") => {
-                    let tag = if msg.role == "user" { "User" } else { "Assistant" };
-                    confirmed_facts
-                        .push(format!("{tag}: {}", summarize_text(text, 180)));
+                    let tag = if msg.role == "user" {
+                        "User"
+                    } else {
+                        "Assistant"
+                    };
+                    confirmed_facts.push(format!("{tag}: {}", summarize_text(text, 180)));
                 }
-                ContentBlock::ToolResult { content, .. } => {
-                    if !content.starts_with("Error:") {
-                        confirmed_facts
-                            .push(format!("Result: {}", summarize_text(content, 180)));
-                    }
+                ContentBlock::ToolResult { content, .. } if !content.starts_with("Error:") => {
+                    confirmed_facts.push(format!("Result: {}", summarize_text(content, 180)));
                 }
                 _ => {}
             }
@@ -1102,14 +1104,13 @@ fn build_canonical_state_from_session(
         }
     }
 
-    // Open loops: error tool results
     let mut open_loops = Vec::new();
     for msg in saved.messages[start..].iter().rev() {
         for block in &msg.content {
-            if let ContentBlock::ToolResult { content, .. } = block {
-                if content.starts_with("Error:") {
-                    open_loops.push(summarize_text(content, 180));
-                }
+            if let ContentBlock::ToolResult { content, .. } = block
+                && content.starts_with("Error:")
+            {
+                open_loops.push(summarize_text(content, 180));
             }
         }
         if open_loops.len() >= 4 {
@@ -1117,7 +1118,6 @@ fn build_canonical_state_from_session(
         }
     }
 
-    // Pending actions
     let pending_actions: Vec<String> = if open_loops.is_empty() {
         vec!["Continue with next smallest verifiable step".to_string()]
     } else {

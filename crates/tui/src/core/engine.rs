@@ -798,7 +798,7 @@ impl Engine {
                     .await;
                 }
                 Op::Shutdown => {
-                    self.write_shutdown_checkpoint().await;
+                    self.write_shutdown_checkpoint();
                     break;
                 }
             }
@@ -815,7 +815,7 @@ impl Engine {
         }
     }
 
-    async fn write_shutdown_checkpoint(&mut self) {
+    fn write_shutdown_checkpoint(&mut self) {
         let canonical = if self.session.messages.is_empty() {
             CanonicalState::default()
         } else {
@@ -828,8 +828,10 @@ impl Engine {
                     if msg.role != "user" {
                         return None;
                     }
-                    msg.content.iter().find_map(|block| match block {
-                        ContentBlock::Text { text, .. } => Some(summarize_text(text, 220)),
+                    msg.content.iter().rev().find_map(|block| match block {
+                        ContentBlock::Text { text, .. } if !text.contains("<turn_meta>") => {
+                            Some(summarize_text(text, 220))
+                        }
                         _ => None,
                     })
                 })
@@ -838,16 +840,28 @@ impl Engine {
             let mut confirmed_facts = Vec::new();
             for msg in self.session.messages.iter().rev().take(6) {
                 for block in &msg.content {
-                    if let ContentBlock::ToolResult { content, .. } = block {
-                        if !content.starts_with("Error:") {
-                            confirmed_facts.push(summarize_text(content, 180));
-                            if confirmed_facts.len() >= 4 {
-                                break;
-                            }
+                    match block {
+                        ContentBlock::Text { text, .. } if !text.contains("<turn_meta>") => {
+                            let tag = if msg.role == "user" {
+                                "User"
+                            } else {
+                                "Assistant"
+                            };
+                            confirmed_facts.push(format!("{tag}: {}", summarize_text(text, 180)));
                         }
+                        ContentBlock::ToolResult { content, .. }
+                            if !content.starts_with("Error:") =>
+                        {
+                            confirmed_facts
+                                .push(format!("Result: {}", summarize_text(content, 180)));
+                        }
+                        _ => {}
+                    }
+                    if confirmed_facts.len() >= 8 {
+                        break;
                     }
                 }
-                if confirmed_facts.len() >= 4 {
+                if confirmed_facts.len() >= 8 {
                     break;
                 }
             }

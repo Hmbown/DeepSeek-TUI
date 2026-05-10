@@ -2101,6 +2101,10 @@ fn apply_env_overrides(config: &mut Config) {
         let val = value.trim().to_ascii_lowercase();
         capacity.enabled = Some(matches!(val.as_str(), "1" | "true" | "yes" | "on"));
     }
+    if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_CROSS_SESSION_ENABLED") {
+        let val = value.trim().to_ascii_lowercase();
+        capacity.cross_session_enabled = Some(matches!(val.as_str(), "1" | "true" | "yes" | "on"));
+    }
     if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_LOW_RISK_MAX")
         && let Ok(parsed) = value.parse::<f64>()
     {

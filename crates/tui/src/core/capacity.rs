@@ -6,6 +6,10 @@ use std::collections::{HashMap, VecDeque};
 #[derive(Debug, Clone, PartialEq)]
 pub struct CapacityControllerConfig {
     pub enabled: bool,
+    /// Opt-in: restore canonical state from the most recent session's
+    /// shutdown checkpoint when starting a fresh session. Off by default
+    /// to prevent cross-workspace memory bleed.
+    pub cross_session_enabled: bool,
     pub low_risk_max: f64,
     pub medium_risk_max: f64,
     pub severe_min_slack: f64,
@@ -17,10 +21,6 @@ pub struct CapacityControllerConfig {
     pub profile_window: usize,
     pub model_priors: HashMap<String, f64>,
     pub fallback_default: f64,
-    /// Opt-in: restore canonical state from the most recent session's
-    /// shutdown checkpoint when starting a fresh session. Off by default
-    /// to prevent cross-workspace memory bleed.
-    pub cross_session_enabled: bool,
 }
 
 impl Default for CapacityControllerConfig {
@@ -76,6 +76,9 @@ impl CapacityControllerConfig {
         if let Some(v) = capacity.enabled {
             out.enabled = v;
         }
+        if let Some(v) = capacity.cross_session_enabled {
+            out.cross_session_enabled = v;
+        }
         if let Some(v) = capacity.low_risk_max {
             out.low_risk_max = v;
         }
@@ -119,9 +122,6 @@ impl CapacityControllerConfig {
         }
         if let Some(v) = capacity.fallback_default_prior {
             out.fallback_default = v;
-        }
-        if let Some(v) = capacity.cross_session_enabled {
-            out.cross_session_enabled = v;
         }
 
         out
