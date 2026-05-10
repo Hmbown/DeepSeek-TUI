@@ -633,4 +633,78 @@ mod tests {
             .expect_err("missing query should fail");
         assert!(format!("{err}").contains("missing required field 'query'"));
     }
+
+    #[test]
+    fn optional_max_results_prefers_top_level_value() {
+        // Top-level `max_results` wins over the array-form sibling
+        // because callers using the array form usually copy-paste it
+        // wholesale and then tweak the outer max_results afterwards.
+        assert_eq!(
+            optional_search_max_results(
+                &json!({"query": "x", "max_results": 8, "search_query": [{"q": "y", "max_results": 2}]})
+            ),
+            8,
+        );
+    }
+
+    #[test]
+    fn optional_max_results_falls_back_to_array_form() {
+        // When only the array form sets max_results, that value is the
+        // one that should reach the caller. This is the path V4 uses
+        // when it emits the structured `search_query: [{…}]` shape.
+        assert_eq!(
+            optional_search_max_results(&json!({"search_query": [{"q": "y", "max_results": 3}]})),
+            3,
+        );
+    }
+
+    #[test]
+    fn optional_max_results_uses_default_when_neither_set() {
+        // No explicit bound anywhere → the DEFAULT (currently 5)
+        // applies, so the model can't accidentally pull MAX_RESULTS
+        // worth of bandwidth just by omitting the field.
+        assert_eq!(optional_search_max_results(&json!({"query": "x"})), 5);
+        assert_eq!(
+            optional_search_max_results(&json!({"search_query": [{"q": "y"}]})),
+            5,
+        );
+    }
+
+    #[test]
+    fn optional_max_results_only_reads_first_array_entry() {
+        // Sub-search support is a future feature; for now the array
+        // entries beyond the first are ignored. Pin so a future
+        // multi-query implementation has to update this test
+        // intentionally rather than silently start fanning out.
+        assert_eq!(
+            optional_search_max_results(
+                &json!({"search_query": [{"q": "first", "max_results": 1}, {"q": "second", "max_results": 9}]})
+            ),
+            1,
+        );
+    }
+
+    #[test]
+    fn extract_search_query_trims_whitespace_from_array_form_q_alias() {
+        // The "trimmed" contract is part of the helper's invariant —
+        // a model sometimes pads `q` with newlines from a heredoc.
+        let q = extract_search_query(&json!({"search_query": [{"q": "  deepseek tui  "}]}))
+            .expect("array form should parse with trim");
+        assert_eq!(q, "deepseek tui");
+    }
+
+    #[test]
+    fn extract_search_query_rejects_empty_query() {
+        // A "" query lands in extract_search_query → propagates as
+        // missing_field rather than a confusing engine error a few
+        // layers down. Lock the failure mode.
+        for body in [json!({"query": ""}), json!({"q": "   "}), json!({})] {
+            let err = extract_search_query(&body).expect_err("empty query must reject");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("missing required field 'query'") || msg.contains("Query"),
+                "expected query-missing error, got `{msg}`"
+            );
+        }
+    }
 }
