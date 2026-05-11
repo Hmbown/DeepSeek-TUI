@@ -316,12 +316,16 @@ impl Settings {
             self.low_motion = true;
             self.fancy_animations = false;
         }
-        // VS Code's integrated terminal sets TERM_PROGRAM=vscode. Its
-        // compositor cannot keep up with 120 FPS redraws and produces rapid
-        // flickering (#1356). Drop to the 30 FPS low-motion cap automatically.
+        // VS Code (TERM_PROGRAM=vscode, #1356) and Ghostty (TERM_PROGRAM=ghostty,
+        // #1445) both produce visible flicker at 120 FPS: VS Code's compositor
+        // cannot keep pace; Ghostty's GPU compositor flash-renders each full-screen
+        // repaint. Drop to the 30 FPS low-motion cap for both automatically.
         // Like NO_ANIMATIONS above, this unconditionally overrides any
         // disk-loaded value — consistent precedence: env signals always win.
-        if std::env::var("TERM_PROGRAM").as_deref() == Ok("vscode") {
+        if matches!(
+            std::env::var("TERM_PROGRAM").as_deref(),
+            Ok("vscode") | Ok("ghostty")
+        ) {
             self.low_motion = true;
             self.fancy_animations = false;
         }
@@ -936,6 +940,34 @@ mod tests {
         assert!(
             !settings.fancy_animations,
             "TERM_PROGRAM=vscode must disable fancy_animations"
+        );
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+        }
+    }
+
+    #[test]
+    fn ghostty_term_program_forces_low_motion_on() {
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        // SAFETY: serialised by the guard.
+        unsafe {
+            std::env::set_var("TERM_PROGRAM", "ghostty");
+        }
+        let mut settings = Settings::default();
+        assert!(!settings.low_motion, "default is animated");
+        settings.apply_env_overrides();
+        assert!(
+            settings.low_motion,
+            "TERM_PROGRAM=ghostty must enable low_motion to prevent flickering (#1445)"
+        );
+        assert!(
+            !settings.fancy_animations,
+            "TERM_PROGRAM=ghostty must disable fancy_animations"
         );
         // SAFETY: cleanup under the guard.
         unsafe {
