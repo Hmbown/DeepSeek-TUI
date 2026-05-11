@@ -6,15 +6,12 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      
+
       - name: Sync to CNB Repository
-        uses: docker://tencentcom/git-sync
-        env:
-          PLUGIN_TARGET_URL: "https://cnb.cool/deepseek-tui.com/DeepSeek-TUI"
-          PLUGIN_AUTH_TYPE: "https"
-          PLUGIN_USERNAME: "cnb"
-          PLUGIN_PASSWORD: ${{ secrets.CNB_GIT_TOKEN }}
-          PLUGIN_SYNC_MODE: "rebase"
+        run: |
+          git remote add cnb "https://cnb:${{ secrets.CNB_GIT_TOKEN }}@cnb.cool/deepseek-tui.com/DeepSeek-TUI.git"
+          git push cnb --all --force
+          git push cnb --tags --force
