@@ -15,7 +15,10 @@ use crossterm::{
         PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
+        disable_raw_mode, enable_raw_mode,
+    },
 };
 use ratatui::{
     Frame, Terminal,
@@ -636,6 +639,15 @@ async fn run_event_loop(
     // `tui::frame_rate_limiter` for the rationale; ports the small piece of
     // codex's frame coalescing that maps cleanly onto our poll-based loop.
     let mut frame_rate_limiter = crate::tui::frame_rate_limiter::FrameRateLimiter::default();
+
+    // Detect terminal capabilities for flicker-free rendering
+    let terminal_caps = crate::tui::terminal_caps::TerminalCapabilities::detect();
+    tracing::info!(
+        target: "render",
+        ?terminal_caps,
+        "Terminal capabilities detected for flicker prevention"
+    );
+
     let mut web_config_session: Option<WebConfigSession> = None;
     // #376: native-copy escape — hold Shift to bypass alt-screen mouse capture
     // for terminal-native text selection.
@@ -1727,6 +1739,12 @@ async fn run_event_loop(
                 // any other events can interleave. Without this, the next
                 // iteration's draw can race against fast follow-up input and
                 // leave the user staring at a blank/partial frame.
+                tracing::debug!(
+                    target: "render",
+                    final_w,
+                    final_h,
+                    "resize: drawing frame with forced size"
+                );
                 draw_app_frame(terminal, app)?;
                 {
                     let backend = terminal.backend_mut();
@@ -5754,7 +5772,25 @@ fn render(f: &mut Frame, app: &mut App) {
 
 fn draw_app_frame(terminal: &mut AppTerminal, app: &mut App) -> Result<()> {
     terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
+    // Wrap the draw in synchronized-update markers (DECSET 2026). Without
+    // this, the \x1b[2J clear emitted internally by ratatui's
+    // `terminal.draw()` can produce a visible blank frame on terminals with
+    // slower rendering pipelines (VSCode terminal / xterm.js, Ghostty in
+    // some configurations). DECSET 2026 tells the terminal to buffer all
+    // output between the begin/end markers and render the frame atomically.
+    //
+    // Windows-specific: ConHost in older Windows 10 builds may not support
+    // DECSET 2026, but modern Windows Terminal and ConPTY do. The escape
+    // is silently ignored on unsupported terminals.
+    tracing::trace!(target: "render", "draw_app_frame: begin synchronized update");
+    if let Err(err) = execute!(terminal.backend_mut(), BeginSynchronizedUpdate) {
+        tracing::debug!(target: "render", ?err, "BeginSynchronizedUpdate failed (terminal may not support DECSET 2026)");
+    }
     terminal.draw(|f| render(f, app))?;
+    if let Err(err) = execute!(terminal.backend_mut(), EndSynchronizedUpdate) {
+        tracing::debug!(target: "render", ?err, "EndSynchronizedUpdate failed");
+    }
+    tracing::trace!(target: "render", "draw_app_frame: end synchronized update");
     Ok(())
 }
 
@@ -6665,8 +6701,17 @@ fn reset_terminal_origin(terminal: &mut AppTerminal) -> Result<()> {
 /// so the diff renderer writes every cell on the next draw, without the
 /// intermediate blank frame.
 fn reset_terminal_viewport(terminal: &mut AppTerminal) -> Result<()> {
+    tracing::trace!(target: "render", "reset_terminal_viewport: begin");
+    // Wrap in synchronized update to prevent flicker during viewport reset
+    if let Err(err) = execute!(terminal.backend_mut(), BeginSynchronizedUpdate) {
+        tracing::debug!(target: "render", ?err, "reset_terminal_viewport: BeginSynchronizedUpdate failed");
+    }
     reset_terminal_origin(terminal)?;
     terminal.swap_buffers();
+    if let Err(err) = execute!(terminal.backend_mut(), EndSynchronizedUpdate) {
+        tracing::debug!(target: "render", ?err, "reset_terminal_viewport: EndSynchronizedUpdate failed");
+    }
+    tracing::trace!(target: "render", "reset_terminal_viewport: end");
     Ok(())
 }
 

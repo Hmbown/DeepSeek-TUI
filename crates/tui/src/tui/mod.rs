@@ -43,6 +43,7 @@ pub mod sidebar;
 pub mod slash_menu;
 pub mod streaming;
 mod subagent_routing;
+pub mod terminal_caps;
 mod tool_routing;
 pub mod transcript;
 pub mod transcript_cache;

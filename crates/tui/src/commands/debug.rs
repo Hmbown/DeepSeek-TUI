@@ -2667,3 +2667,99 @@ pub fn retry(app: &mut App) -> CommandResult {
         None => CommandResult::error("No previous request to retry"),
     }
 }
+
+/// Show flicker prevention diagnostics for the current terminal.
+///
+/// Displays terminal capabilities, synchronized update support, and
+/// rendering configuration. Useful for debugging flicker issues on
+/// Windows terminals.
+pub fn flicker(_app: &mut App) -> CommandResult {
+    use crate::tui::terminal_caps::TerminalCapabilities;
+
+    let caps = TerminalCapabilities::detect();
+
+    let mut report = String::new();
+    report.push_str("Flicker Prevention Diagnostics\n");
+    report.push_str("═══════════════════════════════════════════════════════════════\n\n");
+
+    // Terminal detection
+    report.push_str("Terminal Detection:\n");
+    report.push_str(&format!(
+        "  Windows Terminal:    {}\n",
+        if caps.is_windows_terminal { "YES" } else { "no" }
+    ));
+    report.push_str(&format!(
+        "  VSCode Terminal:     {}\n",
+        if caps.is_vscode_terminal { "YES" } else { "no" }
+    ));
+    report.push_str(&format!(
+        "  ConPTY:              {}\n",
+        if caps.is_conpty { "YES" } else { "no" }
+    ));
+
+    report.push('\n');
+
+    // Synchronized update support
+    report.push_str("DECSET 2026 (Synchronized Output):\n");
+    report.push_str(&format!(
+        "  Supported:           {}\n",
+        if caps.supports_synchronized_update { "YES" } else { "NO" }
+    ));
+    report.push_str("  Status:              ");
+    if caps.supports_synchronized_update {
+        report.push_str("Enabled - terminal will buffer frames atomically\n");
+    } else {
+        report.push_str("Disabled - may cause flicker on resize/focus\n");
+    }
+
+    report.push('\n');
+
+    // Frame rate
+    report.push_str("Frame Rate Configuration:\n");
+    let interval_ms = caps.recommended_frame_interval_ms();
+    let fps = 1000.0 / interval_ms as f64;
+    report.push_str(&format!(
+        "  Frame interval:      {}ms (~{:.0} FPS)\n",
+        interval_ms, fps
+    ));
+
+    report.push('\n');
+
+    // Anti-flicker measures
+    report.push_str("Active Anti-Flicker Measures:\n");
+    report.push_str("  [x] DECSET 2026 synchronized updates\n");
+    report.push_str("  [x] swap_buffers() instead of clear()\\x1b[2J]\n");
+    report.push_str("  [x] Frame rate limiter (120 FPS cap)\n");
+    report.push_str("  [x] Resize event coalescing\n");
+    report.push_str("  [x] Force-size during resize to prevent stale dimensions\n");
+
+    report.push('\n');
+
+    // Platform-specific notes
+    report.push_str("Platform Notes:\n");
+    if cfg!(windows) {
+        report.push_str("  OS: Windows\n");
+        if caps.is_windows_terminal {
+            report.push_str("  → Windows Terminal detected: Full VT support\n");
+        } else if caps.is_conpty {
+            report.push_str("  → ConPTY detected: VT passthrough enabled\n");
+        } else {
+            report.push_str("  → Legacy console detected: Limited VT support\n");
+            report.push_str("  → Consider using Windows Terminal for best experience\n");
+        }
+    } else if cfg!(target_os = "macos") {
+        report.push_str("  OS: macOS\n");
+        report.push_str("  → Most macOS terminals support synchronized updates\n");
+    } else {
+        report.push_str("  OS: Linux/Unix\n");
+        report.push_str("  → Most Linux terminals support synchronized updates\n");
+    }
+
+    report.push('\n');
+    report.push_str("If you experience flicker, check:\n");
+    report.push_str("  1. Is your terminal up to date?\n");
+    report.push_str("  2. Try enabling low_motion mode: /config set low_motion true\n");
+    report.push_str("  3. Check RUST_LOG=render for rendering debug output\n");
+
+    CommandResult::message(report)
+}

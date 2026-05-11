@@ -562,6 +562,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "context" | "ctx" => debug::context(app),
         "edit" => debug::edit(app),
         "diff" => debug::diff(app),
+        "flicker" | "flicker-diag" => debug::flicker(app),
         "undo" => {
             // Try surgical patch-undo first; fall back to conversation undo
             // if no snapshots are available or if the snapshot undo couldn't
