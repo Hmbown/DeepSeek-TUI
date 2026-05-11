@@ -329,6 +329,15 @@ impl BackgroundShell {
 
     /// Collect output from the background threads
     fn collect_output(&mut self) {
+        // Kill the whole process group before joining reader threads.
+        // When the shell spawned persistent background jobs (e.g. `nohup curl`),
+        // those subprocesses keep the pipe write-ends open after the shell exits.
+        // Without this kill, handle.join() blocks indefinitely, freezing the UI
+        // event loop that calls list_jobs() → poll() → collect_output().
+        #[cfg(unix)]
+        if let Some(ShellChild::Process(ref mut proc)) = self.child {
+            let _ = kill_child_process_group(proc);
+        }
         if let Some(handle) = self.stdout_thread.take() {
             let _ = handle.join();
         }
@@ -1299,6 +1308,8 @@ impl ShellManager {
         for shell in self.processes.values_mut() {
             shell.poll();
         }
+        // Evict completed processes older than 1 hour to bound memory growth.
+        self.cleanup(Duration::from_secs(3600));
 
         let mut jobs = self
             .processes
@@ -1346,7 +1357,6 @@ impl ShellManager {
     }
 
     /// Clean up completed processes older than the given duration
-    #[allow(dead_code)]
     pub fn cleanup(&mut self, max_age: Duration) {
         let _now = Instant::now();
         self.processes.retain(|_, shell| {

@@ -689,3 +689,49 @@ async fn test_exec_shell_cancel_tool_can_kill_all_running_processes() {
     assert_eq!(first_job.snapshot.status, ShellStatus::Killed);
     assert_eq!(second_job.snapshot.status, ShellStatus::Killed);
 }
+
+// Regression test for #828: shell spawns an orphaned background subprocess
+// (simulating `nohup curl`) that keeps the pipe write-end open after the shell
+// exits. collect_output() must not block indefinitely — it kills the whole
+// process group first, allowing reader threads to get EOF and exit.
+#[cfg(unix)]
+#[test]
+fn test_orphaned_subprocess_does_not_block_collect_output() {
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = ShellManager::new(tmp.path().to_path_buf());
+
+    // sh spawns `sleep 100 &` and exits; the sleep subprocess inherits the
+    // pipe write-ends and would keep reader threads blocked without the fix.
+    let result = manager
+        .execute("sh -c 'sleep 100 &'", None, 5000, true)
+        .expect("execute");
+    let task_id = result.task_id.expect("task id");
+
+    // Drive to completion with a tight timeout — must not hang.
+    let done = manager
+        .get_output(&task_id, true, 3000)
+        .expect("get_output must complete, not hang");
+    assert_eq!(done.status, ShellStatus::Completed);
+}
+
+#[test]
+fn test_list_jobs_cleans_up_completed_old_processes() {
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = ShellManager::new(tmp.path().to_path_buf());
+
+    let bg = manager
+        .execute(&echo_command("bg"), None, 5000, true)
+        .expect("execute bg");
+    let bg_id = bg.task_id.expect("bg task id");
+    manager.get_output(&bg_id, true, 3000).expect("bg done");
+
+    // Both the completed job and any tracking state should be present.
+    assert!(!manager.processes.is_empty());
+
+    // cleanup(ZERO) removes all completed processes immediately.
+    manager.cleanup(Duration::ZERO);
+    assert!(
+        manager.processes.is_empty(),
+        "completed processes should be evicted by cleanup"
+    );
+}
