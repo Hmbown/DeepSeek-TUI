@@ -527,6 +527,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         skills_dir: app.skills_dir.clone(),
         instructions: config.instructions_paths(),
         project_context_pack_enabled: config.project_context_pack_enabled(),
+        translation_enabled: app.translation_enabled,
         // Effectively unlimited. V4 has a 1M context window and the user
         // wants the model running until it's actually done. The previous cap
         // of 100 hit the ceiling on long multi-step plans (wide refactors,
@@ -744,6 +745,65 @@ async fn run_event_loop(
                             transcript_batch_updated = true;
                         }
 
+                        // ── Post-hoc translation ────────────────────────────
+                        // When translation is enabled and the assistant output
+                        // is predominantly English, call deepseek-v4-flash to
+                        // translate it into Simplified Chinese BEFORE the text
+                        // is committed to api_messages.  The primary mechanism
+                        // is the system-prompt instruction; this is the
+                        // fallback interception layer.
+                        if app.translation_enabled
+                            && !current_streaming_text.is_empty()
+                        {
+                            use crate::tui::translation::{
+                                needs_translation,
+                                translate_text,
+                            };
+                            if needs_translation(&current_streaming_text) {
+                                app.status_message = Some(
+                                    "🔄 正在翻译...".to_string(),
+                                );
+                                match translate_text(
+                                    &current_streaming_text,
+                                    config,
+                                )
+                                .await
+                                {
+                                    Ok(translated) => {
+                                        current_streaming_text = translated;
+                                        // Update the streaming assistant
+                                        // history cell so the display shows
+                                        // the translation immediately.
+                                        for cell in
+                                            app.history.iter_mut().rev()
+                                        {
+                                            if let HistoryCell::Assistant {
+                                                content,
+                                                ..
+                                            } = cell
+                                            {
+                                                *content =
+                                                    current_streaming_text
+                                                        .clone();
+                                                break;
+                                            }
+                                        }
+                                        app.status_message = Some(
+                                            "✓ 翻译完成".to_string(),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "translate_text failed: {e}",
+                                        );
+                                        app.status_message = Some(format!(
+                                            "✗ 翻译失败: {e}",
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+
                         let mut blocks = Vec::new();
                         let thinking = app.last_reasoning.take();
                         if let Some(thinking) = thinking {
@@ -802,13 +862,97 @@ async fn run_event_loop(
                         app.streaming_state.push_content(0, &sanitized);
                         let committed = app.streaming_state.commit_text(0);
                         if !committed.is_empty() {
-                            append_streaming_thinking(app, entry_idx, &committed);
+                            // When translation is enabled, suppress real-time
+                            // thinking display — the thinking block will be
+                            // translated and displayed on ThinkingComplete.
+                            if !app.translation_enabled {
+                                append_streaming_thinking(app, entry_idx, &committed);
+                            }
                             transcript_batch_updated = true;
                         }
                     }
                     EngineEvent::ThinkingComplete { .. } => {
-                        if finalize_current_streaming_thinking(app) {
-                            transcript_batch_updated = true;
+                        if app.translation_enabled {
+                            // Drain remaining buffered thinking text and
+                            // combine with accumulated reasoning buffer to
+                            // get the full English thinking content.
+                            let remaining =
+                                app.streaming_state.finalize_block_text(0);
+                            let mut full_thinking =
+                                app.reasoning_buffer.clone();
+                            if !remaining.is_empty() {
+                                full_thinking.push_str(&remaining);
+                            }
+                            let translated = if !full_thinking.is_empty() {
+                                use crate::tui::translation::{
+                                    needs_translation,
+                                    translate_text,
+                                };
+                                if needs_translation(&full_thinking) {
+                                    app.status_message = Some(
+                                        "🔄 正在翻译思考内容..."
+                                            .to_string(),
+                                    );
+                                    match translate_text(
+                                        &full_thinking,
+                                        config,
+                                    )
+                                    .await
+                                    {
+                                        Ok(translated) => {
+                                            app.status_message = Some(
+                                                "✓ 翻译完成".to_string(),
+                                            );
+                                            translated
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "thinking translation failed: {e}",
+                                            );
+                                            app.status_message = Some(
+                                                format!(
+                                                    "✗ 思考翻译失败: {e}",
+                                                ),
+                                            );
+                                            full_thinking
+                                        }
+                                    }
+                                } else {
+                                    full_thinking
+                                }
+                            } else {
+                                full_thinking
+                            };
+                            // Set the (possibly translated) content into
+                            // the HistoryCell::Thinking and mark it done.
+                            if let Some(entry_idx) =
+                                app.streaming_thinking_active_entry.take()
+                            {
+                                let duration = app
+                                    .thinking_started_at
+                                    .take()
+                                    .map(|t| t.elapsed().as_secs_f32());
+                                if let Some(active) =
+                                    app.active_cell.as_mut()
+                                    && let Some(
+                                        HistoryCell::Thinking {
+                                            content,
+                                            streaming,
+                                            duration_secs,
+                                        },
+                                    ) = active.entry_mut(entry_idx)
+                                {
+                                    *content = translated;
+                                    *streaming = false;
+                                    *duration_secs = duration;
+                                }
+                                app.bump_active_cell_revision();
+                                transcript_batch_updated = true;
+                            }
+                        } else {
+                            if finalize_current_streaming_thinking(app) {
+                                transcript_batch_updated = true;
+                            }
                         }
                         stash_reasoning_buffer_into_last_reasoning(app);
                     }
@@ -1447,7 +1591,11 @@ async fn run_event_loop(
         } else if let Some(entry_idx) = app.streaming_thinking_active_entry {
             let committed = app.streaming_state.commit_text(0);
             if !committed.is_empty() {
-                append_streaming_thinking(app, entry_idx, &committed);
+                // Suppress real-time display when translation is pending;
+                // the translated content will be set on ThinkingComplete.
+                if !app.translation_enabled {
+                    append_streaming_thinking(app, entry_idx, &committed);
+                }
                 transcript_batch_updated = true;
             }
         }
@@ -3898,6 +4046,7 @@ async fn dispatch_user_message(
                 goal_objective: app.goal.goal_objective.as_deref(),
                 project_context_pack_enabled: config.project_context_pack_enabled(),
                 locale_tag: app.ui_locale.tag(),
+                translation_enabled: app.translation_enabled,
             },
         ),
     );
@@ -3990,6 +4139,7 @@ async fn dispatch_user_message(
             trust_mode: app.trust_mode,
             auto_approve: app.mode == AppMode::Yolo,
             approval_mode: app.approval_mode,
+            translation_enabled: app.translation_enabled,
         })
         .await
     {

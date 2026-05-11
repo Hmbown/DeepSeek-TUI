@@ -821,6 +821,10 @@ pub struct App {
     pub session_artifacts: Vec<ArtifactRecord>,
     /// Trust mode - allow access outside workspace
     pub trust_mode: bool,
+    /// Translation mode — when enabled, the model is instructed to respond in
+    /// Chinese (Simplified) and a post-hoc translation layer replaces any
+    /// remaining English output before it reaches the user.
+    pub translation_enabled: bool,
     /// Ordered list of footer items the user wants visible. Sourced from
     /// `tui.status_items` in `~/.deepseek/config.toml` at startup; mutated
     /// live by `/statusline`. The renderer iterates this slice; no item is
@@ -1405,6 +1409,7 @@ impl App {
             current_session_id: None,
             session_artifacts: Vec::new(),
             trust_mode: initial_mode == AppMode::Yolo,
+            translation_enabled: false,
             status_items: config
                 .tui
                 .as_ref()
