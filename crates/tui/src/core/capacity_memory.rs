@@ -270,10 +270,238 @@ pub fn find_latest_cross_session(workspace: &str) -> Option<(String, CapacityMem
     newest.map(|(_, sid, rec)| (sid, rec))
 }
 
+/// Result of a migration pass over `memory/*.jsonl` data.
+#[derive(Debug, Clone, Default)]
+pub struct MigrationReport {
+    pub files_scanned: usize,
+    pub records_migrated: usize,
+    pub records_skipped_empty: usize,
+    pub records_skipped_has_workspace: usize,
+    pub files_backed_up: usize,
+    pub errors: Vec<String>,
+}
+
+/// Migrate legacy `memory/*.jsonl` records by backfilling the `workspace`
+/// field from the corresponding session JSON. Records that already have a
+/// non-empty `workspace` are left untouched. Records with empty
+/// `canonical_state` (all fields default) are skipped.
+///
+/// For each `.jsonl` file that contains at least one migrated record, the
+/// original file is backed up to `<filename>.pre-migration.bak` before
+/// the updated records are written.
+pub fn migrate_legacy_memory_to_workspace(sessions_dir: &Path) -> MigrationReport {
+    let mut report = MigrationReport::default();
+    let dirs = capacity_memory_dirs();
+
+    for dir in &dirs {
+        if !dir.exists() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            report.files_scanned += 1;
+
+            let Some(session_id) = path.file_stem().and_then(|s| s.to_str()).map(String::from)
+            else {
+                continue;
+            };
+
+            let Ok(records) = load_all_records_from_path(&path) else {
+                report
+                    .errors
+                    .push(format!("Failed to read {}", path.display()));
+                continue;
+            };
+
+            let workspace = resolve_session_workspace(sessions_dir, &session_id);
+            let mut any_migrated = false;
+            let mut updated = Vec::with_capacity(records.len());
+
+            for mut record in records {
+                if !record.workspace.is_empty() {
+                    report.records_skipped_has_workspace += 1;
+                    updated.push(record);
+                    continue;
+                }
+                if is_empty_canonical_state(&record.canonical_state) {
+                    report.records_skipped_empty += 1;
+                    updated.push(record);
+                    continue;
+                }
+
+                if let Some(ref ws) = workspace {
+                    record.workspace = ws.clone();
+                    any_migrated = true;
+                    report.records_migrated += 1;
+                } else {
+                    report.records_skipped_empty += 1;
+                }
+                updated.push(record);
+            }
+
+            if any_migrated {
+                let bak_path = path.with_extension("jsonl.pre-migration.bak");
+                if let Err(e) = fs::rename(&path, &bak_path)
+                    && let Err(copy_err) = fs::copy(&path, &bak_path)
+                {
+                    report.errors.push(format!(
+                        "Failed to back up {}: rename={} copy={}",
+                        path.display(),
+                        e,
+                        copy_err
+                    ));
+                    continue;
+                }
+                report.files_backed_up += 1;
+
+                if let Err(e) = rewrite_records(&path, &updated) {
+                    report
+                        .errors
+                        .push(format!("Failed to rewrite {}: {e}", path.display()));
+                }
+            }
+        }
+    }
+
+    report
+}
+
+fn load_all_records_from_path(path: &Path) -> Result<Vec<CapacityMemoryRecord>> {
+    let file = OpenOptions::new().read(true).open(path)?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(record) = serde_json::from_str::<CapacityMemoryRecord>(&line) {
+            records.push(record);
+        }
+    }
+    Ok(records)
+}
+
+fn rewrite_records(path: &Path, records: &[CapacityMemoryRecord]) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)?;
+    for record in records {
+        let line = serde_json::to_string(record)?;
+        writeln!(file, "{line}")?;
+    }
+    Ok(())
+}
+
+fn resolve_session_workspace(sessions_dir: &Path, session_id: &str) -> Option<String> {
+    let session_path = sessions_dir.join(format!("{session_id}.json"));
+    if !session_path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(&session_path).ok()?;
+    let meta: serde_json::Value = serde_json::from_str(&content).ok()?;
+    meta.get("metadata")
+        .and_then(|m| m.get("workspace"))
+        .and_then(|w| w.as_str())
+        .map(|s| s.to_string())
+}
+
+fn is_empty_canonical_state(state: &CanonicalState) -> bool {
+    state.goal.is_empty()
+        && state.constraints.is_empty()
+        && state.confirmed_facts.is_empty()
+        && state.open_loops.is_empty()
+        && state.pending_actions.is_empty()
+        && state.critical_refs.is_empty()
+}
+
+/// Restore a `.jsonl` file from its `.pre-migration.bak` backup.
+/// Returns `true` if a backup was found and restored.
+#[cfg(test)]
+pub fn rollback_migration_for_file(jsonl_path: &Path) -> bool {
+    let bak_path = PathBuf::from(jsonl_path.as_os_str()).with_extension("jsonl.pre-migration.bak");
+    if !bak_path.exists() {
+        return false;
+    }
+    if fs::rename(&bak_path, jsonl_path).is_ok()
+        || (fs::copy(&bak_path, jsonl_path).is_ok() && fs::remove_file(&bak_path).is_ok())
+    {
+        return true;
+    }
+    false
+}
+
+/// Roll back all migrations by restoring `.pre-migration.bak` files.
+/// Returns the number of files restored.
+#[cfg(test)]
+pub fn rollback_all_migrations() -> usize {
+    let dirs = capacity_memory_dirs();
+    let mut restored = 0;
+    for dir in &dirs {
+        if !dir.exists() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !name.ends_with(".pre-migration.bak") {
+                continue;
+            }
+            let original =
+                path.with_file_name(name.strip_suffix(".pre-migration.bak").unwrap_or(name));
+            if fs::rename(&path, &original).is_ok()
+                || (fs::copy(&path, &original).is_ok() && fs::remove_file(&path).is_ok())
+            {
+                restored += 1;
+            }
+        }
+    }
+    restored
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use tempfile::tempdir;
+
+    struct ScopedEnv {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl ScopedEnv {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for ScopedEnv {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(previous) = self.previous.take() {
+                    std::env::set_var(self.key, previous);
+                } else {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
 
     #[test]
     fn memory_jsonl_round_trip() {
@@ -385,5 +613,327 @@ mod tests {
             .expect("load newest records");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].canonical_state.goal, "new");
+    }
+
+    #[test]
+    fn migration_backfills_workspace_from_session_json() {
+        let tmp = tempdir().expect("tempdir");
+        let mem_dir = tmp.path().join("memory");
+        let sessions_dir = tmp.path().join("sessions");
+        fs::create_dir_all(&mem_dir).expect("dirs");
+        fs::create_dir_all(&sessions_dir).expect("dirs");
+
+        let session_id = "abc-123";
+        let workspace = "/home/user/project";
+
+        let session_json = sessions_dir.join(format!("{session_id}.json"));
+        fs::write(
+            &session_json,
+            format!(r#"{{"metadata":{{"id":"{session_id}","workspace":"{workspace}"}}}}"#),
+        )
+        .expect("session json");
+
+        let jsonl_path = mem_dir.join(format!("{session_id}.jsonl"));
+        let record = CapacityMemoryRecord {
+            id: "cap_m1".to_string(),
+            ts: now_rfc3339(),
+            turn_index: 1,
+            action_trigger: "engine_shutdown".to_string(),
+            h_hat: 0.0,
+            c_hat: 0.0,
+            slack: 0.0,
+            risk_band: "low".to_string(),
+            canonical_state: CanonicalState {
+                goal: "Ship feature".to_string(),
+                ..CanonicalState::default()
+            },
+            source_message_ids: vec![],
+            replay_info: None,
+            workspace: String::new(),
+        };
+        append_capacity_record_to_path(&jsonl_path, &record).expect("write");
+
+        let _env = ScopedEnv::set("DEEPSEEK_CAPACITY_MEMORY_DIR", mem_dir.to_str().unwrap());
+        let report = migrate_legacy_memory_to_workspace(&sessions_dir);
+
+        assert_eq!(report.records_migrated, 1);
+        assert_eq!(report.files_backed_up, 1);
+        assert!(
+            jsonl_path
+                .with_extension("jsonl.pre-migration.bak")
+                .exists()
+        );
+
+        let records = load_last_k_capacity_records_from_path(&jsonl_path, 1).expect("load");
+        assert_eq!(records[0].workspace, workspace);
+    }
+
+    #[test]
+    fn migration_skips_empty_canonical_state() {
+        let tmp = tempdir().expect("tempdir");
+        let mem_dir = tmp.path().join("memory");
+        let sessions_dir = tmp.path().join("sessions");
+        fs::create_dir_all(&mem_dir).expect("dirs");
+        fs::create_dir_all(&sessions_dir).expect("dirs");
+
+        let session_id = "empty-456";
+        let session_json = sessions_dir.join(format!("{session_id}.json"));
+        fs::write(
+            &session_json,
+            format!(r#"{{"metadata":{{"id":"{session_id}","workspace":"/ws"}}}}"#),
+        )
+        .expect("session json");
+
+        let jsonl_path = mem_dir.join(format!("{session_id}.jsonl"));
+        let record = CapacityMemoryRecord {
+            id: "cap_e1".to_string(),
+            ts: now_rfc3339(),
+            turn_index: 1,
+            action_trigger: "engine_shutdown".to_string(),
+            h_hat: 0.0,
+            c_hat: 0.0,
+            slack: 0.0,
+            risk_band: "low".to_string(),
+            canonical_state: CanonicalState::default(),
+            source_message_ids: vec![],
+            replay_info: None,
+            workspace: String::new(),
+        };
+        append_capacity_record_to_path(&jsonl_path, &record).expect("write");
+
+        let _env = ScopedEnv::set("DEEPSEEK_CAPACITY_MEMORY_DIR", mem_dir.to_str().unwrap());
+        let report = migrate_legacy_memory_to_workspace(&sessions_dir);
+
+        assert_eq!(report.records_migrated, 0);
+        assert_eq!(report.records_skipped_empty, 1);
+        assert_eq!(report.files_backed_up, 0);
+        assert!(
+            !jsonl_path
+                .with_extension("jsonl.pre-migration.bak")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn rollback_restores_from_backup() {
+        let tmp = tempdir().expect("tempdir");
+        let jsonl_path = tmp.path().join("test.jsonl");
+        let bak_path = tmp.path().join("test.jsonl.pre-migration.bak");
+
+        let original_content = "original line 1\noriginal line 2\n";
+        fs::write(&bak_path, original_content).expect("bak");
+        fs::write(&jsonl_path, "modified content\n").expect("modified");
+
+        assert!(rollback_migration_for_file(&jsonl_path));
+        assert!(!bak_path.exists());
+        assert_eq!(fs::read_to_string(&jsonl_path).unwrap(), original_content);
+    }
+
+    #[test]
+    fn rollback_all_restores_all_backups() {
+        let tmp = tempdir().expect("tempdir");
+        let mem_dir = tmp.path().join("memory");
+        fs::create_dir_all(&mem_dir).expect("dir");
+
+        fs::write(mem_dir.join("a.jsonl.pre-migration.bak"), "a-original\n").expect("bak a");
+        fs::write(mem_dir.join("a.jsonl"), "a-modified\n").expect("mod a");
+        fs::write(mem_dir.join("b.jsonl.pre-migration.bak"), "b-original\n").expect("bak b");
+        fs::write(mem_dir.join("b.jsonl"), "b-modified\n").expect("mod b");
+
+        let _env = ScopedEnv::set("DEEPSEEK_CAPACITY_MEMORY_DIR", mem_dir.to_str().unwrap());
+        let restored = rollback_all_migrations();
+
+        assert_eq!(restored, 2);
+        assert_eq!(
+            fs::read_to_string(mem_dir.join("a.jsonl")).unwrap(),
+            "a-original\n"
+        );
+        assert_eq!(
+            fs::read_to_string(mem_dir.join("b.jsonl")).unwrap(),
+            "b-original\n"
+        );
+    }
+
+    #[test]
+    fn is_empty_canonical_state_detects_default() {
+        assert!(is_empty_canonical_state(&CanonicalState::default()));
+        assert!(!is_empty_canonical_state(&CanonicalState {
+            goal: "something".to_string(),
+            ..CanonicalState::default()
+        }));
+        assert!(!is_empty_canonical_state(&CanonicalState {
+            confirmed_facts: vec!["fact".to_string()],
+            ..CanonicalState::default()
+        }));
+    }
+
+    #[test]
+    fn tier1_rehydrate_from_current_session_memory() {
+        let tmp = tempdir().expect("tempdir");
+        let mem_dir = tmp.path().join("memory");
+        fs::create_dir_all(&mem_dir).expect("dir");
+
+        let session_id = "tier1-session";
+        let jsonl_path = mem_dir.join(format!("{session_id}.jsonl"));
+        let record = CapacityMemoryRecord {
+            id: "cap_t1".to_string(),
+            ts: now_rfc3339(),
+            turn_index: 5,
+            action_trigger: "engine_shutdown".to_string(),
+            h_hat: 0.0,
+            c_hat: 0.0,
+            slack: 0.0,
+            risk_band: "low".to_string(),
+            canonical_state: CanonicalState {
+                goal: "Tier-1 goal from current session".to_string(),
+                confirmed_facts: vec!["fact1".to_string()],
+                ..CanonicalState::default()
+            },
+            source_message_ids: vec![],
+            replay_info: None,
+            workspace: "/workspace/a".to_string(),
+        };
+        append_capacity_record_to_path(&jsonl_path, &record).expect("write");
+
+        let _env = ScopedEnv::set("DEEPSEEK_CAPACITY_MEMORY_DIR", mem_dir.to_str().unwrap());
+        let records = load_last_k_capacity_records(session_id, 1).expect("load");
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].canonical_state.goal,
+            "Tier-1 goal from current session"
+        );
+    }
+
+    #[test]
+    fn tier3_rehydrate_from_cross_session_memory() {
+        let tmp = tempdir().expect("tempdir");
+        let mem_dir = tmp.path().join("memory");
+        fs::create_dir_all(&mem_dir).expect("dir");
+
+        let old_session_id = "old-session-789";
+        let old_path = mem_dir.join(format!("{old_session_id}.jsonl"));
+        let record = CapacityMemoryRecord {
+            id: "cap_t3".to_string(),
+            ts: now_rfc3339(),
+            turn_index: 10,
+            action_trigger: "engine_shutdown".to_string(),
+            h_hat: 0.0,
+            c_hat: 0.0,
+            slack: 0.0,
+            risk_band: "low".to_string(),
+            canonical_state: CanonicalState {
+                goal: "Tier-3 goal from different session".to_string(),
+                confirmed_facts: vec!["cross-fact".to_string()],
+                ..CanonicalState::default()
+            },
+            source_message_ids: vec![],
+            replay_info: None,
+            workspace: "/workspace/x".to_string(),
+        };
+        append_capacity_record_to_path(&old_path, &record).expect("write");
+
+        let _env = ScopedEnv::set("DEEPSEEK_CAPACITY_MEMORY_DIR", mem_dir.to_str().unwrap());
+        let result = find_latest_cross_session("/workspace/x");
+
+        let (sid, rec) = result.expect("should find cross-session record");
+        assert_eq!(sid, old_session_id);
+        assert_eq!(
+            rec.canonical_state.goal,
+            "Tier-3 goal from different session"
+        );
+    }
+
+    #[test]
+    fn tier3_cross_session_isolates_workspace() {
+        let tmp = tempdir().expect("tempdir");
+        let mem_dir = tmp.path().join("memory");
+        fs::create_dir_all(&mem_dir).expect("dir");
+
+        let ws_a = mem_dir.join("ws-a.jsonl");
+        let record_a = CapacityMemoryRecord {
+            id: "cap_a".to_string(),
+            ts: now_rfc3339(),
+            turn_index: 1,
+            action_trigger: "engine_shutdown".to_string(),
+            h_hat: 0.0,
+            c_hat: 0.0,
+            slack: 0.0,
+            risk_band: "low".to_string(),
+            canonical_state: CanonicalState {
+                goal: "Workspace A goal".to_string(),
+                ..CanonicalState::default()
+            },
+            source_message_ids: vec![],
+            replay_info: None,
+            workspace: "/workspace/a".to_string(),
+        };
+        append_capacity_record_to_path(&ws_a, &record_a).expect("write a");
+
+        let _env = ScopedEnv::set("DEEPSEEK_CAPACITY_MEMORY_DIR", mem_dir.to_str().unwrap());
+        let result = find_latest_cross_session("/workspace/b");
+
+        assert!(
+            result.is_none(),
+            "should not find records from different workspace"
+        );
+    }
+
+    #[test]
+    fn rehydration_ladder_tier1_takes_priority_over_tier3() {
+        let tmp = tempdir().expect("tempdir");
+        let mem_dir = tmp.path().join("memory");
+        fs::create_dir_all(&mem_dir).expect("dir");
+
+        let current_session = "current-session";
+        let current_path = mem_dir.join(format!("{current_session}.jsonl"));
+        let current_record = CapacityMemoryRecord {
+            id: "cap_current".to_string(),
+            ts: now_rfc3339(),
+            turn_index: 3,
+            action_trigger: "engine_shutdown".to_string(),
+            h_hat: 0.0,
+            c_hat: 0.0,
+            slack: 0.0,
+            risk_band: "low".to_string(),
+            canonical_state: CanonicalState {
+                goal: "Current session goal (tier 1)".to_string(),
+                ..CanonicalState::default()
+            },
+            source_message_ids: vec![],
+            replay_info: None,
+            workspace: "/workspace/x".to_string(),
+        };
+        append_capacity_record_to_path(&current_path, &current_record).expect("write current");
+
+        let old_session = "old-session";
+        let old_path = mem_dir.join(format!("{old_session}.jsonl"));
+        let old_record = CapacityMemoryRecord {
+            id: "cap_old".to_string(),
+            ts: now_rfc3339(),
+            turn_index: 10,
+            action_trigger: "engine_shutdown".to_string(),
+            h_hat: 0.0,
+            c_hat: 0.0,
+            slack: 0.0,
+            risk_band: "low".to_string(),
+            canonical_state: CanonicalState {
+                goal: "Old session goal (tier 3)".to_string(),
+                ..CanonicalState::default()
+            },
+            source_message_ids: vec![],
+            replay_info: None,
+            workspace: "/workspace/x".to_string(),
+        };
+        append_capacity_record_to_path(&old_path, &old_record).expect("write old");
+
+        let _env = ScopedEnv::set("DEEPSEEK_CAPACITY_MEMORY_DIR", mem_dir.to_str().unwrap());
+        let tier1 = load_last_k_capacity_records(current_session, 1).expect("tier1");
+
+        assert_eq!(tier1.len(), 1);
+        assert_eq!(
+            tier1[0].canonical_state.goal,
+            "Current session goal (tier 1)"
+        );
     }
 }

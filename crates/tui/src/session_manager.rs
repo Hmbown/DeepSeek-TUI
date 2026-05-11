@@ -155,6 +155,11 @@ impl SessionManager {
         Self::new(default_sessions_dir()?)
     }
 
+    #[must_use]
+    pub fn sessions_dir(&self) -> &Path {
+        &self.sessions_dir
+    }
+
     /// Save a session to disk using atomic write (temp file + fsync + rename).
     pub fn save_session(&self, session: &SavedSession) -> std::io::Result<PathBuf> {
         let path = self.validated_session_path(&session.metadata.id)?;

@@ -7,6 +7,7 @@
 
 use super::*;
 
+use crate::core::capacity_memory::migrate_legacy_memory_to_workspace;
 use crate::models::context_window_for_model;
 use crate::session_manager::{SavedSession, SessionManager};
 use std::path::Path;
@@ -960,8 +961,39 @@ impl Engine {
         pointer
     }
 
+    pub(super) fn run_startup_memory_migration(&mut self) {
+        if std::env::var("DEEPSEEK_CAPACITY_SKIP_MIGRATION")
+            .map(|v| v.trim().eq_ignore_ascii_case("true") || v == "1")
+            .unwrap_or(false)
+        {
+            return;
+        }
+
+        let Ok(sessions_dir) = crate::session_manager::SessionManager::default_location()
+            .map(|m| m.sessions_dir().to_path_buf())
+        else {
+            return;
+        };
+
+        let report = migrate_legacy_memory_to_workspace(&sessions_dir);
+        if report.records_migrated > 0 || !report.errors.is_empty() {
+            tracing::info!(
+                "Memory migration: scanned={} migrated={} skipped_empty={} skipped_has_ws={} backed_up={} errors={}",
+                report.files_scanned,
+                report.records_migrated,
+                report.records_skipped_empty,
+                report.records_skipped_has_workspace,
+                report.files_backed_up,
+                report.errors.len(),
+            );
+            for err in &report.errors {
+                tracing::warn!("Migration error: {err}");
+            }
+        }
+    }
+
     pub(super) fn rehydrate_latest_canonical_state(&mut self) {
-        // First try: load from current session
+        // Tier 1: load from current session's memory records
         if let Ok(records) = load_last_k_capacity_records(&self.session.id, 1)
             && let Some(last) = records.last()
         {
@@ -976,14 +1008,20 @@ impl Engine {
             return;
         }
 
-        // Second try: build canonical state from previous session JSON.
-        // Richer than memory records and works even when shutdown checkpoint
-        // wrote an empty state.
-        if self.try_rehydrate_from_previous_session() {
+        // Tier 2: build canonical state from previous session JSON.
+        // Can be disabled via DEEPSEEK_CAPACITY_DISABLE_TIER2=true for rollback.
+        if std::env::var("DEEPSEEK_CAPACITY_DISABLE_TIER2")
+            .map(|v| v.trim().eq_ignore_ascii_case("true") || v == "1")
+            .unwrap_or(false)
+        {
+            tracing::info!(
+                "Tier-2 rehydration disabled by DEEPSEEK_CAPACITY_DISABLE_TIER2 env var"
+            );
+        } else if self.try_rehydrate_from_previous_session() {
             return;
         }
 
-        // Third try: cross-session memory (legacy fallback, opt-in only).
+        // Tier 3: cross-session memory (legacy fallback, opt-in only).
         if !self.capacity_controller.cross_session_enabled() {
             return;
         }

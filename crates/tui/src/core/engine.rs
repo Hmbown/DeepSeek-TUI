@@ -552,6 +552,7 @@ impl Engine {
             workshop_vars,
             sandbox_backend,
         };
+        engine.run_startup_memory_migration();
         engine.rehydrate_latest_canonical_state();
 
         let handle = EngineHandle {
