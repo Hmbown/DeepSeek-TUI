@@ -1019,6 +1019,30 @@ fn create_test_app() -> App {
     App::new(options, &Config::default())
 }
 
+fn create_test_options() -> TuiOptions {
+    TuiOptions {
+        model: "deepseek-v4-pro".to_string(),
+        workspace: PathBuf::from("."),
+        config_path: None,
+        config_profile: None,
+        allow_shell: false,
+        use_alt_screen: true,
+        use_mouse_capture: false,
+        use_bracketed_paste: true,
+        max_subagents: 1,
+        skills_dir: PathBuf::from("."),
+        memory_path: PathBuf::from("memory.md"),
+        notes_path: PathBuf::from("notes.txt"),
+        mcp_config_path: PathBuf::from("mcp.json"),
+        use_memory: false,
+        start_in_agent_mode: false,
+        skip_onboarding: false,
+        yolo: false,
+        resume_session_id: None,
+        initial_input: None,
+    }
+}
+
 fn text_message(role: &str, text: &str) -> Message {
     Message {
         role: role.to_string(),
@@ -4564,9 +4588,12 @@ fn checklist_write_renders_dedicated_card() {
 #[test]
 fn history_arrow_handles_empty_input() {
     let mut app = create_test_app();
+    // Explicitly disable arrows-scroll so this test covers the
+    // history-navigation path regardless of the mouse-capture default.
+    app.composer_arrows_scroll = false;
     app.input_history.push("previous prompt".to_string());
 
-    // Default: empty composer Up navigates input history (#1117).
+    // With arrows-scroll off: empty composer Up navigates input history (#1117).
     assert!(handle_composer_history_arrow(
         &mut app,
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
@@ -4579,6 +4606,9 @@ fn history_arrow_handles_empty_input() {
 #[test]
 fn history_arrow_handles_whitespace_input() {
     let mut app = create_test_app();
+    // Explicitly disable arrows-scroll so this test covers the
+    // history-navigation path regardless of the mouse-capture default.
+    app.composer_arrows_scroll = false;
     app.input = "   ".to_string();
     app.cursor_position = app.input.chars().count();
     app.input_history.push("previous prompt".to_string());
@@ -4655,6 +4685,56 @@ fn composer_arrows_scroll_nonempty_still_navigates_history() {
         false,
     ));
     assert_eq!(app.input, "previous prompt");
+}
+
+// #1443: when mouse capture is off (e.g. Windows CMD), arrow-scroll
+// must default to true so mouse-wheel events (sent as arrow keys by
+// the terminal) scroll the transcript rather than cycling history.
+#[test]
+fn composer_arrows_scroll_defaults_true_without_mouse_capture() {
+    let options = TuiOptions {
+        use_mouse_capture: false,
+        ..create_test_options()
+    };
+    let app = App::new(options, &Config::default());
+    assert!(
+        app.composer_arrows_scroll,
+        "arrows-scroll must default to true when mouse capture is off"
+    );
+}
+
+#[test]
+fn composer_arrows_scroll_defaults_false_with_mouse_capture() {
+    let options = TuiOptions {
+        use_mouse_capture: true,
+        ..create_test_options()
+    };
+    let app = App::new(options, &Config::default());
+    assert!(
+        !app.composer_arrows_scroll,
+        "arrows-scroll must default to false when mouse capture is on"
+    );
+}
+
+#[test]
+fn composer_arrows_scroll_config_overrides_default() {
+    let config = Config {
+        tui: Some(crate::config::TuiConfig {
+            composer_arrows_scroll: Some(false),
+            ..Default::default()
+        }),
+        ..Config::default()
+    };
+    // Even with mouse_capture off, explicit config=false wins.
+    let options = TuiOptions {
+        use_mouse_capture: false,
+        ..create_test_options()
+    };
+    let app = App::new(options, &config);
+    assert!(
+        !app.composer_arrows_scroll,
+        "explicit config=false must override the mouse-capture-derived default"
+    );
 }
 
 #[test]
