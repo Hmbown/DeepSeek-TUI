@@ -6,7 +6,7 @@ use std::time::Instant;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::deepseek_theme::active_theme;
 use crate::models::{ContentBlock, Message};
@@ -57,12 +57,13 @@ const TOOL_DONE_SYMBOL: &str = "\u{23FA}"; // ⏺
 const TOOL_FAILED_SYMBOL: &str = "\u{23FA}"; // ⏺
 
 /// Render mode controlling whether tool/thinking cells render their compact
-/// "live" form (with caps and collapsed reasoning) or their full transcript
-/// form (uncapped, suitable for the pager / clipboard / message export).
+/// "live" form (with capped output and collapsed reasoning) or their full
+/// transcript form (uncapped, suitable for the pager / clipboard / message
+/// export).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
     /// Live in-stream view: thinking is collapsed to a summary, tool output is
-    /// truncated with a "Alt+V for details" affordance.
+    /// shown with a Claude-style head/tail preview when very long.
     Live,
     /// Full transcript view: every line of reasoning and tool output is
     /// emitted, no caps, no affordance.
@@ -150,6 +151,8 @@ impl SubAgentCell {
 pub struct TranscriptRenderOptions {
     pub show_thinking: bool,
     pub verbose: bool,
+    /// Legacy config compatibility. Tool cards stay visible in the main
+    /// transcript; long outputs still use the live head/tail preview.
     pub show_tool_details: bool,
     pub calm_mode: bool,
     pub low_motion: bool,
@@ -261,17 +264,6 @@ impl HistoryCell {
                 !options.verbose,
                 options.low_motion,
             ),
-            HistoryCell::Tool(cell) if !options.show_tool_details => {
-                let mut lines = cell.lines_with_motion(width, options.low_motion);
-                if lines.len() > 2 {
-                    lines.truncate(2);
-                    lines.push(details_affordance_line(
-                        "details hidden",
-                        Style::default().fg(palette::TEXT_MUTED).italic(),
-                    ));
-                }
-                lines
-            }
             HistoryCell::Tool(cell) if options.calm_mode => {
                 let mut lines = cell.lines_with_motion(width, options.low_motion);
                 if lines.len() > TOOL_CARD_SUMMARY_LINES {
@@ -665,6 +657,8 @@ pub struct ExecCell {
     pub duration_ms: Option<u64>,
     pub source: ExecSource,
     pub interaction: Option<String>,
+    /// Cached output summary — avoids re-parsing JSON every frame.
+    pub output_summary: Option<String>,
 }
 
 impl ExecCell {
@@ -710,7 +704,7 @@ impl ExecCell {
                 Style::default().fg(palette::TEXT_MUTED),
                 width,
             ));
-        } else {
+        } else if matches!(mode, RenderMode::Transcript) {
             lines.extend(render_command_mode(&self.command, width, mode));
         }
 
@@ -746,7 +740,7 @@ impl ExecCell {
             ));
         }
 
-        lines
+        clamp_tool_block_lines(lines, width)
     }
 }
 
@@ -1219,6 +1213,11 @@ pub struct GenericToolCell {
     /// OSC 8-aware terminals — the path renders as a hyperlink when
     /// `tui.osc8_links` is enabled).
     pub spillover_path: Option<std::path::PathBuf>,
+    // --- Pre-computed render cache (populated once at cell creation) ---
+    /// Cached output summary — avoids re-parsing JSON every frame.
+    pub output_summary: Option<String>,
+    /// Whether the output looks like a unified diff (cached after first check).
+    pub is_diff: bool,
 }
 
 impl GenericToolCell {
@@ -1269,12 +1268,14 @@ impl GenericToolCell {
             None,
             low_motion,
         ));
-        lines.extend(render_compact_kv(
-            "name",
-            &self.name,
-            tool_value_style(),
-            width,
-        ));
+        if matches!(mode, RenderMode::Transcript) {
+            lines.extend(render_compact_kv(
+                "name",
+                &self.name,
+                tool_value_style(),
+                width,
+            ));
+        }
 
         // Prefer per-prompt rows over the generic args summary when the tool
         // exposes a list of child prompts. One row per child with a `[i]`
@@ -1307,10 +1308,7 @@ impl GenericToolCell {
         }
 
         if let Some(output) = self.output.as_ref() {
-            // If the output looks like a unified diff (contains hunk headers),
-            // use the full diff renderer with line numbers and colored gutters
-            // instead of the generic output path (#380).
-            if output_looks_like_diff(output) {
+            if self.is_diff {
                 let diff_summary = diff_render::diff_summary_label(output);
                 lines.push(render_tool_header_with_summary(
                     "Diff",
@@ -1322,11 +1320,6 @@ impl GenericToolCell {
                 ));
                 lines.extend(diff_render::render_diff(output, width));
             } else {
-                // Multi-line outputs (diff stats, file lists, todo snapshots) used
-                // to be crushed into one line by `render_compact_kv` because its
-                // wrapper joined the entire string before wrapping. Route through
-                // `render_tool_output_mode` so each `\n` becomes a real row, with
-                // a `+N more lines` affordance in live mode (#80).
                 lines.extend(render_tool_output_mode(
                     output,
                     width,
@@ -1335,20 +1328,13 @@ impl GenericToolCell {
                 ));
             }
 
-            // #423: surface the spillover-file path inline so the user
-            // (and the model) can find the elided tail. Only emitted in
-            // live mode — transcript replay already has the full output
-            // verbatim. The path is OSC 8-wrapped when the feature is
-            // enabled so terminals that support hyperlinks make it
-            // Cmd+click-openable; the clipboard / selection path
-            // strips the escape on copy.
             if matches!(mode, RenderMode::Live)
                 && let Some(path) = self.spillover_path.as_ref()
             {
                 lines.push(render_spillover_annotation(path, width));
             }
         }
-        lines
+        clamp_tool_block_lines(lines, width)
     }
 
     /// Render `agent_spawn` as a single compact summary line for live
@@ -1357,7 +1343,7 @@ impl GenericToolCell {
     /// the pointer that says "a spawn happened, here's the agent id".
     ///
     /// Output shape (header):
-    ///   `◐ delegate · agent_spawn  agent-abc12  [running]`
+    ///   `◐ Task(agent-abc12)`
     /// Falls back to a placeholder when the spawn is still pending and
     /// no agent id has been assigned yet.
     fn render_agent_spawn_compact(&self, low_motion: bool) -> Vec<Line<'static>> {
@@ -1483,7 +1469,7 @@ fn is_checklist_tool_name(name: &str) -> bool {
 /// Heuristic: does the output look like a unified diff? Returns true when
 /// the output contains at least one hunk header (`@@`) or a `diff --git`
 /// line, which are reliable markers of unified diff content (#380).
-fn output_looks_like_diff(output: &str) -> bool {
+pub(crate) fn output_looks_like_diff(output: &str) -> bool {
     let mut lines = output.lines();
     // Check first 5 lines for diff markers
     for _ in 0..5 {
@@ -2252,13 +2238,74 @@ fn render_compact_kv(label: &str, value: &str, style: Style, width: u16) -> Vec<
     render_card_detail_line(Some(label.trim_end_matches(':')), value, style, width)
 }
 
+/// Clamp rendered tool-call rows to the target width.
+///
+/// Claude-style transcript rendering does not draw a box around tool calls:
+/// the header carries the tool identity, and body rows use the lightweight
+/// `⎿` detail prefix.
+fn clamp_tool_block_lines(mut lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+    for line in &mut lines {
+        clamp_line_to_width(line, width);
+    }
+    lines
+}
+
+fn clamp_line_to_width(line: &mut Line<'static>, width: u16) {
+    let mut remaining = usize::from(width);
+    let mut clamped = Vec::with_capacity(line.spans.len());
+    for span in line.spans.drain(..) {
+        if remaining == 0 {
+            break;
+        }
+        let span_width = UnicodeWidthStr::width(span.content.as_ref());
+        if span_width <= remaining {
+            remaining = remaining.saturating_sub(span_width);
+            clamped.push(span);
+            continue;
+        }
+        let content = truncate_to_display_width(span.content.as_ref(), remaining);
+        if !content.is_empty() {
+            clamped.push(Span::styled(content, span.style));
+        }
+        break;
+    }
+    line.spans = clamped;
+}
+
+fn truncate_to_display_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_string();
+    }
+    if max_width == 1 {
+        return "\u{2026}".to_string();
+    }
+
+    let suffix = "\u{2026}";
+    let mut out = String::new();
+    let mut used = 0usize;
+    let budget = max_width.saturating_sub(UnicodeWidthStr::width(suffix));
+    for ch in text.chars() {
+        let ch_width = ch.width().unwrap_or(0);
+        if used + ch_width > budget {
+            break;
+        }
+        out.push(ch);
+        used += ch_width;
+    }
+    out.push_str(suffix);
+    out
+}
+
 fn render_tool_output_mode(
     output: &str,
     width: u16,
     line_limit: usize,
     mode: RenderMode,
 ) -> Vec<Line<'static>> {
-    render_preserved_output_mode(output, width, line_limit, mode, "result")
+    render_preserved_output_mode(output, width, line_limit, mode, "")
 }
 
 fn review_severity_color(severity: &str) -> Color {
@@ -2285,7 +2332,7 @@ fn render_exec_output_mode(
     line_limit: usize,
     mode: RenderMode,
 ) -> Vec<Line<'static>> {
-    render_preserved_output_mode(output, width, line_limit, mode, "output")
+    render_preserved_output_mode(output, width, line_limit, mode, "")
 }
 
 #[derive(Debug, Clone)]
@@ -2318,7 +2365,11 @@ fn render_preserved_output_mode(
         for (idx, row) in all_lines.iter().enumerate() {
             render_output_row(
                 &mut lines,
-                if idx == 0 { Some(first_label) } else { None },
+                if idx == 0 && !first_label.is_empty() {
+                    Some(first_label)
+                } else {
+                    None
+                },
                 row,
                 width,
             );
@@ -2342,7 +2393,7 @@ fn render_preserved_output_mode(
         let row = &all_lines[idx];
         render_output_row(
             &mut lines,
-            if rendered_idx == 0 {
+            if rendered_idx == 0 && !first_label.is_empty() {
                 Some(first_label)
             } else {
                 None
@@ -2796,22 +2847,26 @@ fn render_tool_header_with_family_and_summary(
 
     let verb = crate::tui::widgets::tool_card::family_label(family);
 
+    let summary = summary.and_then(normalize_header_summary);
+
     let mut spans = vec![
         Span::styled(
             format!("{} ", status_symbol(started_at, status, low_motion)),
             Style::default().fg(tool_state_color(status)),
         ),
         Span::styled(verb.to_string(), tool_title_style()),
-        Span::styled(" ", Style::default()),
-        Span::styled(state_owned, tool_status_style(status)),
     ];
 
-    if let Some(summary) = summary.and_then(normalize_header_summary) {
-        spans.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
+    if let Some(summary) = summary {
+        spans.push(Span::styled("(", Style::default().fg(palette::TEXT_DIM)));
         spans.push(Span::styled(
             truncate_text(&summary, TOOL_HEADER_SUMMARY_LIMIT),
             Style::default().fg(palette::TEXT_MUTED),
         ));
+        spans.push(Span::styled(")", Style::default().fg(palette::TEXT_DIM)));
+    } else {
+        spans.push(Span::styled(" ", Style::default()));
+        spans.push(Span::styled(state_owned, tool_status_style(status)));
     }
 
     Line::from(spans)
@@ -3132,6 +3187,8 @@ mod tests {
             spillover_path: Some(PathBuf::from(
                 "/Users/dev/.deepseek/tool_outputs/call-abc12.txt",
             )),
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(120, true, super::RenderMode::Live);
         let joined: String = lines
@@ -3160,6 +3217,8 @@ mod tests {
             output: Some("output".to_string()),
             prompts: None,
             spillover_path: Some(PathBuf::from("/tmp/spill.txt")),
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(120, true, super::RenderMode::Transcript);
         let joined: String = lines
@@ -3182,6 +3241,8 @@ mod tests {
             output: Some("contents".to_string()),
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         let joined: String = lines
@@ -3202,6 +3263,8 @@ mod tests {
             output: Some("output".to_string()),
             prompts: None,
             spillover_path: Some(PathBuf::from(long_path)),
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(40, true, super::RenderMode::Live);
         let annotation_line = lines
@@ -3277,19 +3340,22 @@ mod tests {
             ),
             prompts: None,
             spillover_path: None,
+                output_summary: None,
+                is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         // One header line, no details/args/output expansion.
         assert_eq!(lines.len(), 1, "expected exactly 1 line, got {:?}", lines);
         let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        // Header carries the agent id and the running status.
+        // Header carries the agent id; running status is carried by the
+        // animated status glyph, matching the Claude-style compact row.
         assert!(
             rendered.contains("agent-abc12"),
             "expected agent id in header: {rendered:?}"
         );
         assert!(
-            rendered.contains("running"),
-            "expected status in header: {rendered:?}"
+            !rendered.contains("running"),
+            "status text should not clutter the compact row: {rendered:?}"
         );
         // No verbose `args:` / `name:` rows.
         assert!(
@@ -3310,6 +3376,8 @@ mod tests {
             output: None,
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         assert_eq!(lines.len(), 1);
@@ -3330,6 +3398,8 @@ mod tests {
             ),
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Transcript);
         // Transcript mode emits header + name kv + (no args, output present)
@@ -3348,6 +3418,8 @@ mod tests {
             output: Some("first line\nsecond line\nthird line".to_string()),
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         assert!(
@@ -3602,6 +3674,7 @@ mod tests {
             duration_ms: None,
             source: ExecSource::Assistant,
             interaction: None,
+            output_summary: None,
         }));
 
         let animated = cell.lines_with_options(80, TranscriptRenderOptions::default());
@@ -3771,11 +3844,11 @@ mod tests {
     #[test]
     fn assistant_glyph_holds_full_brightness_when_idle() {
         // Idle (streaming=false) and low_motion both pin the colour to the
-        // source sky — pulse only fires when actively streaming.
+        // source accent — pulse only fires when actively streaming.
         let idle = assistant_label_style_for(false, false);
         let low_motion = assistant_label_style_for(true, true);
-        assert_eq!(idle.fg, Some(palette::DEEPSEEK_SKY));
-        assert_eq!(low_motion.fg, Some(palette::DEEPSEEK_SKY));
+        assert_eq!(idle.fg, Some(palette::ACCENT_TOOL_LIVE));
+        assert_eq!(low_motion.fg, Some(palette::ACCENT_TOOL_LIVE));
     }
 
     #[test]
@@ -3789,8 +3862,8 @@ mod tests {
         let mut saw_dimmed = false;
         for _ in 0..50 {
             if let Some(Color::Rgb(_, _, b)) = assistant_label_style_for(true, false).fg {
-                let Color::Rgb(_, _, src_b) = palette::DEEPSEEK_SKY else {
-                    panic!("DEEPSEEK_SKY must be RGB");
+                let Color::Rgb(_, _, src_b) = palette::ACCENT_TOOL_LIVE else {
+                    panic!("ACCENT_TOOL_LIVE must be RGB");
                 };
                 if b < src_b {
                     saw_dimmed = true;
@@ -3805,10 +3878,10 @@ mod tests {
         );
     }
 
-    // === Tool-card verb-glyph tests (v0.6.6 UI redesign) ===
+    // === Tool-card label tests (Claude-style transcript) ===
 
     #[test]
-    fn exec_cell_header_uses_run_verb_glyph_and_label() {
+    fn exec_cell_header_uses_bash_label() {
         let cell = ExecCell {
             command: "ls".to_string(),
             status: ToolStatus::Success,
@@ -3817,6 +3890,7 @@ mod tests {
             duration_ms: Some(10),
             source: ExecSource::Assistant,
             interaction: None,
+            output_summary: None,
         };
         let header = &cell.lines_with_motion(80, true)[0];
         let visible: String = header
@@ -3825,10 +3899,13 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect::<String>();
         assert!(
-            visible.contains('\u{25B6}'),
-            "Run glyph `▶` present: {visible:?}"
+            visible.contains("\u{23FA} Bash(ls)"),
+            "Bash call label present: {visible:?}"
         );
-        assert!(visible.contains(" run "), "verb label `run`: {visible:?}");
+        assert!(
+            !visible.contains(" done "),
+            "done state is implicit: {visible:?}"
+        );
         // Old literal title must be gone.
         assert!(
             !visible.contains("Shell"),
@@ -3846,6 +3923,7 @@ mod tests {
             duration_ms: None,
             source: ExecSource::Assistant,
             interaction: None,
+            output_summary: None,
         };
 
         let header = &cell.lines_with_motion(80, true)[0];
@@ -3854,9 +3932,9 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect::<String>();
-        assert!(visible.contains("run running"));
+        assert!(!visible.contains("Bash running"));
         assert!(
-            visible.contains("cargo test --workspace --all-features"),
+            visible.contains("Bash(cargo test --workspace --all-features)"),
             "header should expose command target: {visible:?}"
         );
     }
@@ -3870,6 +3948,8 @@ mod tests {
             output: None,
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         let header_visible: String = lines[0]
@@ -3877,14 +3957,10 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect::<String>();
-        // agent_spawn → Delegate family (◐ delegate).
+        // agent_spawn → Task family in Claude-style compact transcript.
         assert!(
-            header_visible.contains('\u{25D0}'),
-            "Delegate glyph `◐`: {header_visible:?}"
-        );
-        assert!(
-            header_visible.contains(" delegate "),
-            "verb label `delegate`: {header_visible:?}"
+            header_visible.contains("Task("),
+            "Task label: {header_visible:?}"
         );
     }
 
@@ -3897,6 +3973,8 @@ mod tests {
             output: None,
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         let header_visible: String = lines[0]
@@ -3905,10 +3983,7 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect::<String>();
 
-        assert!(
-            header_visible.contains(" rlm "),
-            "RLM card should identify RLM work: {header_visible:?}"
-        );
+        assert!(header_visible.contains("RLM(compare source trees)"));
         assert!(
             !header_visible.contains("swarm"),
             "RLM card must not use removed swarm wording: {header_visible:?}"
@@ -4061,16 +4136,12 @@ mod tests {
 
         let lines = cell.lines_with_motion(80, true);
 
-        // Header: "<spinner> <family-glyph> <verb> <state>" (v0.6.6 layout).
-        // PlanUpdate has no canonical family yet, so it falls into the
-        // Generic bullet glyph + "tool" verb. The shape and colour wiring
-        // is what matters for the theme parity; the verb text moves with
-        // the redesign.
+        // Header: "<spinner> Tool <state>".
+        // PlanUpdate uses its own lightweight render path.
         let header = &lines[0];
         let symbol_span = &header.spans[0];
-        let glyph_span = &header.spans[1];
-        let title_span = &header.spans[2];
-        let state_span = &header.spans[4];
+        let title_span = &header.spans[1];
+        let state_span = &header.spans[3];
 
         assert_eq!(
             symbol_span.style.fg,
@@ -4078,14 +4149,9 @@ mod tests {
             "running header symbol should use the dark theme running accent"
         );
         assert_eq!(
-            glyph_span.style.fg,
-            Some(theme.tool_running_accent),
-            "family glyph rides the same status colour as the spinner"
-        );
-        assert_eq!(
             title_span.content.as_ref(),
-            "tool",
-            "PlanUpdate routes to Generic family → 'tool' verb",
+            "Tool",
+            "PlanUpdate routes to Generic family → 'Tool' label",
         );
         assert_eq!(title_span.style.fg, Some(theme.tool_title_color));
         assert!(
@@ -4124,9 +4190,9 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        assert_eq!(visible[1].trim_end(), "▏ done: scan repo");
-        assert_eq!(visible[2].trim_end(), "▏ live: extract theme");
-        assert_eq!(visible[3].trim_end(), "▏ next: land tests");
+        assert_eq!(visible[1].trim_end(), "  ⎿ done: scan repo");
+        assert_eq!(visible[2].trim_end(), "  ⎿ live: extract theme");
+        assert_eq!(visible[3].trim_end(), "  ⎿ next: land tests");
     }
 
     #[test]
@@ -4140,36 +4206,34 @@ mod tests {
             duration_ms: Some(42),
             source: ExecSource::Assistant,
             interaction: None,
+            output_summary: None,
         };
 
         let lines = cell.lines_with_motion(80, true);
 
         let header = &lines[0];
         let symbol_span = &header.spans[0];
-        let glyph_span = &header.spans[1];
-        let title_span = &header.spans[2];
-        let state_span = &header.spans[4];
+        let title_span = &header.spans[1];
 
         assert_eq!(
             symbol_span.style.fg,
             Some(theme.tool_failed_accent),
             "failed exec header symbol should use the dark theme failed accent"
         );
-        // ExecCell is family Run → glyph `▶ ` and verb `run`.
-        assert!(
-            glyph_span.content.starts_with('\u{25B6}'),
-            "Run family glyph: {:?}",
-            glyph_span.content
-        );
         assert_eq!(
             title_span.content.as_ref(),
-            "run",
-            "ExecCell routes to Run family → 'run' verb",
+            "Bash",
+            "ExecCell routes to Run family → 'Bash' label",
         );
         assert_eq!(title_span.style.fg, Some(theme.tool_title_color));
         assert!(title_span.style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(state_span.content.as_ref(), "issue");
-        assert_eq!(state_span.style.fg, Some(theme.tool_failed_accent));
+        let visible: String = header
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(visible.contains("Bash(false)"));
+        assert!(!visible.contains(" issue"));
     }
 
     // === display_lines (lines_with_options) vs transcript_lines parity ===
@@ -4288,10 +4352,8 @@ mod tests {
 
     #[test]
     fn tool_exec_live_caps_output_transcript_does_not() {
-        // Synthesize an exec output that comfortably exceeds the live cap
-        // (TOOL_OUTPUT_LINE_LIMIT = 6). The live view should hit the cap
-        // and emit a "+N more lines; press v for details" affordance; the
-        // transcript view should emit every wrapped line uncapped.
+        // Live mode renders head+tail with a lightweight "Alt+V" affordance.
+        // Transcript mode emits the full output uncapped.
         let total_output_lines = 30usize;
         let output = (0..total_output_lines)
             .map(|i| format!("output line {i:02}"))
@@ -4306,6 +4368,7 @@ mod tests {
             duration_ms: Some(120),
             source: ExecSource::Assistant,
             interaction: None,
+            output_summary: None,
         }));
 
         let live = cell.lines_with_options(
@@ -4328,14 +4391,12 @@ mod tests {
         );
         assert!(
             live_text.contains("Alt+V for details"),
-            "live exec output must surface the pager affordance: {live_text}"
+            "live exec output must surface the expand affordance: {live_text}"
         );
         assert!(
             !transcript_text.contains("Alt+V for details"),
-            "transcript exec output must not include the pager affordance"
+            "transcript exec output must not include the expand affordance"
         );
-        // First line is always emitted on both surfaces.
-        assert!(live_text.contains("output line 00"));
         assert!(transcript_text.contains("output line 00"));
         // The middle should only appear in the transcript, since the live
         // view truncates the head/tail around the cap.
@@ -4365,6 +4426,8 @@ mod tests {
                 "Diff this commit against main".to_string(),
             ]),
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         }));
         let text = lines_text(&cell.lines(80));
 
@@ -4390,6 +4453,8 @@ mod tests {
             output: None,
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         }));
         let text = lines_text(&cell.lines(80));
         assert!(text.contains("query: foo"));
@@ -4413,6 +4478,8 @@ mod tests {
             output: Some(diff_stat.to_string()),
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         }));
 
         let transcript_text = lines_text(&cell.transcript_lines(80));
@@ -4463,6 +4530,8 @@ mod tests {
             output: Some(output),
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         }));
 
         let live = cell.lines_with_options(80, TranscriptRenderOptions::default());
@@ -4479,14 +4548,42 @@ mod tests {
             live_text.contains("Alt+V for details"),
             "live view must show pager affordance: {live_text}"
         );
-        // First line shows up in both; later rows only in transcript.
-        assert!(live_text.contains("row 00"));
         let transcript_text = lines_text(&transcript);
         assert!(transcript_text.contains("row 29"));
     }
 
     #[test]
-    fn generic_tool_output_live_keeps_tail_and_omitted_count() {
+    fn show_tool_details_false_keeps_tool_call_and_result_visible() {
+        let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "exec_shell".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("command: cargo test".to_string()),
+            output: Some("compile ok\nunit ok".to_string()),
+            prompts: None,
+            spillover_path: None,
+            output_summary: None,
+            is_diff: false,
+        }));
+
+        let rendered = cell.lines_with_options(
+            80,
+            TranscriptRenderOptions {
+                show_tool_details: false,
+                low_motion: true,
+                ..TranscriptRenderOptions::default()
+            },
+        );
+        let text = lines_text(&rendered);
+
+        assert!(text.contains("Bash(cargo test)"), "{text}");
+        assert!(text.contains("compile ok"), "{text}");
+        assert!(text.contains("unit ok"), "{text}");
+        assert!(!text.contains("name: exec_shell"), "{text}");
+        assert!(!text.contains("details hidden"), "{text}");
+    }
+
+    #[test]
+    fn generic_tool_output_live_renders_lightweight_block() {
         let output = (0..24usize)
             .map(|i| format!("line {i:02}"))
             .collect::<Vec<_>>()
@@ -4498,22 +4595,24 @@ mod tests {
             output: Some(output),
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         }));
 
         let live_text =
             lines_text(&cell.lines_with_options(80, TranscriptRenderOptions::default()));
 
+        assert!(live_text.starts_with('\u{23FA}'), "{live_text}");
+        assert!(!live_text.contains('\u{256D}'), "{live_text}");
+        assert!(!live_text.contains('\u{2570}'), "{live_text}");
+        assert!(!live_text.contains("output:"), "{live_text}");
+        assert!(live_text.contains("Alt+V for details"));
         assert!(live_text.contains("line 00"));
         assert!(live_text.contains("line 23"));
-        assert!(live_text.contains("lines omitted; Alt+V for details"));
-        assert!(
-            !live_text.contains("line 12"),
-            "middle plain output should stay omitted in live view: {live_text}"
-        );
     }
 
     #[test]
-    fn tool_output_live_preserves_error_and_path_lines_from_middle() {
+    fn tool_output_live_preserves_error_preview() {
         let output = [
             "start",
             "still starting",
@@ -4533,15 +4632,23 @@ mod tests {
             output: Some(output),
             prompts: None,
             spillover_path: None,
+            output_summary: Some("Error: failed to read config".to_string()),
+            is_diff: false,
         }));
 
         let live_text =
             lines_text(&cell.lines_with_options(80, TranscriptRenderOptions::default()));
 
-        assert!(live_text.contains("fatal: failed to read /tmp/deepseek/config.toml"));
-        assert!(live_text.contains("https://example.test/build/log"));
-        assert!(live_text.contains("final line"));
-        assert!(live_text.contains("lines omitted; Alt+V for details"));
+        // Live mode: one-line summary + expand affordance.
+        assert!(
+            live_text.contains("Alt+V for details"),
+            "live view must show expand affordance: {live_text}"
+        );
+        // The pre-computed summary captures the first meaningful content.
+        assert!(
+            live_text.contains("Error:") || live_text.contains("fatal:"),
+            "live summary should capture error text: {live_text}"
+        );
     }
 
     // === ErrorEnvelope severity → cell color tests (#66) ===

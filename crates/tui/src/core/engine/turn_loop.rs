@@ -728,6 +728,15 @@ impl Engine {
 
             // Update turn usage
             turn.add_usage(&usage);
+            if usage_has_signal(&usage) {
+                let _ = self
+                    .tx_event
+                    .send(Event::ApiRoundUsage {
+                        usage: usage.clone(),
+                        round: turn.api_rounds,
+                    })
+                    .await;
+            }
 
             // Build content blocks. If this assistant turn produced tool
             // calls, ensure a Thinking block is present even when the model
@@ -1240,6 +1249,7 @@ impl Engine {
                     let lock = tool_exec_lock.clone();
                     let mcp_pool = mcp_pool.clone();
                     let tx_event = self.tx_event.clone();
+                    let session_id = self.session.id.clone();
                     let started_at = Instant::now();
 
                     tool_tasks.push(async move {
@@ -1262,7 +1272,12 @@ impl Engine {
                         // correlate large-output episodes with disk usage.
                         if let Ok(tool_result) = result.as_mut()
                             && let Some(path) =
-                                crate::tools::truncate::apply_spillover(tool_result, &plan.id)
+                                crate::tools::truncate::apply_spillover_with_artifact(
+                                    tool_result,
+                                    &plan.id,
+                                    &plan.name,
+                                    &session_id,
+                                )
                         {
                             emit_tool_audit(json!({
                                 "event": "tool.spillover",
@@ -1568,14 +1583,18 @@ impl Engine {
 
                     // #500: spill outsized tool outputs to disk before the
                     // result fans out to the model context and the UI cell.
-                    // Both consumers see the same truncated content + the
-                    // `spillover_path` metadata pointing at the full file.
+                    // Both consumers see the same artifact reference block +
+                    // metadata pointing at the session-owned full file.
                     // Emit a discrete `tool.spillover` audit event so
                     // operators can correlate large-output episodes with
                     // disk-usage growth in `~/.deepseek/tool_outputs/`.
                     if let Ok(tool_result) = result.as_mut()
-                        && let Some(path) =
-                            crate::tools::truncate::apply_spillover(tool_result, &tool_id)
+                        && let Some(path) = crate::tools::truncate::apply_spillover_with_artifact(
+                            tool_result,
+                            &tool_id,
+                            &tool_name,
+                            &self.session.id,
+                        )
                     {
                         emit_tool_audit(json!({
                             "event": "tool.spillover",
@@ -1817,6 +1836,16 @@ XML unless the user explicitly asks to debug sub-agent internals.\n\n\
             cache_control: None,
         }],
     }
+}
+
+fn usage_has_signal(usage: &Usage) -> bool {
+    usage.input_tokens > 0
+        || usage.output_tokens > 0
+        || usage.prompt_cache_hit_tokens.is_some()
+        || usage.prompt_cache_miss_tokens.is_some()
+        || usage.reasoning_tokens.is_some()
+        || usage.reasoning_replay_tokens.is_some()
+        || usage.server_tool_use.is_some()
 }
 
 /// Resolve an `"auto"` reasoning-effort tier to a concrete value.

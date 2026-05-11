@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::io::{self, Stdout, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -21,7 +21,7 @@ use ratatui::{
     Frame, Terminal,
     layout::{Constraint, Direction, Layout, Rect, Size},
     prelude::Widget,
-    style::Style,
+    style::{Color, Style},
     text::Span,
     widgets::Block,
 };
@@ -47,8 +47,8 @@ use crate::models::{
 use crate::palette;
 use crate::prompts;
 use crate::session_manager::{
-    OfflineQueueState, QueuedSessionMessage, SavedSession, SessionManager,
-    create_saved_session_with_mode, update_session,
+    OfflineQueueState, QueuedSessionMessage, SavedSession, SessionCostSnapshot, SessionManager,
+    create_saved_session_with_id_and_mode, create_saved_session_with_mode, update_session,
 };
 use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus,
@@ -90,9 +90,9 @@ use crate::tui::views::subagent_view_agents;
 
 use super::active_cell::ActiveCell;
 use super::app::{
-    App, AppAction, AppMode, OnboardingState, QueuedMessage, ReasoningEffort, SidebarFocus,
-    StatusToastLevel, SubmitDisposition, TaskPanelEntry, ToolDetailRecord, TuiOptions,
-    MAX_AUTO_CONTINUE_TURNS, STUCK_THRESHOLD, IDLE_TURN_THRESHOLD,
+    App, AppAction, AppMode, IDLE_TURN_THRESHOLD, MAX_AUTO_CONTINUE_TURNS, OnboardingState,
+    QueuedMessage, ReasoningEffort, STUCK_THRESHOLD, SidebarFocus, StatusToastLevel,
+    SubmitDisposition, TaskPanelEntry, ToolDetailRecord, TuiOptions,
 };
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
@@ -131,8 +131,8 @@ const UI_ACTIVE_POLL_MS: u64 = 24;
 const WEB_CONFIG_POLL_MS: u64 = 16;
 const DISPATCH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
 // Forced repaint cadence while a turn is live (model loading, compacting,
-// sub-agents running). Drives the footer water-spout animation as well as
-// the per-tool spinner pulse — keep this fast enough that the spout reads as
+// sub-agents running). Drives the footer whale animation as well as
+// the per-tool spinner pulse — keep this fast enough that the whale reads as
 // motion (~12 fps) instead of teleport-frames.
 const UI_STATUS_ANIMATION_MS: u64 = 80;
 const WORKSPACE_CONTEXT_REFRESH_SECS: u64 = 15;
@@ -140,7 +140,15 @@ const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 240;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 
 type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
-const TERMINAL_ORIGIN_RESET: &[u8] = b"\x1b[r\x1b[?6l\x1b[H\x1b[2J\x1b[3J";
+// Reset scroll region (`\x1b[r`), origin mode (`\x1b[?6l`), and home the cursor
+// (`\x1b[H`) before letting ratatui's diff renderer repaint. The destructive
+// `\x1b[2J\x1b[3J` pair was previously appended here to also wipe the visible
+// screen and saved scrollback, but combined with the immediately-following
+// `terminal.clear()` it produced a double-clear that several terminals
+// (Ghostty, VSCode terminal, Win10 conhost) render as visible flicker on every
+// TurnComplete / focus-gain / resize. The alt-screen buffer's double-buffering
+// plus ratatui's `terminal.clear()` are sufficient to repaint cleanly.
+const TERMINAL_ORIGIN_RESET: &[u8] = b"\x1b[r\x1b[?6l\x1b[H";
 
 /// Run the interactive TUI event loop.
 ///
@@ -367,6 +375,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     if !app.api_messages.is_empty() {
         let _ = engine_handle
             .send(Op::SyncSession {
+                session_id: app.current_session_id.clone(),
                 messages: app.api_messages.clone(),
                 system_prompt: app.system_prompt.clone(),
                 model: app.model.clone(),
@@ -854,14 +863,28 @@ async fn run_event_loop(
                         app.streaming_message_index = None;
                         app.streaming_thinking_active_entry = None;
                         app.turn_started_at = Some(Instant::now());
+                        // Discoverability hint for users who don't know how
+                        // to interrupt a long-running turn (#1367). Only
+                        // surface when the status_message slot is empty so
+                        // we don't trample over a real transient message
+                        // (e.g. "/queue saved", "Selection copied"); the
+                        // hint then auto-clears as soon as anything else
+                        // updates the slot.
+                        if app.status_message.is_none() {
+                            app.status_message = Some("Press Esc or Ctrl+C to cancel".to_string());
+                        }
                         app.runtime_turn_id = Some(turn_id);
                         app.runtime_turn_status = Some("in_progress".to_string());
                         app.reasoning_buffer.clear();
                         app.reasoning_header = None;
                         app.last_reasoning = None;
                         app.pending_tool_uses.clear();
+                        app.clear_last_turn_telemetry();
                         app.plan_tool_used_in_turn = false;
                         last_status_frame = Instant::now();
+                    }
+                    EngineEvent::ApiRoundUsage { usage, .. } => {
+                        app.record_api_round_usage(&usage);
                     }
                     EngineEvent::TurnComplete {
                         usage,
@@ -1015,9 +1038,7 @@ async fn run_event_loop(
                         if app.goal.auto_continue && !app.is_loading {
                             // If the user interrupted the previous turn,
                             // stop auto-continue so they can take control.
-                            if status
-                                == crate::core::events::TurnOutcomeStatus::Interrupted
-                            {
+                            if status == crate::core::events::TurnOutcomeStatus::Interrupted {
                                 app.goal.auto_continue = false;
                                 app.status_message = Some(
                                     "Auto-continue stopped (turn interrupted). Use /goal auto to re-enable."
@@ -1033,12 +1054,9 @@ async fn run_event_loop(
                                 let incomplete = app.pending_todo_count();
 
                                 // Safety: enforce token budget if set.
-                                let budget_exceeded = app
-                                    .goal
-                                    .goal_token_budget
-                                    .is_some_and(|budget| {
-                                        app.session.total_conversation_tokens
-                                            >= budget
+                                let budget_exceeded =
+                                    app.goal.goal_token_budget.is_some_and(|budget| {
+                                        app.session.total_conversation_tokens >= budget
                                     });
 
                                 // Safety: detect stuck state (no progress
@@ -1049,27 +1067,23 @@ async fn run_event_loop(
                                     .todos
                                     .try_lock()
                                     .map(|todos| {
-                                        todos.snapshot().items.iter().any(
-                                            |item| {
-                                                matches!(
-                                                    item.status,
-                                                    crate::tools::todo::TodoStatus::InProgress
-                                                )
-                                            },
-                                        )
+                                        todos.snapshot().items.iter().any(|item| {
+                                            matches!(
+                                                item.status,
+                                                crate::tools::todo::TodoStatus::InProgress
+                                            )
+                                        })
                                     })
                                     .unwrap_or(false);
                                 let stuck = if has_in_progress {
                                     // Model is working — reset streak.
                                     app.goal.stuck_streak = 0;
                                     false
-                                } else if let Some(prev) =
-                                    app.goal.prev_pending_count
+                                } else if let Some(prev) = app.goal.prev_pending_count
                                     && prev == incomplete
                                 {
                                     app.goal.stuck_streak += 1;
-                                    app.goal.stuck_streak
-                                        >= STUCK_THRESHOLD
+                                    app.goal.stuck_streak >= STUCK_THRESHOLD
                                 } else {
                                     app.goal.stuck_streak = 0;
                                     false
@@ -1085,15 +1099,11 @@ async fn run_event_loop(
                                     .find(|msg| msg.role == "assistant")
                                     .map(|msg| {
                                         msg.content.iter().any(|block| {
-                                            matches!(
-                                                block,
-                                                ContentBlock::ToolUse { .. }
-                                            )
+                                            matches!(block, ContentBlock::ToolUse { .. })
                                         })
                                     })
                                     .unwrap_or(false);
-                                if incomplete > 0 && !last_turn_had_tools
-                                {
+                                if incomplete > 0 && !last_turn_had_tools {
                                     app.goal.idle_streak += 1;
                                 } else {
                                     app.goal.idle_streak = 0;
@@ -1101,67 +1111,59 @@ async fn run_event_loop(
 
                                 // Safety: enforce max turn limit (0 =
                                 // unlimited).
-                                let turn_limit =
-                                    MAX_AUTO_CONTINUE_TURNS > 0
-                                        && app.goal.auto_continue_turn_count
-                                            >= MAX_AUTO_CONTINUE_TURNS;
+                                #[allow(clippy::absurd_extreme_comparisons)]
+                                let turn_limit = MAX_AUTO_CONTINUE_TURNS > 0
+                                    && app.goal.auto_continue_turn_count >= MAX_AUTO_CONTINUE_TURNS;
 
                                 // When todos reach zero, don't stop
                                 // immediately. Send one confirmation
                                 // turn so the model can decide whether
                                 // the goal is truly achieved or needs
                                 // more checklist items.
-                                let stop_reason: Option<String> =
-                                    if incomplete == 0 {
-                                        if app.goal.completion_confirmation_pending {
-                                            // Model already got a chance
-                                            // to add more todos and
-                                            // didn't — goal is done.
-                                            Some("Goal achieved — all todos completed and confirmed".to_string())
-                                        } else {
-                                            // First time hitting zero:
-                                            // ask for confirmation.
-                                            app.goal.completion_confirmation_pending = true;
-                                            None // Don't stop yet
-                                        }
-                                    } else {
-                                        // Model added more todos — reset
-                                        // confirmation flag.
-                                        app.goal.completion_confirmation_pending = false;
-                                        None
-                                    };
-
-                                let stop_reason: Option<String> =
-                                    if let Some(reason) = stop_reason {
-                                        Some(reason)
-                                    } else if budget_exceeded {
+                                let stop_reason: Option<String> = if incomplete == 0 {
+                                    if app.goal.completion_confirmation_pending {
+                                        // Model already got a chance
+                                        // to add more todos and
+                                        // didn't — goal is done.
                                         Some(
-                                            "Token budget exhausted"
+                                            "Goal achieved — all todos completed and confirmed"
                                                 .to_string(),
                                         )
-                                    } else if stuck {
-                                        Some(format!(
-                                            "No progress after {STUCK_THRESHOLD} turns"
-                                        ))
-                                    } else if app.goal.idle_streak
-                                        >= IDLE_TURN_THRESHOLD
-                                    {
-                                        Some(format!(
-                                            "{} consecutive idle turns (no tool calls)",
-                                            app.goal.idle_streak
-                                        ))
-                                    } else if turn_limit {
-                                        Some(format!(
-                                            "Reached max auto-continue turns ({MAX_AUTO_CONTINUE_TURNS})"
-                                        ))
                                     } else {
-                                        None
-                                    };
+                                        // First time hitting zero:
+                                        // ask for confirmation.
+                                        app.goal.completion_confirmation_pending = true;
+                                        None // Don't stop yet
+                                    }
+                                } else {
+                                    // Model added more todos — reset
+                                    // confirmation flag.
+                                    app.goal.completion_confirmation_pending = false;
+                                    None
+                                };
+
+                                let stop_reason: Option<String> = if let Some(reason) = stop_reason
+                                {
+                                    Some(reason)
+                                } else if budget_exceeded {
+                                    Some("Token budget exhausted".to_string())
+                                } else if stuck {
+                                    Some(format!("No progress after {STUCK_THRESHOLD} turns"))
+                                } else if app.goal.idle_streak >= IDLE_TURN_THRESHOLD {
+                                    Some(format!(
+                                        "{} consecutive idle turns (no tool calls)",
+                                        app.goal.idle_streak
+                                    ))
+                                } else if turn_limit {
+                                    Some(format!(
+                                        "Reached max auto-continue turns ({MAX_AUTO_CONTINUE_TURNS})"
+                                    ))
+                                } else {
+                                    None
+                                };
 
                                 if let Some(reason) = stop_reason {
-                                    let status = format!(
-                                        "Auto-continue finished: {reason}.",
-                                    );
+                                    let status = format!("Auto-continue finished: {reason}.",);
                                     app.status_message = Some(status.clone());
                                     // Also push the stop reason into the
                                     // transcript so the user can see why.
@@ -1208,19 +1210,18 @@ async fn run_event_loop(
                                             )
                                         })
                                         .unwrap_or_default();
-                                    let decomposition_hint =
-                                        if let Some(prev) =
-                                            app.goal.prev_pending_count
-                                            && incomplete < prev
-                                        {
-                                            // Todo was just completed:
-                                            // prompt to split next tasks.
-                                            "\n\nProgress made. Review the Goal Context above and split the \
+                                    let decomposition_hint = if let Some(prev) =
+                                        app.goal.prev_pending_count
+                                        && incomplete < prev
+                                    {
+                                        // Todo was just completed:
+                                        // prompt to split next tasks.
+                                        "\n\nProgress made. Review the Goal Context above and split the \
                                              next set of tasks from the remaining goal. \
                                              Add them with checklist_add."
-                                        } else {
-                                            ""
-                                        };
+                                    } else {
+                                        ""
+                                    };
                                     let msg = format!(
                                         "Continue working on the remaining todo items.\n\n{recap}{goal_context_block}{decomposition_hint}"
                                     );
@@ -1269,11 +1270,13 @@ async fn run_event_loop(
                         app.status_message = Some(message);
                     }
                     EngineEvent::SessionUpdated {
+                        session_id,
                         messages,
                         system_prompt,
                         model,
                         workspace,
                     } => {
+                        app.current_session_id = Some(session_id);
                         app.api_messages = messages;
                         app.system_prompt = system_prompt;
                         if app.auto_model {
@@ -1802,6 +1805,12 @@ async fn run_event_loop(
                     preview = %text.chars().take(80).collect::<String>(),
                     "Received bracketed paste event"
                 );
+                // Once a real bracketed-paste event has been observed in
+                // this session, the rapid-keystroke heuristic in
+                // paste_burst is redundant — disable it so fast typing /
+                // IME commits / autocomplete bursts don't get
+                // mis-classified as a paste.
+                app.bracketed_paste_seen = true;
                 if app.onboarding == OnboardingState::ApiKey {
                     // Paste into API key input
                     app.insert_api_key_str(text);
@@ -2074,6 +2083,7 @@ async fn run_event_loop(
                                     if !app.api_messages.is_empty() {
                                         let _ = engine_handle
                                             .send(Op::SyncSession {
+                                                session_id: app.current_session_id.clone(),
                                                 messages: app.api_messages.clone(),
                                                 system_prompt: app.system_prompt.clone(),
                                                 model: app.model.clone(),
@@ -2473,34 +2483,38 @@ async fn run_event_loop(
                     copy_active_selection(app);
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    // Three behaviors layered on Ctrl+C, in priority order:
-                    //   1. While a turn is in flight, cancel it (unchanged).
-                    //   2. Otherwise, on the first press, arm a 2-second
-                    //      "press Ctrl+C again to quit" prompt and stay
-                    //      running.
-                    //   3. On the second press while still armed, exit cleanly.
-                    // The prompt expires silently after the window so a
-                    // stray Ctrl+C three seconds later re-arms instead of
-                    // accidentally exiting.
-                    if app.is_loading {
-                        engine_handle.cancel();
-                        app.is_loading = false;
-                        app.dispatch_started_at = None;
-                        app.streaming_state.reset();
-                        // Optimistically clear the turn-in-progress flag so
-                        // the footer wave animation halts immediately —
-                        // without this, the strip keeps animating until the
-                        // engine eventually emits TurnComplete (#5a). The
-                        // engine's eventual TurnComplete event will overwrite
-                        // with the real outcome ("interrupted").
-                        app.runtime_turn_status = None;
-                        app.status_message = Some("Request cancelled".to_string());
-                        app.disarm_quit();
-                    } else if app.quit_is_armed() {
-                        let _ = engine_handle.send(Op::Shutdown).await;
-                        return Ok(());
-                    } else {
-                        app.arm_quit();
+                    // Four behaviors layered on Ctrl+C in priority order — see
+                    // `CtrlCDisposition` for the unit-tested decision table.
+                    // 1. selection active → copy + clear (Windows convention,
+                    //    #1337); 2. turn in flight → cancel; 3. quit-armed →
+                    //    exit; 4. otherwise → arm the 2-second exit prompt.
+                    match ctrl_c_disposition(app) {
+                        CtrlCDisposition::CopySelection => {
+                            copy_active_selection(app);
+                            app.viewport.transcript_selection.clear();
+                        }
+                        CtrlCDisposition::CancelTurn => {
+                            engine_handle.cancel();
+                            app.is_loading = false;
+                            app.dispatch_started_at = None;
+                            app.streaming_state.reset();
+                            // Optimistically clear the turn-in-progress flag
+                            // so the footer whale animation halts immediately —
+                            // without this, the strip keeps animating until
+                            // the engine eventually emits TurnComplete (#5a).
+                            // The engine's eventual TurnComplete event will
+                            // overwrite with the real outcome ("interrupted").
+                            app.runtime_turn_status = None;
+                            app.status_message = Some("Request cancelled".to_string());
+                            app.disarm_quit();
+                        }
+                        CtrlCDisposition::ConfirmExit => {
+                            let _ = engine_handle.send(Op::Shutdown).await;
+                            return Ok(());
+                        }
+                        CtrlCDisposition::ArmExit => {
+                            app.arm_quit();
+                        }
                     }
                 }
                 KeyCode::Char('d')
@@ -2540,9 +2554,9 @@ async fn run_event_loop(
                         app.is_loading = false;
                         app.dispatch_started_at = None;
                         app.streaming_state.reset();
-                        // Optimistically halt the wave + working label —
+                        // Optimistically halt the whale animation + working label —
                         // engine's TurnComplete will resync with the real
-                        // outcome. Fixes #5a (wave kept animating after Esc).
+                        // outcome. Fixes #5a (strip kept animating after Esc).
                         app.runtime_turn_status = None;
                         // Finalize any in-flight tool entries optimistically so
                         // the composer regains focus and the footer's "tool ...
@@ -2860,6 +2874,7 @@ async fn run_event_loop(
                                 app.edit_in_progress = false;
                                 let _ = engine_handle
                                     .send(Op::SyncSession {
+                                        session_id: app.current_session_id.clone(),
                                         messages: app.api_messages.clone(),
                                         system_prompt: app.system_prompt.clone(),
                                         model: app.model.clone(),
@@ -3277,6 +3292,28 @@ fn format_available_models_message(current_model: &str, models: &[String]) -> St
     lines.join("\n")
 }
 
+fn current_session_cost_snapshot(app: &App) -> SessionCostSnapshot {
+    SessionCostSnapshot {
+        session_cost_usd: app.session.session_cost,
+        session_cost_cny: app.session.session_cost_cny,
+        subagent_cost_usd: app.session.subagent_cost,
+        subagent_cost_cny: app.session.subagent_cost_cny,
+        displayed_cost_high_water_usd: app.session.displayed_cost_high_water,
+        displayed_cost_high_water_cny: app.session.displayed_cost_high_water_cny,
+    }
+}
+
+fn current_goal_json(app: &App) -> Option<String> {
+    serde_json::to_string(&app.goal).ok()
+}
+
+fn current_todos_json(app: &App) -> Option<String> {
+    app.todos
+        .try_lock()
+        .ok()
+        .and_then(|todos| serde_json::to_string(&todos.snapshot().items).ok())
+}
+
 fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
     if let Some(ref existing_id) = app.current_session_id
         && let Ok(existing) = manager.load_session(existing_id)
@@ -3288,40 +3325,38 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
             app.system_prompt.as_ref(),
         );
         updated.metadata.mode = Some(app.mode.as_setting().to_string());
-        updated.metadata.session_cost_usd = app.session.session_cost;
-        updated.metadata.session_cost_cny = app.session.session_cost_cny;
-        updated.metadata.subagent_cost_usd = app.session.subagent_cost;
-        updated.metadata.subagent_cost_cny = app.session.subagent_cost_cny;
+        updated.metadata.cost = current_session_cost_snapshot(app);
         updated.context_references = app.session_context_references.clone();
-        updated.goal_state_json =
-            serde_json::to_string(&app.goal).ok();
-        updated.todos_json = app
-            .todos
-            .try_lock()
-            .ok()
-            .and_then(|todos| serde_json::to_string(&todos.snapshot().items).ok());
+        updated.goal_state_json = current_goal_json(app);
+        updated.todos_json = current_todos_json(app);
+        updated.artifacts = app.session_artifacts.clone();
         updated
     } else {
-        let mut session = create_saved_session_with_mode(
-            &app.api_messages,
-            &app.model,
-            &app.workspace,
-            u64::from(app.session.total_tokens),
-            app.system_prompt.as_ref(),
-            Some(app.mode.as_setting()),
-        );
-        session.metadata.session_cost_usd = app.session.session_cost;
-        session.metadata.session_cost_cny = app.session.session_cost_cny;
-        session.metadata.subagent_cost_usd = app.session.subagent_cost;
-        session.metadata.subagent_cost_cny = app.session.subagent_cost_cny;
+        let mut session = if let Some(existing_id) = app.current_session_id.as_ref() {
+            create_saved_session_with_id_and_mode(
+                existing_id.clone(),
+                &app.api_messages,
+                &app.model,
+                &app.workspace,
+                u64::from(app.session.total_tokens),
+                app.system_prompt.as_ref(),
+                Some(app.mode.as_setting()),
+            )
+        } else {
+            create_saved_session_with_mode(
+                &app.api_messages,
+                &app.model,
+                &app.workspace,
+                u64::from(app.session.total_tokens),
+                app.system_prompt.as_ref(),
+                Some(app.mode.as_setting()),
+            )
+        };
+        session.metadata.cost = current_session_cost_snapshot(app);
         session.context_references = app.session_context_references.clone();
-        session.goal_state_json =
-            serde_json::to_string(&app.goal).ok();
-        session.todos_json = app
-            .todos
-            .try_lock()
-            .ok()
-            .and_then(|todos| serde_json::to_string(&todos.snapshot().items).ok());
+        session.goal_state_json = current_goal_json(app);
+        session.todos_json = current_todos_json(app);
+        session.artifacts = app.session_artifacts.clone();
         session
     }
 }
@@ -3822,15 +3857,15 @@ fn handle_composer_history_arrow(
         return false;
     }
 
-    // When the composer is empty, plain Up/Down scroll the transcript so
-    // terminals that map trackpad gestures to arrow keys can still scroll
-    // the history area.  When the composer has text, they navigate input
-    // history so the user can recall previous prompts.
-    let composer_empty = app.input.trim().is_empty();
+    // When `composer_arrows_scroll` is enabled and the composer is empty,
+    // plain Up/Down scroll the transcript.  This helps terminals that map
+    // trackpad gestures to arrow keys.  Otherwise arrows always navigate
+    // input history regardless of composer state (#1117).
+    let scroll_on_empty = app.composer_arrows_scroll && app.input.trim().is_empty();
 
     match key.code {
         KeyCode::Up => {
-            if composer_empty {
+            if scroll_on_empty {
                 app.scroll_up(1);
             } else {
                 app.history_up();
@@ -3838,7 +3873,7 @@ fn handle_composer_history_arrow(
             true
         }
         KeyCode::Down => {
-            if composer_empty {
+            if scroll_on_empty {
                 app.scroll_down(1);
             } else {
                 app.history_down();
@@ -4082,11 +4117,7 @@ async fn dispatch_user_message(
         app.status_message = Some("Context critical; compacting before send...".to_string());
         let _ = engine_handle.send(Op::CompactContext).await;
     }
-    app.session.last_prompt_tokens = None;
-    app.session.last_completion_tokens = None;
-    app.session.last_prompt_cache_hit_tokens = None;
-    app.session.last_prompt_cache_miss_tokens = None;
-    app.session.last_reasoning_replay_tokens = None;
+    app.clear_last_turn_telemetry();
     // Persist immediately so abrupt termination can recover this in-flight turn.
     // Offloaded to the persistence actor.
     if let Ok(manager) = SessionManager::default_location() {
@@ -4389,6 +4420,7 @@ async fn apply_model_picker_choice(
         Ok(mut settings) => {
             if model_changed {
                 let _ = settings.set("default_model", &model);
+                settings.set_model_for_provider(app.api_provider.as_str(), &model);
             }
             if effort_changed {
                 let _ = settings.set("reasoning_effort", effort.as_setting());
@@ -4500,8 +4532,7 @@ async fn switch_provider(
     if cache_scope_changed {
         app.clear_model_scoped_telemetry();
     } else {
-        app.session.last_prompt_tokens = None;
-        app.session.last_completion_tokens = None;
+        app.clear_last_turn_telemetry();
     }
 
     let _ = engine_handle.send(Op::Shutdown).await;
@@ -4511,6 +4542,7 @@ async fn switch_provider(
     if !app.api_messages.is_empty() {
         let _ = engine_handle
             .send(Op::SyncSession {
+                session_id: app.current_session_id.clone(),
                 messages: app.api_messages.clone(),
                 system_prompt: app.system_prompt.clone(),
                 model: app.model.clone(),
@@ -4534,6 +4566,12 @@ async fn switch_provider(
         ),
     });
     app.status_message = Some(format!("Provider: {}", target.as_str()));
+
+    // Persist the provider choice so it survives restarts.
+    if let Ok(mut settings) = crate::settings::Settings::load() {
+        settings.default_provider = Some(target.as_str().to_string());
+        let _ = settings.save();
+    }
 }
 
 fn open_text_pager(app: &mut App, title: String, content: String) {
@@ -4810,14 +4848,22 @@ async fn apply_command_result(
                 app.status_message = Some(format!("Session loaded from {}", path.display()));
             }
             AppAction::SyncSession {
+                session_id,
                 messages,
                 system_prompt,
                 model,
                 workspace,
             } => {
+                let mut session_id = session_id;
                 let is_full_reset = messages.is_empty() && system_prompt.is_none();
+                if is_full_reset && session_id.is_none() {
+                    let new_session_id = uuid::Uuid::new_v4().to_string();
+                    app.current_session_id = Some(new_session_id.clone());
+                    session_id = Some(new_session_id);
+                }
                 let _ = engine_handle
                     .send(Op::SyncSession {
+                        session_id,
                         messages,
                         system_prompt,
                         model,
@@ -4862,18 +4908,27 @@ async fn apply_command_result(
                 let _ = engine_handle.send(Op::ListSubAgents).await;
             }
             AppAction::FetchModels => {
-                app.status_message = Some("Fetching models...".to_string());
-                match fetch_available_models(config).await {
-                    Ok(models) => {
-                        app.add_message(HistoryCell::System {
-                            content: format_available_models_message(&app.model, &models),
-                        });
-                        app.status_message = Some(format!("Found {} model(s)", models.len()));
-                    }
-                    Err(error) => {
-                        app.add_message(HistoryCell::System {
-                            content: format!("Failed to fetch models: {error}"),
-                        });
+                if crate::config::provider_passes_model_through(config.api_provider()) {
+                    app.add_message(HistoryCell::System {
+                        content: format!(
+                            "/models is not supported by the {} provider.",
+                            config.api_provider().display_name()
+                        ),
+                    });
+                } else {
+                    app.status_message = Some("Fetching models...".to_string());
+                    match fetch_available_models(config).await {
+                        Ok(models) => {
+                            app.add_message(HistoryCell::System {
+                                content: format_available_models_message(&app.model, &models),
+                            });
+                            app.status_message = Some(format!("Found {} model(s)", models.len()));
+                        }
+                        Err(error) => {
+                            app.add_message(HistoryCell::System {
+                                content: format!("Failed to fetch models: {error}"),
+                            });
+                        }
                     }
                 }
             }
@@ -4985,6 +5040,14 @@ async fn apply_command_result(
                         ));
                 }
             }
+            AppAction::OpenModePicker => {
+                if app.view_stack.top_kind() != Some(ModalKind::ModePicker) {
+                    app.view_stack
+                        .push(crate::tui::views::mode_picker::ModePickerView::new(
+                            app.mode,
+                        ));
+                }
+            }
             AppAction::OpenStatusPicker => {
                 if app.view_stack.top_kind() != Some(ModalKind::StatusPicker) {
                     app.view_stack
@@ -4993,6 +5056,24 @@ async fn apply_command_result(
                         ));
                 }
             }
+            AppAction::OpenFeedbackPicker => {
+                if app.view_stack.top_kind() != Some(ModalKind::FeedbackPicker) {
+                    app.view_stack
+                        .push(crate::tui::feedback_picker::FeedbackPickerView::new());
+                }
+            }
+            AppAction::OpenExternalUrl { url, label } => match open_external_url(&url) {
+                Ok(()) => {
+                    app.status_message = Some(format!("Opened {label} in your browser"));
+                }
+                Err(err) => {
+                    app.add_message(HistoryCell::System {
+                        content: format!(
+                            "Could not open {label} automatically: {err}\n\nThe URL is printed above."
+                        ),
+                    });
+                }
+            },
             AppAction::OpenContextInspector => {
                 open_context_inspector(app);
             }
@@ -5074,8 +5155,7 @@ async fn apply_command_result(
                         let new_model = config.default_model();
                         app.model = new_model.clone();
                         app.update_model_compaction_budget();
-                        app.session.last_prompt_tokens = None;
-                        app.session.last_completion_tokens = None;
+                        app.clear_last_turn_telemetry();
                         // Rebuild the engine with the new config so API key/model/base URL take effect.
                         let _ = engine_handle.send(Op::Shutdown).await;
                         let engine_config = build_engine_config(app, config);
@@ -5083,6 +5163,7 @@ async fn apply_command_result(
                         if !app.api_messages.is_empty() {
                             let _ = engine_handle
                                 .send(Op::SyncSession {
+                                    session_id: app.current_session_id.clone(),
                                     messages: app.api_messages.clone(),
                                     system_prompt: app.system_prompt.clone(),
                                     model: app.model.clone(),
@@ -5130,6 +5211,43 @@ async fn apply_command_result(
     }
 
     Ok(false)
+}
+
+fn open_external_url(url: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(url);
+        command
+    };
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(url);
+        command
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "start", "", url]);
+        command
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    return Err(anyhow::anyhow!(
+        "browser opening is unsupported on this platform"
+    ));
+
+    let status = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| anyhow::anyhow!("failed to launch browser command: {err}"))?;
+    if !status.success() {
+        return Err(anyhow::anyhow!(
+            "browser command exited with status {status}"
+        ));
+    }
+    Ok(())
 }
 
 async fn handle_mcp_ui_action(
@@ -5662,12 +5780,12 @@ fn render(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(header_height),         // Header
-            Constraint::Min(1),                        // Chat area
-            Constraint::Length(preview_height),        // Pending input preview (0 if empty)
-            Constraint::Length(todos_panel_height),     // Todos panel (0 when empty)
-            Constraint::Length(composer_height),       // Composer
-            Constraint::Length(footer_height),         // Footer
+            Constraint::Length(header_height),      // Header
+            Constraint::Min(1),                     // Chat area
+            Constraint::Length(preview_height),     // Pending input preview (0 if empty)
+            Constraint::Length(todos_panel_height), // Todos panel (0 when empty)
+            Constraint::Length(composer_height),    // Composer
+            Constraint::Length(footer_height),      // Footer
         ])
         .split(size);
 
@@ -5918,6 +6036,15 @@ async fn handle_view_events(
             ViewEvent::OpenTextPager { title, content } => {
                 open_text_pager(app, title, content);
             }
+            ViewEvent::CopyToClipboard { text, label } => {
+                if text.is_empty() {
+                    app.status_message = Some(format!("{label} is empty"));
+                } else if app.clipboard.write_text(&text).is_ok() {
+                    app.status_message = Some(format!("{label} copied"));
+                } else {
+                    app.status_message = Some(format!("Copy failed ({label})"));
+                }
+            }
             ViewEvent::ApprovalDecision {
                 tool_id,
                 tool_name,
@@ -6032,6 +6159,7 @@ async fn handle_view_events(
                         let recovered = apply_loaded_session(app, &session);
                         let _ = engine_handle
                             .send(Op::SyncSession {
+                                session_id: app.current_session_id.clone(),
                                 messages: app.api_messages.clone(),
                                 system_prompt: app.system_prompt.clone(),
                                 model: app.model.clone(),
@@ -6153,6 +6281,10 @@ async fn handle_view_events(
             ViewEvent::ProviderPickerApiKeySubmitted { provider, api_key } => {
                 apply_provider_picker_api_key(app, engine_handle, config, provider, api_key).await;
             }
+            ViewEvent::ModeSelected { mode } => {
+                let msg = commands::switch_mode(app, mode);
+                app.add_message(HistoryCell::System { content: msg });
+            }
             ViewEvent::BacktrackStep { direction } => {
                 app.backtrack.step(direction);
                 if let Some(idx) = app.backtrack.selected_idx() {
@@ -6164,6 +6296,7 @@ async fn handle_view_events(
                     apply_backtrack(app, depth);
                     let _ = engine_handle
                         .send(Op::SyncSession {
+                            session_id: app.current_session_id.clone(),
                             messages: app.api_messages.clone(),
                             system_prompt: app.system_prompt.clone(),
                             model: app.model.clone(),
@@ -6411,42 +6544,46 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     app.workspace.clone_from(&session.metadata.workspace);
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
-    app.session.session_cost = session.metadata.session_cost_usd;
-    app.session.session_cost_cny = session.metadata.session_cost_cny;
-    app.session.subagent_cost = session.metadata.subagent_cost_usd;
-    app.session.subagent_cost_cny = session.metadata.subagent_cost_cny;
+    app.session.session_cost = session.metadata.cost.session_cost_usd;
+    app.session.session_cost_cny = session.metadata.cost.session_cost_cny;
+    app.session.subagent_cost = session.metadata.cost.subagent_cost_usd;
+    app.session.subagent_cost_cny = session.metadata.cost.subagent_cost_cny;
     app.session.subagent_cost_event_seqs.clear();
-    // Set high-water marks to the restored totals so the footer never
-    // reverses when reconciliation events fire on a resumed session.
-    let total_restored_usd = app.session.session_cost + app.session.subagent_cost;
-    let total_restored_cny = app.session.session_cost_cny + app.session.subagent_cost_cny;
-    app.session.displayed_cost_high_water = total_restored_usd;
-    app.session.displayed_cost_high_water_cny = total_restored_cny;
-    app.session.last_prompt_tokens = None;
-    app.session.last_completion_tokens = None;
-    app.session.last_prompt_cache_hit_tokens = None;
-    app.session.last_prompt_cache_miss_tokens = None;
-    app.session.last_reasoning_replay_tokens = None;
-    app.session.turn_cache_history.clear();
+    // Restore the high-water marks from persisted metadata so the
+    // monotonic cost guarantee (#244) survives session restarts.
+    // Take the max with the current totals — old sessions without
+    // persisted high-water fields deserialise to 0.0 and fall back to
+    // the restored total with no regression.
+    let total_restored_usd = session.metadata.cost.total_usd();
+    let total_restored_cny = session.metadata.cost.total_cny();
+    app.session.displayed_cost_high_water = session
+        .metadata
+        .cost
+        .displayed_cost_high_water_usd
+        .max(total_restored_usd);
+    app.session.displayed_cost_high_water_cny = session
+        .metadata
+        .cost
+        .displayed_cost_high_water_cny
+        .max(total_restored_cny);
+    app.clear_model_scoped_telemetry();
 
     // Restore persisted goal state and todos so auto-continue can
     // pick up where it left off after a restart/crash.
-    if let Some(ref json) = session.goal_state_json {
-        if let Ok(goal) = serde_json::from_str::<crate::tui::app::GoalState>(json) {
-            app.goal = goal;
-        }
+    if let Some(ref json) = session.goal_state_json
+        && let Ok(goal) = serde_json::from_str::<crate::tui::app::GoalState>(json)
+    {
+        app.goal = goal;
     }
-    if let Some(ref json) = session.todos_json {
-        if let Ok(items) =
-            serde_json::from_str::<Vec<crate::tools::todo::TodoItem>>(json)
-        {
-            if let Ok(mut todos) = app.todos.try_lock() {
-                *todos = crate::tools::todo::TodoList::from_items(items);
-            }
-        }
+    if let Some(ref json) = session.todos_json
+        && let Ok(items) = serde_json::from_str::<Vec<crate::tools::todo::TodoItem>>(json)
+        && let Ok(mut todos) = app.todos.try_lock()
+    {
+        *todos = crate::tools::todo::TodoList::from_items(items);
     }
 
     app.current_session_id = Some(session.metadata.id.clone());
+    app.session_artifacts = session.artifacts.clone();
     app.workspace_context = None;
     app.workspace_context_refreshed_at = None;
     if let Some(sp) = session.system_prompt.as_ref() {
@@ -6477,9 +6614,7 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
             app.pending_todo_count()
         ));
         let recap = app.recap_text();
-        let msg = format!(
-            "Continue working on the remaining todo items.\n\n{recap}"
-        );
+        let msg = format!("Continue working on the remaining todo items.\n\n{recap}");
         app.queued_messages.push_back(QueuedMessage::new(msg, None));
     }
 
@@ -6737,9 +6872,11 @@ fn reset_terminal_viewport(terminal: &mut AppTerminal) -> Result<()> {
     // Reset scroll margins and origin mode before clearing. Some interactive
     // child processes leave DECSTBM/DECOM behind; if ratatui's diff renderer
     // then writes "row 0", terminals can place it relative to the leaked
-    // scroll region and the whole viewport appears shifted down. CSI 3J also
-    // erases saved scrollback so a focus/resize recapture cannot leave the
-    // host terminal's scrollbar above the live TUI.
+    // scroll region and the whole viewport appears shifted down. We
+    // deliberately do *not* emit CSI 2J/3J here — see TERMINAL_ORIGIN_RESET
+    // for why; the immediately-following ratatui `terminal.clear()` flushes a
+    // single clear via the diff renderer, which the alt-screen buffer absorbs
+    // without visible flicker on the affected terminals.
     terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
     terminal.backend_mut().flush()?;
     terminal.clear()?;
@@ -6891,9 +7028,8 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     // Animate the spacer between the left status line and the right-hand
     // chips whenever a turn is live: model loading/streaming, compacting, or
     // sub-agents in flight. Honors the `low_motion` setting — calm terminals
-    // get the plain whitespace gap. Strip frame counter ticks every 150 ms
-    // (crest A advances every 4 ticks ≈ 600 ms, B every 6 ticks ≈ 900 ms,
-    // jitter every 17 ticks ≈ 2.5 s). Dot-pulse counter ticks every 400 ms
+    // get the plain whitespace gap. The whale strip advances on the raw
+    // frame clock; dot-pulse counter ticks every 400 ms
     // so `working` → `working...` reads at a calm pace.
     if footer_working_strip_active(app) {
         let now_ms = std::time::SystemTime::now()
@@ -6909,7 +7045,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
             .unwrap_or_else(|| crate::tui::widgets::footer_working_label(dot_frame, app.ui_locale));
         props.state_color = palette::DEEPSEEK_SKY;
 
-        // Spout drift: only animate when low_motion is off. The textual
+        // Whale drift: only animate when low_motion is off. The textual
         // `working...` pulse stays even in low-motion mode so the user still
         // sees that something is happening.
         if !app.low_motion {
@@ -6928,7 +7064,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     widget.render(area, buf);
 }
 
-/// Whether the footer should animate the water-spout strip. Driven by the
+/// Whether the footer should animate the whale strip. Driven by the
 /// underlying live-work flags so the strip stays visible for the *entire*
 /// turn — not just the moments where bytes are streaming. `is_loading` can
 /// flicker off between LLM rounds within a single turn (tool execution,
@@ -7419,48 +7555,103 @@ fn footer_coherence_spans(app: &App) -> Vec<Span<'static>> {
     vec![Span::styled(label.to_string(), Style::default().fg(color))]
 }
 
-fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
-    if app.session.last_prompt_tokens.is_none() && app.session.last_completion_tokens.is_none() {
-        return Vec::new();
-    };
-    let Some(hit_tokens) = app.session.last_prompt_cache_hit_tokens else {
-        return vec![Span::styled(
-            "Cache: unavailable",
-            Style::default().fg(palette::TEXT_MUTED),
-        )];
-    };
-    let miss_tokens = app
-        .session
-        .last_prompt_cache_miss_tokens
-        .unwrap_or_else(|| {
-            app.session
-                .last_prompt_tokens
-                .unwrap_or(0)
-                .saturating_sub(hit_tokens)
-        });
-    let total = hit_tokens.saturating_add(miss_tokens);
+#[derive(Debug, Clone, Copy)]
+struct FooterCacheStats {
+    input: Option<u32>,
+    hit: u32,
+    miss: u32,
+    percent: f64,
+}
+
+fn footer_cache_stats(
+    input: Option<u32>,
+    hit: Option<u32>,
+    miss: Option<u32>,
+) -> Option<FooterCacheStats> {
+    let hit = hit?;
+    let miss = miss.unwrap_or_else(|| input.unwrap_or(0).saturating_sub(hit));
+    let total = hit.saturating_add(miss);
     let percent = if total == 0 {
         0.0
     } else {
-        (f64::from(hit_tokens) / f64::from(total) * 100.0).clamp(0.0, 100.0)
+        (f64::from(hit) / f64::from(total) * 100.0).clamp(0.0, 100.0)
     };
-    // Threshold-based coloring for cache hit rate (#396):
-    //   >80%: green (good cache utilization)
-    //   40-80%: yellow/warning
-    //   <40%: red/dimmed (poor cache)
-    let color = if percent > 80.0 {
+    Some(FooterCacheStats {
+        input,
+        hit,
+        miss,
+        percent,
+    })
+}
+
+fn footer_cache_color(percent: f64) -> Color {
+    if percent > 80.0 {
         palette::STATUS_SUCCESS
     } else if percent >= 40.0 {
         palette::STATUS_WARNING
     } else {
         palette::STATUS_ERROR
+    }
+}
+
+fn same_cache_window(left: FooterCacheStats, right: FooterCacheStats) -> bool {
+    left.input == right.input && left.hit == right.hit && left.miss == right.miss
+}
+
+fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
+    let has_turn_tokens =
+        app.session.last_prompt_tokens.is_some() || app.session.last_completion_tokens.is_some();
+    let has_api_tokens = app.session.last_api_prompt_tokens.is_some()
+        || app.session.last_api_completion_tokens.is_some();
+    if !has_turn_tokens && !has_api_tokens {
+        return Vec::new();
     };
+
+    let turn = footer_cache_stats(
+        app.session.last_prompt_tokens,
+        app.session.last_prompt_cache_hit_tokens,
+        app.session.last_prompt_cache_miss_tokens,
+    );
+    let api = footer_cache_stats(
+        app.session.last_api_prompt_tokens,
+        app.session.last_api_prompt_cache_hit_tokens,
+        app.session.last_api_prompt_cache_miss_tokens,
+    );
+
+    let Some(primary) = api.or(turn) else {
+        return vec![Span::styled(
+            "Cache: unavailable",
+            Style::default().fg(palette::TEXT_MUTED),
+        )];
+    };
+
+    if let (Some(api), Some(turn)) = (api, turn)
+        && !same_cache_window(api, turn)
+    {
+        return vec![
+            Span::styled("Cache: ", Style::default().fg(palette::TEXT_MUTED)),
+            Span::styled(
+                format!("api {:.1}%", api.percent),
+                Style::default().fg(footer_cache_color(api.percent)),
+            ),
+            Span::styled(" | ", Style::default().fg(palette::TEXT_MUTED)),
+            Span::styled(
+                format!("turn {:.1}%", turn.percent),
+                Style::default().fg(footer_cache_color(turn.percent)),
+            ),
+            Span::styled(
+                format!(" | hit {} | miss {}", turn.hit, turn.miss),
+                Style::default().fg(footer_cache_color(turn.percent)),
+            ),
+        ];
+    }
+
     vec![Span::styled(
         format!(
-            "Cache: {:.1}% hit | hit {hit_tokens} | miss {miss_tokens}",
-            percent
+            "Cache: {:.1}% hit | hit {} | miss {}",
+            primary.percent, primary.hit, primary.miss
         ),
-        Style::default().fg(color),
+        Style::default().fg(footer_cache_color(primary.percent)),
     )]
 }
 
@@ -7554,7 +7745,7 @@ fn footer_state_label(app: &App) -> (&'static str, ratatui::style::Color) {
         return ("compacting \u{238B}", app.ui_theme.status_warning);
     }
     // Note: we deliberately do NOT show a "thinking" label for `is_loading`.
-    // The animated water-spout strip in the footer's spacer is the visual
+    // The animated whale strip in the footer's spacer is the visual
     // signal that the model is live; "thinking" was misleading because it
     // fired for every kind of in-flight work (tool calls, streaming, etc.),
     // not strictly reasoning. Sub-agents still surface "working" because
@@ -8389,6 +8580,30 @@ fn selection_point_from_position(
 
 fn selection_has_content(app: &App) -> bool {
     selection_to_text(app).is_some_and(|text| !text.is_empty())
+}
+
+/// Branches taken by the Ctrl+C key handler. The order encodes priority and is
+/// the unit-tested contract for #1337 / #1367: a transcript selection always
+/// wins (so users learn that Ctrl+C copies when there's something to copy);
+/// otherwise an active turn is interrupted; otherwise the quit-arm flow runs.
+#[derive(Debug, PartialEq, Eq)]
+enum CtrlCDisposition {
+    CopySelection,
+    CancelTurn,
+    ConfirmExit,
+    ArmExit,
+}
+
+fn ctrl_c_disposition(app: &App) -> CtrlCDisposition {
+    if selection_has_content(app) {
+        CtrlCDisposition::CopySelection
+    } else if app.is_loading {
+        CtrlCDisposition::CancelTurn
+    } else if app.quit_is_armed() {
+        CtrlCDisposition::ConfirmExit
+    } else {
+        CtrlCDisposition::ArmExit
+    }
 }
 
 fn copy_active_selection(app: &mut App) {

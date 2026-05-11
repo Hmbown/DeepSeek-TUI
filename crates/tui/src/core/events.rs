@@ -94,6 +94,13 @@ pub enum Event {
         error: Option<String>,
     },
 
+    /// Usage for one API request inside a turn.
+    ///
+    /// A single user turn can contain many model requests when tools are used.
+    /// Keep this separate from `TurnComplete.usage`, which is the aggregate for
+    /// the whole turn.
+    ApiRoundUsage { usage: Usage, round: u32 },
+
     /// Context compaction started.
     CompactionStarted {
         id: String,
@@ -244,6 +251,7 @@ pub enum Event {
     /// text block, and that assistant message still has to be persisted for
     /// later `reasoning_content` replay.
     SessionUpdated {
+        session_id: String,
         messages: Vec<Message>,
         system_prompt: Option<SystemPrompt>,
         model: String,

@@ -722,17 +722,27 @@ fn internal_context_budget_unaffected_by_api_request_cap() {
 }
 
 #[test]
-fn v4_tool_outputs_keep_large_file_reads_in_context() {
+fn v4_noisy_tool_outputs_are_compacted_even_with_large_context() {
     let content = "0123456789abcdef\n".repeat(2_000);
     let output = ToolResult::success(content.clone());
 
     let v4_context = compact_tool_result_for_context("deepseek-v4-pro", "exec_shell", &output);
-    assert_eq!(v4_context, content.trim());
+    assert!(v4_context.contains("output compacted to protect context"));
+    assert!(v4_context.len() < content.len());
 
     let legacy_context =
         compact_tool_result_for_context("deepseek-v3.2-128k", "exec_shell", &output);
     assert!(legacy_context.contains("output compacted to protect context"));
-    assert!(legacy_context.len() < v4_context.len());
+    assert!(legacy_context.len() < content.len());
+}
+
+#[test]
+fn v4_non_noisy_file_reads_keep_large_context() {
+    let content = "0123456789abcdef\n".repeat(2_000);
+    let output = ToolResult::success(content.clone());
+
+    let v4_context = compact_tool_result_for_context("deepseek-v4-pro", "read_file", &output);
+    assert_eq!(v4_context, content.trim());
 }
 
 #[test]
@@ -761,6 +771,9 @@ fn subagent_results_are_summarized_before_parent_context_insertion() {
     assert!(context.contains("Inspect the RLM rendering path"));
     assert!(context.contains("steps=12"));
     assert!(context.len() < output.content.len());
+    assert!(context.contains("self-report"));
+    assert!(context.contains("verify side effects"));
+    assert!(context.contains("read_file") && context.contains("list_dir"));
 }
 
 #[test]

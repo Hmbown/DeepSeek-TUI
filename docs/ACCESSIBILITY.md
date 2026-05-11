@@ -11,10 +11,10 @@ visual motion and density for screen-reader and low-motion users.
 | --- | --- | --- |
 | `NO_ANIMATIONS=1` env var | unset | At startup, forces `low_motion = true` and `fancy_animations = false`. Overrides whatever's saved in `settings.toml`. |
 | `low_motion` setting | `false` | Suppresses spinners' motion, transcript fade-ins, footer drift, and the active-cell pulse. The frame-rate limiter also slows down idle redraws so the cursor doesn't blink as aggressively. |
-| `fancy_animations` setting | `false` | Footer water-spout strip and pulsing sub-agent counter. Off by default. |
-| `calm_mode` setting | `false` | Collapses tool-output details by default and trims status messages. Useful for screen readers that announce every redraw. |
+| `fancy_animations` setting | `false` | Footer DeepSeek whale strip and pulsing sub-agent counter. Off by default. |
+| `calm_mode` setting | `false` | Trims long tool-output previews and status noise. Useful for screen readers that announce every redraw. |
 | `show_thinking` setting | `true` | Set to `false` to hide model `reasoning_content` blocks entirely. |
-| `show_tool_details` setting | `true` | Set to `false` to render tool calls as one-liners without expanded payloads. |
+| `show_tool_details` setting | `true` | Legacy setting kept for config compatibility; Claude-style tool calls keep a visible call/result preview in the main transcript. |
 
 ## Standard env-var surface
 

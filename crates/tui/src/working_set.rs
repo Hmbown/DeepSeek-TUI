@@ -370,6 +370,101 @@ fn walk_for_completions(
     );
 }
 
+#[allow(dead_code)]
+const LOCAL_REFERENCE_SCAN_LIMIT: usize = 4096;
+
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+fn add_local_reference_completions(
+    root: &Path,
+    display_root: &Path,
+    needle: &str,
+    limit: usize,
+    prefix_hits: &mut Vec<String>,
+    substring_hits: &mut Vec<String>,
+    seen: &mut HashSet<PathBuf>,
+) {
+    if !should_try_local_reference_completion(needle) {
+        return;
+    }
+
+    for path in local_reference_paths(root, LOCAL_REFERENCE_SCAN_LIMIT) {
+        if prefix_hits.len() + substring_hits.len() >= limit {
+            break;
+        }
+        let Ok(rel) = path.strip_prefix(display_root) else {
+            continue;
+        };
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        if rel_str.is_empty() || !seen.insert(path.clone()) {
+            continue;
+        }
+        let lower = rel_str.to_lowercase();
+        if needle.is_empty() || lower.starts_with(needle) {
+            prefix_hits.push(rel_str);
+        } else if lower.contains(needle) {
+            substring_hits.push(rel_str);
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn should_try_local_reference_completion(needle: &str) -> bool {
+    !needle.is_empty() && (needle.starts_with('.') || needle.contains('/') || needle.contains('\\'))
+}
+
+#[allow(dead_code)]
+fn local_reference_paths(root: &Path, limit: usize) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .hidden(false)
+        .follow_links(false)
+        .max_depth(Some(COMPLETIONS_WALK_DEPTH))
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false);
+    let _ = builder.add_custom_ignore_filename(".deepseekignore");
+    builder.filter_entry(|entry| !should_skip_local_reference_dir(entry.path()));
+
+    for entry in builder.build().flatten() {
+        if out.len() >= limit {
+            break;
+        }
+        let path = entry.path();
+        if path == root {
+            continue;
+        }
+        if entry
+            .file_type()
+            .is_some_and(|ft| ft.is_file() || ft.is_dir())
+        {
+            out.push(path.to_path_buf());
+        }
+    }
+    out
+}
+
+#[allow(dead_code)]
+fn should_skip_local_reference_dir(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    matches!(
+        name,
+        ".git"
+            | "target"
+            | "node_modules"
+            | ".venv"
+            | "venv"
+            | "env"
+            | "dist"
+            | "build"
+            | "__pycache__"
+            | ".ruff_cache"
+    )
+}
+
 impl Clone for Workspace {
     fn clone(&self) -> Self {
         // Don't carry the cached file_index — clones get a fresh OnceLock so
@@ -532,6 +627,7 @@ impl WorkingSet {
         let prompt_entries: Vec<&WorkingSetEntry> = self
             .sorted_for_prompt()
             .into_iter()
+            .filter(|entry| prompt_eligible_entry(entry))
             .take(self.config.max_prompt_entries)
             .collect();
 
@@ -624,6 +720,9 @@ impl WorkingSet {
             else {
                 continue;
             };
+            if source == WorkingSetSource::ToolOutput && !exists {
+                continue;
+            }
             self.record_path(rel, exists, is_dir, source);
         }
 
@@ -702,6 +801,14 @@ fn score_entry(entry: &WorkingSetEntry, current_turn: u64) -> i64 {
     i64::from(entry.touches) * 4 + recency_bonus
 }
 
+fn prompt_eligible_entry(entry: &WorkingSetEntry) -> bool {
+    entry.exists
+        || matches!(
+            entry.last_source,
+            WorkingSetSource::UserMessage | WorkingSetSource::ToolInput
+        )
+}
+
 fn normalize_candidate(raw: &str) -> Option<String> {
     let trimmed = raw.trim().trim_matches(|c: char| {
         matches!(
@@ -753,6 +860,9 @@ fn relativize_candidate(
         .unwrap_or_else(|| candidate.ends_with('/'));
 
     let rel_string = path_to_string(&rel_path)?;
+    if rel_string.is_empty() {
+        return None;
+    }
     Some((rel_string, exists, is_dir))
 }
 
@@ -795,8 +905,8 @@ fn extract_paths_from_message(message: &Message) -> Vec<String> {
             ContentBlock::Text { text, .. } => {
                 paths.extend(extract_paths_from_text(text));
             }
-            ContentBlock::ToolUse { input, .. } => {
-                paths.extend(extract_paths_from_value(input, None));
+            ContentBlock::ToolUse { name, input, .. } => {
+                paths.extend(extract_paths_from_value(input, Some(name)));
             }
             ContentBlock::ToolResult { content, .. } => {
                 paths.extend(extract_paths_from_text(content));
@@ -824,14 +934,15 @@ fn extract_paths_from_value_inner(
 ) {
     match value {
         Value::String(s) => {
+            if tool_is_shell(tool_hint) && key_hint.map(key_is_shell_command).unwrap_or(false) {
+                return;
+            }
             let key_suggests_path = key_hint.map(key_is_path_like).unwrap_or(false);
             if key_suggests_path || looks_like_path(s) {
                 out.extend(extract_paths_from_text(s));
                 if key_suggests_path && !s.contains('/') && !s.contains('\\') {
                     out.push(s.to_string());
                 }
-            } else if tool_hint == Some("exec_shell") && s.len() < 400 {
-                out.extend(extract_paths_from_text(s));
             }
         }
         Value::Array(arr) => {
@@ -846,6 +957,20 @@ fn extract_paths_from_value_inner(
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
+}
+
+fn tool_is_shell(tool_hint: Option<&str>) -> bool {
+    matches!(
+        tool_hint,
+        Some("exec_shell" | "exec_shell_wait" | "exec_shell_interact" | "task_shell_start")
+    )
+}
+
+fn key_is_shell_command(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "command" | "cmd" | "shell" | "script"
+    )
 }
 
 fn key_is_path_like(key: &str) -> bool {
@@ -1142,6 +1267,62 @@ mod tests {
         assert!(block.contains("src/lib.rs"));
     }
 
+    #[test]
+    fn summary_block_omits_workspace_root_as_empty_path() {
+        let tmp = TempDir::new().expect("tempdir");
+        fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"").expect("write");
+
+        let mut ws = WorkingSet::default();
+        ws.observe_tool_call(
+            "read_file",
+            &serde_json::json!({ "path": tmp.path().display().to_string() }),
+            None,
+            tmp.path(),
+        );
+        let block = ws.summary_block(tmp.path()).expect("block");
+
+        assert!(!ws.entries.contains_key(""));
+        assert!(!block.contains("-  (dir)"));
+    }
+
+    #[test]
+    fn shell_command_text_does_not_pollute_working_set() {
+        let tmp = TempDir::new().expect("tempdir");
+
+        let mut ws = WorkingSet::default();
+        ws.observe_tool_call(
+            "exec_shell",
+            &serde_json::json!({
+                "command": "cd /tmp && echo 42/nfn && sed -n '1,20p' a/Users/nope.rs"
+            }),
+            None,
+            tmp.path(),
+        );
+
+        assert!(ws.entries.is_empty());
+    }
+
+    #[test]
+    fn tool_output_keeps_existing_paths_and_drops_missing_paths() {
+        let tmp = TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        fs::write(src.join("lib.rs"), "pub fn x() {}").expect("write");
+
+        let mut ws = WorkingSet::default();
+        ws.observe_tool_call(
+            "exec_shell",
+            &serde_json::json!({ "command": "printf '%s\n' src/lib.rs 42/nfn a/Users/nope.rs" }),
+            Some("src/lib.rs\n42/nfn\na/Users/nope.rs\n"),
+            tmp.path(),
+        );
+        let block = ws.summary_block(tmp.path()).expect("block");
+
+        assert!(block.contains("src/lib.rs"));
+        assert!(!block.contains("42/nfn"));
+        assert!(!block.contains("a/Users/nope.rs"));
+    }
+
     /// #280 regression: `summary_block` must produce byte-identical output
     /// across `next_turn()` advances when no new paths are touched. Prior to
     /// the fix, the rendered lines interpolated `entry.touches` and
@@ -1315,6 +1496,78 @@ mod tests {
         assert!(
             entries.iter().any(|e| e == "alphabeta.txt"),
             "expected cwd entry alphabeta.txt; got: {entries:?}",
+        );
+    }
+
+    #[test]
+    #[ignore = "wiring incomplete — add_local_reference_completions not yet called from completions()"]
+    fn workspace_completions_surface_explicit_hidden_and_ignored_paths() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), ".deepseek/\n.generated/\n").unwrap();
+        std::fs::write(
+            tmp.path().join(".deepseekignore"),
+            ".generated/specs/secrets.env\n",
+        )
+        .unwrap();
+        let deepseek_commands = tmp.path().join(".deepseek").join("commands");
+        let generated_specs = tmp.path().join(".generated").join("specs");
+        std::fs::create_dir_all(&deepseek_commands).unwrap();
+        std::fs::create_dir_all(&generated_specs).unwrap();
+        std::fs::write(deepseek_commands.join("start-task.md"), "start").unwrap();
+        std::fs::write(generated_specs.join("device-layout.md"), "layout").unwrap();
+        std::fs::write(generated_specs.join("secrets.env"), "secret").unwrap();
+
+        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), Some(tmp.path().to_path_buf()));
+
+        let start_entries = ws.completions(".deepseek/commands", 16);
+        assert!(
+            start_entries
+                .iter()
+                .any(|e| e == ".deepseek/commands/start-task.md"),
+            "expected explicitly addressed hidden command file in completions: {start_entries:?}",
+        );
+
+        let generated_entries = ws.completions(".generated/specs", 16);
+        assert!(
+            generated_entries
+                .iter()
+                .any(|e| e == ".generated/specs/device-layout.md"),
+            "expected explicitly addressed ignored user folder in completions: {generated_entries:?}",
+        );
+        assert!(
+            !generated_entries
+                .iter()
+                .any(|e| e == ".generated/specs/secrets.env"),
+            ".deepseekignore entries must not be reintroduced by local fallback: {generated_entries:?}",
+        );
+    }
+
+    #[test]
+    #[ignore = "wiring incomplete — needs add_local_reference_completions integration"]
+    fn fuzzy_index_resolves_hidden_and_ignored_files_except_deepseekignored() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), ".generated/\n").unwrap();
+        std::fs::write(
+            tmp.path().join(".deepseekignore"),
+            ".generated/specs/secrets.env\n",
+        )
+        .unwrap();
+        let generated_specs = tmp.path().join(".generated").join("specs");
+        std::fs::create_dir_all(&generated_specs).unwrap();
+        std::fs::write(generated_specs.join("device-layout.md"), "layout").unwrap();
+        std::fs::write(generated_specs.join("secrets.env"), "secret").unwrap();
+
+        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), None);
+        let resolved = ws.resolve("device-layout.md").unwrap();
+
+        assert!(resolved.ends_with(".generated/specs/device-layout.md"));
+        assert!(
+            ws.resolve("secrets.env").is_err(),
+            "basename fuzzy resolution must honor .deepseekignore"
+        );
+        assert!(
+            ws.resolve(".generated/specs/secrets.env").is_ok(),
+            "exact user-specified paths should still resolve"
         );
     }
 

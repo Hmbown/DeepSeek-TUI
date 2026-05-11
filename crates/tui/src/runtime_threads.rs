@@ -1973,6 +1973,7 @@ impl RuntimeThreadManager {
         if !session_messages.is_empty() || sys_prompt.is_some() {
             engine
                 .send(Op::SyncSession {
+                    session_id: None,
                     messages: session_messages,
                     system_prompt: sys_prompt,
                     model: thread.model.clone(),

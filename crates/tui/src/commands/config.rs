@@ -538,30 +538,40 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
     set_config_value(app, &key, value, should_save)
 }
 
-/// Enable YOLO mode (shell + trust + auto-approve)
-pub fn yolo(app: &mut App) -> CommandResult {
-    app.set_mode(AppMode::Yolo);
-    CommandResult::message("YOLO mode enabled - shell + trust + auto-approve!")
+/// Select the TUI operating mode.
+pub fn mode(app: &mut App, arg: Option<&str>) -> CommandResult {
+    let Some(arg) = arg.filter(|value| !value.trim().is_empty()) else {
+        return CommandResult::action(AppAction::OpenModePicker);
+    };
+    match parse_mode_arg(arg) {
+        Some(mode) => CommandResult::message(switch_mode(app, mode)),
+        None => CommandResult::error("Usage: /mode [agent|plan|yolo|1|2|3]"),
+    }
 }
 
-/// Legacy alias for the removed normal mode.
-pub fn normal_mode(app: &mut App) -> CommandResult {
-    app.set_mode(AppMode::Agent);
-    CommandResult::message("Normal mode was removed. Switched to Agent mode.")
+pub fn switch_mode(app: &mut App, mode: AppMode) -> String {
+    if app.set_mode(mode) {
+        format!("Switched to {} mode.", mode_display_name(mode))
+    } else {
+        format!("Already in {} mode.", mode_display_name(mode))
+    }
 }
 
-/// Enable agent mode (autonomous tool use with approvals)
-pub fn agent_mode(app: &mut App) -> CommandResult {
-    app.set_mode(AppMode::Agent);
-    CommandResult::message("Agent mode enabled.")
+fn parse_mode_arg(arg: &str) -> Option<AppMode> {
+    match arg.trim().to_ascii_lowercase().as_str() {
+        "agent" | "1" => Some(AppMode::Agent),
+        "plan" | "2" => Some(AppMode::Plan),
+        "yolo" | "3" => Some(AppMode::Yolo),
+        _ => None,
+    }
 }
 
-/// Enable plan mode (tool planning, then choose execution route)
-pub fn plan_mode(app: &mut App) -> CommandResult {
-    app.set_mode(AppMode::Plan);
-    CommandResult::message(
-        "Plan mode enabled. Describe your goal and I will create a plan before execution.",
-    )
+fn mode_display_name(mode: AppMode) -> &'static str {
+    match mode {
+        AppMode::Agent => "Agent",
+        AppMode::Plan => "Plan",
+        AppMode::Yolo => "YOLO",
+    }
 }
 
 /// Toggle between dark and light theme.
@@ -1122,9 +1132,11 @@ mod tests {
     }
 
     #[test]
-    fn test_yolo_command_sets_all_flags() {
+    fn test_mode_yolo_sets_all_flags() {
         let mut app = create_test_app();
-        let _ = yolo(&mut app);
+        app.set_mode(AppMode::Agent);
+        let result = mode(&mut app, Some("yolo"));
+        assert!(result.message.unwrap().contains("Switched to YOLO mode"));
         assert!(app.allow_shell);
         assert!(app.trust_mode);
         assert!(app.yolo);
@@ -1133,14 +1145,30 @@ mod tests {
     }
 
     #[test]
-    fn test_mode_switch_commands() {
+    fn test_mode_switch_command_accepts_names_and_numbers() {
         let mut app = create_test_app();
-        let _ = normal_mode(&mut app);
+        let _ = mode(&mut app, Some("agent"));
         assert_eq!(app.mode, AppMode::Agent);
-        let _ = agent_mode(&mut app);
-        assert_eq!(app.mode, AppMode::Agent);
-        let _ = plan_mode(&mut app);
+        let _ = mode(&mut app, Some("2"));
         assert_eq!(app.mode, AppMode::Plan);
+        let _ = mode(&mut app, Some("3"));
+        assert_eq!(app.mode, AppMode::Yolo);
+    }
+
+    #[test]
+    fn test_mode_without_arg_opens_picker() {
+        let mut app = create_test_app();
+        let result = mode(&mut app, None);
+        assert!(result.message.is_none());
+        assert!(matches!(result.action, Some(AppAction::OpenModePicker)));
+    }
+
+    #[test]
+    fn test_mode_rejects_unknown_value() {
+        let mut app = create_test_app();
+        let result = mode(&mut app, Some("fast"));
+        assert!(result.is_error);
+        assert!(result.message.unwrap().contains("Usage: /mode"));
     }
 
     #[test]
@@ -1374,6 +1402,7 @@ mod tests {
     #[test]
     fn test_trust_on_enables_flag() {
         let mut app = create_test_app();
+        app.trust_mode = false;
         assert!(!app.trust_mode);
         let result = trust(&mut app, Some("on"));
         let msg = result.message.expect("message");

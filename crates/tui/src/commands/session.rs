@@ -3,12 +3,23 @@
 use std::fmt::Write;
 use std::path::PathBuf;
 
-use crate::session_manager::create_saved_session_with_mode;
+use crate::session_manager::{SessionCostSnapshot, create_saved_session_with_mode};
 use crate::tui::app::{App, AppAction};
 use crate::tui::history::{HistoryCell, history_cells_from_message};
 use crate::tui::session_picker::SessionPickerView;
 
 use super::CommandResult;
+
+fn session_cost_snapshot(app: &App) -> SessionCostSnapshot {
+    SessionCostSnapshot {
+        session_cost_usd: app.session.session_cost,
+        session_cost_cny: app.session.session_cost_cny,
+        subagent_cost_usd: app.session.subagent_cost,
+        subagent_cost_cny: app.session.subagent_cost_cny,
+        displayed_cost_high_water_usd: app.session.displayed_cost_high_water,
+        displayed_cost_high_water_cny: app.session.displayed_cost_high_water_cny,
+    }
+}
 
 /// Save session to file
 pub fn save(app: &mut App, path: Option<&str>) -> CommandResult {
@@ -28,10 +39,8 @@ pub fn save(app: &mut App, path: Option<&str>) -> CommandResult {
         app.system_prompt.as_ref(),
         Some(app.mode.label()),
     );
-    session.metadata.session_cost_usd = app.session.session_cost;
-    session.metadata.session_cost_cny = app.session.session_cost_cny;
-    session.metadata.subagent_cost_usd = app.session.subagent_cost;
-    session.metadata.subagent_cost_cny = app.session.subagent_cost_cny;
+    session.metadata.cost = session_cost_snapshot(app);
+    session.artifacts = app.session_artifacts.clone();
 
     let sessions_dir = save_path
         .parent()
@@ -101,13 +110,21 @@ pub fn load(app: &mut App, path: Option<&str>) -> CommandResult {
     app.workspace.clone_from(&session.metadata.workspace);
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
-    app.session.session_cost = 0.0;
-    app.session.session_cost_cny = 0.0;
-    app.session.subagent_cost = 0.0;
-    app.session.subagent_cost_cny = 0.0;
+    app.session.session_cost = session.metadata.cost.session_cost_usd;
+    app.session.session_cost_cny = session.metadata.cost.session_cost_cny;
+    app.session.subagent_cost = session.metadata.cost.subagent_cost_usd;
+    app.session.subagent_cost_cny = session.metadata.cost.subagent_cost_cny;
     app.session.subagent_cost_event_seqs.clear();
-    app.session.displayed_cost_high_water = 0.0;
-    app.session.displayed_cost_high_water_cny = 0.0;
+    app.session.displayed_cost_high_water = session
+        .metadata
+        .cost
+        .displayed_cost_high_water_usd
+        .max(session.metadata.cost.total_usd());
+    app.session.displayed_cost_high_water_cny = session
+        .metadata
+        .cost
+        .displayed_cost_high_water_cny
+        .max(session.metadata.cost.total_cny());
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
     app.session.last_prompt_cache_hit_tokens = None;
@@ -115,6 +132,7 @@ pub fn load(app: &mut App, path: Option<&str>) -> CommandResult {
     app.session.last_reasoning_replay_tokens = None;
     app.session.turn_cache_history.clear();
     app.current_session_id = Some(session.metadata.id.clone());
+    app.session_artifacts = session.artifacts.clone();
     if let Some(sp) = session.system_prompt {
         app.system_prompt = Some(crate::models::SystemPrompt::Text(sp));
     }
@@ -128,6 +146,7 @@ pub fn load(app: &mut App, path: Option<&str>) -> CommandResult {
             session.metadata.message_count
         ),
         crate::tui::app::AppAction::SyncSession {
+            session_id: app.current_session_id.clone(),
             messages: app.api_messages.clone(),
             system_prompt: app.system_prompt.clone(),
             model: app.model.clone(),
@@ -334,6 +353,32 @@ mod tests {
     }
 
     #[test]
+    fn save_preserves_artifact_registry() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let save_path = tmpdir.path().join("artifact_session.json");
+        app.session_artifacts
+            .push(crate::artifacts::ArtifactRecord {
+                id: "art_call_big".to_string(),
+                kind: crate::artifacts::ArtifactKind::ToolOutput,
+                session_id: "artifact-session".to_string(),
+                tool_call_id: "call-big".to_string(),
+                tool_name: "exec_shell".to_string(),
+                created_at: chrono::Utc::now(),
+                byte_size: 512_000,
+                preview: "cargo test output".to_string(),
+                storage_path: tmpdir.path().join("call-big.txt"),
+            });
+
+        let result = save(&mut app, Some(save_path.to_str().unwrap()));
+
+        assert!(!result.is_error);
+        let saved: crate::session_manager::SavedSession =
+            serde_json::from_str(&std::fs::read_to_string(save_path).unwrap()).unwrap();
+        assert_eq!(saved.artifacts, app.session_artifacts);
+    }
+
+    #[test]
     fn test_save_with_default_path_uses_workspace() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
@@ -420,6 +465,46 @@ mod tests {
         assert_eq!(app2.session.total_tokens, 500);
         assert!(app2.current_session_id.is_some());
         assert!(matches!(result.action, Some(AppAction::SyncSession { .. })));
+    }
+
+    #[test]
+    fn load_restores_artifact_registry() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut saved_app = create_test_app_with_tmpdir(&tmpdir);
+        saved_app
+            .session_artifacts
+            .push(crate::artifacts::ArtifactRecord {
+                id: "art_call_big".to_string(),
+                kind: crate::artifacts::ArtifactKind::ToolOutput,
+                session_id: "artifact-session".to_string(),
+                tool_call_id: "call-big".to_string(),
+                tool_name: "exec_shell".to_string(),
+                created_at: chrono::Utc::now(),
+                byte_size: 128,
+                preview: "checking crate".to_string(),
+                storage_path: tmpdir.path().join("call-big.txt"),
+            });
+        let save_path = tmpdir.path().join("artifact_load.json");
+        save(&mut saved_app, Some(save_path.to_str().unwrap()));
+
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        app.session_artifacts
+            .push(crate::artifacts::ArtifactRecord {
+                id: "art_stale".to_string(),
+                kind: crate::artifacts::ArtifactKind::ToolOutput,
+                session_id: "stale-session".to_string(),
+                tool_call_id: "stale".to_string(),
+                tool_name: "exec_shell".to_string(),
+                created_at: chrono::Utc::now(),
+                byte_size: 1,
+                preview: "stale".to_string(),
+                storage_path: tmpdir.path().join("stale.txt"),
+            });
+
+        let result = load(&mut app, Some(save_path.to_str().unwrap()));
+
+        assert!(!result.is_error);
+        assert_eq!(app.session_artifacts, saved_app.session_artifacts);
     }
 
     #[test]

@@ -171,7 +171,7 @@ pub struct Settings {
     pub calm_mode: bool,
     /// Reduce animation and redraw churn
     pub low_motion: bool,
-    /// Enable fancy footer animations (water-spout strip, pulsing text)
+    /// Enable fancy footer animations (DeepSeek whale strip, pulsing text)
     pub fancy_animations: bool,
     /// Enable terminal bracketed-paste mode. Default true. Disable if your
     /// terminal mishandles the `\e[?2004h` escape (rare; some legacy
@@ -182,7 +182,7 @@ pub struct Settings {
     pub paste_burst_detection: bool,
     /// Show thinking blocks from the model
     pub show_thinking: bool,
-    /// Show detailed tool output
+    /// Legacy toggle retained for settings compatibility.
     pub show_tool_details: bool,
     /// UI locale: auto, en, ja, zh-Hans, pt-BR
     pub locale: String,
@@ -211,8 +211,13 @@ pub struct Settings {
     pub cost_currency: String,
     /// Maximum number of input history entries to save
     pub max_input_history: usize,
+    /// Default provider override (e.g. "deepseek", "openai").
+    pub default_provider: Option<String>,
     /// Default model to use
     pub default_model: Option<String>,
+    /// Per-provider model overrides. Key is provider name (e.g. "openai"),
+    /// value is the model id. Takes precedence over `default_model`.
+    pub provider_models: Option<std::collections::HashMap<String, String>>,
 }
 
 impl Default for Settings {
@@ -247,7 +252,9 @@ impl Default for Settings {
             context_panel: false,
             cost_currency: "usd".to_string(),
             max_input_history: 100,
+            default_provider: None,
             default_model: None,
+            provider_models: None,
         }
     }
 }
@@ -540,7 +547,7 @@ impl Settings {
             ("low_motion", "Reduce animation and redraw churn: on/off"),
             (
                 "fancy_animations",
-                "Fancy footer animations (water-spout strip): on/off",
+                "Fancy footer animations (DeepSeek whale strip): on/off",
             ),
             (
                 "bracketed_paste",
@@ -551,7 +558,10 @@ impl Settings {
                 "Fallback rapid-key paste detection: on/off",
             ),
             ("show_thinking", "Show model thinking: on/off"),
-            ("show_tool_details", "Show detailed tool output: on/off"),
+            (
+                "show_tool_details",
+                "Legacy toggle; Claude-style tool details stay visible",
+            ),
             (
                 "locale",
                 "UI locale and default model language: auto, en, ja, zh-Hans, pt-BR",
@@ -585,6 +595,13 @@ impl Settings {
                 "Default model: auto or any DeepSeek model ID (e.g. deepseek-v4-pro)",
             ),
         ]
+    }
+
+    /// Persist the model for a specific provider.
+    pub fn set_model_for_provider(&mut self, provider: &str, model: &str) {
+        self.provider_models
+            .get_or_insert_with(std::collections::HashMap::new)
+            .insert(provider.to_string(), model.to_string());
     }
 }
 

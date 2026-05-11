@@ -13,6 +13,7 @@ use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
 mod acp_server;
+mod artifacts;
 mod audit;
 mod auto_reasoning;
 mod automation_manager;
@@ -151,7 +152,8 @@ struct Cli {
     #[arg(long = "no-alt-screen", hide = true)]
     no_alt_screen: bool,
 
-    /// Enable TUI mouse capture for internal scrolling and transcript selection
+    /// Enable TUI mouse capture for internal scrolling, transcript selection,
+    /// and scrollbar dragging
     /// (default off on Windows)
     #[arg(long = "mouse-capture", conflicts_with = "no_mouse_capture")]
     mouse_capture: bool,
@@ -2801,10 +2803,11 @@ fn fork_session(session_id: Option<String>, last: bool, workspace: &Path) -> Res
         saved.metadata.total_tokens,
         system_prompt.as_ref(),
     );
-    forked.metadata.session_cost_usd = saved.metadata.session_cost_usd;
-    forked.metadata.session_cost_cny = saved.metadata.session_cost_cny;
-    forked.metadata.subagent_cost_usd = saved.metadata.subagent_cost_usd;
-    forked.metadata.subagent_cost_cny = saved.metadata.subagent_cost_cny;
+    forked.metadata.cost = saved.metadata.cost;
+    forked.context_references = saved.context_references.clone();
+    forked.goal_state_json = saved.goal_state_json.clone();
+    forked.todos_json = saved.todos_json.clone();
+    forked.artifacts = saved.artifacts.clone();
     manager.save_session(&forked)?;
 
     let source_title = saved.metadata.title.trim();
@@ -4648,6 +4651,7 @@ mod terminal_mode_tests {
                 terminal_probe_timeout_ms: None,
                 status_items: None,
                 osc8_links: None,
+                composer_arrows_scroll: None,
                 notification_condition: None,
             }),
             ..Config::default()
@@ -4721,6 +4725,7 @@ mod terminal_mode_tests {
                 terminal_probe_timeout_ms: None,
                 status_items: None,
                 osc8_links: None,
+                composer_arrows_scroll: None,
                 notification_condition: None,
             }),
             ..Config::default()
@@ -4751,6 +4756,7 @@ mod terminal_mode_tests {
                 terminal_probe_timeout_ms: None,
                 status_items: None,
                 osc8_links: None,
+                composer_arrows_scroll: None,
                 notification_condition: None,
             }),
             ..Config::default()
@@ -4832,6 +4838,7 @@ mod terminal_mode_tests {
                 terminal_probe_timeout_ms: None,
                 status_items: None,
                 osc8_links: None,
+                composer_arrows_scroll: None,
                 notification_condition: None,
             }),
             ..Config::default()
@@ -5521,6 +5528,7 @@ mod setup_helper_tests {
             "RUST_LOG",
             "DEEPSEEK_APPROVAL_POLICY",
             "DEEPSEEK_SANDBOX_MODE",
+            "DEEPSEEK_YOLO",
         ] {
             assert!(
                 keys.contains(required),

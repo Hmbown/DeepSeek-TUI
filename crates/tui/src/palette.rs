@@ -19,7 +19,9 @@ pub const PINK_RGB: (u8, u8, u8) = (219, 109, 165);
 // Legacy re-exports — keep for minimal diff
 pub const DEEPSEEK_BLUE_RGB: (u8, u8, u8) = BLUE_RGB;
 pub const DEEPSEEK_SKY_RGB: (u8, u8, u8) = SKY_RGB;
+#[allow(dead_code)]
 pub const DEEPSEEK_INK_RGB: (u8, u8, u8) = INK_RGB;
+#[allow(dead_code)]
 pub const DEEPSEEK_SLATE_RGB: (u8, u8, u8) = SLATE_RGB;
 pub const DEEPSEEK_RED_RGB: (u8, u8, u8) = RED_RGB;
 #[allow(dead_code)]
@@ -122,7 +124,7 @@ pub const DEEPSEEK_NAVY: Color = Color::Rgb(24, 63, 138);
 // === Semantic text colors ===
 pub const TEXT_BODY: Color = Color::Rgb(235, 230, 218);
 pub const TEXT_SECONDARY: Color = Color::Rgb(166, 155, 140);
-pub const TEXT_HINT: Color = Color::Rgb(119, 110, 98);
+pub const TEXT_HINT: Color = Color::Rgb(136, 126, 112);
 pub const TEXT_SOFT: Color = Color::Rgb(213, 204, 190);
 pub const TEXT_ACCENT: Color = SKY;
 pub const SELECTION_TEXT: Color = Color::White;
@@ -415,12 +417,11 @@ pub enum ColorDepth {
 impl ColorDepth {
     #[must_use]
     pub fn detect() -> Self {
-        if let Ok(ct) = std::env::var("COLORTERM") {
-            if ct.to_ascii_lowercase().contains("truecolor")
-                || ct.to_ascii_lowercase().contains("24bit")
-            {
-                return Self::TrueColor;
-            }
+        if let Ok(ct) = std::env::var("COLORTERM")
+            && (ct.to_ascii_lowercase().contains("truecolor")
+                || ct.to_ascii_lowercase().contains("24bit"))
+        {
+            return Self::TrueColor;
         }
         if std::env::var_os("WT_SESSION").is_some() {
             return Self::TrueColor;
@@ -511,6 +512,7 @@ pub fn pulse_brightness(color: Color, now_ms: u64) -> Color {
 
 #[must_use]
 #[allow(dead_code)]
+#[allow(clippy::needless_return)]
 fn nearest_ansi16(r: u8, g: u8, b: u8) -> Color {
     let lum = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
     if lum < 24 {

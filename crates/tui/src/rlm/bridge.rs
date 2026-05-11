@@ -16,8 +16,8 @@ use std::time::Duration;
 use std::{future::Future, pin::Pin};
 
 use anyhow::Result;
-use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use tokio::sync::Mutex;
 
 use crate::llm_client::LlmClient;

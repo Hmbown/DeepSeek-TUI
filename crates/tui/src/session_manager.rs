@@ -6,6 +6,7 @@
 //! - Resuming sessions by ID
 //! - Managing session lifecycle
 
+use crate::artifacts::ArtifactRecord;
 use crate::models::{ContentBlock, Message, SystemPrompt};
 use crate::tui::file_mention::ContextReference;
 use crate::utils::write_atomic;
@@ -100,7 +101,7 @@ pub struct SessionContextReference {
 }
 
 /// Session metadata stored with each saved session
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SessionMetadata {
     /// Unique session identifier
     pub id: String,
@@ -119,20 +120,121 @@ pub struct SessionMetadata {
     /// Workspace directory
     pub workspace: PathBuf,
     /// Optional mode label (agent/plan/etc.)
-    #[serde(default)]
     pub mode: Option<String>,
-    /// Accumulated parent-turn session cost in USD (for persisted billing).
+    /// Accumulated cost data for persisted billing and high-water mark.
+    pub cost: SessionCostSnapshot,
+}
+
+/// Cost and high-water-mark fields persisted with each session.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct SessionCostSnapshot {
+    /// Accumulated parent-turn session cost in USD.
     #[serde(default)]
     pub session_cost_usd: f64,
-    /// Accumulated parent-turn session cost in CNY (for persisted billing).
+    /// Accumulated parent-turn session cost in CNY.
     #[serde(default)]
     pub session_cost_cny: f64,
-    /// Accumulated sub-agent/background LLM cost in USD (for persisted billing).
+    /// Accumulated sub-agent/background LLM cost in USD.
     #[serde(default)]
     pub subagent_cost_usd: f64,
-    /// Accumulated sub-agent/background LLM cost in CNY (for persisted billing).
+    /// Accumulated sub-agent/background LLM cost in CNY.
     #[serde(default)]
     pub subagent_cost_cny: f64,
+    /// Max-ever displayed session+subagent cost in USD (preserves #244
+    /// monotonic guarantee across session restarts).
+    #[serde(default)]
+    pub displayed_cost_high_water_usd: f64,
+    /// Max-ever displayed session+subagent cost in CNY.
+    #[serde(default)]
+    pub displayed_cost_high_water_cny: f64,
+}
+
+impl SessionCostSnapshot {
+    /// Session + subagent cost in USD.
+    pub fn total_usd(&self) -> f64 {
+        self.session_cost_usd + self.subagent_cost_usd
+    }
+
+    /// Session + subagent cost in CNY.
+    pub fn total_cny(&self) -> f64 {
+        self.session_cost_cny + self.subagent_cost_cny
+    }
+
+    fn is_empty(&self) -> bool {
+        self.session_cost_usd == 0.0
+            && self.session_cost_cny == 0.0
+            && self.subagent_cost_usd == 0.0
+            && self.subagent_cost_cny == 0.0
+            && self.displayed_cost_high_water_usd == 0.0
+            && self.displayed_cost_high_water_cny == 0.0
+    }
+}
+
+impl SessionMetadata {
+    /// Copy cost fields from another metadata (used when forking a session).
+    #[allow(dead_code)]
+    pub fn copy_cost_from(&mut self, other: &SessionMetadata) {
+        self.cost = other.cost;
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionMetadata {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawSessionMetadata {
+            id: String,
+            title: String,
+            created_at: DateTime<Utc>,
+            updated_at: DateTime<Utc>,
+            message_count: usize,
+            total_tokens: u64,
+            model: String,
+            workspace: PathBuf,
+            #[serde(default)]
+            mode: Option<String>,
+            #[serde(default)]
+            cost: SessionCostSnapshot,
+            #[serde(default)]
+            session_cost_usd: f64,
+            #[serde(default)]
+            session_cost_cny: f64,
+            #[serde(default)]
+            subagent_cost_usd: f64,
+            #[serde(default)]
+            subagent_cost_cny: f64,
+        }
+
+        let raw = RawSessionMetadata::deserialize(deserializer)?;
+        let legacy_cost = SessionCostSnapshot {
+            session_cost_usd: raw.session_cost_usd,
+            session_cost_cny: raw.session_cost_cny,
+            subagent_cost_usd: raw.subagent_cost_usd,
+            subagent_cost_cny: raw.subagent_cost_cny,
+            displayed_cost_high_water_usd: 0.0,
+            displayed_cost_high_water_cny: 0.0,
+        };
+        let cost = if raw.cost.is_empty() && !legacy_cost.is_empty() {
+            legacy_cost
+        } else {
+            raw.cost
+        };
+
+        Ok(Self {
+            id: raw.id,
+            title: raw.title,
+            created_at: raw.created_at,
+            updated_at: raw.updated_at,
+            message_count: raw.message_count,
+            total_tokens: raw.total_tokens,
+            model: raw.model,
+            workspace: raw.workspace,
+            mode: raw.mode,
+            cost,
+        })
+    }
 }
 
 /// A saved session containing full conversation history
@@ -159,6 +261,10 @@ pub struct SavedSession {
     /// incomplete work survives restart/crash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todos_json: Option<String>,
+    /// Metadata registry of large outputs produced during this session.
+    /// Artifact contents are stored in the session-owned artifact directory.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ArtifactRecord>,
 }
 
 /// Manager for session persistence operations
@@ -425,7 +531,12 @@ impl SessionManager {
     /// Delete a session by ID
     pub fn delete_session(&self, id: &str) -> std::io::Result<()> {
         let path = self.validated_session_path(id)?;
-        fs::remove_file(path)
+        fs::remove_file(path)?;
+        let session_dir = self.sessions_dir.join(id.trim());
+        if session_dir.exists() {
+            fs::remove_dir_all(session_dir)?;
+        }
+        Ok(())
     }
 
     /// Clean up old sessions to stay within `MAX_SESSIONS` limit
@@ -598,7 +709,27 @@ pub fn create_saved_session_with_mode(
     system_prompt: Option<&SystemPrompt>,
     mode: Option<&str>,
 ) -> SavedSession {
-    let id = Uuid::new_v4().to_string();
+    create_saved_session_with_id_and_mode(
+        Uuid::new_v4().to_string(),
+        messages,
+        model,
+        workspace,
+        total_tokens,
+        system_prompt,
+        mode,
+    )
+}
+
+/// Create a new `SavedSession` using a caller-owned session id.
+pub fn create_saved_session_with_id_and_mode(
+    id: String,
+    messages: &[Message],
+    model: &str,
+    workspace: &Path,
+    total_tokens: u64,
+    system_prompt: Option<&SystemPrompt>,
+    mode: Option<&str>,
+) -> SavedSession {
     let now = Utc::now();
 
     // Generate title from first user message
@@ -627,10 +758,7 @@ pub fn create_saved_session_with_mode(
             model: model.to_string(),
             workspace: workspace.to_path_buf(),
             mode: mode.map(str::to_string),
-            session_cost_usd: 0.0,
-            session_cost_cny: 0.0,
-            subagent_cost_usd: 0.0,
-            subagent_cost_cny: 0.0,
+            cost: SessionCostSnapshot::default(),
         },
         messages: capped_messages,
         system_prompt: merge_truncation_note(
@@ -640,6 +768,7 @@ pub fn create_saved_session_with_mode(
         context_references: Vec::new(),
         goal_state_json: None,
         todos_json: None,
+        artifacts: Vec::new(),
     }
 }
 
@@ -900,15 +1029,13 @@ mod tests {
                 model: "deepseek-v4-flash".to_string(),
                 workspace: workspace.to_path_buf(),
                 mode: None,
-                session_cost_usd: 0.0,
-                session_cost_cny: 0.0,
-                subagent_cost_usd: 0.0,
-                subagent_cost_cny: 0.0,
+                cost: SessionCostSnapshot::default(),
             },
             system_prompt: None,
             context_references: Vec::new(),
             goal_state_json: None,
             todos_json: None,
+            artifacts: Vec::new(),
         };
         manager.save_session(&session).expect("save");
     }
@@ -932,15 +1059,13 @@ mod tests {
                 model: "deepseek-v4-pro".to_string(),
                 workspace: workspace.to_path_buf(),
                 mode: Some("yolo".to_string()),
-                session_cost_usd: 0.0,
-                session_cost_cny: 0.0,
-                subagent_cost_usd: 0.0,
-                subagent_cost_cny: 0.0,
+                cost: SessionCostSnapshot::default(),
             },
             system_prompt: None,
             context_references: Vec::new(),
             goal_state_json: None,
             todos_json: None,
+            artifacts: Vec::new(),
         };
         manager.save_session(&session).expect("save empty");
     }
@@ -1107,6 +1232,31 @@ mod tests {
 
         manager.delete_session(&session_id).expect("delete");
         assert!(manager.load_session(&session_id).is_err());
+    }
+
+    #[test]
+    fn delete_session_removes_artifact_directory() {
+        let tmp = tempdir().expect("tempdir");
+        let sessions_dir = tmp.path().join("sessions");
+        let manager = SessionManager::new(sessions_dir.clone()).expect("new");
+
+        let session = create_saved_session(
+            &[make_test_message("user", "artifact session")],
+            "test-model",
+            tmp.path(),
+            100,
+            None,
+        );
+        let session_id = session.metadata.id.clone();
+        let artifact_dir = sessions_dir.join(&session_id).join("artifacts");
+        fs::create_dir_all(&artifact_dir).expect("artifact dir");
+        fs::write(artifact_dir.join("art_call.txt"), "raw output").expect("artifact file");
+
+        manager.save_session(&session).expect("save");
+        manager.delete_session(&session_id).expect("delete");
+
+        assert!(!sessions_dir.join(format!("{session_id}.json")).exists());
+        assert!(!sessions_dir.join(&session_id).exists());
     }
 
     #[test]
@@ -1472,6 +1622,57 @@ mod tests {
         let extracted = extract_top_level_metadata(json.as_bytes())
             .expect("brace-in-string survives the scanner");
         assert_eq!(extracted.title, "weird { title } with braces");
+    }
+
+    #[test]
+    fn saved_session_deserializes_without_artifacts_as_empty_registry() {
+        let json = r#"{
+            "schema_version": 1,
+            "metadata": {
+                "id": "legacy-session",
+                "title": "legacy",
+                "created_at": "2026-05-08T00:00:00Z",
+                "updated_at": "2026-05-08T00:00:00Z",
+                "message_count": 0,
+                "total_tokens": 0,
+                "model": "deepseek-v4-pro",
+                "workspace": "/tmp"
+            },
+            "messages": [],
+            "system_prompt": null
+        }"#;
+
+        let session: SavedSession = serde_json::from_str(json).expect("legacy session loads");
+        assert!(session.artifacts.is_empty());
+    }
+
+    #[test]
+    fn save_and_load_session_preserves_artifact_metadata() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+        let mut session = create_saved_session(
+            &[make_test_message("user", "run tests")],
+            "deepseek-v4-pro",
+            Path::new("/tmp"),
+            0,
+            None,
+        );
+        session.artifacts.push(crate::artifacts::ArtifactRecord {
+            id: "art_call_big".to_string(),
+            kind: crate::artifacts::ArtifactKind::ToolOutput,
+            session_id: session.metadata.id.clone(),
+            tool_call_id: "call-big".to_string(),
+            tool_name: "exec_shell".to_string(),
+            created_at: Utc::now(),
+            byte_size: 512_000,
+            preview: "cargo test output".to_string(),
+            storage_path: PathBuf::from("/tmp/tool_outputs/call-big.txt"),
+        });
+
+        manager.save_session(&session).expect("save");
+        let loaded = manager.load_session(&session.metadata.id).expect("load");
+
+        assert_eq!(loaded.artifacts, session.artifacts);
     }
 
     // ---- #406 prune_sessions_older_than ----

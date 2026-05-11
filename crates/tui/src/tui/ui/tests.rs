@@ -87,20 +87,32 @@ fn recover_terminal_modes_runs_without_panic_on_windows() {
 }
 
 #[test]
-fn terminal_origin_reset_resets_scroll_region_origin_and_clears() {
+fn terminal_origin_reset_resets_scroll_region_origin_without_destructive_clear() {
     assert!(
         TERMINAL_ORIGIN_RESET.starts_with(b"\x1b[r\x1b[?6l"),
         "must reset scroll margins and origin mode before repaint"
     );
     assert!(
-        TERMINAL_ORIGIN_RESET.ends_with(b"\x1b[H\x1b[2J\x1b[3J"),
-        "must home the cursor and clear the viewport"
+        TERMINAL_ORIGIN_RESET.ends_with(b"\x1b[H"),
+        "must home the cursor at the end of the reset sequence"
+    );
+    // Cross-terminal flicker regression (#1119, #1352, #1356, #1363, #1366,
+    // #1260, #1295): emitting CSI 2J/3J here in addition to the
+    // immediately-following ratatui `terminal.clear()` produced a visible
+    // blank-then-repaint flicker on Ghostty / VSCode terminal / Win10 conhost
+    // every TurnComplete. The cleared back-buffer plus a single ratatui clear
+    // is sufficient on the alt-screen.
+    assert!(
+        !TERMINAL_ORIGIN_RESET
+            .windows(b"\x1b[2J".len())
+            .any(|sequence| sequence == b"\x1b[2J"),
+        "must not emit destructive CSI 2J — causes visible flicker"
     );
     assert!(
-        TERMINAL_ORIGIN_RESET
+        !TERMINAL_ORIGIN_RESET
             .windows(b"\x1b[3J".len())
             .any(|sequence| sequence == b"\x1b[3J"),
-        "must erase saved scrollback when reclaiming the viewport"
+        "must not emit destructive CSI 3J — causes visible flicker"
     );
 }
 
@@ -227,6 +239,8 @@ fn selection_to_text_handles_multiline_and_reversed_endpoints() {
 #[test]
 fn selection_to_text_copies_rendered_transcript_block() {
     let mut app = create_test_app();
+    app.show_thinking = true;
+    app.show_tool_details = true;
     app.history = vec![
         HistoryCell::System {
             content: "copy system".to_string(),
@@ -246,6 +260,8 @@ fn selection_to_text_copies_rendered_transcript_block() {
             output: Some("tool output line".to_string()),
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         })),
         HistoryCell::Assistant {
             content: "copy assistant".to_string(),
@@ -279,9 +295,8 @@ fn selection_to_text_copies_rendered_transcript_block() {
     assert!(selected.contains("copy thinking"), "{selected:?}");
     assert!(selected.contains("tool output line"), "{selected:?}");
     assert!(selected.contains("copy assistant"), "{selected:?}");
-    // #1163: tool-card middle lines are rendered with a `│ ` left rail
-    // glyph, but that decoration must not leak into copied text. Assert
-    // no isolated rail glyph survives at the start of any line.
+    // #1163: legacy tool-card box rails must not leak into copied text.
+    // Assert no isolated rail glyph survives at the start of any line.
     for (idx, line) in selected.lines().enumerate() {
         assert!(
             !line.starts_with("\u{2502} "),
@@ -1028,16 +1043,14 @@ fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
             model: "deepseek-v4-pro".to_string(),
             workspace: PathBuf::from("/tmp/resume-recovery"),
             mode: Some("yolo".to_string()),
-            session_cost_usd: 0.0,
-            session_cost_cny: 0.0,
-            subagent_cost_usd: 0.0,
-            subagent_cost_cny: 0.0,
+            cost: crate::session_manager::SessionCostSnapshot::default(),
         },
         messages,
         system_prompt: None,
         context_references: Vec::new(),
         goal_state_json: None,
         todos_json: None,
+        artifacts: Vec::new(),
     }
 }
 
@@ -1200,6 +1213,7 @@ fn active_tool_status_label_summarizes_live_tool_group() {
             duration_ms: None,
             source: ExecSource::Assistant,
             interaction: None,
+            output_summary: None,
         })),
     );
     active.push_tool(
@@ -1211,6 +1225,8 @@ fn active_tool_status_label_summarizes_live_tool_group() {
             output: Some("done".to_string()),
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         })),
     );
     app.active_cell = Some(active);
@@ -1237,6 +1253,8 @@ fn active_tool_status_label_counts_foreground_rlm_work() {
             output: None,
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         })),
     );
     app.active_cell = Some(active);
@@ -1264,6 +1282,7 @@ fn terminal_probe_timeout_uses_tui_config_and_clamps() {
             status_items: None,
             osc8_links: None,
             notification_condition: None,
+            composer_arrows_scroll: None,
         }),
         ..Config::default()
     };
@@ -1735,6 +1754,7 @@ fn event_poll_timeout_has_nonzero_floor() {
 #[test]
 fn footer_status_line_spans_show_mode_and_model_idle_and_active() {
     let mut app = create_test_app();
+    app.set_mode(AppMode::Agent);
     app.model = "deepseek-v4-flash".to_string();
 
     let idle = spans_text(&footer_status_line_spans(&app, 60));
@@ -1830,6 +1850,22 @@ fn footer_auxiliary_spans_show_cache_unavailable_when_provider_omits_cache_field
     let roomy = spans_text(&footer_auxiliary_spans(&app, 72));
 
     assert!(roomy.contains("Cache: unavailable"));
+}
+
+#[test]
+fn footer_auxiliary_spans_distinguish_api_round_cache_from_turn_cache() {
+    let mut app = create_test_app();
+    app.session.last_prompt_tokens = Some(1_246_923);
+    app.session.last_prompt_cache_hit_tokens = Some(447_360);
+    app.session.last_prompt_cache_miss_tokens = Some(799_563);
+    app.session.last_api_prompt_tokens = Some(100_000);
+    app.session.last_api_prompt_cache_hit_tokens = Some(90_000);
+    app.session.last_api_prompt_cache_miss_tokens = Some(10_000);
+
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 104));
+
+    assert!(roomy.contains("Cache: api 90.0% | turn 35.9%"));
+    assert!(roomy.contains("hit 447360 | miss 799563"));
 }
 
 #[test]
@@ -2151,6 +2187,49 @@ fn test_ctrl_c_exits_when_not_loading() {
     // We can't test the actual shutdown, but verify the state is correct
     // for the shutdown path to be taken
     assert!(!app.is_loading);
+}
+
+#[test]
+fn ctrl_c_disposition_idle_arms_exit_prompt() {
+    let app = create_test_app();
+    assert!(!app.is_loading);
+    assert!(!app.quit_is_armed());
+    assert_eq!(ctrl_c_disposition(&app), CtrlCDisposition::ArmExit);
+}
+
+#[test]
+fn ctrl_c_disposition_loading_cancels_turn() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    assert_eq!(ctrl_c_disposition(&app), CtrlCDisposition::CancelTurn);
+}
+
+#[test]
+fn ctrl_c_disposition_armed_idle_confirms_exit() {
+    let mut app = create_test_app();
+    app.arm_quit();
+    assert!(app.quit_is_armed());
+    assert_eq!(ctrl_c_disposition(&app), CtrlCDisposition::ConfirmExit);
+}
+
+#[test]
+fn ctrl_c_disposition_loading_beats_armed_quit() {
+    // If a turn started while quit is armed, the user almost certainly meant
+    // "cancel the turn", not "exit". Pin that priority order.
+    let mut app = create_test_app();
+    app.arm_quit();
+    app.is_loading = true;
+    assert_eq!(ctrl_c_disposition(&app), CtrlCDisposition::CancelTurn);
+}
+
+#[test]
+fn ctrl_c_disposition_no_selection_means_no_copy() {
+    // Regression guard for #1337: with no transcript selection, Ctrl+C must
+    // NOT route to copy. (When selection is active, the copy branch wins;
+    // exercised by the integration-level mouse-drag tests in this file.)
+    let app = create_test_app();
+    assert!(!selection_has_content(&app));
+    assert_ne!(ctrl_c_disposition(&app), CtrlCDisposition::CopySelection);
 }
 
 #[test]
@@ -2499,6 +2578,8 @@ fn jump_to_adjacent_tool_cell_finds_next_and_previous() {
             output: Some("done".to_string()),
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         })),
         HistoryCell::Assistant {
             content: "ok".to_string(),
@@ -2511,6 +2592,8 @@ fn jump_to_adjacent_tool_cell_finds_next_and_previous() {
             output: Some("...".to_string()),
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         })),
     ];
     app.mark_history_updated();
@@ -2567,6 +2650,8 @@ fn detail_target_prefers_visible_tool_card() {
             output: Some("done".to_string()),
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         })),
         HistoryCell::Assistant {
             content: "ok".to_string(),
@@ -2579,6 +2664,8 @@ fn detail_target_prefers_visible_tool_card() {
             output: Some("...".to_string()),
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         })),
     ];
     app.tool_details_by_cell.insert(
@@ -2670,6 +2757,8 @@ fn spillover_pager_section_returns_none_when_no_spillover() {
         output: Some("hi".to_string()),
         prompts: None,
         spillover_path: None,
+        output_summary: None,
+        is_diff: false,
     }))];
     app.resync_history_revisions();
     assert!(spillover_pager_section(&app, 0).is_none());
@@ -2691,6 +2780,8 @@ fn spillover_pager_section_loads_file_when_present() {
         output: Some("(truncated head)".to_string()),
         prompts: None,
         spillover_path: Some(path.clone()),
+        output_summary: None,
+        is_diff: false,
     }))];
     app.resync_history_revisions();
 
@@ -2714,6 +2805,8 @@ fn spillover_pager_section_returns_notice_when_file_missing() {
         output: Some("(truncated head)".to_string()),
         prompts: None,
         spillover_path: Some(bogus),
+        output_summary: None,
+        is_diff: false,
     }))];
     app.resync_history_revisions();
 
@@ -2737,6 +2830,7 @@ fn terminal_pause_has_live_owner_only_for_running_exec_cells() {
             duration_ms: None,
             source: ExecSource::Assistant,
             interaction: Some("interactive".to_string()),
+            output_summary: None,
         })),
     );
     app.active_cell = Some(active);
@@ -2752,6 +2846,8 @@ fn terminal_pause_has_live_owner_only_for_running_exec_cells() {
             output: None,
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         })),
     );
     app.active_cell = Some(active);
@@ -2775,6 +2871,8 @@ fn active_rlm_task_entries_surface_foreground_rlm_work() {
             output: None,
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         })),
     );
     app.active_cell = Some(active);
@@ -3103,6 +3201,86 @@ fn tool_child_usage_metadata_updates_live_cost_counter() {
     handle_tool_call_complete(&mut app, "review-usage", "review", &result);
 
     assert!(app.session.subagent_cost > 0.0);
+}
+
+#[test]
+fn spilled_tool_completion_records_session_artifact_metadata() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let spillover_path = tmp.path().join("call-big.txt");
+    let raw = "checking crate ... error[E0425]: cannot find value\n".repeat(20);
+    std::fs::write(&spillover_path, &raw).expect("write spillover");
+    let result = Ok(
+        crate::tools::spec::ToolResult::success("checking crate ...").with_metadata(
+            serde_json::json!({
+                "spillover_path": spillover_path.display().to_string(),
+                "artifact_session_id": "session-123",
+                "artifact_relative_path": "artifacts/art_call-big.txt",
+                "artifact_byte_size": raw.len() as u64,
+                "artifact_preview": "checking crate ... error[E0425]: cannot find value",
+            }),
+        ),
+    );
+    let mut app = create_test_app();
+    app.current_session_id = Some("session-123".to_string());
+
+    handle_tool_call_complete(&mut app, "call-big", "exec_shell", &result);
+
+    assert_eq!(app.session_artifacts.len(), 1);
+    let artifact = &app.session_artifacts[0];
+    assert_eq!(artifact.kind, crate::artifacts::ArtifactKind::ToolOutput);
+    assert_eq!(artifact.session_id, "session-123");
+    assert_eq!(artifact.tool_call_id, "call-big");
+    assert_eq!(artifact.tool_name, "exec_shell");
+    assert_eq!(artifact.byte_size, raw.len() as u64);
+    assert_eq!(
+        artifact.storage_path,
+        PathBuf::from("artifacts/art_call-big.txt")
+    );
+    assert!(artifact.preview.starts_with("checking crate"));
+
+    let manager =
+        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+    let snapshot = build_session_snapshot(&app, &manager);
+    assert_eq!(snapshot.artifacts, app.session_artifacts);
+}
+
+#[test]
+fn first_snapshot_preserves_current_session_id_for_artifact_ownership() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let manager =
+        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+    let mut app = create_test_app();
+    app.current_session_id = Some("session-123".to_string());
+    app.api_messages.push(text_message("user", "hello"));
+
+    let snapshot = build_session_snapshot(&app, &manager);
+
+    assert_eq!(snapshot.metadata.id, "session-123");
+}
+
+#[test]
+fn apply_loaded_session_restores_artifact_registry() {
+    let mut app = create_test_app();
+    let mut session = saved_session_with_messages(vec![
+        text_message("user", "hello"),
+        text_message("assistant", "hi"),
+    ]);
+    session.artifacts.push(crate::artifacts::ArtifactRecord {
+        id: "art_call_big".to_string(),
+        kind: crate::artifacts::ArtifactKind::ToolOutput,
+        session_id: "session-123".to_string(),
+        tool_call_id: "call-big".to_string(),
+        tool_name: "exec_shell".to_string(),
+        created_at: chrono::Utc::now(),
+        byte_size: 128,
+        preview: "hello".to_string(),
+        storage_path: PathBuf::from("/tmp/tool_outputs/call-big.txt"),
+    });
+
+    let recovered = apply_loaded_session(&mut app, &session);
+
+    assert!(!recovered);
+    assert_eq!(app.session_artifacts, session.artifacts);
 }
 
 #[test]
@@ -4138,6 +4316,7 @@ fn render_footer_from_with_default_items_renders_mode_and_model() {
     // Default footer composition should show the mode chip and model
     // identifier — whatever the configured default model is.
     let mut app = create_test_app();
+    app.set_mode(AppMode::Agent);
     app.session.session_cost = 0.00005;
     let items = crate::config::StatusItem::default_footer();
     let props = render_footer_from(&app, &items, None);
@@ -4167,6 +4346,7 @@ fn render_footer_from_with_empty_items_blanks_every_segment() {
 fn render_footer_from_drops_only_unselected_clusters() {
     // Toggling Cost off but keeping the rest should hide cost only.
     let mut app = create_test_app();
+    app.set_mode(AppMode::Agent);
     app.session.session_cost = 0.42;
     let items: Vec<crate::config::StatusItem> = crate::config::StatusItem::default_footer()
         .into_iter()
@@ -4272,6 +4452,8 @@ fn checklist_write_renders_dedicated_card() {
         ),
         prompts: None,
         spillover_path: None,
+            output_summary: None,
+            is_diff: false,
     };
     let lines = cell.lines_with_mode(80, true, crate::tui::history::RenderMode::Live);
     let text: Vec<String> = lines
@@ -4310,38 +4492,14 @@ fn history_arrow_handles_empty_input() {
     let mut app = create_test_app();
     app.input_history.push("previous prompt".to_string());
 
-    // Empty composer: Up scrolls the transcript, not navigates history.
+    // Default: empty composer Up navigates input history (#1117).
     assert!(handle_composer_history_arrow(
         &mut app,
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
         false,
         false,
     ));
-    assert!(
-        app.viewport.pending_scroll_delta < 0,
-        "empty composer Up should scroll up"
-    );
-    assert!(
-        app.input.is_empty(),
-        "input should stay empty, not load history"
-    );
-    assert_eq!(app.viewport.pending_scroll_delta, -1);
-}
-
-#[test]
-fn history_arrow_handles_empty_input_down() {
-    let mut app = create_test_app();
-    // Empty composer: Down scrolls the transcript.
-    assert!(handle_composer_history_arrow(
-        &mut app,
-        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-        false,
-        false,
-    ));
-    assert_eq!(
-        app.viewport.pending_scroll_delta, 1,
-        "empty composer Down should scroll down"
-    );
+    assert_eq!(app.input, "previous prompt");
 }
 
 #[test]
@@ -4351,18 +4509,14 @@ fn history_arrow_handles_whitespace_input() {
     app.cursor_position = app.input.chars().count();
     app.input_history.push("previous prompt".to_string());
 
-    // Whitespace-only composer: Up scrolls transcript.
+    // Whitespace-only composer follows the default history behavior.
     assert!(handle_composer_history_arrow(
         &mut app,
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
         false,
         false,
     ));
-    assert_eq!(app.viewport.pending_scroll_delta, -1);
-    assert_eq!(
-        app.input, "   ",
-        "whitespace-only input should stay unchanged"
-    );
+    assert_eq!(app.input, "previous prompt");
 }
 
 #[test]
@@ -4380,6 +4534,54 @@ fn history_arrow_handles_nonempty_input() {
         false,
     ));
 
+    assert_eq!(app.input, "previous prompt");
+}
+
+#[test]
+fn composer_arrows_scroll_empty_up() {
+    let mut app = create_test_app();
+    app.composer_arrows_scroll = true;
+
+    // Opt-in: empty composer Up scrolls transcript.
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+    assert_eq!(app.viewport.pending_scroll_delta, -1);
+    assert!(app.input.is_empty());
+}
+
+#[test]
+fn composer_arrows_scroll_empty_down() {
+    let mut app = create_test_app();
+    app.composer_arrows_scroll = true;
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+    assert_eq!(app.viewport.pending_scroll_delta, 1);
+}
+
+#[test]
+fn composer_arrows_scroll_nonempty_still_navigates_history() {
+    let mut app = create_test_app();
+    app.composer_arrows_scroll = true;
+    app.input = "hello".to_string();
+    app.cursor_position = app.input.chars().count();
+    app.input_history.push("previous prompt".to_string());
+
+    // Even with the option on, non-empty composer still navigates history.
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
     assert_eq!(app.input, "previous prompt");
 }
 

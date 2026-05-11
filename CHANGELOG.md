@@ -5,6 +5,232 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.27] - 2026-05-10
+
+A polish release bundling 17 community PRs plus a focused user-issue
+sweep over the 24–48 hours after v0.8.26 shipped. Headline fixes:
+cross-terminal flicker on Ghostty / VSCode / Win10 conhost (most-
+reported v0.8.26 regression), long-text right-edge overflow, an
+in-app pager copy-out, context-sensitive Ctrl+C, an MCP pool that
+auto-reloads on config changes, and a model-callable `notify` tool.
+Big thanks to every contributor below.
+
+### Added
+
+- **Unified `/mode` command** (#1247) — `/mode [agent|plan|yolo|1|2|3]`
+  replaces the separate `/agent`, `/plan`, and `/yolo` commands. Running
+  `/mode` without arguments opens a picker modal. The legacy aliases
+  (`/yolo`, `/agent`, `/plan`) are kept as compatibility shorthands.
+  Thanks **@reidliu41**.
+- **`/status` runtime diagnostics** (#1223) — shows version, provider,
+  model, workspace, mode, permissions, context-window usage, cache
+  hit/miss, and session cost. Previously `/status` was an alias for
+  `/statusline` (footer config); that alias is now `/statusline` only.
+  Thanks **@reidliu41**.
+- **`/feedback` command** (#1185) — opens the matching GitHub issue
+  template (bug report, feature request) in the browser. Security
+  vulnerability reports route through the project's security policy
+  page first. Thanks **@reidliu41**.
+- **Session artifact metadata** (#1220) — large tool outputs spilled to
+  the session artifacts directory are now tracked in a durable metadata
+  index, so saved sessions retain references across save/restore cycles.
+  Thanks **@THINKER-ONLY**.
+- **Subagent results are self-reports** (#1140) — the compacted result
+  summary now notes that child-agent outputs are unverified self-reports.
+  The parent model should verify side effects with tools like `read_file`
+  or `list_dir` before claiming success. Thanks **@THINKER-ONLY**.
+- **Global AGENTS.md fallback** (#1197) — when the workspace and its
+  parents don't provide project instructions, the TUI now loads
+  `~/.deepseek/AGENTS.md` before falling back to auto-generated
+  instructions. Repo-local context still takes priority.
+  Thanks **@manaskarra**.
+- **`--yolo` forwarded from CLI to TUI** (#1233) — the `deepseek --yolo`
+  flag now propagates through the dispatcher to the TUI binary via
+  `DEEPSEEK_YOLO=true`. Previously the flag set `yolo` in the CLI
+  process but the TUI session started in its default mode.
+  Thanks **@fuleinist**.
+- **`composer_arrows_scroll` config** (#1211) — a new
+  `tui.composer_arrows_scroll` option (default `false`) makes plain
+  Up/Down arrow keys scroll the transcript when the composer is empty,
+  instead of navigating input history. Helpful for terminals that map
+  trackpad gestures to arrow keys. Thanks **@lbcheng888**.
+- **Session cost persistence** (#1192) — accumulated costs (session +
+  sub-agents, both USD and CNY) and the displayed-cost high-water mark
+  now survive session save/restore, so the monotonic cost guarantee
+  (#244) holds across restarts. Thanks **@lbcheng888**.
+- **Provider-aware model picker and provider persistence** (#1320) —
+  switching providers now persists the choice to
+  `~/.deepseek/settings.toml` so it survives restarts. The model
+  picker hides DeepSeek-specific models when a non-DeepSeek provider
+  is active. `OPENAI_MODEL` env var now overrides the per-provider
+  model rather than the global `default_text_model`. Bailian / ZhiPu
+  Coding Plan endpoints are now supported.
+  Thanks **@imkingjh999**.
+- **HTTP User-Agent header** (#1320) — all outbound API requests now
+  carry `deepseek-tui/{version}` in the User-Agent, matching the format
+  `fetch_url` already uses. Thanks **@imkingjh999**.
+
+### Fixed
+
+- **Cross-terminal flicker on TurnComplete / focus / resize** (#1119,
+  #1260, #1295, #1352, #1356, #1363, #1366) — the viewport-reset
+  sequence emitted before each forced repaint no longer includes
+  `\x1b[2J\x1b[3J`. Combined with the immediately-following ratatui
+  `terminal.clear()`, the destructive pair produced a double-clear that
+  Ghostty, the VSCode integrated terminal, and Win10 conhost rendered
+  as a visible blank-then-repaint flicker. The lighter sequence
+  (`\x1b[r\x1b[?6l\x1b[H`) plus the alt-screen buffer's double-buffering
+  handles viewport correctness without flicker. macOS Terminal.app /
+  iTerm2 / alacritty users were already unaffected and remain so.
+- **`/skills --remote` and `/skills sync` diagnostics** (#1329) — the
+  underlying anyhow chain has always been formatted with `{err:#}`, but
+  the chain alone is often opaque (e.g. "error sending request"). The
+  error message now appends a one-line hint when the chain matches a
+  common failure pattern: DNS / connection refused / TLS / 4xx / 429 /
+  timeout. Each hint points at the most likely cause and a concrete
+  next step.
+
+### Added
+
+- **Pager copy-out** (#1354) — full-screen pagers (`Alt+V` tool details,
+  `Ctrl+O` thinking content, shell-job / task / MCP-manager pagers, and
+  the selection pager) now accept `c` or `y` to copy the entire body to
+  the system clipboard. The pager intercepts mouse capture so terminal-
+  native selection isn't available inside it; this restores the
+  copy-out path that users on macOS / Windows / WSL expect. The footer
+  hint now reads `…  / search  c copy  q/Esc close`. A status toast
+  confirms success ("Pager content copied"), empty-body, or failure.
+- **`notify` tool** (#1322) — model-callable desktop notification.
+  Always-loaded (no ToolSearch round-trip). Routes through the existing
+  `tui::notifications` infrastructure: OSC 9 on iTerm2 / Ghostty /
+  WezTerm, BEL fallback on macOS / Linux, `MessageBeep` on Windows when
+  explicitly opted in. Honours the user's `[notifications].method`
+  config — when set to `off`, the tool is a silent no-op. Title and
+  body are length-capped (80 / 200 chars) on character (not byte)
+  boundaries to keep the OSC 9 escape clean and avoid mid-grapheme
+  truncation. The tool description steers the model away from chatter:
+  use only when a long-running task completes or genuinely needs the
+  user's attention.
+
+### Fixed (cont.)
+
+- **Long output text overflowed the right edge** (#1344, #1351) —
+  paragraph rendering (`render_line_with_links`) and code-block
+  wrapping (`wrap_text` for `Block::Code`) were word-based: a single
+  word wider than the available column was placed alone on a line and
+  silently overflowed. Long URLs, paths, hashes, and no-whitespace CJK
+  runs all hit this. Both paths now hard-break overlong words at the
+  character level, matching the v0.8.25 fix for table cells. The
+  rendered width is capped at the budget for every line; full content
+  is preserved across wrapped segments. Snapshot-style tests pin the
+  invariant at widths 40, 60, 80, and 120.
+
+### Changed
+
+- **`Ctrl+C` now copies an active transcript selection** (#1337) — on
+  Windows, plain `Ctrl+C` is the OS-wide copy chord, and treating it
+  as "exit" stole work whenever a user copy-pasted from the
+  transcript. `Ctrl+C` is now a four-stage decision: 1) selection
+  active → copy + clear (matches the OS convention); 2) turn in
+  flight → cancel (unchanged); 3) quit-armed within 2s → exit cleanly
+  (unchanged); 4) idle, no selection → arm the 2-second
+  "press Ctrl+C again to quit" prompt (unchanged). The decision is
+  factored into a `CtrlCDisposition` helper with a unit-tested
+  priority table. `Cmd+C` (macOS) and `Ctrl+Shift+C` continue to copy
+  unchanged.
+- **Cancel-key discoverability hint on turn start** (#1367) — when a
+  turn begins, the status-message slot now surfaces "Press Esc or
+  Ctrl+C to cancel" if the slot is otherwise empty. Real transient
+  status messages still take precedence; the hint clears as soon as
+  any other update fires. Closes the loop on users who didn't know
+  how to interrupt a long-running turn.
+- **Lazy auto-reload of MCP pool on config-file change** (#1267 part 2) —
+  v0.8.26 surfaced the underlying spawn errors; v0.8.27 closes the
+  loop on the second half of the report (manual `/mcp reload` after
+  `~/.deepseek/mcp.json` edits). `McpPool::get_or_connect` now does a
+  cheap `stat` + content-hash check before each connection lookup. If
+  the on-disk file's mtime moved AND its content hash changed since
+  the pool was loaded, all live connections are dropped so the next
+  `get_or_connect` reattaches under the new config. Pool-construction
+  via `McpPool::new` (tests, ad-hoc snapshots) is unaffected — only
+  pools built with `from_config_path` watch the source file. No file
+  watcher; no long-lived task. mtime-only churn (touched but
+  byte-unchanged content) does not trigger a reload, so networked
+  filesystems with coarse mtime granularity won't churn the pool.
+- **Paste consolidation now happens at paste time, not submit time** —
+  large bracketed pastes that exceed the 16 000-char safety cap are
+  now folded into a workspace `.deepseek/pastes/paste-…md` file and
+  swapped for an `@`-mention immediately on paste, instead of waiting
+  until the user presses Enter. The user sees the `@`-mention in the
+  composer (and the "consolidated → @mention" toast) before deciding
+  whether to send, eliminating the "I pressed Enter and an `@`-mention
+  appeared in the chat I didn't authorise" surprise. The submit-time
+  consolidation remains as a safety net for any other code path that
+  fills the buffer above the cap, so the cap is still enforced exactly
+  once.
+- **Auto-disable paste-burst once bracketed paste verified** — the
+  rapid-keystroke paste-burst heuristic (default-on for terminals
+  without bracketed paste) used to keep running on every session.
+  Once a real `Event::Paste` arrives in a session, paste-burst now
+  short-circuits — bracketed paste is verified working, and running
+  the heuristic alongside it just creates false positives on fast
+  typing / IME commits / autocomplete bursts. Terminals that never
+  deliver bracketed paste (the original target audience) are
+  unaffected; the heuristic still fires there.
+- **Short CJK multi-line paste no longer auto-submits first line**
+  (#1302) — pasting `请联网搜索：\nSTM32 …` (short non-ASCII first line
+  followed by a newline) used to fail the paste-burst detection
+  heuristic because the first line had no whitespace and was under
+  the 16-char threshold; the trailing pasted newline then fell
+  through as a real Enter and submitted the first line on its own.
+  The heuristic now treats any non-ASCII run as paste-like, so the
+  Enter is absorbed into the burst buffer. Thanks **@reidliu41**
+  (PR #1342).
+- **Onboarding screens render in the selected language** — when a
+  user picked 简体中文 / 日本語 / Português (Brasil) at the language
+  step, every subsequent screen (API key entry, workspace trust
+  prompt, final tips) used to remain in English. The
+  `set_locale_from_onboarding` path now drives the title, body
+  copy, hints, and footer of each onboarding screen through the
+  localization table, so once you pick your language the rest of
+  the flow is in that language. Particularly nice for users on
+  CJK input methods who want to avoid IME juggling during setup.
+- **`/skills <prefix>` filters the local skills list** (#1318) — on
+  top of the v0.8.26 inter-row spacing (#1328 from @reidliu41), the
+  list now narrows to skills whose names start with the typed
+  prefix. Case-insensitive. The header reflects matched count vs
+  registry total; an empty match set says so explicitly and points
+  back at unfiltered `/skills`. `--remote` and `sync` stay
+  reserved as subcommands; any `--`-prefixed argument is rejected
+  rather than being silently treated as a no-match prefix.
+- **HTTP 400 quota errors retried** (#1203) — some OpenAI-compatible
+  gateways return quota/rate-limit errors as HTTP 400 instead of 429.
+  These are now classified as retryable `RateLimited` errors.
+  Thanks **@dst1213**.
+- **Explicit hidden/ignored file completions** (#1270) — when the user
+  types an explicit path starting with `.` (e.g., `.deepseek/commands/`),
+  the file-completion system now surfaces hidden and gitignored entries
+  while still respecting `.deepseekignore`. Thanks **@SamhandsomeLee**.
+
+### Changed
+
+- **Windows mouse capture docs** (#1181) — the `--mouse-capture` help
+  text and the configuration docs now mention scrollbar dragging and
+  note that raw terminal selection on Windows may cross the sidebar.
+  Thanks **@Oliver-ZPLiu**.
+- **README zh-CN sync** (#1235) — the Chinese README's quickstart section
+  now shows `deepseek run pr <N>` instead of the outdated
+  `deepseek pr <N>`. Thanks **@whtis**.
+- **Tool output render perf** (#1098) — tool output summaries and the
+  "is this a diff?" check are now pre-computed once at cell creation
+  instead of re-parsed every frame. Tool output cells also got a visual
+  card-rail (`╭ │ ╰`) for clearer grouping. Thanks **@lbcheng888**.
+
+### Internal
+
+- Test coverage for approval decision branches (@tuohai666, #1316)
+- Test coverage for hook event dispatch paths (@tuohai666, #1317)
+
 ## [0.8.26] - 2026-05-09
 
 A security + polish release. Two responsibly-disclosed issues were
@@ -482,6 +708,12 @@ TUI, runtime, and docs. Big thanks to **Reid (@reidliu41)**,
   dispatcher binary.
 
 ## [0.8.20] - 2026-05-08
+
+### Added
+- **Global AGENTS.md fallback** - when a workspace and its parents do not
+  provide project instructions, DeepSeek TUI now loads `~/.deepseek/AGENTS.md`
+  before falling back to auto-generated `.deepseek/instructions.md`, keeping
+  repo-local instructions higher priority while supporting shared defaults.
 
 ### Fixed
 - **Chinese reasoning stays Chinese** - restore the #588 language contract after

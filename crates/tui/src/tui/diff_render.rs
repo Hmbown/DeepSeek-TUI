@@ -36,8 +36,12 @@ pub fn render_diff(diff: &str, width: u16) -> Vec<Line<'static>> {
             }
             continue;
         }
-        if raw.starts_with("index ") { continue; }
-        if raw.starts_with("--- ") || raw.starts_with("+++ ") { continue; }
+        if raw.starts_with("index ") {
+            continue;
+        }
+        if raw.starts_with("--- ") || raw.starts_with("+++ ") {
+            continue;
+        }
 
         if raw.starts_with("@@") {
             if let Some((old_start, new_start)) = parse_hunk_header(raw) {
@@ -226,7 +230,12 @@ fn render_file_header(path: &str, width: u16) -> Vec<Line<'static>> {
     let bar = "\u{2500}".repeat(width.saturating_sub(path.width() as u16 + 4).max(1) as usize);
     lines.push(Line::from(vec![
         Span::styled("── ", Style::default().fg(palette::TEXT_DIM)),
-        Span::styled(path.to_string(), Style::default().fg(palette::DEEPSEEK_SKY).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            path.to_string(),
+            Style::default()
+                .fg(palette::DEEPSEEK_SKY)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(format!(" {bar}"), Style::default().fg(palette::TEXT_DIM)),
     ]));
     lines

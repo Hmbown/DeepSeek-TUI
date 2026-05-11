@@ -737,11 +737,17 @@ impl Engine {
                         .await;
                 }
                 Op::SyncSession {
+                    session_id,
                     messages,
                     system_prompt,
                     model,
                     workspace,
                 } => {
+                    if let Some(session_id) = session_id {
+                        self.session.id = session_id;
+                    } else if messages.is_empty() && system_prompt.is_none() {
+                        self.session.id = uuid::Uuid::new_v4().to_string();
+                    }
                     self.session.messages = messages;
                     self.session.compaction_summary_prompt =
                         extract_compaction_summary_prompt(system_prompt.clone());
@@ -832,6 +838,7 @@ impl Engine {
         let _ = self
             .tx_event
             .send(Event::SessionUpdated {
+                session_id: self.session.id.clone(),
                 messages: self.session.messages.clone(),
                 system_prompt: self.session.system_prompt.clone(),
                 model: self.session.model.clone(),
@@ -1097,9 +1104,9 @@ impl Engine {
         } else {
             Vec::new()
         };
-        let tools = tool_registry.as_ref().map(|registry| {
-            build_model_tool_catalog(registry.to_api_tools(), mcp_tools, mode)
-        });
+        let tools = tool_registry
+            .as_ref()
+            .map(|registry| build_model_tool_catalog(registry.to_api_tools(), mcp_tools, mode));
 
         // Main turn loop
         let (status, error) = self
@@ -1527,7 +1534,7 @@ impl Engine {
         let mut ctx = ctx.with_elevated_sandbox_policy(policy);
         if matches!(mode, AppMode::Plan) {
             ctx = ctx.with_shell_network_denied_hint(
-                "Shell command blocked: Plan mode runs shell commands in a read-only sandbox — no writes, no network. Use Agent mode (`/agent`) for any command that creates or modifies files, or that needs network access.",
+                "Shell command blocked: Plan mode runs shell commands in a read-only sandbox — no writes, no network. Use Agent mode (`/mode agent`) for any command that creates or modifies files, or that needs network access.",
             );
         }
         ctx
@@ -1899,8 +1906,7 @@ impl Engine {
             self.session.last_system_prompt_hash = Some(stable_hash);
             if had_prior {
                 let _ = self.tx_event.try_send(Event::status(
-                    "System prompt changed — KV prefix cache will reset on next turn"
-                        .to_string(),
+                    "System prompt changed — KV prefix cache will reset on next turn".to_string(),
                 ));
             }
         }

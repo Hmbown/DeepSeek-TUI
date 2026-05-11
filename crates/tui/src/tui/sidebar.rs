@@ -26,6 +26,11 @@ use super::history::{HistoryCell, ToolCell, ToolStatus};
 use super::subagent_routing::active_fanout_counts;
 use super::ui::truncate_line_to_width;
 
+/// Tolerance for floating-point cost comparison in the sidebar breakdown.
+/// Must be large enough that accumulated f64 error across hundreds of turns
+/// does not prematurely hide the session+agents breakdown.
+const COST_EQ_TOLERANCE: f64 = 1e-6;
+
 pub fn render_sidebar(f: &mut Frame, area: Rect, app: &App) {
     if area.width < 24 || area.height < 8 {
         // Paint a styled block over the area so stale cells from a previous
@@ -666,13 +671,22 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
     let total_cost = app.displayed_session_cost_for_currency(app.cost_currency);
     let session_cost = app.session_cost_for_currency(app.cost_currency);
     let agent_cost = app.subagent_cost_for_currency(app.cost_currency);
-    lines.push(Line::from(Span::styled(
+    let real_total = session_cost + agent_cost;
+    // Only show the additive breakdown when it matches the displayed
+    // total; when the high-water mark is in effect (post-reconciliation),
+    // the breakdown would not sum to the displayed value (#244).
+    let cost_line = if (total_cost - real_total).abs() < COST_EQ_TOLERANCE {
         format!(
             "cost: {} (session {} + agents {})",
             app.format_cost_amount(total_cost),
             app.format_cost_amount(session_cost),
             app.format_cost_amount(agent_cost)
-        ),
+        )
+    } else {
+        format!("cost: {}", app.format_cost_amount(total_cost),)
+    };
+    lines.push(Line::from(Span::styled(
+        cost_line,
         Style::default().fg(palette::TEXT_MUTED),
     )));
 
@@ -747,23 +761,23 @@ pub fn todos_panel_height(app: &App) -> u16 {
     if snapshot.items.is_empty() {
         return 0;
     }
-    // 1 header line + N items (capped) + 2 border rows
+    // Title + progress summary + N items (capped), no border chrome.
     let items = snapshot.items.len().min(TODOS_PANEL_MAX_ITEMS);
-    1 + items as u16 + 2
+    let remaining = snapshot.items.len().saturating_sub(TODOS_PANEL_MAX_ITEMS);
+    2 + items as u16 + u16::from(remaining > 0)
 }
 
-/// Render the todos area as a bordered list panel above the composer.
+/// Render the todos area as a lightweight list above the composer.
 ///
-/// Shows checklist progress with a bordered box: completion summary header
-/// followed by each item on its own line with status markers. Width below
-/// 24 columns silently renders nothing. Items beyond the cap show a
-/// "+N more" footer.
+/// Shows checklist progress with a title, completion summary, and each item on
+/// its own line with status markers. Width below 24 columns silently renders
+/// nothing. Items beyond the cap show a "+N more" footer.
 ///
 /// Design follows Claude Code's pattern of placing the checklist above
 /// the composer/input area so the user can see task progress at a glance
 /// without needing the sidebar visible.
 pub fn render_todos_panel(f: &mut Frame, area: Rect, app: &App) {
-    if area.width < 24 || area.height < 3 {
+    if area.width < 24 || area.height < 2 {
         return;
     }
 
@@ -777,8 +791,8 @@ pub fn render_todos_panel(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let theme = Theme::for_palette_mode(app.ui_theme.mode);
-    let content_width = area.width.saturating_sub(4) as usize;
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(TODOS_PANEL_MAX_ITEMS + 2);
+    let content_width = area.width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(TODOS_PANEL_MAX_ITEMS + 3);
 
     let total = snapshot.items.len();
     let completed = snapshot
@@ -786,6 +800,10 @@ pub fn render_todos_panel(f: &mut Frame, area: Rect, app: &App) {
         .iter()
         .filter(|item| item.status == TodoStatus::Completed)
         .count();
+    lines.push(Line::from(Span::styled(
+        "Todos",
+        Style::default().fg(theme.section_title_color).bold(),
+    )));
     lines.push(Line::from(vec![
         Span::styled(
             format!("{}%", snapshot.completion_pct),
@@ -818,26 +836,19 @@ pub fn render_todos_panel(f: &mut Frame, area: Rect, app: &App) {
         )));
     }
 
-    let visible_rows = area.height.saturating_sub(2) as usize;
+    let visible_rows = area.height as usize;
     let lines: Vec<Line<'static>> = if lines.len() > visible_rows && visible_rows > 0 {
         lines.into_iter().take(visible_rows).collect()
     } else {
         lines
     };
 
-    let section = Paragraph::new(lines).wrap(Wrap { trim: true }).block(
-        Block::default()
-            .title(Line::from(vec![Span::styled(
-                " Todos ",
-                Style::default().fg(theme.section_title_color).bold(),
-            )]))
-            .borders(theme.section_borders)
-            .border_type(theme.section_border_type)
-            .border_style(Style::default().fg(theme.section_border_color))
-            .style(Style::default().bg(app.ui_theme.surface_bg))
-            .padding(theme.section_padding),
-    );
-
+    Block::default()
+        .style(Style::default().bg(app.ui_theme.surface_bg))
+        .render(area, f.buffer_mut());
+    let section = Paragraph::new(lines)
+        .wrap(Wrap { trim: true })
+        .style(Style::default().bg(app.ui_theme.surface_bg));
     f.render_widget(section, area);
 }
 

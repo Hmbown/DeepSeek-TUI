@@ -14,6 +14,7 @@ pub mod context_menu;
 pub mod diff_render;
 pub mod event_broker;
 pub mod external_editor;
+pub mod feedback_picker;
 pub mod file_frecency;
 pub mod file_mention;
 pub mod file_picker;

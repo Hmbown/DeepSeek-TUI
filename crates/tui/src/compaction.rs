@@ -13,8 +13,7 @@ use crate::config::DEFAULT_TEXT_MODEL;
 use crate::llm_client::LlmClient;
 use crate::logging;
 use crate::models::{
-    ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt,
-    context_window_for_model,
+    ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt, context_window_for_model,
 };
 
 /// Configuration for conversation compaction behavior.

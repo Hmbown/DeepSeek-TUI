@@ -12,7 +12,9 @@ use super::CommandResult;
 pub fn recap(app: &mut App, _arg: Option<&str>) -> CommandResult {
     let text = app.recap_text();
     if text.is_empty() {
-        CommandResult::message("No session state to recap. Set a goal with /goal <objective> to get started.")
+        CommandResult::message(
+            "No session state to recap. Set a goal with /goal <objective> to get started.",
+        )
     } else {
         CommandResult::message(text)
     }

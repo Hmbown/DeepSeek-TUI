@@ -78,11 +78,7 @@ mod tests {
 
     #[test]
     fn absolute_path_strips_leading_slash() {
-        let diff = make_unified_diff(
-            "/Users/lbcheng/DeepSeek-TUI/file.txt",
-            "old\n",
-            "new\n",
-        );
+        let diff = make_unified_diff("/Users/lbcheng/DeepSeek-TUI/file.txt", "old\n", "new\n");
         assert!(diff.contains("--- a/Users/"), "{diff}");
         assert!(!diff.contains("a//"), "double slash in {diff}");
     }

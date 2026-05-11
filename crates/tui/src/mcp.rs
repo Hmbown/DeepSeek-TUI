@@ -1424,15 +1424,32 @@ pub struct McpPool {
     connections: HashMap<String, McpConnection>,
     config: McpConfig,
     network_policy: Option<NetworkPolicyDecider>,
+    /// Source path the config was loaded from, when `from_config_path` was
+    /// used. `None` for pools constructed directly via `new` (tests, ad-hoc
+    /// snapshots). Drives the lazy-reload check (#1267 part 2): when the
+    /// file's mtime moves, the pool re-reads the config and compares its
+    /// content hash to decide whether to drop existing connections.
+    config_source: Option<std::path::PathBuf>,
+    /// 64-bit content hash of the active config (`hash_mcp_config`). Compared
+    /// against the freshly-loaded config after an mtime change to skip
+    /// reloading when the file was merely touched.
+    config_hash: u64,
+    /// Most recently observed mtime of `config_source`. Updated whenever the
+    /// reload check runs (whether or not it triggered a reload).
+    last_mtime: Option<std::time::SystemTime>,
 }
 
 impl McpPool {
     /// Create a new pool with the given configuration
     pub fn new(config: McpConfig) -> Self {
+        let config_hash = hash_mcp_config(&config);
         Self {
             connections: HashMap::new(),
             config,
             network_policy: None,
+            config_source: None,
+            config_hash,
+            last_mtime: None,
         }
     }
 
@@ -1447,7 +1464,11 @@ impl McpPool {
         } else {
             McpConfig::default()
         };
-        Ok(Self::new(config))
+        let last_mtime = mcp_config_mtime(path);
+        let mut pool = Self::new(config);
+        pool.config_source = Some(path.to_path_buf());
+        pool.last_mtime = last_mtime;
+        Ok(pool)
     }
 
     /// Attach a per-domain network policy (#135). When set, HTTP/SSE
@@ -1457,8 +1478,63 @@ impl McpPool {
         self
     }
 
+    /// If the source config file's mtime has changed since the last check,
+    /// re-read it and (only when the content hash also changed) drop all
+    /// existing connections so the next `get_or_connect` reattaches under
+    /// the new config. No-op when the pool was constructed via [`McpPool::new`]
+    /// (no source path), when stat fails, or when the file content is
+    /// byte-identical to what we last loaded. Returns `Ok(true)` if any
+    /// connections were dropped, `Ok(false)` otherwise.
+    ///
+    /// This is the lazy half of the auto-reload story for #1267: instead of a
+    /// long-lived file watcher, the next tool invocation pays a single `stat`
+    /// call (and only re-reads the file when the mtime moved). On networked
+    /// or remote filesystems where mtime granularity is poor, the hash
+    /// compare keeps us from churning connections on every check.
+    pub async fn reload_if_config_changed(&mut self) -> Result<bool> {
+        let Some(path) = self.config_source.clone() else {
+            return Ok(false);
+        };
+        let current_mtime = match mcp_config_mtime(&path) {
+            Some(m) => m,
+            None => return Ok(false),
+        };
+        if Some(current_mtime) == self.last_mtime {
+            return Ok(false);
+        }
+        // mtime moved — we owe a re-read.
+        let new_config: McpConfig = if path.exists() {
+            let contents = fs::read_to_string(&path)
+                .with_context(|| format!("Failed to re-read MCP config: {}", path.display()))?;
+            serde_json::from_str(&contents)
+                .with_context(|| format!("Failed to re-parse MCP config: {}", path.display()))?
+        } else {
+            McpConfig::default()
+        };
+        let new_hash = hash_mcp_config(&new_config);
+        // Always advance last_mtime so a touched-but-unchanged file doesn't
+        // make us re-read on every subsequent call.
+        self.last_mtime = Some(current_mtime);
+        if new_hash == self.config_hash {
+            return Ok(false);
+        }
+        // Real content change — drop all live connections so the next
+        // get_or_connect picks up the new config (sandbox flags, env, args).
+        self.connections.clear();
+        self.config = new_config;
+        self.config_hash = new_hash;
+        Ok(true)
+    }
+
     /// Get or create a connection to a server
     pub async fn get_or_connect(&mut self, server_name: &str) -> Result<&mut McpConnection> {
+        // Lazy auto-reload (#1267 part 2): cheap mtime-then-hash check before
+        // each connection lookup. Errors from the reload check (stat failure,
+        // partial config parse) are swallowed here so a transient FS hiccup
+        // can't take down the whole tool dispatch — the user still gets the
+        // existing connection to respond to.
+        let _ = self.reload_if_config_changed().await;
+
         let is_ready = self
             .connections
             .get(server_name)
@@ -2012,6 +2088,35 @@ pub fn load_config(path: &Path) -> Result<McpConfig> {
         .with_context(|| format!("Failed to read MCP config {}", path.display()))?;
     serde_json::from_str(&contents)
         .with_context(|| format!("Failed to parse MCP config {}", path.display()))
+}
+
+/// 64-bit content hash of an [`McpConfig`]. Used by [`McpPool`] to decide
+/// whether a freshly-read config differs from the one currently driving the
+/// live connections. Hashing the JSON serialization avoids forcing every
+/// nested config type to derive `Hash` (the timeouts struct, network policy
+/// stubs, etc.). The hash is stable across runs of the same Rust toolchain
+/// for byte-identical input.
+fn hash_mcp_config(config: &McpConfig) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let bytes = serde_json::to_vec(config).unwrap_or_default();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Best-effort fetch of the MCP config file's last-modified time. Returns
+/// `None` when the file is missing, when stat fails, when the platform
+/// doesn't expose mtime, or when the path fails the same allow-list check
+/// that `load_config` / `save_config` apply. The lazy-reload check in
+/// `McpPool::get_or_connect` treats `None` as "skip the check this turn",
+/// so a rejected path simply degrades to "no auto-reload" rather than an
+/// error path. Callers already validate via `validate_mcp_config_path` at
+/// construction time; the redundant validation here keeps this helper
+/// safe-by-construction for any future caller and ties the validation to
+/// the call site rather than relying on cross-function reasoning.
+fn mcp_config_mtime(path: &Path) -> Option<std::time::SystemTime> {
+    validate_mcp_config_path(path).ok()?;
+    fs::metadata(path).ok()?.modified().ok()
 }
 
 pub fn save_config(path: &Path, cfg: &McpConfig) -> Result<()> {
@@ -2628,6 +2733,96 @@ mod tests {
         let pool = McpPool::new(McpConfig::default());
         assert!(pool.server_names().is_empty());
         assert!(pool.all_tools().is_empty());
+    }
+
+    /// #1267 part 2: a pool built without a source path has no file to watch,
+    /// so `reload_if_config_changed` must short-circuit instead of trying
+    /// to stat `/`.
+    #[tokio::test]
+    async fn reload_if_config_changed_is_noop_without_source_path() {
+        let mut pool = McpPool::new(McpConfig::default());
+        let reloaded = pool.reload_if_config_changed().await.unwrap();
+        assert!(!reloaded, "no source path → no reload");
+    }
+
+    /// #1267 part 2: when the on-disk config is byte-unchanged, the lazy
+    /// reload must not drop connections — every call to `get_or_connect`
+    /// would otherwise pay a full reconnect cycle on networked filesystems
+    /// where mtime granularity is coarse.
+    #[tokio::test]
+    async fn reload_if_config_changed_skips_when_content_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(&path, r#"{"servers":{}}"#).unwrap();
+        let mut pool = McpPool::from_config_path(&path).unwrap();
+        // Force the mtime to advance without changing content.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&path, r#"{"servers":{}}"#).unwrap();
+        let reloaded = pool.reload_if_config_changed().await.unwrap();
+        assert!(
+            !reloaded,
+            "content-unchanged config must not trigger a reload"
+        );
+    }
+
+    /// #1267 part 2: when the on-disk config changes content, the next
+    /// `reload_if_config_changed` call must swap in the new config and
+    /// (would) drop all live connections. We can't stand up a real
+    /// `McpConnection` in a unit test, so we observe the swap via the
+    /// publicly-readable side: server names go from empty to non-empty.
+    #[tokio::test]
+    async fn reload_if_config_changed_swaps_config_on_content_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(&path, r#"{"servers":{}}"#).unwrap();
+        let mut pool = McpPool::from_config_path(&path).unwrap();
+        assert!(pool.server_names().is_empty());
+        // Mutate the file so both the mtime and the hash change.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(
+            &path,
+            r#"{"servers":{"new":{"command":"echo","args":["hi"]}}}"#,
+        )
+        .unwrap();
+        let reloaded = pool.reload_if_config_changed().await.unwrap();
+        assert!(reloaded, "content-changed config must trigger reload");
+        let names = pool.server_names();
+        assert!(
+            names.contains(&"new"),
+            "expected new server in pool after reload, got {names:?}"
+        );
+    }
+
+    /// #1267 part 2: hash-based comparison must be stable for byte-identical
+    /// configs and distinct for differing configs.
+    #[test]
+    fn hash_mcp_config_is_stable_and_change_sensitive() {
+        let a = McpConfig::default();
+        let b = McpConfig::default();
+        assert_eq!(hash_mcp_config(&a), hash_mcp_config(&b));
+        let mut c = McpConfig::default();
+        c.servers.insert(
+            "x".into(),
+            McpServerConfig {
+                command: Some("/bin/echo".into()),
+                args: vec!["hi".into()],
+                env: Default::default(),
+                url: None,
+                connect_timeout: None,
+                execute_timeout: None,
+                read_timeout: None,
+                disabled: false,
+                enabled: true,
+                required: false,
+                enabled_tools: Vec::new(),
+                disabled_tools: Vec::new(),
+            },
+        );
+        assert_ne!(
+            hash_mcp_config(&a),
+            hash_mcp_config(&c),
+            "hash must change when servers map changes"
+        );
     }
 
     /// #1319: discovered tools must be sorted by name so the prompt prefix

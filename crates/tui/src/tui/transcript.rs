@@ -542,6 +542,7 @@ mod tests {
             duration_ms: None,
             source: ExecSource::Assistant,
             interaction: None,
+            output_summary: None,
         }))
     }
 
@@ -841,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_tool_cells_render_as_one_railed_group() {
+    fn adjacent_tool_cells_render_without_legacy_rails() {
         let cells = vec![exec_tool_cell("cargo test"), exec_tool_cell("cargo clippy")];
         let revisions = vec![1u64, 1];
         let mut cache = TranscriptViewCache::new();
@@ -852,18 +853,18 @@ mod tests {
         assert!(
             lines
                 .first()
-                .is_some_and(|line| line.starts_with("\u{256D} ")),
-            "first tool line should open the shared rail: {lines:?}"
+                .is_some_and(|line| line.contains("Bash(cargo test)")),
+            "first tool line should show the tool call header: {lines:?}"
         );
         assert!(
-            lines.iter().any(|line| line.starts_with("\u{2502} ")),
-            "middle tool lines should continue the shared rail: {lines:?}"
+            !lines.iter().any(|line| line.starts_with("\u{256D} ")
+                || line.starts_with("\u{2502} ")
+                || line.starts_with("\u{2570} ")),
+            "legacy rail glyphs should not render in Claude-style tool cells: {lines:?}"
         );
         assert!(
-            lines
-                .last()
-                .is_some_and(|line| line.starts_with("\u{2570} ")),
-            "last tool line should close the shared rail: {lines:?}"
+            lines.iter().filter(|line| line.starts_with("  ")).count() >= 2,
+            "tool detail rows should use plain two-space indentation: {lines:?}"
         );
         assert!(
             !lines.iter().any(String::is_empty),
