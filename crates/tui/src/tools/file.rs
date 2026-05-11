@@ -331,6 +331,12 @@ impl ToolSpec for EditFileTool {
         let search = required_str(&input, "search")?;
         let replace = required_str(&input, "replace")?;
 
+        if search == replace {
+            return Err(ToolError::invalid_input(
+                "search and replace are identical, no change intended",
+            ));
+        }
+
         let file_path = context.resolve_path(path_str)?;
 
         let contents = fs::read_to_string(&file_path).map_err(|e| {
@@ -662,6 +668,36 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_file_rejects_identical_search_and_replace() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let test_file = tmp.path().join("same.txt");
+        fs::write(&test_file, "a := \"foo\"").expect("write");
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({
+                    "path": "same.txt",
+                    "search": "a := \"foo\"",
+                    "replace": "a := \"foo\""
+                }),
+                &ctx,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("search and replace are identical"),
+            "error must explain the no-op input: {err}"
+        );
+        let unchanged = fs::read_to_string(&test_file).expect("read");
+        assert_eq!(unchanged, "a := \"foo\"");
     }
 
     /// #157 — When the model uses `replacement` instead of `replace`,
