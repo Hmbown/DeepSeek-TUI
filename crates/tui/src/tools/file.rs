@@ -331,6 +331,12 @@ impl ToolSpec for EditFileTool {
         let search = required_str(&input, "search")?;
         let replace = required_str(&input, "replace")?;
 
+        if search == replace {
+            return Err(ToolError::execution_failed(
+                "edit_file: search and replace are identical — no edit intended".to_string(),
+            ));
+        }
+
         let file_path = context.resolve_path(path_str)?;
 
         let contents = fs::read_to_string(&file_path).map_err(|e| {
@@ -662,6 +668,35 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("not found"));
+    }
+
+    /// #1457 — edit_file must reject calls where search == replace so agents
+    /// break their retry loop immediately on the first mistake.
+    #[tokio::test]
+    async fn test_edit_file_identical_search_replace() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let test_file = tmp.path().join("identical.txt");
+        fs::write(&test_file, r#"a := "foo""#).expect("write");
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({"path": "identical.txt", "search": r#"a := "foo""#, "replace": r#"a := "foo""#}),
+                &ctx,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("identical"),
+            "expected 'identical' in error, got: {err}"
+        );
+        // File must be unchanged.
+        let contents = fs::read_to_string(&test_file).expect("read");
+        assert_eq!(contents, r#"a := "foo""#);
     }
 
     /// #157 — When the model uses `replacement` instead of `replace`,
