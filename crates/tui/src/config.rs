@@ -26,6 +26,8 @@ pub const DEFAULT_NVIDIA_NIM_FLASH_MODEL: &str = "deepseek-ai/deepseek-v4-flash"
 pub const DEFAULT_NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 pub const DEFAULT_OPENAI_MODEL: &str = "gpt-4.1";
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+pub const DEFAULT_ATLASCLOUD_MODEL: &str = "deepseek-ai/deepseek-v4-flash";
+pub const DEFAULT_ATLASCLOUD_BASE_URL: &str = "https://api.atlascloud.ai/v1";
 pub const DEFAULT_OPENROUTER_MODEL: &str = "deepseek/deepseek-v4-pro";
 pub const DEFAULT_OPENROUTER_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
 pub const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -66,6 +68,7 @@ pub enum ApiProvider {
     DeepseekCN,
     NvidiaNim,
     Openai,
+    Atlascloud,
     Openrouter,
     Novita,
     Fireworks,
@@ -84,6 +87,7 @@ impl ApiProvider {
             }
             "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => Some(Self::NvidiaNim),
             "openai" | "open-ai" => Some(Self::Openai),
+            "atlascloud" | "atlas-cloud" | "atlas_cloud" | "atlas" => Some(Self::Atlascloud),
             "openrouter" | "open_router" => Some(Self::Openrouter),
             "novita" => Some(Self::Novita),
             "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
@@ -101,6 +105,7 @@ impl ApiProvider {
             Self::DeepseekCN => "deepseek-cn",
             Self::NvidiaNim => "nvidia-nim",
             Self::Openai => "openai",
+            Self::Atlascloud => "atlascloud",
             Self::Openrouter => "openrouter",
             Self::Novita => "novita",
             Self::Fireworks => "fireworks",
@@ -118,6 +123,7 @@ impl ApiProvider {
             Self::DeepseekCN => "DeepSeek (legacy alias)",
             Self::NvidiaNim => "NVIDIA NIM",
             Self::Openai => "OpenAI-compatible",
+            Self::Atlascloud => "AtlasCloud",
             Self::Openrouter => "OpenRouter",
             Self::Novita => "Novita AI",
             Self::Fireworks => "Fireworks AI",
@@ -134,6 +140,7 @@ impl ApiProvider {
             Self::Deepseek,
             Self::NvidiaNim,
             Self::Openai,
+            Self::Atlascloud,
             Self::Openrouter,
             Self::Novita,
             Self::Fireworks,
@@ -205,7 +212,7 @@ pub enum RequestPayloadMode {
 /// in the API payload (after normalization / provider-specific mapping).
 #[must_use]
 pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> ProviderCapability {
-    if matches!(provider, ApiProvider::Openai) {
+    if matches!(provider, ApiProvider::Openai | ApiProvider::Atlascloud) {
         return ProviderCapability {
             provider,
             resolved_model: resolved_model.to_string(),
@@ -1023,6 +1030,8 @@ pub struct ProvidersConfig {
     #[serde(default)]
     pub openai: ProviderConfig,
     #[serde(default)]
+    pub atlascloud: ProviderConfig,
+    #[serde(default)]
     pub openrouter: ProviderConfig,
     #[serde(default)]
     pub novita: ProviderConfig,
@@ -1093,7 +1102,7 @@ impl Config {
             && ApiProvider::parse(provider).is_none()
         {
             anyhow::bail!(
-                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openai, openrouter, novita, fireworks, sglang, vllm, or ollama."
+                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openai, atlascloud, openrouter, novita, fireworks, sglang, vllm, or ollama."
             );
         }
         if let Some(ref key) = self.api_key
@@ -1210,6 +1219,7 @@ impl Config {
             ApiProvider::DeepseekCN => &providers.deepseek_cn,
             ApiProvider::NvidiaNim => &providers.nvidia_nim,
             ApiProvider::Openai => &providers.openai,
+            ApiProvider::Atlascloud => &providers.atlascloud,
             ApiProvider::Openrouter => &providers.openrouter,
             ApiProvider::Novita => &providers.novita,
             ApiProvider::Fireworks => &providers.fireworks,
@@ -1273,6 +1283,7 @@ impl Config {
             ApiProvider::Deepseek | ApiProvider::DeepseekCN => DEFAULT_TEXT_MODEL,
             ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_MODEL,
             ApiProvider::Openai => DEFAULT_OPENAI_MODEL,
+            ApiProvider::Atlascloud => DEFAULT_ATLASCLOUD_MODEL,
             ApiProvider::Openrouter => DEFAULT_OPENROUTER_MODEL,
             ApiProvider::Novita => DEFAULT_NOVITA_MODEL,
             ApiProvider::Fireworks => DEFAULT_FIREWORKS_MODEL,
@@ -1302,6 +1313,7 @@ impl Config {
                 .filter(|base| base.contains("integrate.api.nvidia.com"))
                 .cloned(),
             ApiProvider::Openai
+            | ApiProvider::Atlascloud
             | ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks
@@ -1315,6 +1327,7 @@ impl Config {
                 ApiProvider::DeepseekCN => DEFAULT_DEEPSEEKCN_BASE_URL,
                 ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
                 ApiProvider::Openai => DEFAULT_OPENAI_BASE_URL,
+                ApiProvider::Atlascloud => DEFAULT_ATLASCLOUD_BASE_URL,
                 ApiProvider::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
                 ApiProvider::Novita => DEFAULT_NOVITA_BASE_URL,
                 ApiProvider::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
@@ -1346,6 +1359,7 @@ impl Config {
             ApiProvider::Deepseek | ApiProvider::DeepseekCN => "deepseek",
             ApiProvider::NvidiaNim => "nvidia-nim",
             ApiProvider::Openai => "openai",
+            ApiProvider::Atlascloud => "atlascloud",
             ApiProvider::Openrouter => "openrouter",
             ApiProvider::Novita => "novita",
             ApiProvider::Fireworks => "fireworks",
@@ -1405,6 +1419,10 @@ impl Config {
             ApiProvider::Openai => anyhow::bail!(
                 "OpenAI-compatible API key not found. Run 'deepseek auth set --provider openai', \
                  set OPENAI_API_KEY, or add [providers.openai] api_key in ~/.deepseek/config.toml."
+            ),
+            ApiProvider::Atlascloud => anyhow::bail!(
+                "AtlasCloud API key not found. Run 'deepseek auth set --provider atlascloud', \
+                 set ATLASCLOUD_API_KEY, or add [providers.atlascloud] api_key in ~/.deepseek/config.toml."
             ),
             ApiProvider::Openrouter => anyhow::bail!(
                 "OpenRouter API key not found. Run 'deepseek auth set --provider openrouter', \
@@ -1892,6 +1910,13 @@ fn apply_env_overrides(config: &mut Config) {
                     .openai
                     .base_url = Some(value);
             }
+            ApiProvider::Atlascloud => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .atlascloud
+                    .base_url = Some(value);
+            }
             _ => {
                 config.base_url = Some(value);
             }
@@ -1919,6 +1944,16 @@ fn apply_env_overrides(config: &mut Config) {
             .providers
             .get_or_insert_with(ProvidersConfig::default)
             .openai
+            .base_url = Some(value);
+    }
+    if matches!(config.api_provider(), ApiProvider::Atlascloud)
+        && let Ok(value) = std::env::var("ATLASCLOUD_BASE_URL")
+        && !value.trim().is_empty()
+    {
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .atlascloud
             .base_url = Some(value);
     }
     if matches!(config.api_provider(), ApiProvider::Openrouter)
@@ -1988,6 +2023,7 @@ fn apply_env_overrides(config: &mut Config) {
             ApiProvider::DeepseekCN => &mut providers.deepseek_cn,
             ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
             ApiProvider::Openai => &mut providers.openai,
+            ApiProvider::Atlascloud => &mut providers.atlascloud,
             ApiProvider::Openrouter => &mut providers.openrouter,
             ApiProvider::Novita => &mut providers.novita,
             ApiProvider::Fireworks => &mut providers.fireworks,
@@ -2026,6 +2062,11 @@ fn apply_env_overrides(config: &mut Config) {
     }
     if matches!(config.api_provider(), ApiProvider::Openai)
         && let Ok(value) = std::env::var("OPENAI_MODEL")
+    {
+        config.default_text_model = Some(value);
+    }
+    if matches!(config.api_provider(), ApiProvider::Atlascloud)
+        && let Ok(value) = std::env::var("ATLASCLOUD_MODEL")
     {
         config.default_text_model = Some(value);
     }
@@ -2274,7 +2315,10 @@ fn normalize_model_for_provider(provider: ApiProvider, model: &str) -> Option<St
 }
 
 fn provider_passes_model_through(provider: ApiProvider) -> bool {
-    matches!(provider, ApiProvider::Openai | ApiProvider::Ollama)
+    matches!(
+        provider,
+        ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama
+    )
 }
 
 fn provider_entry_uses_custom_base_url(provider: ApiProvider, entry: &ProviderConfig) -> bool {
@@ -2290,6 +2334,7 @@ fn default_base_url_for_provider(provider: ApiProvider) -> &'static str {
         ApiProvider::DeepseekCN => DEFAULT_DEEPSEEKCN_BASE_URL,
         ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
         ApiProvider::Openai => DEFAULT_OPENAI_BASE_URL,
+        ApiProvider::Atlascloud => DEFAULT_ATLASCLOUD_BASE_URL,
         ApiProvider::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
         ApiProvider::Novita => DEFAULT_NOVITA_BASE_URL,
         ApiProvider::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
@@ -2490,6 +2535,7 @@ fn merge_providers(
             deepseek_cn: merge_provider_config(base.deepseek_cn, override_cfg.deepseek_cn),
             nvidia_nim: merge_provider_config(base.nvidia_nim, override_cfg.nvidia_nim),
             openai: merge_provider_config(base.openai, override_cfg.openai),
+            atlascloud: merge_provider_config(base.atlascloud, override_cfg.atlascloud),
             openrouter: merge_provider_config(base.openrouter, override_cfg.openrouter),
             novita: merge_provider_config(base.novita, override_cfg.novita),
             fireworks: merge_provider_config(base.fireworks, override_cfg.fireworks),
@@ -2907,6 +2953,9 @@ pub fn active_provider_has_env_api_key(config: &Config) -> bool {
                 || std::env::var("NVIDIA_NIM_API_KEY").is_ok_and(|k| !k.trim().is_empty())
         }
         ApiProvider::Openai => std::env::var("OPENAI_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
+        ApiProvider::Atlascloud => {
+            std::env::var("ATLASCLOUD_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+        }
         ApiProvider::Openrouter => {
             std::env::var("OPENROUTER_API_KEY").is_ok_and(|k| !k.trim().is_empty())
         }
@@ -2934,6 +2983,7 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         ApiProvider::Deepseek | ApiProvider::DeepseekCN => "DEEPSEEK_API_KEY",
         ApiProvider::NvidiaNim => "NVIDIA_API_KEY",
         ApiProvider::Openai => "OPENAI_API_KEY",
+        ApiProvider::Atlascloud => "ATLASCLOUD_API_KEY",
         ApiProvider::Openrouter => "OPENROUTER_API_KEY",
         ApiProvider::Novita => "NOVITA_API_KEY",
         ApiProvider::Fireworks => "FIREWORKS_API_KEY",
@@ -3002,6 +3052,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         }
         ApiProvider::NvidiaNim => "providers.nvidia_nim",
         ApiProvider::Openai => "providers.openai",
+        ApiProvider::Atlascloud => "providers.atlascloud",
         ApiProvider::Openrouter => "providers.openrouter",
         ApiProvider::Novita => "providers.novita",
         ApiProvider::Fireworks => "providers.fireworks",
@@ -3036,6 +3087,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         }
         ApiProvider::NvidiaNim => "nvidia_nim",
         ApiProvider::Openai => "openai",
+        ApiProvider::Atlascloud => "atlascloud",
         ApiProvider::Openrouter => "openrouter",
         ApiProvider::Novita => "novita",
         ApiProvider::Fireworks => "fireworks",
@@ -3152,6 +3204,9 @@ mod tests {
         openai_api_key: Option<OsString>,
         openai_base_url: Option<OsString>,
         openai_model: Option<OsString>,
+        atlascloud_api_key: Option<OsString>,
+        atlascloud_base_url: Option<OsString>,
+        atlascloud_model: Option<OsString>,
         openrouter_api_key: Option<OsString>,
         openrouter_base_url: Option<OsString>,
         novita_api_key: Option<OsString>,
@@ -3192,6 +3247,9 @@ mod tests {
             let openai_api_key_prev = env::var_os("OPENAI_API_KEY");
             let openai_base_url_prev = env::var_os("OPENAI_BASE_URL");
             let openai_model_prev = env::var_os("OPENAI_MODEL");
+            let atlascloud_api_key_prev = env::var_os("ATLASCLOUD_API_KEY");
+            let atlascloud_base_url_prev = env::var_os("ATLASCLOUD_BASE_URL");
+            let atlascloud_model_prev = env::var_os("ATLASCLOUD_MODEL");
             let openrouter_api_key_prev = env::var_os("OPENROUTER_API_KEY");
             let openrouter_base_url_prev = env::var_os("OPENROUTER_BASE_URL");
             let novita_api_key_prev = env::var_os("NOVITA_API_KEY");
@@ -3227,6 +3285,9 @@ mod tests {
                 env::remove_var("OPENAI_API_KEY");
                 env::remove_var("OPENAI_BASE_URL");
                 env::remove_var("OPENAI_MODEL");
+                env::remove_var("ATLASCLOUD_API_KEY");
+                env::remove_var("ATLASCLOUD_BASE_URL");
+                env::remove_var("ATLASCLOUD_MODEL");
                 env::remove_var("OPENROUTER_API_KEY");
                 env::remove_var("OPENROUTER_BASE_URL");
                 env::remove_var("NOVITA_API_KEY");
@@ -3262,6 +3323,9 @@ mod tests {
                 openai_api_key: openai_api_key_prev,
                 openai_base_url: openai_base_url_prev,
                 openai_model: openai_model_prev,
+                atlascloud_api_key: atlascloud_api_key_prev,
+                atlascloud_base_url: atlascloud_base_url_prev,
+                atlascloud_model: atlascloud_model_prev,
                 openrouter_api_key: openrouter_api_key_prev,
                 openrouter_base_url: openrouter_base_url_prev,
                 novita_api_key: novita_api_key_prev,
@@ -3306,6 +3370,9 @@ mod tests {
                 Self::restore_var("OPENAI_API_KEY", self.openai_api_key.take());
                 Self::restore_var("OPENAI_BASE_URL", self.openai_base_url.take());
                 Self::restore_var("OPENAI_MODEL", self.openai_model.take());
+                Self::restore_var("ATLASCLOUD_API_KEY", self.atlascloud_api_key.take());
+                Self::restore_var("ATLASCLOUD_BASE_URL", self.atlascloud_base_url.take());
+                Self::restore_var("ATLASCLOUD_MODEL", self.atlascloud_model.take());
                 Self::restore_var("OPENROUTER_API_KEY", self.openrouter_api_key.take());
                 Self::restore_var("OPENROUTER_BASE_URL", self.openrouter_base_url.take());
                 Self::restore_var("NOVITA_API_KEY", self.novita_api_key.take());
@@ -4413,6 +4480,50 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
     }
 
     #[test]
+    fn atlascloud_provider_uses_documented_defaults() -> Result<()> {
+        let config = Config {
+            provider: Some("atlascloud".to_string()),
+            ..Default::default()
+        };
+
+        config.validate()?;
+        assert_eq!(config.api_provider(), ApiProvider::Atlascloud);
+        assert_eq!(config.default_model(), DEFAULT_ATLASCLOUD_MODEL);
+        assert_eq!(config.deepseek_base_url(), DEFAULT_ATLASCLOUD_BASE_URL);
+        Ok(())
+    }
+
+    #[test]
+    fn atlascloud_env_overrides_provider_base_url_and_model() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-atlascloud-env-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "atlascloud");
+            env::set_var("ATLASCLOUD_API_KEY", "atlascloud-env-key");
+            env::set_var("ATLASCLOUD_BASE_URL", "https://api.atlascloud.ai/v1");
+            env::set_var("ATLASCLOUD_MODEL", "deepseek-ai/deepseek-v4-flash");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Atlascloud);
+        assert_eq!(config.deepseek_api_key()?, "atlascloud-env-key");
+        assert_eq!(config.deepseek_base_url(), "https://api.atlascloud.ai/v1");
+        assert_eq!(config.default_model(), "deepseek-ai/deepseek-v4-flash");
+        Ok(())
+    }
+
+    #[test]
     fn openai_provider_accepts_custom_model_and_base_url() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
@@ -5315,6 +5426,22 @@ model = "deepseek-ai/deepseek-v4-pro"
     #[test]
     fn provider_capability_openai_custom_model_is_chat_completions_without_thinking() {
         let cap = provider_capability(ApiProvider::Openai, "glm-5");
+        assert_eq!(
+            cap.context_window,
+            crate::models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(cap.max_output, 4096);
+        assert!(!cap.thinking_supported);
+        assert!(!cap.cache_telemetry_supported);
+        assert_eq!(
+            cap.request_payload_mode,
+            RequestPayloadMode::ChatCompletions
+        );
+    }
+
+    #[test]
+    fn provider_capability_atlascloud_custom_model_is_chat_completions_without_thinking() {
+        let cap = provider_capability(ApiProvider::Atlascloud, "deepseek-ai/deepseek-v4-flash");
         assert_eq!(
             cap.context_window,
             crate::models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS

@@ -16,10 +16,10 @@
 # `/provider sglang`, `/provider vllm`, `/provider ollama`) toggle without having to
 # re-enter keys. Top-level `api_key` / `base_url` are still read as DeepSeek
 # defaults when `[providers.deepseek]` is absent (backward compatibility).
-provider = "deepseek" # deepseek | deepseek-cn | nvidia-nim | openai | openrouter | novita | fireworks | sglang | vllm | ollama
+provider = "deepseek" # deepseek | deepseek-cn | nvidia-nim | openai | atlascloud | openrouter | novita | fireworks | sglang | vllm | ollama
 api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
 base_url = "https://api.deepseek.com/beta"
-# provider = "deepseek-cn"                       # mainland China preset (official https://api.deepseek.com)
+# provider = "deepseek-cn"                       # legacy alias (official host is still https://api.deepseek.com)
 # base_url = "https://api.deepseek.com"         # opt out of DeepSeek beta features
 # Optional custom model request headers for OpenAI-compatible gateways.
 # Authorization and Content-Type are managed by the client and cannot be overridden here.
@@ -34,6 +34,7 @@ base_url = "https://api.deepseek.com/beta"
 #   deepseek-ai/deepseek-v4-pro   — NVIDIA NIM-hosted Pro model ID
 #   deepseek-ai/deepseek-v4-flash — NVIDIA NIM-hosted Flash model ID
 #   gpt-4.1                         — default generic OpenAI-compatible model ID
+#   deepseek-ai/deepseek-v4-flash   — default AtlasCloud model ID
 #   accounts/fireworks/models/deepseek-v4-pro — Fireworks AI Pro model ID
 #   deepseek-ai/DeepSeek-V4-Pro    — SGLang self-hosted Pro model ID
 #   deepseek-ai/DeepSeek-V4-Flash  — SGLang self-hosted Flash model ID
@@ -182,6 +183,12 @@ max_subagents = 10 # optional (1-20)
 # api_key = "YOUR_OPENAI_COMPATIBLE_API_KEY"
 # base_url = "https://api.openai.com/v1"
 # model = "gpt-4.1"
+
+# AtlasCloud OpenAI-compatible endpoint (https://www.atlascloud.ai/docs/models/llm)
+[providers.atlascloud]
+# api_key = "YOUR_ATLASCLOUD_API_KEY"
+# base_url = "https://api.atlascloud.ai/v1"
+# model = "deepseek-ai/deepseek-v4-flash"
 
 # Fireworks AI-hosted DeepSeek V4 (https://fireworks.ai)
 [providers.fireworks]

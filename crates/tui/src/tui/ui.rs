@@ -4878,6 +4878,8 @@ async fn execute_command_input(
             providers.deepseek.api_key = None;
             providers.deepseek_cn.api_key = None;
             providers.nvidia_nim.api_key = None;
+            providers.openai.api_key = None;
+            providers.atlascloud.api_key = None;
             providers.openrouter.api_key = None;
             providers.novita.api_key = None;
             providers.fireworks.api_key = None;
@@ -5258,6 +5260,7 @@ fn render(f: &mut Frame, app: &mut App) {
             crate::config::ApiProvider::DeepseekCN => None,
             crate::config::ApiProvider::NvidiaNim => Some("NIM"),
             crate::config::ApiProvider::Openai => Some("OpenAI"),
+            crate::config::ApiProvider::Atlascloud => Some("Atlas"),
             crate::config::ApiProvider::Openrouter => Some("OR"),
             crate::config::ApiProvider::Novita => Some("Novita"),
             crate::config::ApiProvider::Fireworks => Some("Fireworks"),
@@ -5900,6 +5903,7 @@ async fn apply_provider_picker_api_key(
             }
             ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
             ApiProvider::Openai => &mut providers.openai,
+            ApiProvider::Atlascloud => &mut providers.atlascloud,
             ApiProvider::Openrouter => &mut providers.openrouter,
             ApiProvider::Novita => &mut providers.novita,
             ApiProvider::Fireworks => &mut providers.fireworks,

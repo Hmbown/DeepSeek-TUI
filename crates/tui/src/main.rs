@@ -1343,6 +1343,10 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     "OPENAI_API_KEY",
                     "deepseek auth set --provider openai --api-key \"...\"",
                 ),
+                crate::config::ApiProvider::Atlascloud => (
+                    "ATLASCLOUD_API_KEY",
+                    "deepseek auth set --provider atlascloud --api-key \"...\"",
+                ),
                 crate::config::ApiProvider::Openrouter => (
                     "OPENROUTER_API_KEY",
                     "deepseek auth set --provider openrouter --api-key \"...\"",
@@ -1376,6 +1380,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                 match config.api_provider() {
                     crate::config::ApiProvider::NvidiaNim => "nvidia_nim",
                     crate::config::ApiProvider::Openai => "openai",
+                    crate::config::ApiProvider::Atlascloud => "atlascloud",
                     crate::config::ApiProvider::Openrouter => "openrouter",
                     crate::config::ApiProvider::Novita => "novita",
                     crate::config::ApiProvider::Fireworks => "fireworks",
