@@ -510,13 +510,13 @@ impl ConfigToml {
                 self.providers.openai.http_headers = parse_http_headers(value)?;
             }
             "providers.atlascloud.api_key" => {
-                self.providers.atlascloud.api_key = Some(value.to_string())
+                self.providers.atlascloud.api_key = Some(value.to_string());
             }
             "providers.atlascloud.base_url" => {
-                self.providers.atlascloud.base_url = Some(value.to_string())
+                self.providers.atlascloud.base_url = Some(value.to_string());
             }
             "providers.atlascloud.model" => {
-                self.providers.atlascloud.model = Some(value.to_string())
+                self.providers.atlascloud.model = Some(value.to_string());
             }
             "providers.atlascloud.http_headers" => {
                 self.providers.atlascloud.http_headers = parse_http_headers(value)?;
