@@ -293,6 +293,14 @@ pub fn migrate_legacy_memory_to_workspace(sessions_dir: &Path) -> MigrationRepor
     let mut report = MigrationReport::default();
     let dirs = capacity_memory_dirs();
 
+    let marker = dirs
+        .first()
+        .map(|d| d.join(".migration-v1-complete"))
+        .unwrap_or_else(|| PathBuf::from(".migration-v1-complete"));
+    if marker.exists() {
+        return report;
+    }
+
     for dir in &dirs {
         if !dir.exists() {
             continue;
@@ -369,6 +377,13 @@ pub fn migrate_legacy_memory_to_workspace(sessions_dir: &Path) -> MigrationRepor
         }
     }
 
+    if report.errors.is_empty() {
+        if let Some(parent) = marker.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(&marker, format!("v1 migrated at {}\n", now_rfc3339()));
+    }
+
     report
 }
 
@@ -425,7 +440,7 @@ fn is_empty_canonical_state(state: &CanonicalState) -> bool {
 
 /// Restore a `.jsonl` file from its `.pre-migration.bak` backup.
 /// Returns `true` if a backup was found and restored.
-#[cfg(test)]
+#[allow(dead_code)]
 pub fn rollback_migration_for_file(jsonl_path: &Path) -> bool {
     let bak_path = PathBuf::from(jsonl_path.as_os_str()).with_extension("jsonl.pre-migration.bak");
     if !bak_path.exists() {
@@ -441,7 +456,7 @@ pub fn rollback_migration_for_file(jsonl_path: &Path) -> bool {
 
 /// Roll back all migrations by restoring `.pre-migration.bak` files.
 /// Returns the number of files restored.
-#[cfg(test)]
+#[allow(dead_code)]
 pub fn rollback_all_migrations() -> usize {
     let dirs = capacity_memory_dirs();
     let mut restored = 0;
@@ -500,6 +515,14 @@ mod tests {
                     std::env::remove_var(self.key);
                 }
             }
+        }
+    }
+
+    fn clear_migration_marker() {
+        let dirs = capacity_memory_dirs();
+        for dir in &dirs {
+            let marker = dir.join(".migration-v1-complete");
+            let _ = fs::remove_file(marker);
         }
     }
 
@@ -654,6 +677,7 @@ mod tests {
         append_capacity_record_to_path(&jsonl_path, &record).expect("write");
 
         let _env = ScopedEnv::set("DEEPSEEK_CAPACITY_MEMORY_DIR", mem_dir.to_str().unwrap());
+        clear_migration_marker();
         let report = migrate_legacy_memory_to_workspace(&sessions_dir);
 
         assert_eq!(report.records_migrated, 1);
@@ -702,6 +726,7 @@ mod tests {
         append_capacity_record_to_path(&jsonl_path, &record).expect("write");
 
         let _env = ScopedEnv::set("DEEPSEEK_CAPACITY_MEMORY_DIR", mem_dir.to_str().unwrap());
+        clear_migration_marker();
         let report = migrate_legacy_memory_to_workspace(&sessions_dir);
 
         assert_eq!(report.records_migrated, 0);
