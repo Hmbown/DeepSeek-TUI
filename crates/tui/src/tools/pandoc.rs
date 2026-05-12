@@ -265,6 +265,9 @@ mod tests {
 
     #[tokio::test]
     async fn pandoc_convert_rejects_inline_request_for_binary_format() {
+        if !pandoc_present() {
+            return;
+        }
         let tmp = tempdir().expect("tempdir");
         let src = tmp.path().join("in.md");
         fs::write(&src, "# hi").unwrap();
