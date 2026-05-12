@@ -763,8 +763,14 @@ fn read_text_prefix(path: &Path) -> std::io::Result<(String, bool)> {
         buffer.truncate(MAX_MENTION_FILE_BYTES as usize);
         // Round down to the nearest valid UTF-8 character boundary so a
         // multi-byte sequence (CJK, emoji, etc.) is never split at the cut point.
+        // Only adjust when error_len() is None — that means truncation landed
+        // mid-sequence (incomplete tail).  A Some(_) error_len means the file
+        // genuinely contains invalid UTF-8 bytes; leave the buffer intact so
+        // the from_utf8 call below returns the correct "file is not UTF-8" error.
         if let Err(e) = std::str::from_utf8(&buffer) {
-            buffer.truncate(e.valid_up_to());
+            if e.error_len().is_none() {
+                buffer.truncate(e.valid_up_to());
+            }
         }
     }
     if buffer.contains(&0) {
