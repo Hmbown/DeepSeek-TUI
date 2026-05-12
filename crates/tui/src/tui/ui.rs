@@ -1988,7 +1988,6 @@ async fn run_event_loop(
                     );
                 }
 
-                reset_terminal_viewport(terminal, app.synchronized_output_enabled)?;
                 app.handle_resize(final_w, final_h);
                 // #macos-resize: some terminals (macOS Terminal.app, Windows
                 // ConHost) briefly report stale dimensions via
@@ -2004,11 +2003,15 @@ async fn run_event_loop(
                     let backend = terminal.backend_mut();
                     backend.force_size(Size::new(final_w, final_h));
                 }
-                // Draw immediately so the cleared screen gets repainted before
-                // any other events can interleave. Without this, the next
-                // iteration's draw can race against fast follow-up input and
-                // leave the user staring at a blank/partial frame.
-                draw_app_frame(terminal, app)?;
+                // Draw immediately with full_repaint so the cleared screen
+                // and the repainted UI are committed as a single DEC 2026
+                // synchronized frame. The previous two-step sequence
+                // (reset_terminal_viewport + draw_app_frame) split the clear
+                // and draw into separate DEC 2026 batches, causing a visible
+                // blank flash between them — most noticeable on GPU-accelerated
+                // terminals (Ghostty, VSCode, Kitty, WezTerm) during window
+                // drag-resizes.
+                draw_app_frame_inner(terminal, app, true)?;
                 {
                     let backend = terminal.backend_mut();
                     backend.clear_forced_size();

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Resize no longer flashes a blank intermediate frame.** The previous
+  resize handler called `reset_terminal_viewport` (clear) and
+  `draw_app_frame` (draw) as two separate DEC 2026 synchronized-output
+  batches — GPU-accelerated terminals (Ghostty, VSCode, Kitty,
+  WezTerm) rendered the blank cleared screen as one frame and the
+  repainted UI as the next, producing a visible flash during every
+  window drag-resize. The fix merges both into a single
+  `draw_app_frame_inner(full_repaint=true)` call so the clear and the
+  redraw land in one batch with no intermediate frame.
+
 ## [0.8.32] - 2026-05-12
 
 A "more useful tools" release. v0.8.31 made the tool surface
