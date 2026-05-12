@@ -2695,11 +2695,24 @@ impl ToolSpec for NoteTool {
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let note_content = required_str(&input, "content")?;
+        const VALID_KINDS: &[&str] =
+            &["constraint", "task_scope", "user_preference", "observation"];
         let kind = input
             .get("kind")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("observation");
-        let default_inherit = matches!(kind, "constraint" | "task_scope" | "user_preference");
+        let valid_kind = VALID_KINDS.contains(&kind);
+        if !valid_kind {
+            tracing::warn!(
+                "NoteTool: invalid kind '{kind}' (expected one of {:?}), falling back to observation",
+                VALID_KINDS
+            );
+        }
+        let resolved_kind = if valid_kind { kind } else { "observation" };
+        let default_inherit = matches!(
+            resolved_kind,
+            "constraint" | "task_scope" | "user_preference"
+        );
         let inherit = input
             .get("inherit")
             .and_then(serde_json::Value::as_bool)
@@ -2722,7 +2735,7 @@ impl ToolSpec for NoteTool {
 
         let entry = json!({
             "content": note_content,
-            "kind": kind,
+            "kind": resolved_kind,
             "inherit": inherit,
         });
         writeln!(

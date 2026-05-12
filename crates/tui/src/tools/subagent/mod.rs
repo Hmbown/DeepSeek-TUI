@@ -2655,14 +2655,21 @@ fn build_inherited_notes_section(notes_path: &Path) -> String {
                 .get("content")
                 .and_then(|v| v.as_str())
                 .unwrap_or(segment);
+            const VALID_KINDS: &[&str] =
+                &["constraint", "task_scope", "user_preference", "observation"];
             let kind = entry
                 .get("kind")
                 .and_then(|v| v.as_str())
                 .unwrap_or("observation");
+            let resolved_kind = if VALID_KINDS.contains(&kind) {
+                kind
+            } else {
+                "observation"
+            };
             let inherit = entry
                 .get("inherit")
                 .and_then(|v| v.as_bool())
-                .unwrap_or(!matches!(kind, "observation"));
+                .unwrap_or(!matches!(resolved_kind, "observation"));
             if inherit {
                 notes.push((kind.to_string(), content.to_string(), inherit));
             }

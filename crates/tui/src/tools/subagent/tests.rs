@@ -1916,3 +1916,21 @@ fn fork_agent_does_not_receive_duplicate_inherited_notes() {
         "fork agents should not receive duplicate inherited notes"
     );
 }
+
+#[test]
+fn inherited_notes_invalid_kind_falls_back_to_observation() {
+    // Invalid kind values should be silently treated as observation
+    // (not inherited), matching the defensive design.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notes.txt");
+    std::fs::write(
+        &path,
+        "\n---\n{\"content\": \"fell through\", \"kind\": \"not_a_real_kind\"}",
+    )
+    .unwrap();
+    let section = build_inherited_notes_section(&path);
+    assert!(
+        section.is_empty(),
+        "notes with invalid kind should not be inherited"
+    );
+}
