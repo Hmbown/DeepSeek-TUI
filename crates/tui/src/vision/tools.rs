@@ -269,8 +269,13 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let tool = ImageAnalyzeTool::new(fake_config());
+        let absolute_path = if cfg!(windows) {
+            r"C:\Windows\win.ini"
+        } else {
+            "/etc/hosts"
+        };
         let err = tool
-            .execute(json!({"image_path": "/etc/hosts"}), &ctx)
+            .execute(json!({"image_path": absolute_path}), &ctx)
             .await
             .expect_err("absolute path must reject");
         assert!(
