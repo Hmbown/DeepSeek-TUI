@@ -63,7 +63,7 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 /// stuck API call from blocking the sub-agent indefinitely.
 const STEP_API_TIMEOUT: Duration = Duration::from_secs(120);
 const RESULT_POLL_INTERVAL: Duration = Duration::from_millis(250);
-const DEFAULT_RESULT_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_RESULT_TIMEOUT_MS: u64 = 300_000;
 const MIN_WAIT_TIMEOUT_MS: u64 = 10_000;
 const MAX_RESULT_TIMEOUT_MS: u64 = 3_600_000;
 const COMPLETED_AGENT_RETENTION: Duration = Duration::from_secs(60 * 60);
@@ -1879,7 +1879,7 @@ impl ToolSpec for AgentResultTool {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "Max wait time in milliseconds (default: 30000, clamped to 1000-3600000)"
+                    "description": "Max wait time in milliseconds (default: 300000, clamped to 1000-3600000)"
                 }
             }
         })
@@ -2418,7 +2418,7 @@ impl ToolSpec for AgentWaitTool {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "Max wait time in milliseconds (default: 30000, clamped to 10000-3600000)"
+                    "description": "Max wait time in milliseconds (default: 300000, clamped to 10000-3600000)"
                 }
             }
         })
