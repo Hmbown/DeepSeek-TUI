@@ -86,6 +86,34 @@ fn recover_terminal_modes_runs_without_panic_on_windows() {
     recover_terminal_modes(&mut buf, false, false);
 }
 
+// On Windows crossterm's PushKeyboardEnhancementFlags never writes bytes
+// (is_ansi_code_supported() == false), so the fix writes the escape
+// directly. Verify the direct path emits the expected Kitty keyboard
+// protocol sequence so the Windows fix for #1359 is not accidentally reverted.
+#[cfg(windows)]
+#[test]
+fn push_keyboard_flags_writes_kitty_push_sequence_on_windows() {
+    let mut buf: Vec<u8> = Vec::new();
+    push_keyboard_enhancement_flags(&mut buf);
+    let seq = String::from_utf8_lossy(&buf);
+    assert!(
+        seq.contains("\x1b[>1u"),
+        "push_keyboard_enhancement_flags must write kitty push (\\x1b[>1u) on Windows (#1359); got: {seq:?}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn pop_keyboard_flags_writes_kitty_pop_sequence_on_windows() {
+    let mut buf: Vec<u8> = Vec::new();
+    pop_keyboard_enhancement_flags(&mut buf);
+    let seq = String::from_utf8_lossy(&buf);
+    assert!(
+        seq.contains("\x1b[<1u"),
+        "pop_keyboard_enhancement_flags must write kitty pop (\\x1b[<1u) on Windows (#1359); got: {seq:?}"
+    );
+}
+
 #[test]
 fn terminal_origin_reset_resets_scroll_region_origin_without_destructive_clear() {
     assert!(
