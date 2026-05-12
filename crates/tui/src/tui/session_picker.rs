@@ -16,7 +16,7 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::palette;
-use crate::session_manager::{SavedSession, SessionManager, SessionMetadata};
+use crate::session_manager::{extract_title, SavedSession, SessionManager, SessionMetadata};
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 
 fn modal_block(title: &str) -> Block<'static> {
@@ -534,7 +534,10 @@ fn format_session_line(session: &SessionMetadata) -> String {
 
 fn build_preview_lines(session: &SavedSession) -> Vec<String> {
     let mut out = Vec::new();
-    out.push(format!("Title: {}", session.metadata.title));
+    out.push(format!(
+        "Title: {}",
+        extract_title(&session.metadata.title)
+    ));
     out.push(format!(
         "Updated: {}",
         session
@@ -552,17 +555,34 @@ fn build_preview_lines(session: &SavedSession) -> Vec<String> {
     }
     out.push("".to_string());
 
-    for message in session.messages.iter().take(6) {
+    let mut dialogue_lines: Vec<String> = Vec::new();
+    for message in &session.messages {
         let role = message.role.to_ascii_uppercase();
         let mut text = String::new();
         for block in &message.content {
-            if let crate::models::ContentBlock::Text { text: body, .. } = block {
-                text.push_str(body);
+            match block {
+                crate::models::ContentBlock::Text { text: body, .. } => {
+                    let cleaned = if role == "USER" {
+                        crate::session_manager::extract_user_prompt(body).to_string()
+                    } else {
+                        crate::session_manager::strip_thinking_tags(body)
+                    };
+                    if !cleaned.trim().is_empty() {
+                        if !text.is_empty() { text.push(' '); }
+                        text.push_str(&cleaned);
+                    }
+                }
+                crate::models::ContentBlock::Thinking { .. } => {}
+                _ => {}
             }
         }
-        let preview = truncate(&text.replace('\n', " "), 120);
-        out.push(format!("{role}: {preview}"));
+        let trimmed = text.trim().to_string();
+        if !trimmed.is_empty() {
+            let preview = truncate(&trimmed.replace('\n', " "), 120);
+            dialogue_lines.push(format!("{role}: {preview}"));
+        }
     }
+    out.extend(dialogue_lines);
     out
 }
 
