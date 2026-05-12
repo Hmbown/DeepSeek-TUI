@@ -516,7 +516,12 @@ fn build_list_lines(
 
 fn format_session_line(session: &SessionMetadata) -> String {
     let updated = format_relative_time(&session.updated_at);
-    let title = truncate(&session.title, 32);
+    let raw_title = extract_title(&session.title);
+    let title = if raw_title == "Session" {
+        truncate(crate::session_manager::truncate_id(&session.id), 32)
+    } else {
+        truncate(raw_title, 32)
+    };
     let mode = session
         .mode
         .as_deref()
@@ -555,8 +560,10 @@ fn build_preview_lines(session: &SavedSession) -> Vec<String> {
     }
     out.push("".to_string());
 
+    const MAX_MESSAGES: usize = 50;
+    const MAX_DIALOGUE: usize = 20;
     let mut dialogue_lines: Vec<String> = Vec::new();
-    for message in &session.messages {
+    for message in session.messages.iter().take(MAX_MESSAGES) {
         let role = message.role.to_ascii_uppercase();
         let mut text = String::new();
         for block in &message.content {
@@ -582,6 +589,7 @@ fn build_preview_lines(session: &SavedSession) -> Vec<String> {
             dialogue_lines.push(format!("{role}: {preview}"));
         }
     }
+    dialogue_lines.truncate(MAX_DIALOGUE);
     out.extend(dialogue_lines);
     out
 }
