@@ -4622,20 +4622,18 @@ async fn run_exec_agent(
                             })
                             .await?;
 
-                        loaded_session_id = Some(saved_id);
+                        loaded_session_id = Some(saved_id.clone());
                         if !json_output {
-                            eprintln!("Resumed session: {}", loaded_session_id.as_deref().unwrap());
+                            eprintln!("Resumed session: {saved_id}");
                         }
                     }
                     Err(e) => {
-                        eprintln!("Error: could not load session '{session_id}': {e}");
-                        std::process::exit(1);
+                        bail!("could not load session '{session_id}': {e}");
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Error: could not open session manager: {e}");
-                std::process::exit(1);
+                bail!("could not open session manager: {e}");
             }
         }
     }
@@ -4896,10 +4894,10 @@ async fn run_exec_agent(
                 summary.error = error;
 
                 // Save the session so it can be resumed later with --resume.
-                let saved_session_id = if let Ok(manager) =
+                let saved_session_id = match
                     crate::session_manager::SessionManager::default_location()
                 {
-                    if !latest_messages.is_empty() {
+                    Ok(manager) if !latest_messages.is_empty() => {
                         let total_tokens: u64 =
                             usage.input_tokens as u64 + usage.output_tokens as u64;
 
@@ -4918,7 +4916,23 @@ async fn run_exec_agent(
                                         latest_system_prompt.as_ref(),
                                     )
                                 }
-                                Err(_) => {
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                    // Session file not found (e.g. deleted or ID from a
+                                    // different machine) — create fresh with the same ID.
+                                    crate::session_manager::create_saved_session_with_id_and_mode(
+                                        session_id,
+                                        &latest_messages,
+                                        &latest_model,
+                                        &latest_workspace,
+                                        total_tokens,
+                                        latest_system_prompt.as_ref(),
+                                        Some("exec"),
+                                    )
+                                }
+                                Err(e) => {
+                                    if output_fmt == OutputFormat::Text && !json_output {
+                                        eprintln!("Warning: failed to load session for update: {e}");
+                                    }
                                     crate::session_manager::create_saved_session_with_id_and_mode(
                                         session_id,
                                         &latest_messages,
@@ -4955,11 +4969,14 @@ async fn run_exec_agent(
                             }
                         }
                         Some(saved_id)
-                    } else {
+                    }
+                    Ok(_) => None, // no messages to save
+                    Err(e) => {
+                        if output_fmt == OutputFormat::Text && !json_output {
+                            eprintln!("Warning: could not open session manager for saving: {e}");
+                        }
                         None
                     }
-                } else {
-                    None
                 };
 
                 // Emit stream-json events for metadata, session_capture, and done.
