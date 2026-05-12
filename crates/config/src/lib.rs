@@ -94,7 +94,10 @@ impl ProviderKind {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderConfigToml {
     pub api_key: Option<String>,
+    #[serde(alias = "baseurl")]
     pub base_url: Option<String>,
+    #[serde(default)]
+    pub allow_insecure_http: Option<bool>,
     pub model: Option<String>,
     #[serde(default)]
     pub http_headers: BTreeMap<String, String>,
@@ -163,7 +166,10 @@ pub struct ConfigToml {
     /// and `deepseek-tui` can share a single config file.
     pub api_key: Option<String>,
     /// TUI-compatible DeepSeek base URL.
+    #[serde(alias = "baseurl")]
     pub base_url: Option<String>,
+    #[serde(default)]
+    pub allow_insecure_http: Option<bool>,
     /// Optional extra HTTP headers forwarded to model API requests.
     #[serde(default)]
     pub http_headers: BTreeMap<String, String>,
@@ -914,6 +920,9 @@ impl ConfigToml {
         let root_deepseek_model = (provider == ProviderKind::Deepseek)
             .then(|| self.default_text_model.clone())
             .flatten();
+        let root_allow_insecure_http = (provider == ProviderKind::Deepseek)
+            .then_some(self.allow_insecure_http)
+            .flatten();
         // CLI flag wins outright. Otherwise: config-file → injected secrets/env.
         // This makes `deepseek auth set` a reliable fix even when the user's
         // shell still exports an old key. When the file is empty, the injected
@@ -952,6 +961,10 @@ impl ConfigToml {
                 ProviderKind::Vllm => DEFAULT_VLLM_BASE_URL.to_string(),
                 ProviderKind::Ollama => DEFAULT_OLLAMA_BASE_URL.to_string(),
             });
+        let allow_insecure_http = provider_cfg
+            .allow_insecure_http
+            .or(root_allow_insecure_http)
+            .unwrap_or(false);
 
         let explicit_model = cli.model.is_some()
             || env.model.is_some()
@@ -1026,6 +1039,7 @@ impl ConfigToml {
             sandbox_mode,
             yolo,
             http_headers,
+            allow_insecure_http,
         }
     }
 }
@@ -1200,6 +1214,7 @@ pub struct ResolvedRuntimeOptions {
     pub sandbox_mode: Option<String>,
     pub yolo: Option<bool>,
     pub http_headers: BTreeMap<String, String>,
+    pub allow_insecure_http: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1665,6 +1680,53 @@ mod tests {
         assert_eq!(resolved.api_key.as_deref(), Some("root-key"));
         assert_eq!(resolved.base_url, "https://api.deepseek.com");
         assert_eq!(resolved.model, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn root_baseurl_alias_and_model_field_resolve_for_deepseek() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let config: ConfigToml = toml::from_str(
+            r#"
+api_key = "root-key"
+baseurl = "http://gateway.example/v1"
+allow_insecure_http = true
+model = "deepseek-v4-flash"
+"#,
+        )
+        .expect("alias config should parse");
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Deepseek);
+        assert_eq!(resolved.api_key.as_deref(), Some("root-key"));
+        assert_eq!(resolved.base_url, "http://gateway.example/v1");
+        assert!(resolved.allow_insecure_http);
+        assert_eq!(resolved.model, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn provider_allow_insecure_http_overrides_root_default() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let config: ConfigToml = toml::from_str(
+            r#"
+provider = "openai"
+
+[providers.openai]
+base_url = "http://gateway.example/v1"
+allow_insecure_http = true
+model = "glm-5"
+"#,
+        )
+        .expect("provider config should parse");
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Openai);
+        assert_eq!(resolved.base_url, "http://gateway.example/v1");
+        assert!(resolved.allow_insecure_http);
+        assert_eq!(resolved.model, "glm-5");
     }
 
     #[test]

@@ -18,13 +18,8 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-<<<<<<< Updated upstream
   "generatedAt": "2026-05-12T03:14:50.815Z",
   "version": "0.8.30",
-=======
-  "generatedAt": "2026-05-10T15:06:44.698Z",
-  "version": "0.8.27",
->>>>>>> Stashed changes
   "crates": [
     "agent",
     "app-server",

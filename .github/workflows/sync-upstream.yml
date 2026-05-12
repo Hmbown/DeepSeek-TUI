@@ -1,0 +1,103 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  # Keep only one active sync lane for this repo. GitHub Actions concurrency
+  # allows at most one running job plus one pending job in the same group; the
+  # pending run waits for the running one to finish because cancel-in-progress
+  # is false.
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync-main:
+    if: github.repository == 'openChatGpts/DeepSeek-TUI'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out fork main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/Hmbown/DeepSeek-TUI.git 2>/dev/null \
+            || git remote set-url upstream https://github.com/Hmbown/DeepSeek-TUI.git
+
+      - name: Fetch fork and upstream main
+        run: |
+          git fetch origin main
+          git fetch upstream main
+
+      - name: Compare fork and upstream
+        id: compare
+        run: |
+          origin_sha=$(git rev-parse origin/main)
+          upstream_sha=$(git rev-parse upstream/main)
+          merge_base=$(git merge-base origin/main upstream/main)
+
+          echo "origin_sha=${origin_sha}" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=${upstream_sha}" >> "$GITHUB_OUTPUT"
+
+          if [ "$origin_sha" = "$upstream_sha" ]; then
+            echo "needs_sync=false" >> "$GITHUB_OUTPUT"
+            echo "result=already-up-to-date" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$merge_base" != "$origin_sha" ]; then
+            echo "needs_sync=false" >> "$GITHUB_OUTPUT"
+            echo "result=diverged" >> "$GITHUB_OUTPUT"
+            echo "Fork main has commits that are not in upstream/main; refusing automatic sync." >&2
+            echo "Keep custom work off main or sync manually before rerunning this workflow." >&2
+            exit 1
+          fi
+
+          echo "needs_sync=true" >> "$GITHUB_OUTPUT"
+          echo "result=sync-required" >> "$GITHUB_OUTPUT"
+
+      - name: Fast-forward fork main to upstream/main
+        if: steps.compare.outputs.needs_sync == 'true'
+        run: |
+          git checkout main
+          git merge --ff-only upstream/main
+
+      - name: Push synced main
+        if: steps.compare.outputs.needs_sync == 'true'
+        run: git push origin HEAD:main
+
+      - name: Write summary
+        if: always()
+        run: |
+          {
+            echo "## Upstream sync"
+            echo "- Fork main: ${{ steps.compare.outputs.origin_sha || 'n/a' }}"
+            echo "- Upstream main: ${{ steps.compare.outputs.upstream_sha || 'n/a' }}"
+            case "${{ steps.compare.outputs.result || 'unknown' }}" in
+              already-up-to-date)
+                echo "- Result: already up to date"
+                ;;
+              sync-required)
+                echo "- Result: synced upstream/main into fork main"
+                ;;
+              diverged)
+                echo "- Result: fork main diverged from upstream; manual intervention required"
+                ;;
+              *)
+                echo "- Result: workflow ended before sync status was determined"
+                ;;
+            esac
+          } >> "$GITHUB_STEP_SUMMARY"
