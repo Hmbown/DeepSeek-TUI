@@ -293,6 +293,9 @@ struct ExecArgs {
     /// Continue the most recent session for this workspace
     #[arg(long, default_value_t = false)]
     r#continue: bool,
+    /// Output format: text (default) or stream-json (JSON Lines for machine consumption)
+    #[arg(long, value_name = "FORMAT", default_value = "text")]
+    output_format: String,
 }
 
 fn join_prompt_parts(parts: &[String]) -> String {
@@ -721,6 +724,7 @@ async fn main() -> Result<()> {
                         auto_mode,
                         args.json,
                         resume_session_id,
+                        args.output_format.clone(),
                     )
                     .await
                 } else if args.json {
@@ -4407,6 +4411,70 @@ async fn run_one_shot_json(config: &Config, model: &str, prompt: &str) -> Result
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Stream-json output types for --output-format stream-json
+// ---------------------------------------------------------------------------
+
+/// Output format for exec mode.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum OutputFormat {
+    Text,
+    StreamJson,
+}
+
+impl OutputFormat {
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "text" => Ok(OutputFormat::Text),
+            "stream-json" => Ok(OutputFormat::StreamJson),
+            _ => bail!(
+                "unknown output format '{}'. Valid values: text, stream-json",
+                s
+            ),
+        }
+    }
+}
+
+/// Streaming metadata emitted at turn end.
+#[derive(serde::Serialize)]
+struct StreamMeta {
+    model: String,
+    input_tokens: u32,
+    output_tokens: u32,
+    session_id: String,
+}
+
+/// A single JSON Lines event emitted when --output-format stream-json is set.
+#[derive(serde::Serialize)]
+#[serde(tag = "type")]
+enum StreamEvent {
+    #[serde(rename = "content")]
+    Content { content: String },
+    #[serde(rename = "thinking")]
+    Thinking { content: String },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        name: String,
+        id: String,
+        input: serde_json::Value,
+        done: bool,
+    },
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        id: String,
+        output: String,
+        status: String,
+    },
+    #[serde(rename = "metadata")]
+    Metadata { meta: StreamMeta },
+    #[serde(rename = "session_capture")]
+    SessionCapture { content: String },
+    #[serde(rename = "done")]
+    Done,
+    #[serde(rename = "error")]
+    Error { error: String },
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_exec_agent(
     config: &Config,
@@ -4418,6 +4486,7 @@ async fn run_exec_agent(
     trust_mode: bool,
     json_output: bool,
     resume_session_id: Option<String>,
+    output_format: String,
 ) -> Result<()> {
     use crate::compaction::CompactionConfig;
     use crate::core::engine::{EngineConfig, spawn_engine};
@@ -4628,6 +4697,8 @@ async fn run_exec_agent(
     let mut latest_model: String = String::new();
     let mut latest_workspace: PathBuf = workspace.clone();
 
+    let output_fmt = OutputFormat::from_str(&output_format)?;
+
     let mut stdout = io::stdout();
     let mut ends_with_newline = false;
     loop {
@@ -4643,46 +4714,99 @@ async fn run_exec_agent(
         match event {
             Event::MessageDelta { content, .. } => {
                 summary.output.push_str(&content);
-                if !json_output {
-                    print!("{content}");
-                    stdout.flush()?;
+                match output_fmt {
+                    OutputFormat::StreamJson => {
+                        println!("{}", serde_json::to_string(&StreamEvent::Content {
+                            content,
+                        })?);
+                    }
+                    OutputFormat::Text if !json_output => {
+                        print!("{content}");
+                        stdout.flush()?;
+                    }
+                    OutputFormat::Text => {}
                 }
-                ends_with_newline = content.ends_with('\n');
+                ends_with_newline = summary.output.ends_with('\n');
             }
-            Event::MessageComplete { .. } if !json_output && !ends_with_newline => {
-                println!();
-            }
-            Event::ToolCallStarted { name, input, .. } if !json_output => {
-                let summary = summarize_tool_args(&input);
-                if let Some(summary) = summary {
-                    eprintln!("tool: {name} ({summary})");
-                } else {
-                    eprintln!("tool: {name}");
+            Event::ThinkingDelta { content, .. } => {
+                match output_fmt {
+                    OutputFormat::StreamJson => {
+                        println!("{}", serde_json::to_string(&StreamEvent::Thinking {
+                            content,
+                        })?);
+                    }
+                    OutputFormat::Text => {
+                        // In text mode, thinking content is not displayed.
+                    }
                 }
             }
-            Event::ToolCallProgress { id, output } if !json_output => {
-                eprintln!("tool {id}: {}", summarize_tool_output(&output));
+            Event::MessageComplete { .. } => {
+                if output_fmt == OutputFormat::Text && !json_output && !ends_with_newline {
+                    println!();
+                }
             }
-            Event::ToolCallComplete { name, result, .. } => match result {
-                Ok(output) => {
+            Event::ToolCallStarted { id, name, input, .. } => {
+                match output_fmt {
+                    OutputFormat::StreamJson => {
+                        println!("{}", serde_json::to_string(&StreamEvent::ToolUse {
+                            name,
+                            id,
+                            input,
+                            done: false,
+                        })?);
+                    }
+                    OutputFormat::Text if !json_output => {
+                        let summary = summarize_tool_args(&input);
+                        if let Some(summary) = summary {
+                            eprintln!("tool: {name} ({summary})");
+                        } else {
+                            eprintln!("tool: {name}");
+                        }
+                    }
+                    OutputFormat::Text => {}
+                }
+            }
+            Event::ToolCallProgress { id, output } => {
+                // ToolCallProgress is not emitted in the main turn loop,
+                // but handle it for completeness.
+                if output_fmt == OutputFormat::Text && !json_output {
+                    eprintln!("tool {id}: {}", summarize_tool_output(&output));
+                }
+            }
+            Event::ToolCallComplete { id, name, result, .. } => match result {
+                Ok(tool_result) => {
                     summary.tools.push(ExecToolEntry {
                         name: name.clone(),
-                        success: output.success,
-                        output: output.content.clone(),
+                        success: tool_result.success,
+                        output: tool_result.content.clone(),
                     });
-                    if name == "exec_shell" && !output.content.trim().is_empty() {
-                        if !json_output {
-                            eprintln!("tool {name} completed");
-                            eprintln!(
-                                "--- stdout/stderr ---\n{}\n---------------------",
-                                output.content
-                            );
+                    match output_fmt {
+                        OutputFormat::StreamJson => {
+                            println!("{}", serde_json::to_string(&StreamEvent::ToolResult {
+                                id,
+                                output: tool_result.content,
+                                status: if tool_result.success {
+                                    "success".to_string()
+                                } else {
+                                    "error".to_string()
+                                },
+                            })?);
                         }
-                    } else if !json_output {
-                        eprintln!(
-                            "tool {name} completed: {}",
-                            summarize_tool_output(&output.content)
-                        );
+                        OutputFormat::Text if !json_output => {
+                            if name == "exec_shell" && !tool_result.content.trim().is_empty() {
+                                eprintln!("tool {name} completed");
+                                eprintln!(
+                                    "--- stdout/stderr ---\n{}\n---------------------",
+                                    tool_result.content
+                                );
+                            } else {
+                                eprintln!(
+                                    "tool {name} completed: {}",
+                                    summarize_tool_output(&tool_result.content)
+                                );
+                            }
+                        }
+                        OutputFormat::Text => {}
                     }
                 }
                 Err(err) => {
@@ -4691,22 +4815,38 @@ async fn run_exec_agent(
                         success: false,
                         output: err.to_string(),
                     });
-                    if !json_output {
-                        eprintln!("tool {name} failed: {err}");
+                    match output_fmt {
+                        OutputFormat::StreamJson => {
+                            println!("{}", serde_json::to_string(&StreamEvent::ToolResult {
+                                id,
+                                output: err.to_string(),
+                                status: "error".to_string(),
+                            })?);
+                        }
+                        OutputFormat::Text if !json_output => {
+                            eprintln!("tool {name} failed: {err}");
+                        }
+                        OutputFormat::Text => {}
                     }
                 }
             },
             Event::AgentSpawned { id, prompt } => {
-                eprintln!("sub-agent {id} spawned: {}", summarize_tool_output(&prompt));
+                if output_fmt == OutputFormat::Text {
+                    eprintln!("sub-agent {id} spawned: {}", summarize_tool_output(&prompt));
+                }
             }
             Event::AgentProgress { id, status } => {
-                eprintln!("sub-agent {id}: {status}");
+                if output_fmt == OutputFormat::Text {
+                    eprintln!("sub-agent {id}: {status}");
+                }
             }
             Event::AgentComplete { id, result } => {
-                eprintln!(
-                    "sub-agent {id} completed: {}",
-                    summarize_tool_output(&result)
-                );
+                if output_fmt == OutputFormat::Text {
+                    eprintln!(
+                        "sub-agent {id} completed: {}",
+                        summarize_tool_output(&result)
+                    );
+                }
             }
             Event::ApprovalRequired { id, .. } => {
                 if auto_approve {
@@ -4722,11 +4862,15 @@ async fn run_exec_agent(
                 ..
             } => {
                 if auto_approve {
-                    eprintln!("sandbox denied {tool_name}: {denial_reason} (auto-elevating)");
+                    if output_fmt == OutputFormat::Text {
+                        eprintln!("sandbox denied {tool_name}: {denial_reason} (auto-elevating)");
+                    }
                     let policy = crate::sandbox::SandboxPolicy::DangerFullAccess;
                     let _ = engine_handle.retry_tool_with_policy(tool_id, policy).await;
                 } else {
-                    eprintln!("sandbox denied {tool_name}: {denial_reason}");
+                    if output_fmt == OutputFormat::Text {
+                        eprintln!("sandbox denied {tool_name}: {denial_reason}");
+                    }
                     let _ = engine_handle.deny_tool_call(tool_id).await;
                 }
             }
@@ -4735,8 +4879,16 @@ async fn run_exec_agent(
                 recoverable: _,
             } => {
                 summary.error = Some(envelope.message.clone());
-                if !json_output {
-                    eprintln!("error: {}", envelope.message);
+                match output_fmt {
+                    OutputFormat::StreamJson => {
+                        println!("{}", serde_json::to_string(&StreamEvent::Error {
+                            error: envelope.message,
+                        })?);
+                    }
+                    OutputFormat::Text if !json_output => {
+                        eprintln!("error: {}", summary.error.as_deref().unwrap_or_default());
+                    }
+                    OutputFormat::Text => {}
                 }
             }
             Event::TurnComplete { status, error, usage, .. } => {
@@ -4744,7 +4896,7 @@ async fn run_exec_agent(
                 summary.error = error;
 
                 // Save the session so it can be resumed later with --resume.
-                if let Ok(manager) =
+                let saved_session_id = if let Ok(manager) =
                     crate::session_manager::SessionManager::default_location()
                 {
                     if !latest_messages.is_empty() {
@@ -4757,7 +4909,6 @@ async fn run_exec_agent(
                             .to_string();
 
                         let saved = if !session_id.is_empty() {
-                            // Try to update an existing session (resume path)
                             match manager.load_session(&session_id) {
                                 Ok(existing) => {
                                     crate::session_manager::update_session(
@@ -4768,7 +4919,6 @@ async fn run_exec_agent(
                                     )
                                 }
                                 Err(_) => {
-                                    // Existing session not found — create fresh with the same ID
                                     crate::session_manager::create_saved_session_with_id_and_mode(
                                         session_id,
                                         &latest_messages,
@@ -4781,7 +4931,6 @@ async fn run_exec_agent(
                                 }
                             }
                         } else {
-                            // Fresh session — generate a new ID
                             crate::session_manager::create_saved_session_with_mode(
                                 &latest_messages,
                                 &latest_model,
@@ -4792,19 +4941,46 @@ async fn run_exec_agent(
                             )
                         };
 
+                        let saved_id = saved.metadata.id.clone();
                         match manager.save_session(&saved) {
                             Ok(_) => {
-                                if !json_output {
+                                if output_fmt == OutputFormat::Text && !json_output {
                                     eprintln!("session: {}", saved.metadata.id);
                                 }
                             }
                             Err(e) => {
-                                if !json_output {
+                                if output_fmt == OutputFormat::Text && !json_output {
                                     eprintln!("Warning: failed to save session: {e}");
                                 }
                             }
                         }
+                        Some(saved_id)
+                    } else {
+                        None
                     }
+                } else {
+                    None
+                };
+
+                // Emit stream-json events for metadata, session_capture, and done.
+                if output_fmt == OutputFormat::StreamJson {
+                    if let Some(sid) = saved_session_id {
+                        println!("{}", serde_json::to_string(&StreamEvent::SessionCapture {
+                            content: sid,
+                        })?);
+                    }
+                    println!("{}", serde_json::to_string(&StreamEvent::Metadata {
+                        meta: StreamMeta {
+                            model: latest_model.clone(),
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
+                            session_id: latest_session_id
+                                .as_deref()
+                                .unwrap_or_default()
+                                .to_string(),
+                        },
+                    })?);
+                    println!("{}", serde_json::to_string(&StreamEvent::Done)?);
                 }
 
                 let _ = engine_handle.send(Op::Shutdown).await;
@@ -6169,5 +6345,275 @@ mod pr_prompt_tests {
             !is_command_available("this-command-cannot-exist-deepseek-tui-test-ENOENT-marker"),
             "missing command should return false, not panic"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests for exec session resume (--resume/--continue) and stream-json output
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod exec_session_and_stream_tests {
+    use super::*;
+
+    // ---- OutputFormat tests ----
+
+    #[test]
+    fn output_format_text() {
+        let fmt = OutputFormat::from_str("text").unwrap();
+        assert_eq!(fmt, OutputFormat::Text);
+    }
+
+    #[test]
+    fn output_format_stream_json() {
+        let fmt = OutputFormat::from_str("stream-json").unwrap();
+        assert_eq!(fmt, OutputFormat::StreamJson);
+    }
+
+    #[test]
+    fn output_format_rejects_unknown() {
+        let err = OutputFormat::from_str("xml").unwrap_err();
+        assert!(err.to_string().contains("unknown output format"));
+        assert!(err.to_string().contains("xml"));
+    }
+
+    // ---- StreamEvent serialization tests ----
+
+    #[test]
+    fn stream_event_content_serializes() {
+        let evt = StreamEvent::Content {
+            content: "hello".to_string(),
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""type":"content""#));
+        assert!(json.contains(r#""content":"hello""#));
+    }
+
+    #[test]
+    fn stream_event_thinking_serializes() {
+        let evt = StreamEvent::Thinking {
+            content: "pondering".to_string(),
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""type":"thinking""#));
+        assert!(json.contains(r#""content":"pondering""#));
+    }
+
+    #[test]
+    fn stream_event_tool_use_serializes() {
+        let evt = StreamEvent::ToolUse {
+            name: "read_file".to_string(),
+            id: "tool_123".to_string(),
+            input: serde_json::json!({"path": "Cargo.toml"}),
+            done: false,
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""type":"tool_use""#));
+        assert!(json.contains(r#""name":"read_file""#));
+        assert!(json.contains(r#""id":"tool_123""#));
+        assert!(json.contains(r#""done":false"#));
+    }
+
+    #[test]
+    fn stream_event_tool_result_serializes() {
+        let evt = StreamEvent::ToolResult {
+            id: "tool_123".to_string(),
+            output: "file contents".to_string(),
+            status: "success".to_string(),
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""type":"tool_result""#));
+        assert!(json.contains(r#""id":"tool_123""#));
+        assert!(json.contains(r#""status":"success""#));
+    }
+
+    #[test]
+    fn stream_event_tool_result_error_serializes() {
+        let evt = StreamEvent::ToolResult {
+            id: "tool_456".to_string(),
+            output: "permission denied".to_string(),
+            status: "error".to_string(),
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""status":"error""#));
+    }
+
+    #[test]
+    fn stream_event_metadata_serializes() {
+        let evt = StreamEvent::Metadata {
+            meta: StreamMeta {
+                model: "deepseek-v4-flash".to_string(),
+                input_tokens: 100,
+                output_tokens: 50,
+                session_id: "abc-123".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""type":"metadata""#));
+        assert!(json.contains(r#""model":"deepseek-v4-flash""#));
+        assert!(json.contains(r#""input_tokens":100"#));
+        assert!(json.contains(r#""output_tokens":50"#));
+        assert!(json.contains(r#""session_id":"abc-123""#));
+    }
+
+    #[test]
+    fn stream_event_session_capture_serializes() {
+        let evt = StreamEvent::SessionCapture {
+            content: "c45d0ab8-8dfc-4676-804a-199a5526a25c".to_string(),
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""type":"session_capture""#));
+        assert!(json.contains(r#""content":"c45d0ab8"#));
+    }
+
+    #[test]
+    fn stream_event_done_serializes() {
+        let evt = StreamEvent::Done;
+        let json = serde_json::to_string(&evt).unwrap();
+        assert_eq!(json, r#"{"type":"done"}"#);
+    }
+
+    #[test]
+    fn stream_event_error_serializes() {
+        let evt = StreamEvent::Error {
+            error: "API error".to_string(),
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""type":"error""#));
+        assert!(json.contains(r#""error":"API error""#));
+    }
+
+    // ---- JSON Lines round-trip: each event is one valid JSON line ----
+
+    #[test]
+    fn stream_events_are_single_line_json() {
+        // Every serialized StreamEvent must be a single line (no embedded newlines)
+        // so it can be parsed as JSON Lines (NDJSON).
+        let events: Vec<StreamEvent> = vec![
+            StreamEvent::Content { content: "hello\nworld".to_string() },
+            StreamEvent::Thinking { content: "line1\nline2".to_string() },
+            StreamEvent::ToolUse {
+                name: "read_file".to_string(),
+                id: "id1".to_string(),
+                input: serde_json::json!({"path": "test.rs"}),
+                done: false,
+            },
+            StreamEvent::ToolResult {
+                id: "id1".to_string(),
+                output: "output with\nnewlines".to_string(),
+                status: "success".to_string(),
+            },
+            StreamEvent::Metadata {
+                meta: StreamMeta {
+                    model: "m".to_string(),
+                    input_tokens: 1,
+                    output_tokens: 2,
+                    session_id: "s".to_string(),
+                },
+            },
+            StreamEvent::SessionCapture { content: "sid".to_string() },
+            StreamEvent::Done,
+            StreamEvent::Error { error: "e".to_string() },
+        ];
+
+        for evt in &events {
+            let json = serde_json::to_string(evt).unwrap();
+            // Must be valid JSON
+            let _: serde_json::Value = serde_json::from_str(&json).unwrap();
+            // Must be a single line (no unescaped newlines outside strings)
+            assert!(
+                !json.contains('\n'),
+                "StreamEvent serialized with embedded newline: {json}"
+            );
+        }
+    }
+
+    // ---- Content with special characters is properly escaped ----
+
+    #[test]
+    fn stream_event_content_with_special_chars() {
+        let evt = StreamEvent::Content {
+            content: "quotes \" and backslash \\".to_string(),
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["content"], "quotes \" and backslash \\");
+    }
+
+    #[test]
+    fn stream_event_content_with_unicode() {
+        let evt = StreamEvent::Content {
+            content: "你好世界 🦀".to_string(),
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["content"], "你好世界 🦀");
+    }
+
+    // ---- Session resume: load_session_by_prefix integration ----
+
+    #[test]
+    fn session_manager_load_by_prefix_rejects_nonexistent() {
+        let manager = crate::session_manager::SessionManager::default_location().unwrap();
+        let result = manager.load_session_by_prefix("nonexistent_prefix_12345");
+        assert!(result.is_err());
+    }
+
+    // ---- StreamMeta field completeness ----
+
+    #[test]
+    fn stream_meta_has_all_required_fields() {
+        let meta = StreamMeta {
+            model: "deepseek-v4-flash".to_string(),
+            input_tokens: 1000,
+            output_tokens: 500,
+            session_id: "test-session-id".to_string(),
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed.get("model").is_some(), "missing 'model' field");
+        assert!(parsed.get("input_tokens").is_some(), "missing 'input_tokens' field");
+        assert!(parsed.get("output_tokens").is_some(), "missing 'output_tokens' field");
+        assert!(parsed.get("session_id").is_some(), "missing 'session_id' field");
+    }
+
+    // ---- ClawBench compatibility: type field values match expected strings ----
+
+    #[test]
+    fn stream_event_type_values_match_clawbench_expectations() {
+        // ClawBench expects these exact type strings:
+        // "content", "thinking", "tool_use", "tool_result",
+        // "metadata", "session_capture", "done", "error"
+
+        let test_cases: Vec<(StreamEvent, &str)> = vec![
+            (StreamEvent::Content { content: "x".into() }, "content"),
+            (StreamEvent::Thinking { content: "x".into() }, "thinking"),
+            (StreamEvent::ToolUse {
+                name: "n".into(), id: "i".into(),
+                input: serde_json::Value::Null, done: false,
+            }, "tool_use"),
+            (StreamEvent::ToolResult {
+                id: "i".into(), output: "o".into(), status: "s".into(),
+            }, "tool_result"),
+            (StreamEvent::Metadata {
+                meta: StreamMeta {
+                    model: "m".into(), input_tokens: 0, output_tokens: 0,
+                    session_id: "s".into(),
+                },
+            }, "metadata"),
+            (StreamEvent::SessionCapture { content: "c".into() }, "session_capture"),
+            (StreamEvent::Done, "done"),
+            (StreamEvent::Error { error: "e".into() }, "error"),
+        ];
+
+        for (evt, expected_type) in test_cases {
+            let json = serde_json::to_string(&evt).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+            let actual_type = parsed["type"].as_str().unwrap();
+            assert_eq!(
+                actual_type, expected_type,
+                "StreamEvent type mismatch: expected {expected_type}, got {actual_type}"
+            );
+        }
     }
 }
