@@ -1,7 +1,7 @@
 import type { CuratedDispatch, FeedItem, RepoStats } from "./types";
 
-const BASE = process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com";
-const MODEL = process.env.DEEPSEEK_MODEL ?? "deepseek-v4-flash";
+const FALLBACK_BASE = "https://api.deepseek.com";
+const FALLBACK_MODEL = "deepseek-v4-flash";
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -13,16 +13,20 @@ interface ChatResponse {
 }
 
 export async function chat(messages: ChatMessage[], apiKey: string, jsonMode = false): Promise<string> {
-  const res = await fetch(`${BASE}/v1/chat/completions`, {
+  const base = process.env.DEEPSEEK_BASE_URL ?? FALLBACK_BASE;
+  const model = process.env.DEEPSEEK_MODEL ?? FALLBACK_MODEL;
+  const res = await fetch(`${base}/v1/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: MODEL,
+      model,
       messages,
       temperature: 0.4,
+      max_tokens: 4096,
+      reasoning_effort: "high",
       ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
     }),
   });
@@ -96,5 +100,20 @@ export async function curate(
   );
 
   const parsed = JSON.parse(raw) as Omit<CuratedDispatch, "generatedAt">;
-  return { ...parsed, generatedAt: new Date().toISOString() };
+  return { ...sanitizeDispatch(parsed), generatedAt: new Date().toISOString() };
+}
+
+const SAFE_HREF_RE = /^https:\/\/(?:github\.com|api\.github\.com|deepseek-tui\.com|crates\.io|www\.npmjs\.com|docs\.rs)\//;
+const FALLBACK_HREF = "https://github.com/Hmbown/deepseek-tui";
+
+function safeHref(u: unknown): string {
+  return typeof u === "string" && SAFE_HREF_RE.test(u) ? u : FALLBACK_HREF;
+}
+
+function sanitizeDispatch(d: Omit<CuratedDispatch, "generatedAt">): Omit<CuratedDispatch, "generatedAt"> {
+  return {
+    ...d,
+    highlights: (d.highlights ?? []).map((h) => ({ ...h, href: safeHref(h.href) })),
+    movers: (d.movers ?? []).map((m) => ({ ...m, href: safeHref(m.href) })),
+  };
 }

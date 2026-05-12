@@ -92,6 +92,19 @@ impl Engine {
             builder = builder.with_remember_tool();
         }
 
+        // Register image_analyze tool when vision_model is configured and feature enabled.
+        if self.config.features.enabled(Feature::VisionModel)
+            && let Some(ref vision_config) = self.config.vision_config
+        {
+            builder = builder.with_vision_tools(vision_config.clone());
+        }
+
+        // Register the `notify` tool unconditionally (#1322). It has no
+        // side effects beyond a single terminal escape write and respects
+        // the user's `[notifications].method` config (including `off`),
+        // so there's no failure mode worth gating on.
+        builder = builder.with_notify_tool();
+
         builder
     }
 }

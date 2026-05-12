@@ -140,7 +140,6 @@ const DEFAULT_CLIENT_RATE_LIMIT_BURST: f64 = 16.0;
 pub(super) const SSE_BACKPRESSURE_HIGH_WATERMARK: usize = 8 * 1024 * 1024; // 8 MB
 pub(super) const SSE_BACKPRESSURE_SLEEP_MS: u64 = 10;
 pub(super) const SSE_MAX_LINES_PER_CHUNK: usize = 256;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionState {
     Healthy,
@@ -325,6 +324,33 @@ fn validate_base_url_security(base_url: &str) -> Result<()> {
         return Ok(());
     }
 
+    if base_url.starts_with("http://")
+        && std::env::var(ALLOW_INSECURE_HTTP_ENV)
+            .ok()
+            .as_deref()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    {
+        logging::warn(format!(
+            "Using insecure HTTP base URL because {} is set",
+            ALLOW_INSECURE_HTTP_ENV
+        ));
+        return Ok(());
+    }
+
+    if base_url.starts_with("http://") {
+        anyhow::bail!(
+            "Refusing insecure base URL '{base_url}'.\n\
+             \n\
+             Loopback hosts (localhost, 127.0.0.1, [::1]) are auto-allowed.\n\
+             For other trusted local hosts (LAN, llama.cpp on a private IP, etc.)\n\
+             set the env var `{env}=1` in the shell that runs deepseek and re-run.\n\
+             \n\
+             Example: `{env}=1 deepseek` (note the underscores).",
+            base_url = base_url,
+            env = ALLOW_INSECURE_HTTP_ENV,
+        );
+    }
+
     anyhow::bail!(
         "Refusing base URL '{}': only http:// and https:// URLs are supported.",
         base_url,
@@ -481,6 +507,11 @@ impl DeepSeekClient {
         let headers = build_default_headers(api_key, extra_headers)?;
         let mut builder = reqwest::Client::builder()
             .default_headers(headers)
+            .user_agent(concat!(
+                "Mozilla/5.0 (compatible; deepseek-tui/",
+                env!("CARGO_PKG_VERSION"),
+                "; +https://github.com/Hmbown/DeepSeek-TUI)"
+            ))
             .connect_timeout(Duration::from_secs(30))
             .tcp_keepalive(Some(Duration::from_secs(30)))
             .http2_keep_alive_interval(Some(Duration::from_secs(15)))
@@ -535,6 +566,62 @@ fn build_default_headers(
 }
 
 impl DeepSeekClient {
+    /// Translate text to the requested target language using a focused
+    /// non-streaming chat completion call on the supplied model.
+    ///
+    /// This is a lightweight translation service — no tool calls, no
+    /// streaming, no conversation history. The dedicated translation agent
+    /// receives the source text and returns only the translated result.
+    pub async fn translate(
+        &self,
+        text: &str,
+        model: &str,
+        target_language: &str,
+    ) -> Result<String> {
+        let url = api_url(&self.base_url, "chat/completions");
+        let mut body = serde_json::json!({
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": format!(
+                        "You are a professional translator. Your ONLY task is to translate text to {target_language}. \
+                         Rules:\n\
+                         1. Output ONLY the translation, nothing else — no explanations, no notes, no quotes.\n\
+                         2. Preserve all code blocks (```...```), URLs, file paths, command names, \
+                         and technical terms like API names, function names, and library names untranslated.\n\
+                         3. Keep Markdown formatting (headings, lists, bold, italics, links) intact.\n\
+                         4. Translate all natural-language prose naturally and professionally.\n\
+                         5. Do NOT add any prefix, suffix, or commentary.\n\
+                         6. If the input is already in {target_language} or contains no prose to translate, \
+                         return it as-is."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": text
+                }
+            ],
+            "max_tokens": 4096,
+            "temperature": 0.1,
+            "stream": false
+        });
+        apply_reasoning_effort(&mut body, Some("off"), self.api_provider);
+
+        let response = self
+            .send_with_retry(|| self.http_client.post(&url).json(&body))
+            .await?;
+
+        let value: serde_json::Value = response.json().await?;
+        let translated = value["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("translate: unexpected API response shape"))?
+            .trim()
+            .to_string();
+
+        Ok(translated)
+    }
+
     /// List available models from the provider.
     pub async fn list_models(&self) -> Result<Vec<AvailableModel>> {
         let url = api_url(&self.base_url, "models");
@@ -619,10 +706,6 @@ impl DeepSeekClient {
                         .map_err(|err| LlmError::from_reqwest(&err))?;
                     let status = response.status();
                     if status.is_success() {
-                        return Ok(response);
-                    }
-                    let retryable = status.as_u16() == 429 || status.is_server_error();
-                    if !retryable {
                         return Ok(response);
                     }
                     let retry_after = extract_retry_after(response.headers());
@@ -799,11 +882,24 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks
-            | ApiProvider::Sglang
-            | ApiProvider::Vllm => {
+            | ApiProvider::Sglang => {
                 body["thinking"] = json!({ "type": "disabled" });
             }
-            ApiProvider::Openai | ApiProvider::Ollama => {}
+            // vLLM is an OpenAI-protocol server, not an Anthropic-protocol one.
+            // For Qwen3 / DeepSeek-R1 / other reasoning models hosted via vLLM,
+            // the canonical OpenAI extension to disable thinking is
+            // `chat_template_kwargs.enable_thinking`. The old
+            // `thinking: {type: disabled}` field is Anthropic-native and
+            // silently ignored by vLLM — the model still emits a full
+            // reasoning trace into the `reasoning` field (which this client
+            // doesn't surface), causing 10+ seconds of perceived "freeze"
+            // before the first content token (PR #1480 by @h3c-hexin).
+            ApiProvider::Vllm => {
+                body["chat_template_kwargs"] = json!({
+                    "enable_thinking": false,
+                });
+            }
+            ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": false,
@@ -816,12 +912,17 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks
-            | ApiProvider::Sglang
-            | ApiProvider::Vllm => {
+            | ApiProvider::Sglang => {
                 body["reasoning_effort"] = json!("high");
                 body["thinking"] = json!({ "type": "enabled" });
             }
-            ApiProvider::Openai | ApiProvider::Ollama => {}
+            ApiProvider::Vllm => {
+                body["chat_template_kwargs"] = json!({
+                    "enable_thinking": true,
+                });
+                body["reasoning_effort"] = json!("high");
+            }
+            ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": true,
@@ -835,12 +936,17 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks
-            | ApiProvider::Sglang
-            | ApiProvider::Vllm => {
+            | ApiProvider::Sglang => {
                 body["reasoning_effort"] = json!("max");
                 body["thinking"] = json!({ "type": "enabled" });
             }
-            ApiProvider::Openai | ApiProvider::Ollama => {}
+            ApiProvider::Vllm => {
+                body["chat_template_kwargs"] = json!({
+                    "enable_thinking": true,
+                });
+                body["reasoning_effort"] = json!("max");
+            }
+            ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": true,

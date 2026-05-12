@@ -1021,6 +1021,9 @@ impl Engine {
                 None
             };
 
+            let active_tools_at_batch_start = active_tool_names.clone();
+            let mut deferred_tools_hydrated_this_batch: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             let mut plans: Vec<ToolExecutionPlan> = Vec::with_capacity(tool_uses.len());
             for (index, tool) in tool_uses.iter_mut().enumerate() {
                 let tool_id = tool.id.clone();
@@ -1055,6 +1058,7 @@ impl Engine {
                             | "exec_wait"
                             | "exec_interact"
                             | CODE_EXECUTION_TOOL_NAME
+                            | JS_EXECUTION_TOOL_NAME
                     )
                 {
                     blocked_error = Some(ToolError::permission_denied(format!(
@@ -1062,18 +1066,7 @@ impl Engine {
                     )));
                 }
 
-                if maybe_activate_requested_deferred_tool(
-                    &tool_name,
-                    &tool_catalog,
-                    &mut active_tool_names,
-                ) {
-                    let _ = self
-                        .tx_event
-                        .send(Event::status(format!(
-                            "Auto-loaded deferred tool '{tool_name}' after model request."
-                        )))
-                        .await;
-                }
+                let requested_tool_name = tool_name.clone();
                 let mut tool_def = tool_catalog.iter().find(|def| def.name == tool_name);
 
                 // Resolve hallucinated tool names when the model emits a
@@ -1092,21 +1085,6 @@ impl Engine {
                         // Update the tool_uses entry so the result is
                         // attributed to the canonical name.
                         tool.name = tool_name.clone();
-                        // Re-run the deferred-activation check with the
-                        // canonical name.
-                        if maybe_activate_requested_deferred_tool(
-                            &tool_name,
-                            &tool_catalog,
-                            &mut active_tool_names,
-                        ) {
-                            let _ = self
-                                .tx_event
-                                .send(Event::status(format!(
-                                    "Auto-loaded deferred tool '{}' after resolving '{}'.",
-                                    tool_name, tool_name
-                                )))
-                                .await;
-                        }
                     }
                 }
 
@@ -1121,6 +1099,7 @@ impl Engine {
                     && tool_def.is_none()
                     && !McpPool::is_mcp_tool(&tool_name)
                     && tool_name != CODE_EXECUTION_TOOL_NAME
+                    && tool_name != JS_EXECUTION_TOOL_NAME
                     && !is_tool_search_tool(&tool_name)
                 {
                     blocked_error = Some(ToolError::not_available(missing_tool_error_message(
@@ -1147,6 +1126,13 @@ impl Engine {
                         "Run model-provided Python code in local execution sandbox".to_string();
                     supports_parallel = false;
                     read_only = false;
+                } else if tool_name == JS_EXECUTION_TOOL_NAME {
+                    approval_required = true;
+                    approval_description =
+                        "Run model-provided JavaScript code in local Node.js execution sandbox"
+                            .to_string();
+                    supports_parallel = false;
+                    read_only = false;
                 } else if is_tool_search_tool(&tool_name) {
                     approval_required = false;
                     approval_description = "Search tool catalog".to_string();
@@ -1154,7 +1140,33 @@ impl Engine {
                     read_only = true;
                 }
 
+                let should_emit_hydration_status =
+                    !deferred_tools_hydrated_this_batch.contains(&tool_name);
                 if blocked_error.is_none()
+                    && let Some(result) = maybe_hydrate_requested_deferred_tool(
+                        &tool_name,
+                        &tool_input,
+                        &tool_catalog,
+                        &active_tools_at_batch_start,
+                        &mut deferred_tools_hydrated_this_batch,
+                    )
+                {
+                    if should_emit_hydration_status {
+                        let status = if requested_tool_name == tool_name {
+                            format!("Auto-loaded deferred tool '{tool_name}' after model request.")
+                        } else {
+                            format!(
+                                "Auto-loaded deferred tool '{}' after resolving '{}'.",
+                                tool_name, requested_tool_name
+                            )
+                        };
+                        let _ = self.tx_event.send(Event::status(status)).await;
+                    }
+                    guard_result = Some(result);
+                }
+
+                if blocked_error.is_none()
+                    && guard_result.is_none()
                     && let AttemptDecision::Block(message) =
                         loop_guard.record_attempt(&tool_name, &tool_input)
                 {
@@ -1180,6 +1192,7 @@ impl Engine {
                     guard_result,
                 });
             }
+            active_tool_names.extend(deferred_tools_hydrated_this_batch);
 
             let parallel_allowed = should_parallelize_tool_batch(&plans);
             if parallel_allowed && plans.len() > 1 {
@@ -1240,6 +1253,7 @@ impl Engine {
                     let lock = tool_exec_lock.clone();
                     let mcp_pool = mcp_pool.clone();
                     let tx_event = self.tx_event.clone();
+                    let session_id = self.session.id.clone();
                     let started_at = Instant::now();
 
                     tool_tasks.push(async move {
@@ -1262,7 +1276,12 @@ impl Engine {
                         // correlate large-output episodes with disk usage.
                         if let Ok(tool_result) = result.as_mut()
                             && let Some(path) =
-                                crate::tools::truncate::apply_spillover(tool_result, &plan.id)
+                                crate::tools::truncate::apply_spillover_with_artifact(
+                                    tool_result,
+                                    &plan.id,
+                                    &plan.name,
+                                    &session_id,
+                                )
                         {
                             emit_tool_audit(json!({
                                 "event": "tool.spillover",
@@ -1378,6 +1397,31 @@ impl Engine {
                         let started_at = Instant::now();
                         let result =
                             execute_code_execution_tool(&tool_input, &self.session.workspace).await;
+
+                        let _ = self
+                            .tx_event
+                            .send(Event::ToolCallComplete {
+                                id: tool_id.clone(),
+                                name: tool_name.clone(),
+                                result: result.clone(),
+                            })
+                            .await;
+
+                        outcomes[plan.index] = Some(ToolExecOutcome {
+                            index: plan.index,
+                            id: tool_id,
+                            name: tool_name,
+                            input: tool_input,
+                            started_at,
+                            result,
+                        });
+                        continue;
+                    }
+
+                    if tool_name == JS_EXECUTION_TOOL_NAME {
+                        let started_at = Instant::now();
+                        let result =
+                            execute_js_execution_tool(&tool_input, &self.session.workspace).await;
 
                         let _ = self
                             .tx_event
@@ -1542,8 +1586,9 @@ impl Engine {
                     {
                         let ws = self.session.workspace.clone();
                         let tid = tool_id.clone();
+                        let cap = self.config.snapshots_max_workspace_bytes;
                         let _ = tokio::task::spawn_blocking(move || {
-                            crate::core::turn::pre_tool_snapshot(&ws, &tid)
+                            crate::core::turn::pre_tool_snapshot(&ws, &tid, cap)
                         })
                         .await;
                     }
@@ -1568,14 +1613,18 @@ impl Engine {
 
                     // #500: spill outsized tool outputs to disk before the
                     // result fans out to the model context and the UI cell.
-                    // Both consumers see the same truncated content + the
-                    // `spillover_path` metadata pointing at the full file.
+                    // Both consumers see the same artifact reference block +
+                    // metadata pointing at the session-owned full file.
                     // Emit a discrete `tool.spillover` audit event so
                     // operators can correlate large-output episodes with
                     // disk-usage growth in `~/.deepseek/tool_outputs/`.
                     if let Ok(tool_result) = result.as_mut()
-                        && let Some(path) =
-                            crate::tools::truncate::apply_spillover(tool_result, &tool_id)
+                        && let Some(path) = crate::tools::truncate::apply_spillover_with_artifact(
+                            tool_result,
+                            &tool_id,
+                            &tool_name,
+                            &self.session.id,
+                        )
                     {
                         emit_tool_audit(json!({
                             "event": "tool.spillover",
@@ -1646,6 +1695,12 @@ impl Engine {
                             &outcome.name,
                             &output,
                         );
+                        let tool_was_executed = output
+                            .metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.get("executed"))
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(true);
                         let output_content = output.content;
 
                         tool_call.set_result(output_content.clone(), duration);
@@ -1660,7 +1715,7 @@ impl Engine {
                         // this on success — failed edits leave the file
                         // untouched, so polling for diagnostics would just
                         // surface stale state.
-                        if output.success {
+                        if output.success && tool_was_executed {
                             self.run_post_edit_lsp_hook(&outcome.name, &tool_input)
                                 .await;
                         }

@@ -169,9 +169,18 @@ pub struct Settings {
     pub auto_compact: bool,
     /// Reduce status noise and collapse details more aggressively
     pub calm_mode: bool,
-    /// Reduce animation and redraw churn
+    /// Streaming pacing mode. `true` pins the chunker to one-character-per-
+    /// commit-tick (typewriter); `false` drains the upstream cadence (each
+    /// commit flushes everything queued, which matches V4-pro's burst pattern
+    /// when the prefix cache is warm). Has no effect on the footer water-spout
+    /// animation — that is gated independently by [`Self::fancy_animations`].
     pub low_motion: bool,
-    /// Enable fancy footer animations (water-spout strip, pulsing text)
+    /// Enable the footer water-spout animation strip during live turns. The
+    /// strip's wave cadence is synchronized with the character-commit rate, so
+    /// the visual flow matches whatever streaming pacing [`Self::low_motion`]
+    /// selects: typewriter mode drips, upstream mode surges, tool calls /
+    /// planning pauses freeze the surface. Set `false` to keep the gap as
+    /// plain whitespace.
     pub fancy_animations: bool,
     /// Enable terminal bracketed-paste mode. Default true. Disable if your
     /// terminal mishandles the `\e[?2004h` escape (rare; some legacy
@@ -211,8 +220,50 @@ pub struct Settings {
     pub cost_currency: String,
     /// Maximum number of input history entries to save
     pub max_input_history: usize,
+    /// Default provider override (e.g. "deepseek", "openai").
+    pub default_provider: Option<String>,
     /// Default model to use
     pub default_model: Option<String>,
+    /// Per-provider model overrides. Key is provider name (e.g. "openai"),
+    /// value is the model id. Takes precedence over `default_model`.
+    pub provider_models: Option<std::collections::HashMap<String, String>>,
+    /// Header status indicator next to the effort chip. Cycles through a
+    /// per-turn animation keyed off `App::turn_started_at`:
+    /// - `"whale"` (default): historical `🐳 → 🐋` 12-frame sequence
+    ///   originally shipped in v0.3.5, removed in v0.8.x's "smoother TUI
+    ///   streaming" pass, restored in v0.8.30. Idle frame is a steady `🐳`.
+    /// - `"dots"`: the 6-frame geometric sequence (`◍ ◉ ◌ ◌ ◉ ◍`) that
+    ///   replaced the whale during the dots era.
+    /// - `"off"`: hide the indicator entirely.
+    pub status_indicator: String,
+    /// Whether to wrap each draw in DEC mode 2026 synchronized output
+    /// (`\x1b[?2026h` … `\x1b[?2026l`). Synchronized output asks the
+    /// terminal to defer rendering until the whole frame is staged so
+    /// GPU-accelerated terminals (Ghostty, VS Code, Kitty, WezTerm)
+    /// don't flash a blank intermediate frame.
+    ///
+    /// - `"auto"` (default): emit DEC 2026 unless an environment signal
+    ///   says the active terminal mishandles it (currently Ptyxis 50.x
+    ///   on VTE 0.84.x — see [`Settings::apply_env_overrides`]).
+    /// - `"on"`: always emit DEC 2026 (override the auto opt-out).
+    /// - `"off"`: never emit DEC 2026. Use this if your terminal flashes
+    ///   the whole screen on every redraw — most often Ptyxis on
+    ///   Ubuntu 26.04 today; historically also some legacy ssh+screen
+    ///   stacks. The cost of `off` is brief tearing on terminals that
+    ///   *do* support DEC 2026; it is purely a rendering-quality knob,
+    ///   not a correctness one.
+    pub synchronized_output: String,
+    /// Prefer the external `pdftotext` binary (Poppler) over the bundled
+    /// pure-Rust `pdf-extract` extractor for PDF reads in `read_file`.
+    /// Pure-Rust extraction is the v0.8.32 default because it removes the
+    /// install-poppler-first hurdle most users hit, but `pdftotext -layout`
+    /// still wins for column-heavy or complex-table PDFs (academic papers
+    /// laid out in two columns, financial filings, etc.). Set to `true` to
+    /// route every PDF read through `pdftotext` instead — when the binary
+    /// is missing in that mode the tool returns the structured
+    /// `binary_unavailable` response with an install hint, matching the
+    /// pre-v0.8.32 behavior.
+    pub prefer_external_pdftotext: bool,
 }
 
 impl Default for Settings {
@@ -247,7 +298,12 @@ impl Default for Settings {
             context_panel: false,
             cost_currency: "usd".to_string(),
             max_input_history: 100,
+            default_provider: None,
             default_model: None,
+            provider_models: None,
+            status_indicator: "whale".to_string(),
+            synchronized_output: "auto".to_string(),
+            prefer_external_pdftotext: false,
         }
     }
 }
@@ -288,6 +344,9 @@ impl Settings {
             s.composer_density = normalize_composer_density(&s.composer_density).to_string();
             s.transcript_spacing = normalize_transcript_spacing(&s.transcript_spacing).to_string();
             s.sidebar_focus = normalize_sidebar_focus(&s.sidebar_focus).to_string();
+            s.status_indicator = normalize_status_indicator(&s.status_indicator).to_string();
+            s.synchronized_output =
+                normalize_synchronized_output(&s.synchronized_output).to_string();
             s.locale = normalize_configured_locale(&s.locale)
                 .unwrap_or("en")
                 .to_string();
@@ -308,6 +367,58 @@ impl Settings {
         if env_truthy("NO_ANIMATIONS") {
             self.low_motion = true;
             self.fancy_animations = false;
+        }
+        // VS Code (TERM_PROGRAM=vscode, #1356) and Ghostty (TERM_PROGRAM=ghostty,
+        // #1445) both produce visible flicker at 120 FPS: VS Code's compositor
+        // cannot keep pace; Ghostty's GPU compositor flash-renders each full-screen
+        // repaint. Drop to the 30 FPS low-motion cap for both automatically.
+        // Like NO_ANIMATIONS above, this unconditionally overrides any
+        // disk-loaded value — consistent precedence: env signals always win.
+        if matches!(
+            std::env::var("TERM_PROGRAM").as_deref(),
+            Ok("vscode") | Ok("ghostty")
+        ) {
+            self.low_motion = true;
+            self.fancy_animations = false;
+        }
+
+        // Termius (TERM_PROGRAM=Termius) and SSH sessions exhibit the
+        // same 120-FPS flicker class as VS Code — the SSH round-trip
+        // races ahead of what the remote renderer can flush, so rapid
+        // cursor-positioning sequences cycle through input boxes.
+        // Drop both to the 30 FPS low-motion cap. Harvested from
+        // PR #1479 by @CrepuscularIRIS / autoghclaw (closes #1433).
+        //
+        // SSH_CLIENT is exported by sshd for every TCP SSH session;
+        // SSH_TTY is exported only for interactive PTY logins, so we
+        // check both so non-PTY-allocating tools (rsync wrappers, etc.)
+        // still pick this up if they end up running the TUI.
+        let term_is_termius = std::env::var("TERM_PROGRAM").as_deref() == Ok("Termius");
+        let in_ssh_session = std::env::var_os("SSH_CLIENT").is_some_and(|v| !v.is_empty())
+            || std::env::var_os("SSH_TTY").is_some_and(|v| !v.is_empty());
+        if term_is_termius || in_ssh_session {
+            self.low_motion = true;
+            self.fancy_animations = false;
+        }
+
+        // Ptyxis 50.x (the new default terminal on Ubuntu 26.04) ships with
+        // VTE 0.84.x which mishandles DEC mode 2026 synchronized output: the
+        // begin/end pair is parsed but each wrapped frame still triggers a
+        // full-viewport flash on the GPU compositor side, so any TUI that
+        // uses DEC 2026 to avoid tearing instead gets visible flicker on
+        // every redraw. gnome-terminal 3.58 on the same VTE renders cleanly,
+        // so we can't broaden the opt-out to all VTE-based terminals —
+        // only the Ptyxis-specific signals trigger it. Confirmed
+        // user-visible regression starting with Ubuntu 26.04's default
+        // terminal swap; cargo-installed binaries are not exempt because
+        // the bug is in the terminal, not the binary.
+        //
+        // Only flip `auto` to `off`; respect an explicit `"on"` so users
+        // who upgrade Ptyxis or want to confirm the fix landed upstream
+        // can override the heuristic from `~/.config/deepseek/settings.toml`
+        // or `/set synchronized_output on`.
+        if self.synchronized_output.eq_ignore_ascii_case("auto") && detected_ptyxis_terminal() {
+            self.synchronized_output = "off".to_string();
         }
     }
 
@@ -395,6 +506,27 @@ impl Settings {
                     );
                 }
                 self.transcript_spacing = normalized.to_string();
+            }
+            "status_indicator" | "indicator" => {
+                let normalized = normalize_status_indicator(value);
+                if !["whale", "dots", "off"].contains(&normalized) {
+                    anyhow::bail!(
+                        "Failed to update setting: invalid status indicator '{value}'. Expected: whale, dots, off."
+                    );
+                }
+                self.status_indicator = normalized.to_string();
+            }
+            "synchronized_output" | "sync_output" | "sync" => {
+                let normalized = normalize_synchronized_output(value);
+                if !["auto", "on", "off"].contains(&normalized) {
+                    anyhow::bail!(
+                        "Failed to update setting: invalid synchronized_output '{value}'. Expected: auto, on, off."
+                    );
+                }
+                self.synchronized_output = normalized.to_string();
+            }
+            "prefer_external_pdftotext" | "external_pdftotext" | "pdftotext" => {
+                self.prefer_external_pdftotext = parse_bool(value)?;
             }
             "default_mode" | "mode" => {
                 let normalized = normalize_mode(value);
@@ -507,6 +639,15 @@ impl Settings {
         lines.push(format!("  composer_border:    {}", self.composer_border));
         lines.push(format!("  composer_vim_mode:  {}", self.composer_vim_mode));
         lines.push(format!("  transcript_spacing: {}", self.transcript_spacing));
+        lines.push(format!("  status_indicator:   {}", self.status_indicator));
+        lines.push(format!(
+            "  synchronized_output: {}",
+            self.synchronized_output
+        ));
+        lines.push(format!(
+            "  prefer_external_pdftotext: {}",
+            self.prefer_external_pdftotext
+        ));
         lines.push(format!("  default_mode:       {}", self.default_mode));
         lines.push(format!(
             "  sidebar_width:      {}%",
@@ -537,10 +678,13 @@ impl Settings {
                 "Auto-compact near context limit: on/off (default on)",
             ),
             ("calm_mode", "Calmer UI defaults: on/off"),
-            ("low_motion", "Reduce animation and redraw churn: on/off"),
+            (
+                "low_motion",
+                "Streaming pacing: on = typewriter (one char/tick), off = upstream cadence",
+            ),
             (
                 "fancy_animations",
-                "Fancy footer animations (water-spout strip): on/off",
+                "Footer water-spout strip (wave synced to typing speed): on/off",
             ),
             (
                 "bracketed_paste",
@@ -572,6 +716,18 @@ impl Settings {
                 "transcript_spacing",
                 "Transcript spacing: compact, comfortable, spacious",
             ),
+            (
+                "status_indicator",
+                "Header status indicator next to effort chip: whale, dots, off",
+            ),
+            (
+                "synchronized_output",
+                "DEC 2026 synchronized output: auto, on, off (set off if your terminal flickers)",
+            ),
+            (
+                "prefer_external_pdftotext",
+                "Route PDF reads through Poppler's pdftotext instead of the bundled pure-Rust extractor: on/off (default off)",
+            ),
             ("default_mode", "Default mode: agent, plan, yolo"),
             ("sidebar_width", "Sidebar width percentage: 10-50"),
             (
@@ -585,6 +741,23 @@ impl Settings {
                 "Default model: auto or any DeepSeek model ID (e.g. deepseek-v4-pro)",
             ),
         ]
+    }
+
+    /// Persist the model for a specific provider.
+    pub fn set_model_for_provider(&mut self, provider: &str, model: &str) {
+        self.provider_models
+            .get_or_insert_with(std::collections::HashMap::new)
+            .insert(provider.to_string(), model.to_string());
+    }
+
+    /// Resolved boolean for whether the renderer should wrap each frame in
+    /// DEC mode 2026 synchronized output. `auto` and `on` enable; `off`
+    /// disables. The `auto` → `off` flip for known-bad terminals happens
+    /// earlier in [`Self::apply_env_overrides`]; this method only inspects
+    /// the final state.
+    #[must_use]
+    pub fn synchronized_output_enabled(&self) -> bool {
+        !self.synchronized_output.eq_ignore_ascii_case("off")
     }
 }
 
@@ -635,6 +808,58 @@ fn normalize_transcript_spacing(value: &str) -> &str {
         "spacious" | "loose" => "spacious",
         _ => value,
     }
+}
+
+/// Normalize the `status_indicator` header chip setting. Accepts the
+/// canonical names plus common aliases ("none"/"hidden" → "off",
+/// "dot" → "dots"). Unknown values fall through unchanged so the parser
+/// in `update_setting` can surface a clear error.
+fn normalize_status_indicator(value: &str) -> &str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "whale" | "🐳" | "🐋" => "whale",
+        "dots" | "dot" => "dots",
+        "off" | "none" | "hidden" | "false" => "off",
+        _ => value,
+    }
+}
+
+/// Normalize the `synchronized_output` setting. Accepts the canonical
+/// `"auto"` / `"on"` / `"off"` plus the usual truthy/falsey spellings.
+/// Unknown values fall through unchanged so the parser in `set` can
+/// surface a clear error.
+fn normalize_synchronized_output(value: &str) -> &str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" | "default" => "auto",
+        "on" | "true" | "yes" | "1" | "enabled" => "on",
+        "off" | "false" | "no" | "0" | "disabled" => "off",
+        _ => value,
+    }
+}
+
+/// Returns `true` when the active terminal is Ptyxis (the new default
+/// terminal on Ubuntu 26.04). Used by [`Settings::apply_env_overrides`]
+/// to flip `synchronized_output` from `auto` to `off` so DEC mode 2026
+/// flicker on Ptyxis 50.x + VTE 0.84.x stops at the source.
+///
+/// We deliberately keep this narrow:
+///
+/// - `TERM_PROGRAM` matches `ptyxis` case-insensitively (the value
+///   Ptyxis sets when it forwards a process-launch context).
+/// - `PTYXIS_VERSION` is set to any non-empty value (the binary's
+///   own version probe, present whether or not `TERM_PROGRAM` made it
+///   into the child environment).
+///
+/// Either signal is sufficient. We do *not* trigger on `VTE_VERSION`
+/// alone because gnome-terminal 3.58 ships with the same VTE 0.84.x
+/// and renders cleanly — broadening the heuristic would regress every
+/// gnome-terminal user.
+pub fn detected_ptyxis_terminal() -> bool {
+    if let Ok(program) = std::env::var("TERM_PROGRAM")
+        && program.trim().to_ascii_lowercase().contains("ptyxis")
+    {
+        return true;
+    }
+    matches!(std::env::var("PTYXIS_VERSION"), Ok(v) if !v.trim().is_empty())
 }
 
 fn normalize_optional_background_color(value: Option<&str>) -> Option<String> {
@@ -803,10 +1028,13 @@ mod tests {
 
     /// Tests that mutate process-global `NO_ANIMATIONS` serialise
     /// through this guard so the cargo parallel runner doesn't
-    /// observe interleaved overrides.
+    /// observe interleaved overrides. Uses the process-wide test env
+    /// lock so this serializes with the TERM_PROGRAM tests too —
+    /// otherwise a `NO_ANIMATIONS=1` leak from this test family can
+    /// flip a concurrent `TERM_PROGRAM=iTerm` test's `low_motion`
+    /// assertion through the shared `apply_env_overrides` path.
     fn no_animations_test_guard() -> std::sync::MutexGuard<'static, ()> {
-        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        GUARD.lock().unwrap_or_else(|e| e.into_inner())
+        crate::test_support::lock_test_env()
     }
 
     #[test]
@@ -882,6 +1110,411 @@ mod tests {
         }
     }
 
+    /// Serialise tests that mutate `TERM_PROGRAM` through this guard.
+    /// Uses the process-wide test env lock so this serializes not just
+    /// with itself but with every other env-mutating test in the suite
+    /// — otherwise a concurrent test that calls `Settings::default()`
+    /// can read whatever value our two `set_var`s have raced into the
+    /// env at that instant.
+    fn term_program_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        crate::test_support::lock_test_env()
+    }
+
+    #[test]
+    fn vscode_term_program_forces_low_motion_on() {
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        // SAFETY: serialised by the guard.
+        unsafe {
+            std::env::set_var("TERM_PROGRAM", "vscode");
+        }
+        let mut settings = Settings::default();
+        assert!(!settings.low_motion, "default is animated");
+        settings.apply_env_overrides();
+        assert!(
+            settings.low_motion,
+            "TERM_PROGRAM=vscode must enable low_motion to prevent flickering (#1356)"
+        );
+        assert!(
+            !settings.fancy_animations,
+            "TERM_PROGRAM=vscode must disable fancy_animations"
+        );
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+        }
+    }
+
+    #[test]
+    fn ghostty_term_program_forces_low_motion_on() {
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        // SAFETY: serialised by the guard.
+        unsafe {
+            std::env::set_var("TERM_PROGRAM", "ghostty");
+        }
+        let mut settings = Settings::default();
+        assert!(!settings.low_motion, "default is animated");
+        settings.apply_env_overrides();
+        assert!(
+            settings.low_motion,
+            "TERM_PROGRAM=ghostty must enable low_motion to prevent flickering (#1445)"
+        );
+        assert!(
+            !settings.fancy_animations,
+            "TERM_PROGRAM=ghostty must disable fancy_animations"
+        );
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+        }
+    }
+
+    #[test]
+    fn non_vscode_term_program_does_not_force_low_motion() {
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        let prev_ssh_client = std::env::var_os("SSH_CLIENT");
+        let prev_ssh_tty = std::env::var_os("SSH_TTY");
+        // SAFETY: serialised by the guard. Clear SSH_* so a real
+        // SSH session running the test suite doesn't make this
+        // assertion trivially fail — the SSH path is exercised
+        // separately by `ssh_session_forces_low_motion_on`.
+        unsafe {
+            std::env::remove_var("SSH_CLIENT");
+            std::env::remove_var("SSH_TTY");
+        }
+        for program in ["iTerm.app", "Apple_Terminal", "WezTerm", "xterm-256color"] {
+            // SAFETY: serialised by the guard.
+            unsafe {
+                std::env::set_var("TERM_PROGRAM", program);
+            }
+            let mut s = Settings::default();
+            s.apply_env_overrides();
+            assert!(
+                !s.low_motion,
+                "TERM_PROGRAM={program:?} should not force low_motion"
+            );
+        }
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+            if let Some(v) = prev_ssh_client {
+                std::env::set_var("SSH_CLIENT", v);
+            }
+            if let Some(v) = prev_ssh_tty {
+                std::env::set_var("SSH_TTY", v);
+            }
+        }
+    }
+
+    #[test]
+    fn termius_term_program_forces_low_motion_on() {
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        // SAFETY: serialised by the guard.
+        unsafe {
+            std::env::set_var("TERM_PROGRAM", "Termius");
+        }
+        let mut settings = Settings::default();
+        assert!(!settings.low_motion, "default is animated");
+        settings.apply_env_overrides();
+        assert!(
+            settings.low_motion,
+            "TERM_PROGRAM=Termius must enable low_motion to prevent flickering (#1433)"
+        );
+        assert!(
+            !settings.fancy_animations,
+            "TERM_PROGRAM=Termius must disable fancy_animations"
+        );
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+        }
+    }
+
+    #[test]
+    fn ssh_session_forces_low_motion_on() {
+        let _g = term_program_test_guard();
+        let prev_client = std::env::var_os("SSH_CLIENT");
+        let prev_tty = std::env::var_os("SSH_TTY");
+        let prev_term_program = std::env::var_os("TERM_PROGRAM");
+        for (var, val) in [
+            ("SSH_CLIENT", "192.168.1.100 50000 22"),
+            ("SSH_TTY", "/dev/pts/0"),
+        ] {
+            // SAFETY: serialised by the guard.
+            unsafe {
+                std::env::remove_var("SSH_CLIENT");
+                std::env::remove_var("SSH_TTY");
+                // Clear TERM_PROGRAM so the test isolates the SSH signal
+                // — otherwise a leaked `TERM_PROGRAM=vscode` from a
+                // concurrent test would already have forced low_motion
+                // and the SSH-only assertion below would be a tautology.
+                std::env::remove_var("TERM_PROGRAM");
+                std::env::set_var(var, val);
+            }
+            let mut s = Settings::default();
+            s.apply_env_overrides();
+            assert!(
+                s.low_motion,
+                "{var}={val:?} must enable low_motion to prevent flickering in SSH sessions (#1433)"
+            );
+            assert!(
+                !s.fancy_animations,
+                "{var}={val:?} must disable fancy_animations in SSH sessions (#1433)"
+            );
+        }
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            std::env::remove_var("SSH_CLIENT");
+            std::env::remove_var("SSH_TTY");
+            if let Some(v) = prev_client {
+                std::env::set_var("SSH_CLIENT", v);
+            }
+            if let Some(v) = prev_tty {
+                std::env::set_var("SSH_TTY", v);
+            }
+            match prev_term_program {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // synchronized_output / Ptyxis flicker detection
+    // ────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn synchronized_output_defaults_to_auto_and_resolves_to_enabled() {
+        let s = Settings::default();
+        assert_eq!(s.synchronized_output, "auto");
+        assert!(
+            s.synchronized_output_enabled(),
+            "auto must keep DEC 2026 on so terminals that support it stay tear-free"
+        );
+    }
+
+    #[test]
+    fn synchronized_output_off_disables_dec_2026() {
+        let s = Settings {
+            synchronized_output: "off".to_string(),
+            ..Settings::default()
+        };
+        assert!(!s.synchronized_output_enabled());
+    }
+
+    #[test]
+    fn synchronized_output_on_keeps_dec_2026_enabled() {
+        let s = Settings {
+            synchronized_output: "on".to_string(),
+            ..Settings::default()
+        };
+        assert!(s.synchronized_output_enabled());
+    }
+
+    #[test]
+    fn synchronized_output_set_command_accepts_aliases() {
+        let mut s = Settings::default();
+        for value in ["auto", "AUTO", "default"] {
+            s.set("synchronized_output", value).expect("valid");
+            assert_eq!(s.synchronized_output, "auto");
+        }
+        for value in ["on", "true", "yes", "1", "ENABLED"] {
+            s.set("sync_output", value).expect("valid");
+            assert_eq!(s.synchronized_output, "on");
+        }
+        for value in ["off", "false", "no", "0", "DISABLED"] {
+            s.set("sync", value).expect("valid");
+            assert_eq!(s.synchronized_output, "off");
+        }
+        let err = s
+            .set("synchronized_output", "maybe")
+            .expect_err("unknown value rejected");
+        assert!(
+            err.to_string().contains("synchronized_output"),
+            "error names the offending key: {err}"
+        );
+    }
+
+    #[test]
+    fn ptyxis_term_program_flips_synchronized_output_off() {
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        let prev_ptyxis = std::env::var_os("PTYXIS_VERSION");
+        // SAFETY: serialised by the guard.
+        unsafe {
+            std::env::set_var("TERM_PROGRAM", "Ptyxis");
+            std::env::remove_var("PTYXIS_VERSION");
+        }
+        let mut s = Settings::default();
+        assert_eq!(s.synchronized_output, "auto");
+        s.apply_env_overrides();
+        assert_eq!(
+            s.synchronized_output, "off",
+            "Ptyxis 50.x mishandles DEC 2026 — auto must flip to off so VTE 0.84 stops flickering"
+        );
+        assert!(
+            !s.synchronized_output_enabled(),
+            "resolved boolean must agree with stored string"
+        );
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+            match prev_ptyxis {
+                Some(v) => std::env::set_var("PTYXIS_VERSION", v),
+                None => std::env::remove_var("PTYXIS_VERSION"),
+            }
+        }
+    }
+
+    #[test]
+    fn ptyxis_version_env_alone_flips_synchronized_output_off() {
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        let prev_ptyxis = std::env::var_os("PTYXIS_VERSION");
+        // SAFETY: serialised by the guard.
+        unsafe {
+            std::env::remove_var("TERM_PROGRAM");
+            std::env::set_var("PTYXIS_VERSION", "50.1");
+        }
+        let mut s = Settings::default();
+        s.apply_env_overrides();
+        assert_eq!(
+            s.synchronized_output, "off",
+            "PTYXIS_VERSION alone is sufficient — Ptyxis sets this even when TERM_PROGRAM isn't propagated"
+        );
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+            match prev_ptyxis {
+                Some(v) => std::env::set_var("PTYXIS_VERSION", v),
+                None => std::env::remove_var("PTYXIS_VERSION"),
+            }
+        }
+    }
+
+    #[test]
+    fn ptyxis_does_not_override_user_explicit_on() {
+        // Users who set `synchronized_output = "on"` (e.g. to confirm a
+        // Ptyxis upgrade fixed it) must keep DEC 2026 even on Ptyxis.
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        // SAFETY: serialised by the guard.
+        unsafe {
+            std::env::set_var("TERM_PROGRAM", "ptyxis");
+        }
+        let mut s = Settings {
+            synchronized_output: "on".to_string(),
+            ..Settings::default()
+        };
+        s.apply_env_overrides();
+        assert_eq!(
+            s.synchronized_output, "on",
+            "explicit user override must beat the Ptyxis env heuristic"
+        );
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+        }
+    }
+
+    #[test]
+    fn ptyxis_does_not_override_user_explicit_off() {
+        // A user with `synchronized_output = "off"` on a non-Ptyxis
+        // terminal stays off after env detection (no-op flip).
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        // SAFETY: serialised by the guard.
+        unsafe {
+            std::env::set_var("TERM_PROGRAM", "xterm-256color");
+        }
+        let mut s = Settings {
+            synchronized_output: "off".to_string(),
+            ..Settings::default()
+        };
+        s.apply_env_overrides();
+        assert_eq!(s.synchronized_output, "off");
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+        }
+    }
+
+    #[test]
+    fn non_ptyxis_term_programs_keep_synchronized_output_auto() {
+        let _g = term_program_test_guard();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        let prev_ptyxis = std::env::var_os("PTYXIS_VERSION");
+        // SAFETY: clean slate so non-Ptyxis programs don't see a leaked
+        // PTYXIS_VERSION from another test.
+        unsafe {
+            std::env::remove_var("PTYXIS_VERSION");
+        }
+        for program in [
+            "iTerm.app",
+            "Apple_Terminal",
+            "WezTerm",
+            "xterm-256color",
+            "gnome-terminal-server",
+            // The Ghostty / VS Code paths force low_motion but must NOT
+            // disable DEC 2026 — they handle synchronized output cleanly.
+            "ghostty",
+            "vscode",
+        ] {
+            // SAFETY: serialised by the guard.
+            unsafe {
+                std::env::set_var("TERM_PROGRAM", program);
+            }
+            let mut s = Settings::default();
+            s.apply_env_overrides();
+            assert_eq!(
+                s.synchronized_output, "auto",
+                "TERM_PROGRAM={program:?} must not opt out of DEC 2026"
+            );
+            assert!(
+                s.synchronized_output_enabled(),
+                "resolved boolean for {program:?} must stay enabled"
+            );
+        }
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+            match prev_ptyxis {
+                Some(v) => std::env::set_var("PTYXIS_VERSION", v),
+                None => std::env::remove_var("PTYXIS_VERSION"),
+            }
+        }
+    }
+
     // ────────────────────────────────────────────────────────────────────────
     // TuiPrefs tests
     // ────────────────────────────────────────────────────────────────────────
@@ -889,8 +1522,7 @@ mod tests {
     /// Serialise tests that mutate `DEEPSEEK_CONFIG_PATH` through this guard
     /// so the parallel test runner doesn't observe interleaved env values.
     fn config_path_test_guard() -> std::sync::MutexGuard<'static, ()> {
-        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        GUARD.lock().unwrap_or_else(|e| e.into_inner())
+        crate::test_support::lock_test_env()
     }
 
     #[test]

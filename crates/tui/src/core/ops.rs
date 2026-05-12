@@ -30,6 +30,7 @@ pub enum Op {
         trust_mode: bool,
         auto_approve: bool,
         approval_mode: ApprovalMode,
+        translation_enabled: bool,
     },
 
     /// Cancel the current request
@@ -64,6 +65,7 @@ pub enum Op {
 
     /// Sync engine session state (used for resume/load)
     SyncSession {
+        session_id: Option<String>,
         messages: Vec<Message>,
         system_prompt: Option<SystemPrompt>,
         model: String,

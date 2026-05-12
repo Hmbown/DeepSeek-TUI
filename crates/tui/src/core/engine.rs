@@ -96,6 +96,9 @@ pub struct EngineConfig {
     /// Resolved via `expand_path` so `~` works.
     pub instructions: Vec<PathBuf>,
     pub project_context_pack_enabled: bool,
+    /// When true, the model is instructed to respond in the current locale
+    /// and a post-hoc translation layer replaces remaining English output.
+    pub translation_enabled: bool,
     /// Maximum number of assistant steps before stopping.
     pub max_steps: u32,
     /// Maximum number of concurrently active subagents.
@@ -129,6 +132,10 @@ pub struct EngineConfig {
     pub network_policy: Option<crate::network_policy::NetworkPolicyDecider>,
     /// Whether to take side-git workspace snapshots before/after each turn.
     pub snapshots_enabled: bool,
+    /// Maximum workspace size (in bytes) before snapshots self-disable on
+    /// first init. `0` disables the cap. Resolved from
+    /// `[snapshots] max_workspace_gb` × 1 GB at engine construction.
+    pub snapshots_max_workspace_bytes: u64,
     /// Post-edit LSP diagnostics injection (#136). When `None`, the engine
     /// constructs a disabled manager so the field is always present.
     pub lsp_config: Option<crate::lsp::LspConfig>,
@@ -143,6 +150,7 @@ pub struct EngineConfig {
     /// Path to the user memory file (#489). Always populated; only
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
+    pub vision_config: Option<crate::config::VisionModelConfig>,
     pub goal_objective: Option<String>,
     /// Resolved BCP-47 locale tag (e.g. `"en"`, `"zh-Hans"`, `"ja"`)
     /// for the `## Environment` block in the system prompt. The
@@ -154,6 +162,10 @@ pub struct EngineConfig {
     pub strict_tool_mode: bool,
     /// Workshop / large-tool-output routing (#548). `None` disables routing.
     pub workshop: Option<crate::tools::large_output_router::WorkshopConfig>,
+    /// Which search backend `web_search` should use. Default: DuckDuckGo.
+    pub search_provider: crate::config::SearchProvider,
+    /// API key for Tavily or Bocha. `None` for DuckDuckGo.
+    pub search_api_key: Option<String>,
 }
 
 impl Default for EngineConfig {
@@ -168,6 +180,7 @@ impl Default for EngineConfig {
             skills_dir: crate::skills::default_skills_dir(),
             instructions: Vec::new(),
             project_context_pack_enabled: true,
+            translation_enabled: false,
             max_steps: 100,
             max_subagents: DEFAULT_MAX_SUBAGENTS,
             features: Features::with_defaults(),
@@ -179,15 +192,20 @@ impl Default for EngineConfig {
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy: None,
             snapshots_enabled: true,
+            snapshots_max_workspace_bytes:
+                crate::snapshot::DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT,
             lsp_config: None,
             runtime_services: RuntimeToolServices::default(),
             subagent_model_overrides: HashMap::new(),
             memory_enabled: false,
             memory_path: PathBuf::from("./memory.md"),
+            vision_config: None,
             strict_tool_mode: false,
             goal_objective: None,
             locale_tag: "en".to_string(),
             workshop: None,
+            search_provider: crate::config::SearchProvider::default(),
+            search_api_key: None,
         }
     }
 }
@@ -373,6 +391,7 @@ impl Engine {
             ApiProvider::Deepseek | ApiProvider::DeepseekCN => "DEEPSEEK_API_KEY",
             ApiProvider::NvidiaNim => "NVIDIA_API_KEY/NVIDIA_NIM_API_KEY",
             ApiProvider::Openai => "OPENAI_API_KEY",
+            ApiProvider::Atlascloud => "ATLASCLOUD_API_KEY",
             ApiProvider::Openrouter => "OPENROUTER_API_KEY",
             ApiProvider::Novita => "NOVITA_API_KEY",
             ApiProvider::Fireworks => "FIREWORKS_API_KEY",
@@ -446,6 +465,7 @@ impl Engine {
                     goal_objective: config.goal_objective.as_deref(),
                     project_context_pack_enabled: config.project_context_pack_enabled,
                     locale_tag: &config.locale_tag,
+                    translation_enabled: config.translation_enabled,
                 },
                 session.approval_mode,
             );
@@ -586,6 +606,7 @@ impl Engine {
                     trust_mode,
                     auto_approve,
                     approval_mode,
+                    translation_enabled,
                 } => {
                     self.handle_send_message(
                         content,
@@ -599,6 +620,7 @@ impl Engine {
                         trust_mode,
                         auto_approve,
                         approval_mode,
+                        translation_enabled,
                     )
                     .await;
                 }
@@ -726,11 +748,17 @@ impl Engine {
                         .await;
                 }
                 Op::SyncSession {
+                    session_id,
                     messages,
                     system_prompt,
                     model,
                     workspace,
                 } => {
+                    if let Some(session_id) = session_id {
+                        self.session.id = session_id;
+                    } else if messages.is_empty() && system_prompt.is_none() {
+                        self.session.id = uuid::Uuid::new_v4().to_string();
+                    }
                     self.session.messages = messages;
                     self.session.compaction_summary_prompt =
                         extract_compaction_summary_prompt(system_prompt.clone());
@@ -797,6 +825,7 @@ impl Engine {
                         self.session.trust_mode,
                         self.session.auto_approve,
                         self.session.approval_mode,
+                        self.config.translation_enabled,
                     )
                     .await;
                 }
@@ -821,6 +850,7 @@ impl Engine {
         let _ = self
             .tx_event
             .send(Event::SessionUpdated {
+                session_id: self.session.id.clone(),
                 messages: self.session.messages.clone(),
                 system_prompt: self.session.system_prompt.clone(),
                 model: self.session.model.clone(),
@@ -883,6 +913,7 @@ impl Engine {
         trust_mode: bool,
         auto_approve: bool,
         approval_mode: crate::tui::approval::ApprovalMode,
+        translation_enabled: bool,
     ) {
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.reset_cancel_token();
@@ -895,23 +926,28 @@ impl Engine {
         self.turn_counter = self.turn_counter.saturating_add(1);
         self.capacity_controller.mark_turn_start(self.turn_counter);
 
-        // Snapshot the workspace BEFORE we touch a single tool. Run the git
-        // work on the blocking pool so the async runtime stays responsive;
-        // failure is non-fatal (the helper logs at WARN).
-        if self.config.snapshots_enabled {
-            let pre_workspace = self.session.workspace.clone();
-            let pre_seq = self.turn_counter;
-            let _ = tokio::task::spawn_blocking(move || pre_turn_snapshot(&pre_workspace, pre_seq))
-                .await;
-        }
-
-        // Emit turn started event
+        // Emit turn started event IMMEDIATELY so the UI knows the turn is
+        // active. The snapshot below can take 30+ seconds on slow filesystems
+        // (e.g. WSL2 /mnt/c) and must not delay the TurnStarted event.
         let _ = self
             .tx_event
             .send(Event::TurnStarted {
                 turn_id: turn.id.clone(),
             })
             .await;
+
+        // Snapshot the workspace BEFORE we touch a single tool. Run the git
+        // work on the blocking pool so the async runtime stays responsive;
+        // failure is non-fatal (the helper logs at WARN).
+        if self.config.snapshots_enabled {
+            let pre_workspace = self.session.workspace.clone();
+            let pre_seq = self.turn_counter;
+            let pre_cap = self.config.snapshots_max_workspace_bytes;
+            let _ = tokio::task::spawn_blocking(move || {
+                pre_turn_snapshot(&pre_workspace, pre_seq, pre_cap)
+            })
+            .await;
+        }
 
         // A new turn means any leftover retry banner (success cleared
         // it, failure pinned it) is no longer relevant — reset to idle
@@ -960,6 +996,7 @@ impl Engine {
         self.config.allow_shell = allow_shell;
         self.session.trust_mode = trust_mode;
         self.config.trust_mode = trust_mode;
+        self.config.translation_enabled = translation_enabled;
         self.session.auto_approve = auto_approve;
         self.session.approval_mode = if auto_approve {
             crate::tui::approval::ApprovalMode::Auto
@@ -1128,8 +1165,9 @@ impl Engine {
         if self.config.snapshots_enabled {
             let post_workspace = self.session.workspace.clone();
             let post_seq = self.turn_counter;
+            let post_cap = self.config.snapshots_max_workspace_bytes;
             crate::utils::spawn_blocking_supervised("post-turn-snapshot", move || {
-                post_turn_snapshot(&post_workspace, post_seq);
+                post_turn_snapshot(&post_workspace, post_seq, post_cap);
             });
         }
     }
@@ -1503,11 +1541,15 @@ impl Engine {
             ctx = ctx.with_sandbox_backend(std::sync::Arc::clone(backend));
         }
 
+        // Wire search provider config.
+        ctx.search_provider = self.config.search_provider;
+        ctx.search_api_key = self.config.search_api_key.clone();
+
         let policy = sandbox_policy_for_mode(mode, &self.session.workspace);
         let mut ctx = ctx.with_elevated_sandbox_policy(policy);
         if matches!(mode, AppMode::Plan) {
             ctx = ctx.with_shell_network_denied_hint(
-                "Shell command blocked: Plan mode runs shell commands in a read-only sandbox — no writes, no network. Use Agent mode (`/agent`) for any command that creates or modifies files, or that needs network access.",
+                "Shell command blocked: Plan mode runs shell commands in a read-only sandbox — no writes, no network. Use Agent mode (`/mode agent`) for any command that creates or modifies files, or that needs network access.",
             );
         }
         ctx
@@ -1867,6 +1909,7 @@ impl Engine {
                 goal_objective: self.config.goal_objective.as_deref(),
                 project_context_pack_enabled: self.config.project_context_pack_enabled,
                 locale_tag: &self.config.locale_tag,
+                translation_enabled: self.config.translation_enabled,
             },
             self.session.approval_mode,
         );
@@ -2037,15 +2080,19 @@ use self::streaming::{
     should_transparently_retry_stream, stream_chunk_timeout_secs,
 };
 use self::tool_catalog::{
-    CODE_EXECUTION_TOOL_NAME, MULTI_TOOL_PARALLEL_NAME, REQUEST_USER_INPUT_NAME,
-    active_tools_for_step, build_model_tool_catalog, ensure_advanced_tooling,
-    execute_code_execution_tool, execute_tool_search, initial_active_tools, is_tool_search_tool,
-    maybe_activate_requested_deferred_tool, missing_tool_error_message,
+    CODE_EXECUTION_TOOL_NAME, JS_EXECUTION_TOOL_NAME, MULTI_TOOL_PARALLEL_NAME,
+    REQUEST_USER_INPUT_NAME, active_tools_for_step, build_model_tool_catalog,
+    ensure_advanced_tooling, execute_code_execution_tool, execute_tool_search,
+    initial_active_tools, is_tool_search_tool, maybe_hydrate_requested_deferred_tool,
+    missing_tool_error_message,
 };
 #[cfg(test)]
-use self::tool_catalog::{TOOL_SEARCH_BM25_NAME, should_default_defer_tool};
+use self::tool_catalog::{
+    TOOL_SEARCH_BM25_NAME, maybe_activate_requested_deferred_tool, should_default_defer_tool,
+};
 use self::tool_execution::emit_tool_audit;
 use self::tool_setup::sandbox_policy_for_mode;
+use crate::tools::js_execution::execute_js_execution_tool;
 
 #[cfg(test)]
 mod tests;

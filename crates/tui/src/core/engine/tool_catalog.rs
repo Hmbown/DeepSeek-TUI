@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::models::Tool;
 use crate::tools::spec::{ToolError, ToolResult, required_str};
@@ -19,6 +19,7 @@ pub(super) const MULTI_TOOL_PARALLEL_NAME: &str = "multi_tool_use.parallel";
 pub(super) const REQUEST_USER_INPUT_NAME: &str = "request_user_input";
 pub(super) const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
 const CODE_EXECUTION_TOOL_TYPE: &str = "code_execution_20250825";
+pub(super) use crate::tools::js_execution::JS_EXECUTION_TOOL_NAME;
 const TOOL_SEARCH_REGEX_NAME: &str = "tool_search_tool_regex";
 const TOOL_SEARCH_REGEX_TYPE: &str = "tool_search_tool_regex_20251119";
 pub(super) const TOOL_SEARCH_BM25_NAME: &str = "tool_search_tool_bm25";
@@ -59,6 +60,7 @@ pub(super) fn should_default_defer_tool(name: &str, mode: AppMode) -> bool {
             | "diagnostics"
             | "rlm"
             | "recall_archive"
+            | "notify"
             | MULTI_TOOL_PARALLEL_NAME
             | "update_plan"
             | "checklist_write"
@@ -119,7 +121,17 @@ pub(super) fn build_model_tool_catalog(
 }
 
 pub(super) fn ensure_advanced_tooling(catalog: &mut Vec<Tool>, mode: AppMode) {
-    if mode != AppMode::Plan && !catalog.iter().any(|t| t.name == CODE_EXECUTION_TOOL_NAME) {
+    // code_execution depends on a locally-installed Python interpreter
+    // (python3 / python / py -3). Before v0.8.31, the tool was always
+    // advertised and would fail at execution time on Windows where
+    // `python3` isn't on PATH — the model treated the tool as reliable
+    // once it appeared in the catalog. We now probe at catalog-build
+    // time and only advertise when an interpreter resolves. See
+    // `crate::dependencies::resolve_python_interpreter` for the probe.
+    if mode != AppMode::Plan
+        && !catalog.iter().any(|t| t.name == CODE_EXECUTION_TOOL_NAME)
+        && crate::dependencies::resolve_python_interpreter().is_some()
+    {
         catalog.push(Tool {
             tool_type: Some(CODE_EXECUTION_TOOL_TYPE.to_string()),
             name: CODE_EXECUTION_TOOL_NAME.to_string(),
@@ -137,6 +149,18 @@ pub(super) fn ensure_advanced_tooling(catalog: &mut Vec<Tool>, mode: AppMode) {
             strict: None,
             cache_control: None,
         });
+    }
+
+    // js_execution mirrors code_execution: gate on Node.js being
+    // present locally so the model never sees a runtime it can't
+    // actually use. Plan mode hides shell/exec surfaces (including
+    // both interpreter tools) by construction; Agent / YOLO advertise
+    // the tool only when `resolve_node()` succeeds.
+    if mode != AppMode::Plan
+        && !catalog.iter().any(|t| t.name == JS_EXECUTION_TOOL_NAME)
+        && crate::dependencies::resolve_node().is_some()
+    {
+        catalog.push(crate::tools::js_execution::js_execution_tool_definition());
     }
 
     if !catalog.iter().any(|t| t.name == TOOL_SEARCH_REGEX_NAME) {
@@ -389,6 +413,7 @@ pub(super) fn missing_tool_error_message(tool_name: &str, catalog: &[Tool]) -> S
     )
 }
 
+#[cfg(test)]
 pub(super) fn maybe_activate_requested_deferred_tool(
     tool_name: &str,
     catalog: &[Tool],
@@ -403,6 +428,144 @@ pub(super) fn maybe_activate_requested_deferred_tool(
     }
 
     active_tools.insert(tool_name.to_string())
+}
+
+pub(super) fn maybe_hydrate_requested_deferred_tool(
+    tool_name: &str,
+    tool_input: &Value,
+    catalog: &[Tool],
+    active_tools_at_batch_start: &HashSet<String>,
+    hydrated_tools_this_batch: &mut HashSet<String>,
+) -> Option<ToolResult> {
+    let def = catalog.iter().find(|def| def.name == tool_name)?;
+
+    if !def.defer_loading.unwrap_or(false) || active_tools_at_batch_start.contains(tool_name) {
+        return None;
+    }
+
+    hydrated_tools_this_batch.insert(tool_name.to_string());
+    Some(deferred_tool_schema_hydration_result(def, tool_input))
+}
+
+fn deferred_tool_schema_hydration_result(tool: &Tool, tool_input: &Value) -> ToolResult {
+    let expected = schema_field_lines(tool);
+    let received = received_field_names(tool_input);
+    let corrections = likely_field_corrections(&tool.name, &received);
+
+    let expected_text = if expected.is_empty() {
+        "  (no declared fields)".to_string()
+    } else {
+        expected
+            .iter()
+            .map(|field| format!("  {field}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let received_text = if received.is_empty() {
+        "  (none)".to_string()
+    } else {
+        format!("  {}", received.join(", "))
+    };
+    let correction_text = if corrections.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nLikely correction:\n{}",
+            corrections
+                .iter()
+                .map(|field| format!("  {field}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+
+    ToolResult::success(format!(
+        "Tool `{}` was deferred and has now been loaded.\n\nExpected schema:\n{}\n\nReceived fields:\n{}{}\n\nThe tool was not executed. Retry the same operation with the loaded schema.",
+        tool.name, expected_text, received_text, correction_text
+    ))
+    .with_metadata(json!({
+        "event": "tool.schema_hydrated",
+        "tool": tool.name,
+        "executed": false,
+        "retry_required": true,
+        "reason": "deferred_tool_first_use",
+    }))
+}
+
+fn schema_field_lines(tool: &Tool) -> Vec<String> {
+    let mut required = Vec::new();
+    if let Some(items) = tool.input_schema.get("required").and_then(Value::as_array) {
+        for item in items {
+            if let Some(field) = item.as_str() {
+                required.push(field.to_string());
+            }
+        }
+    }
+
+    let Some(properties) = tool
+        .input_schema
+        .get("properties")
+        .and_then(Value::as_object)
+    else {
+        return required;
+    };
+
+    let mut fields = Vec::new();
+    let mut seen = HashSet::new();
+    for field in &required {
+        if let Some(schema) = properties.get(field) {
+            fields.push(format!("{field}: {}", schema_type_label(schema)));
+            seen.insert(field.as_str());
+        } else {
+            fields.push(field.clone());
+        }
+    }
+    for (field, schema) in properties {
+        if seen.contains(field.as_str()) {
+            continue;
+        }
+        fields.push(format!("{field}: {} (optional)", schema_type_label(schema)));
+    }
+    fields
+}
+
+fn schema_type_label(schema: &Value) -> String {
+    schema
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("value")
+        .to_string()
+}
+
+fn received_field_names(input: &Value) -> Vec<String> {
+    let mut fields = input
+        .as_object()
+        .map(|object| object.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    fields.sort();
+    fields
+}
+
+fn likely_field_corrections(tool_name: &str, received: &[String]) -> Vec<String> {
+    if tool_name != "edit_file" {
+        return Vec::new();
+    }
+
+    let has = |name: &str| received.iter().any(|field| field == name);
+    let mut corrections = Vec::new();
+    if has("old_string") {
+        corrections.push("old_string -> search".to_string());
+    } else if has("old_str") {
+        corrections.push("old_str -> search".to_string());
+    }
+    if has("new_string") {
+        corrections.push("new_string -> replace".to_string());
+    } else if has("new_str") {
+        corrections.push("new_str -> replace".to_string());
+    } else if has("replacement") {
+        corrections.push("replacement -> replace".to_string());
+    }
+    corrections
 }
 
 pub(super) fn execute_tool_search(
@@ -446,9 +609,45 @@ pub(super) async fn execute_code_execution_tool(
     workspace: &Path,
 ) -> Result<ToolResult, ToolError> {
     let code = required_str(input, "code")?;
-    let mut cmd = tokio::process::Command::new("python3");
-    cmd.arg("-c");
-    cmd.arg(code);
+
+    // Resolve the locally-installed Python interpreter we cached at
+    // catalog-build time. If it's absent now (somehow registered but
+    // disappeared between startup and this call — concurrent uninstall,
+    // PATH change, etc.) we fail fast with a clear message rather than
+    // dropping into `tokio::process::Command::new("python3")` and
+    // surfacing the cryptic "program not found" the contributor
+    // originally hit on Windows.
+    let interpreter = crate::dependencies::resolve_python_interpreter().ok_or_else(|| {
+        ToolError::execution_failed(format!(
+            "code_execution: no Python interpreter found on PATH (tried {:?}). \
+             Install Python 3 and ensure one of these is on PATH, then restart \
+             deepseek-tui.",
+            crate::dependencies::PYTHON_CANDIDATES,
+        ))
+    })?;
+    let (program, args) = crate::dependencies::split_interpreter_spec(&interpreter);
+
+    // Write the code to a temp file and execute it as a script rather
+    // than passing it via `-c "<code>"`. Reasons:
+    //   * `-c` has length limits (argv) on Windows.
+    //   * Multiline code with quote nesting is brittle through `-c`.
+    //   * Tracebacks reference a real filename instead of `<string>`,
+    //     so the model can interpret line numbers correctly.
+    // Tempfile lives only for the duration of this execution; Drop
+    // removes it. We use `.py` so any shebang / encoding-sniffer
+    // logic in the interpreter behaves normally.
+    let temp_dir = tempfile::tempdir()
+        .map_err(|e| ToolError::execution_failed(format!("tempdir failed: {e}")))?;
+    let script_path = temp_dir.path().join("code_execution.py");
+    tokio::fs::write(&script_path, code)
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("tempfile write failed: {e}")))?;
+
+    let mut cmd = tokio::process::Command::new(&program);
+    for arg in &args {
+        cmd.arg(arg);
+    }
+    cmd.arg(&script_path);
     cmd.current_dir(workspace);
 
     let output = tokio::time::timeout(Duration::from_secs(120), cmd.output())

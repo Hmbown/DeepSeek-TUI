@@ -79,6 +79,7 @@ pub fn clear(app: &mut App) -> CommandResult {
     CommandResult::with_message_and_action(
         message,
         AppAction::SyncSession {
+            session_id: None,
             messages: Vec::new(),
             system_prompt: None,
             model: app.model.clone(),
@@ -306,6 +307,21 @@ pub fn home_dashboard(app: &mut App) -> CommandResult {
     CommandResult::message(stats)
 }
 
+/// Toggle output translation to the current system language on/off.
+///
+/// When enabled, the model is instructed to respond in the current locale and an
+/// interception layer translates any remaining English output before it
+/// reaches the user.
+pub fn translate(app: &mut App) -> CommandResult {
+    app.translation_enabled = !app.translation_enabled;
+    let locale = app.ui_locale;
+    if app.translation_enabled {
+        CommandResult::message(tr(locale, MessageId::CmdTranslateOn))
+    } else {
+        CommandResult::message(tr(locale, MessageId::CmdTranslateOff))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,6 +444,18 @@ mod tests {
         app.session.total_conversation_tokens = 100;
         app.tool_log.push("test".to_string());
         app.current_session_id = Some("existing-session".to_string());
+        app.session_artifacts
+            .push(crate::artifacts::ArtifactRecord {
+                id: "art_call_big".to_string(),
+                kind: crate::artifacts::ArtifactKind::ToolOutput,
+                session_id: "existing-session".to_string(),
+                tool_call_id: "call-big".to_string(),
+                tool_name: "exec_shell".to_string(),
+                created_at: chrono::Utc::now(),
+                byte_size: 128,
+                preview: "tool output".to_string(),
+                storage_path: PathBuf::from("/tmp/tool_outputs/call-big.txt"),
+            });
 
         let result = clear(&mut app);
         assert!(result.message.is_some());
@@ -437,6 +465,7 @@ mod tests {
         assert!(app.tool_log.is_empty());
         assert!(app.tool_cells.is_empty());
         assert!(app.tool_details_by_cell.is_empty());
+        assert!(app.session_artifacts.is_empty());
         assert!(app.current_session_id.is_none());
         assert!(matches!(result.action, Some(AppAction::SyncSession { .. })));
     }

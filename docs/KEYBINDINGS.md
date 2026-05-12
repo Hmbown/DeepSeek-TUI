@@ -99,6 +99,10 @@ When `[memory] enabled = true`, typing `# foo` and pressing `Enter` appends `foo
 | `y` / `Y`            | Trust the workspace (Trust step)                   |
 | `n` / `N`            | Skip the trust prompt                              |
 
+## v0.8.29 audit notes
+
+- **`Shift+Enter` / `Alt+Enter` newlines now work in VSCode on Windows (#1359).** crossterm's `PushKeyboardEnhancementFlags` command unconditionally returns `Unsupported` on Windows (`is_ansi_code_supported() == false`), so the Kitty keyboard protocol escape was never written to the terminal. Without it, VSCode's xterm.js stays in legacy mode where `Shift+Enter` is indistinguishable from plain `Enter`, causing the composer to send the message instead of inserting a newline. The fix writes the push/pop escapes (`\x1b[>1u` / `\x1b[<1u`) directly on Windows, bypassing crossterm's capability gate. VSCode integrated terminal and Windows Terminal ≥1.17 both honour the Kitty keyboard protocol; terminals that do not understand the sequences silently discard them.
+
 ## v0.8.13 audit notes
 
 - **Ctrl-S is stash, not history search.** Fixed in this revision — `Alt-R` is history search.

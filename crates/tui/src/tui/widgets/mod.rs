@@ -17,7 +17,7 @@ pub mod tool_card;
 pub use footer::{
     FooterProps, FooterToast, FooterWidget, footer_agents_chip, footer_working_label,
 };
-pub use header::{HeaderData, HeaderWidget};
+pub use header::{HeaderData, HeaderWidget, header_status_indicator_frame};
 pub use renderable::Renderable;
 
 use std::time::Duration;
@@ -1010,6 +1010,31 @@ impl Renderable for ApprovalWidget<'_> {
             return;
         }
 
+        // Collapsed mode: a single-line banner at the bottom of the area
+        // so the user can still see the transcript behind it.
+        if self.view.collapsed {
+            let bar_y = area.y.saturating_add(area.height.saturating_sub(1));
+            let bar_area = Rect::new(area.x, bar_y, area.width, 1);
+            Clear.render(bar_area, buf);
+
+            let risk = self.request.risk;
+            let palette_colors = approval_palette(risk);
+            let summary = format!(
+                " {} — {}  [Tab to expand] ",
+                self.request.tool_name,
+                risk_badge_text(risk, self.view.locale()),
+            );
+            let line = Line::from(Span::styled(
+                summary,
+                Style::default()
+                    .fg(palette::DEEPSEEK_INK)
+                    .bg(palette_colors.accent)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            Paragraph::new(line).render(bar_area, buf);
+            return;
+        }
+
         let card_area = compute_takeover_area(area);
         Clear.render(card_area, buf);
 
@@ -1839,24 +1864,23 @@ fn build_empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         return Vec::new();
     }
 
-    let workspace_name = app
-        .workspace
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .map(std::string::ToString::to_string)
-        .unwrap_or_else(|| app.workspace.to_string_lossy().into_owned());
+    let workspace = crate::utils::display_path(&app.workspace);
     let body_width = usize::from(area.width.saturating_sub(8).clamp(24, 72));
     let left_padding = usize::from(area.width.saturating_sub(body_width as u16) / 2);
     let inset = " ".repeat(left_padding);
 
     let body = vec![
         Line::from(Span::styled(
-            format!("{inset}DeepSeek TUI"),
+            format!("{inset}>_ DeepSeek TUI (v{})", env!("CARGO_PKG_VERSION")),
             Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
         )),
+        Line::from(""),
         Line::from(Span::styled(
-            format!("{inset}{workspace_name}  ·  {}", app.model),
+            format!("{inset}model: {}  /model to switch", app.model),
+            Style::default().fg(palette::TEXT_MUTED),
+        )),
+        Line::from(Span::styled(
+            format!("{inset}directory: {workspace}"),
             Style::default().fg(palette::TEXT_MUTED),
         )),
     ];
@@ -1986,23 +2010,20 @@ pub(crate) fn slash_completion_hints(
         }
     }
 
-    // Cached skills
-    let skill_prefix = completing_skill_arg.unwrap_or(prefix);
-    let prefix_lower = skill_prefix.to_ascii_lowercase();
-    for (skill_name, skill_desc) in cached_skills {
-        let skill_name_lower = skill_name.to_ascii_lowercase();
-        let command_prefix_matches = completing_skill_arg.is_none()
-            && (prefix_lower.is_empty()
-                || "skill".starts_with(&prefix_lower)
-                || skill_name_lower.starts_with(&prefix_lower));
-        let skill_arg_matches =
-            completing_skill_arg.is_some() && skill_name_lower.starts_with(&prefix_lower);
-        if command_prefix_matches || skill_arg_matches {
-            entries.push(SlashMenuEntry {
-                name: format!("/skill {skill_name}"),
-                description: skill_desc.clone(),
-                is_skill: true,
-            });
+    // Cached skills are arguments to `/skill`, not top-level commands. Keep
+    // the top-level slash menu focused on commands and expand skills only
+    // after the user has selected the skill command.
+    let prefix_lower = completing_skill_arg.unwrap_or(prefix).to_ascii_lowercase();
+    if completing_skill_arg.is_some() {
+        for (skill_name, skill_desc) in cached_skills {
+            let skill_name_lower = skill_name.to_ascii_lowercase();
+            if skill_name_lower.starts_with(&prefix_lower) {
+                entries.push(SlashMenuEntry {
+                    name: format!("/skill {skill_name}"),
+                    description: skill_desc.clone(),
+                    is_skill: true,
+                });
+            }
         }
     }
 
@@ -2164,10 +2185,10 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 mod tests {
     use super::{
         ApprovalWidget, COMPOSER_PANEL_HEIGHT, ChatWidget, ComposerWidget, Renderable,
-        SlashMenuEntry, apply_selection_to_line, composer_height, composer_max_height,
-        composer_min_input_rows, composer_top_padding, compute_takeover_area, cursor_row_col,
-        layout_input, pad_lines_to_bottom, placeholder_visual_lines, should_render_empty_state,
-        slash_completion_hints, wrap_input_lines, wrap_text,
+        SlashMenuEntry, apply_selection_to_line, build_empty_state_lines, composer_height,
+        composer_max_height, composer_min_input_rows, composer_top_padding, compute_takeover_area,
+        cursor_row_col, layout_input, pad_lines_to_bottom, placeholder_visual_lines,
+        should_render_empty_state, slash_completion_hints, wrap_input_lines, wrap_text,
     };
     use crate::config::Config;
     use crate::localization::Locale;
@@ -2373,37 +2394,39 @@ mod tests {
     }
 
     #[test]
-    fn slash_completion_hints_include_skills() {
+    fn slash_completion_hints_hide_skills_from_top_level_menu() {
         let cached_skills = vec![
             ("search-files".to_string(), "Search files".to_string()),
             ("my-review".to_string(), "Review code".to_string()),
         ];
         let hints = slash_completion_hints("/", 128, &cached_skills, Locale::En, None);
-        assert!(
-            hints
-                .iter()
-                .any(|hint| hint.name == "/skill search-files" && hint.is_skill)
-        );
-        assert!(
-            hints
-                .iter()
-                .any(|hint| hint.name == "/skill my-review" && hint.is_skill)
-        );
+        assert!(hints.iter().any(|hint| hint.name == "/skill"));
+        assert!(hints.iter().any(|hint| hint.name == "/skills"));
+        assert!(!hints.iter().any(|hint| hint.is_skill));
     }
 
     #[test]
-    fn slash_completion_hints_skills_match_prefix() {
+    fn slash_completion_hints_hide_skills_from_top_level_prefix() {
         let cached_skills = vec![
             ("search-files".to_string(), "Search files".to_string()),
             ("my-review".to_string(), "Review code".to_string()),
         ];
         let hints = slash_completion_hints("/se", 128, &cached_skills, Locale::En, None);
-        assert!(
-            hints
-                .iter()
-                .any(|hint| hint.name == "/skill search-files" && hint.is_skill)
-        );
+        assert!(!hints.iter().any(|hint| hint.name == "/skill search-files"));
         assert!(!hints.iter().any(|hint| hint.name == "/skill my-review"));
+    }
+
+    #[test]
+    fn slash_completion_hints_complete_skill_argument_all() {
+        let cached_skills = vec![
+            ("search-files".to_string(), "Search files".to_string()),
+            ("my-review".to_string(), "Review code".to_string()),
+        ];
+        let hints = slash_completion_hints("/skill ", 128, &cached_skills, Locale::En, None);
+        assert_eq!(hints.len(), 2);
+        assert!(hints.iter().any(|hint| hint.name == "/skill search-files"));
+        assert!(hints.iter().any(|hint| hint.name == "/skill my-review"));
+        assert!(hints.iter().all(|hint| hint.is_skill));
     }
 
     #[test]
@@ -2675,6 +2698,29 @@ mod tests {
         assert!(!should_render_empty_state(&app));
     }
 
+    #[test]
+    fn empty_state_shows_startup_context() {
+        let mut app = create_test_app();
+        app.workspace = PathBuf::from("/tmp/deepseek-test-workspace");
+        app.model = "deepseek-v4-pro".to_string();
+
+        let lines = build_empty_state_lines(&app, Rect::new(0, 0, 100, 20));
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains(&format!(">_ DeepSeek TUI (v{})", env!("CARGO_PKG_VERSION"))));
+        assert!(rendered.contains("model: deepseek-v4-pro  /model to switch"));
+        assert!(rendered.contains("directory: /tmp/deepseek-test-workspace"));
+    }
+
     /// Probe: confirm `cell.lines_with_motion` returns no Line whose total
     /// visual width exceeds the requested area width, even for pathological
     /// long single-line tool results.
@@ -2687,6 +2733,8 @@ mod tests {
             output: Some("hello world ".repeat(420)),
             prompts: None,
             spillover_path: None,
+            output_summary: None,
+            is_diff: false,
         }));
         for width in [40u16, 80, 111, 165] {
             let lines = cell.lines(width);
@@ -2696,8 +2744,17 @@ mod tests {
                     .iter()
                     .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
                     .sum();
+                // Card-rail prefix (╭/│/╰ + space) adds 2 chars.
+                let rail_adjust = if line.spans.first().is_some_and(|s| {
+                    let c = s.content.as_ref();
+                    c == "\u{256D} " || c == "\u{2502} " || c == "\u{2570} "
+                }) {
+                    2usize
+                } else {
+                    0
+                };
                 assert!(
-                    visual <= usize::from(width),
+                    visual.saturating_sub(rail_adjust) <= usize::from(width),
                     "line {idx} at width {width} has visual width {visual} > {width}"
                 );
             }
@@ -2731,6 +2788,8 @@ mod tests {
                 output: Some(output),
                 prompts: None,
                 spillover_path: None,
+                output_summary: None,
+                is_diff: false,
             })));
 
             let height: u16 = 30;
@@ -3091,6 +3150,9 @@ mod tests {
     ///
     /// Run with: `cargo test -p deepseek-tui --release bench_transcript_scroll
     /// -- --ignored --nocapture`
+    // Perf bench prints timing rows to stdout — runs in `cargo test`,
+    // never inside the TUI alt-screen.
+    #[allow(clippy::print_stdout)]
     #[test]
     #[ignore = "perf bench; run with --release"]
     fn bench_transcript_scroll_5000_messages() {
@@ -3109,6 +3171,8 @@ mod tests {
                     output: Some(format!("found 12 matches in cell-{i}")),
                     prompts: None,
                     spillover_path: None,
+                    output_summary: None,
+                    is_diff: false,
                 }))
             } else if i % 2 == 0 {
                 HistoryCell::User {
