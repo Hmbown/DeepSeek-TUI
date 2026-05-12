@@ -94,6 +94,8 @@ pub enum ViewEvent {
         timed_out: bool,
         /// Fingerprint key for per‑call approval caching (§5.A).
         approval_key: String,
+        /// Persistent allow rules the approval UI generated for "save this rule".
+        persistent_rules: Vec<deepseek_execpolicy::ToolPermissionRule>,
     },
     ElevationDecision {
         tool_id: String,
