@@ -469,7 +469,17 @@ impl BackgroundShell {
     }
 
     fn job_snapshot(&self) -> ShellJobSnapshot {
-        let (stdout_full, stderr_full, stdout_len, stderr_len) = self.full_output();
+        // Use tail_from_buffer instead of full_output so we never clone the
+        // entire accumulated stdout/stderr for display purposes.  full_output
+        // is O(total_bytes_written), which caused the ShellManager mutex to be
+        // held for an arbitrarily long time during list_jobs() calls from the
+        // TUI event loop — freezing input handling on long automation runs.
+        let (stdout_len, stdout_tail) = tail_from_buffer(&self.stdout_buffer, 1200);
+        let (stderr_len, stderr_tail) = self
+            .stderr_buffer
+            .as_ref()
+            .map(|buf| tail_from_buffer(buf, 1200))
+            .unwrap_or((0, String::new()));
         ShellJobSnapshot {
             id: self.id.clone(),
             job_id: self.id.clone(),
@@ -478,8 +488,8 @@ impl BackgroundShell {
             status: self.status.clone(),
             exit_code: self.exit_code,
             elapsed_ms: u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
-            stdout_tail: tail_text(&stdout_full, 1200),
-            stderr_tail: tail_text(&stderr_full, 1200),
+            stdout_tail,
+            stderr_tail,
             stdout_len,
             stderr_len,
             stdin_available: self.stdin.is_some() && self.status == ShellStatus::Running,
@@ -1370,11 +1380,30 @@ impl ShellManager {
 }
 
 fn take_delta_from_buffer(buffer: &Arc<Mutex<Vec<u8>>>, cursor: &mut usize) -> (Vec<u8>, usize) {
-    let data = buffer.lock().map(|d| d.clone()).unwrap_or_default();
-    let start = (*cursor).min(data.len());
-    let delta = data[start..].to_vec();
-    *cursor = data.len();
-    (delta, data.len())
+    let guard = buffer.lock().unwrap_or_else(|e| e.into_inner());
+    let total = guard.len();
+    let start = (*cursor).min(total);
+    // Clone only the unread portion (the delta), not the entire accumulated buffer.
+    // Long-running processes can produce megabytes of output; cloning the full
+    // buffer on every poll held the ShellManager mutex for O(total_bytes) time.
+    let delta = guard[start..].to_vec();
+    *cursor = total;
+    (delta, total)
+}
+
+/// Read only the tail of a byte buffer and return (total_len, tail_string).
+///
+/// Avoids cloning the full buffer when only a trailing excerpt is needed
+/// (e.g. for the job-panel display).  `max_tail_chars` is in Unicode scalar
+/// values; we read at most `max_tail_chars * 4` bytes from the end to account
+/// for multi-byte UTF-8 sequences.
+fn tail_from_buffer(buffer: &Arc<Mutex<Vec<u8>>>, max_tail_chars: usize) -> (usize, String) {
+    let guard = buffer.lock().unwrap_or_else(|e| e.into_inner());
+    let total = guard.len();
+    // Over-estimate byte count (4 bytes per char worst case for UTF-8).
+    let tail_start = total.saturating_sub(max_tail_chars.saturating_mul(4));
+    let tail_str = String::from_utf8_lossy(&guard[tail_start..]).into_owned();
+    (total, tail_text(&tail_str, max_tail_chars))
 }
 
 fn tail_text(text: &str, max_chars: usize) -> String {
