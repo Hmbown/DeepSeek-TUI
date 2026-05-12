@@ -326,6 +326,7 @@ fn forked_subagent_messages_preserve_parent_prefix_then_append_task() {
         &assignment,
         &SubAgentType::General,
         Some(&fork_context),
+        None,
     );
 
     assert_eq!(
@@ -345,8 +346,13 @@ fn forked_subagent_messages_preserve_parent_prefix_then_append_task() {
 #[test]
 fn fresh_subagent_messages_keep_existing_single_turn_shape() {
     let assignment = SubAgentAssignment::new("list files".to_string(), None);
-    let messages =
-        build_initial_subagent_messages("list files", &assignment, &SubAgentType::Explore, None);
+    let messages = build_initial_subagent_messages(
+        "list files",
+        &assignment,
+        &SubAgentType::Explore,
+        None,
+        None,
+    );
 
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].role, "user");
@@ -1736,5 +1742,195 @@ fn subagent_completion_payload_carries_existing_sentinel_format() {
     assert!(
         second.contains("\"agent_id\":\"agent_test\""),
         "sentinel JSON includes agent_id"
+    );
+}
+
+#[test]
+fn inherited_notes_empty_when_file_missing() {
+    let section = build_inherited_notes_section(std::path::Path::new("/nonexistent"));
+    assert!(section.is_empty());
+}
+
+#[test]
+fn inherited_notes_skips_old_format_plain_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notes.txt");
+    std::fs::write(&path, "\n---\nplain text note with no JSON structure").unwrap();
+    let section = build_inherited_notes_section(&path);
+    assert!(
+        section.is_empty(),
+        "old-format plain text notes should not be inherited"
+    );
+}
+
+#[test]
+fn inherited_notes_includes_constraint_and_task_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notes.txt");
+    std::fs::write(
+        &path,
+        r#"
+---
+{"content": "Do not modify src/config.rs", "kind": "constraint", "inherit": true}
+---
+{"content": "Only review, do not implement", "kind": "task_scope"}
+---
+{"content": "temp observation", "kind": "observation"}
+"#,
+    )
+    .unwrap();
+    let section = build_inherited_notes_section(&path);
+    assert!(section.contains("Do not modify src/config.rs"));
+    assert!(section.contains("Only review, do not implement"));
+    assert!(
+        !section.contains("temp observation"),
+        "observation should not be inherited by default"
+    );
+}
+
+#[test]
+fn inherited_notes_respects_explicit_inherit_false() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notes.txt");
+    std::fs::write(
+        &path,
+        r#"
+---
+{"content": "This should not appear", "kind": "constraint", "inherit": false}
+"#,
+    )
+    .unwrap();
+    let section = build_inherited_notes_section(&path);
+    assert!(
+        section.is_empty(),
+        "explicit inherit=false should override kind default"
+    );
+}
+
+#[test]
+fn inherited_notes_duplicates_are_deduped() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notes.txt");
+    std::fs::write(
+        &path,
+        r#"
+---
+{"content": "Reply in Chinese", "kind": "user_preference"}
+---
+{"content": "Reply in Chinese", "kind": "user_preference"}
+"#,
+    )
+    .unwrap();
+    let section = build_inherited_notes_section(&path);
+    // "Reply in Chinese" appears twice in file, but only once in output
+    let count = section.matches("Reply in Chinese").count();
+    assert_eq!(count, 1, "duplicate notes should be deduped");
+}
+
+#[test]
+fn inherited_notes_budget_truncated_by_chars() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notes.txt");
+    let mut body = String::new();
+    for i in 1..=30 {
+        // Each note ~200 chars
+        body.push_str(&format!(
+            "\n---\n{{\"content\": \"Constraint number {}: use {} for indentation\", \"kind\": \"constraint\"}}",
+            i, i * 2,
+        ));
+    }
+    std::fs::write(&path, &body).unwrap();
+    let section = build_inherited_notes_section(&path);
+    // 4000 char budget: at ~200 chars/note, should have < 25 notes
+    assert!(section.len() <= 4500, "section must respect char budget");
+    // Should not have all 30
+    let count = section.matches("Constraint number").count();
+    assert!(count < 30, "budget should have truncated notes");
+}
+
+#[test]
+fn fresh_subagent_receives_inherited_notes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notes.txt");
+    std::fs::write(
+        &path,
+        "\n---\n{\"content\": \"Do not modify src/config.rs\", \"kind\": \"constraint\"}",
+    )
+    .unwrap();
+    let assignment = SubAgentAssignment::new("inspect parser".to_string(), None);
+    let messages = build_initial_subagent_messages(
+        "inspect parser",
+        &assignment,
+        &SubAgentType::Review,
+        None,
+        Some(&path),
+    );
+    let system_count = messages.iter().filter(|m| m.role == "system").count();
+    assert!(
+        system_count >= 1,
+        "fresh agent should receive system message with inherited notes"
+    );
+    let has_notes = messages
+        .iter()
+        .any(|m| message_text(m).contains("Do not modify src/config.rs"));
+    assert!(has_notes, "fresh agent must receive inherited constraint");
+}
+
+#[test]
+fn fork_agent_does_not_receive_duplicate_inherited_notes() {
+    let parent_system = SystemPrompt::Text("parent system".to_string());
+    let parent_message = Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "original request".to_string(),
+            cache_control: None,
+        }],
+    };
+    let fork_context = SubAgentForkContext {
+        system: Some(parent_system),
+        messages: vec![parent_message.clone()],
+        structured_state_block: None,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notes.txt");
+    std::fs::write(
+        &path,
+        "\n---\n{\"content\": \"Some constraint\", \"kind\": \"constraint\"}",
+    )
+    .unwrap();
+    let assignment = SubAgentAssignment::new("continue work".to_string(), None);
+    let messages = build_initial_subagent_messages(
+        "continue work",
+        &assignment,
+        &SubAgentType::General,
+        Some(&fork_context),
+        Some(&path),
+    );
+    // Fork agents already inherit parent context; notes should NOT be injected again.
+    let notes_count = messages
+        .iter()
+        .filter(|m| message_text(m).contains("Inherited context from parent agent"))
+        .count();
+    assert_eq!(
+        notes_count, 0,
+        "fork agents should not receive duplicate inherited notes"
+    );
+}
+
+#[test]
+fn inherited_notes_invalid_kind_falls_back_to_observation() {
+    // Invalid kind values should be silently treated as observation
+    // (not inherited), matching the defensive design.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notes.txt");
+    std::fs::write(
+        &path,
+        "\n---\n{\"content\": \"fell through\", \"kind\": \"not_a_real_kind\"}",
+    )
+    .unwrap();
+    let section = build_inherited_notes_section(&path);
+    assert!(
+        section.is_empty(),
+        "notes with invalid kind should not be inherited"
     );
 }

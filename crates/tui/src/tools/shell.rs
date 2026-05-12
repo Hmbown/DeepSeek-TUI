@@ -2666,6 +2666,15 @@ impl ToolSpec for NoteTool {
                 "content": {
                     "type": "string",
                     "description": "The note content to append"
+                },
+                "kind": {
+                    "type": "string",
+                    "description": "Note kind: constraint, task_scope, user_preference, or observation (default). Determines whether the note is inherited by sub-agents.",
+                    "enum": ["constraint", "task_scope", "user_preference", "observation"]
+                },
+                "inherit": {
+                    "type": "boolean",
+                    "description": "Whether this note should be passed to sub-agents. Overrides the default for the given kind. Default: true for constraint/task_scope/user_preference, false for observation."
                 }
             },
             "required": ["content"]
@@ -2686,6 +2695,28 @@ impl ToolSpec for NoteTool {
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let note_content = required_str(&input, "content")?;
+        const VALID_KINDS: &[&str] =
+            &["constraint", "task_scope", "user_preference", "observation"];
+        let kind = input
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("observation");
+        let valid_kind = VALID_KINDS.contains(&kind);
+        if !valid_kind {
+            tracing::warn!(
+                "NoteTool: invalid kind '{kind}' (expected one of {:?}), falling back to observation",
+                VALID_KINDS
+            );
+        }
+        let resolved_kind = if valid_kind { kind } else { "observation" };
+        let default_inherit = matches!(
+            resolved_kind,
+            "constraint" | "task_scope" | "user_preference"
+        );
+        let inherit = input
+            .get("inherit")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(default_inherit);
 
         // Ensure parent directory exists
         if let Some(parent) = context.notes_path.parent() {
@@ -2694,19 +2725,35 @@ impl ToolSpec for NoteTool {
             })?;
         }
 
-        // Append to notes file
+        // Append structured JSONL line to notes file.
+        // Format: one JSON object per line (after the initial "---\n" separator).
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&context.notes_path)
             .map_err(|e| ToolError::execution_failed(format!("Failed to open notes file: {e}")))?;
 
-        writeln!(file, "\n---\n{note_content}")
-            .map_err(|e| ToolError::execution_failed(format!("Failed to write note: {e}")))?;
+        let entry = json!({
+            "content": note_content,
+            "kind": resolved_kind,
+            "inherit": inherit,
+        });
+        writeln!(
+            file,
+            "\n---\n{}",
+            serde_json::to_string(&entry).unwrap_or_default()
+        )
+        .map_err(|e| ToolError::execution_failed(format!("Failed to write note: {e}")))?;
 
+        let inherit_note = if inherit {
+            " (inherited by sub-agents)"
+        } else {
+            ""
+        };
         Ok(ToolResult::success(format!(
-            "Note appended to {}",
-            context.notes_path.display()
+            "Note appended to {}{}",
+            context.notes_path.display(),
+            inherit_note,
         )))
     }
 }

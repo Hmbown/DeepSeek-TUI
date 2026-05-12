@@ -30,7 +30,7 @@ jobs:
             echo "apt-get update failed (attempt $i); retrying in 15s"
             sleep 15
           done
-          sudo apt-get install -y libdbus-1-dev pkg-config
+          sudo apt-get install -y libdbus-1-dev pkg-config pandoc
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -53,7 +53,7 @@ jobs:
             echo "apt-get update failed (attempt $i); retrying in 15s"
             sleep 15
           done
-          sudo apt-get install -y libdbus-1-dev pkg-config
+          sudo apt-get install -y libdbus-1-dev pkg-config pandoc
       - uses: Swatinem/rust-cache@v2
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -81,7 +81,13 @@ jobs:
             echo "apt-get update failed (attempt $i); retrying in 15s"
             sleep 15
           done
-          sudo apt-get install -y libdbus-1-dev pkg-config
+          sudo apt-get install -y libdbus-1-dev pkg-config pandoc
+      - name: Install macOS system dependencies
+        if: runner.os == 'macOS'
+        run: brew install pandoc
+      - name: Install Windows system dependencies
+        if: runner.os == 'Windows'
+        run: choco install pandoc --no-progress
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test --workspace --all-features --locked
@@ -108,7 +114,7 @@ jobs:
             echo "apt-get update failed (attempt $i); retrying in 15s"
             sleep 15
           done
-          sudo apt-get install -y libdbus-1-dev pkg-config
+          sudo apt-get install -y libdbus-1-dev pkg-config pandoc
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -134,7 +140,7 @@ jobs:
             echo "apt-get update failed (attempt $i); retrying in 15s"
             sleep 15
           done
-          sudo apt-get install -y libdbus-1-dev pkg-config
+          sudo apt-get install -y libdbus-1-dev pkg-config pandoc
       - uses: Swatinem/rust-cache@v2
       - name: Build docs
         run: cargo doc --workspace --no-deps
