@@ -1,0 +1,8 @@
+# GitGuardian configuration
+# Exclude test code that contains intentional fake/example secrets
+# used to verify our own leak detection logic.
+
+paths-ignore:
+  - "**/tests/**"
+  - "**/*_test.rs"
+  - "**/test_support.rs"
