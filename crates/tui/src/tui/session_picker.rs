@@ -2,7 +2,6 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
 use crossterm::event::{KeyCode, KeyEvent};
@@ -40,7 +39,6 @@ enum SortMode {
 }
 
 pub struct SessionPickerView {
-    /// Every session loaded from disk. The picker filters from this set.
     sessions: Vec<SessionMetadata>,
     filtered: Vec<SessionMetadata>,
     selected: usize,
@@ -53,21 +51,10 @@ pub struct SessionPickerView {
     current_preview: Vec<String>,
     confirm_delete: bool,
     status: Option<String>,
-    /// Canonical workspace path used as the per-project scope filter
-    /// (#1395). `None` opts out of scoping (e.g. when the caller can't
-    /// resolve a workspace).
-    workspace_scope: Option<PathBuf>,
-    /// When `true`, the picker shows sessions from every workspace; when
-    /// `false`, only sessions whose recorded `workspace` matches the
-    /// canonicalised `workspace_scope`.
-    show_all_workspaces: bool,
 }
 
 impl SessionPickerView {
-    /// Construct a picker scoped to `workspace`. Sessions belonging to
-    /// other workspaces are hidden by default — press `a` inside the
-    /// picker to expand to all workspaces (#1395).
-    pub fn new(workspace: &Path) -> Self {
+    pub fn new() -> Self {
         let sessions = SessionManager::default_location()
             .and_then(|manager| manager.list_sessions())
             .unwrap_or_default();
@@ -85,37 +72,10 @@ impl SessionPickerView {
             current_preview: Vec::new(),
             confirm_delete: false,
             status: None,
-            workspace_scope: Some(canonical_or_self(workspace.to_path_buf())),
-            show_all_workspaces: false,
         };
         view.apply_sort_and_filter();
         view.refresh_preview();
         view
-    }
-
-    fn matches_workspace_scope(&self, session: &SessionMetadata) -> bool {
-        if self.show_all_workspaces {
-            return true;
-        }
-        match self.workspace_scope.as_deref() {
-            None => true,
-            Some(scope) => canonical_or_self(session.workspace.clone()) == scope,
-        }
-    }
-
-    /// Flip between current-workspace-only and all-workspaces view
-    /// (#1395). Used by the `a` keybinding inside the picker; also
-    /// callable from tests.
-    pub fn toggle_all_workspaces(&mut self) {
-        self.show_all_workspaces = !self.show_all_workspaces;
-        let label = if self.show_all_workspaces {
-            "showing sessions from every workspace"
-        } else {
-            "scoped to this workspace"
-        };
-        self.status = Some(label.to_string());
-        self.selected = 0;
-        self.apply_sort_and_filter();
     }
 
     fn apply_sort_and_filter(&mut self) {
@@ -134,15 +94,16 @@ impl SessionPickerView {
         }
 
         let query = self.search_input.trim().to_ascii_lowercase();
-        self.filtered = self
-            .sessions
-            .iter()
-            .filter(|session| {
-                self.matches_workspace_scope(session)
-                    && (query.is_empty() || fuzzy_match(&query, session))
-            })
-            .cloned()
-            .collect();
+        if query.is_empty() {
+            self.filtered = self.sessions.clone();
+        } else {
+            self.filtered = self
+                .sessions
+                .iter()
+                .filter(|session| fuzzy_match(&query, session))
+                .cloned()
+                .collect();
+        }
 
         if self.selected >= self.filtered.len() {
             self.selected = 0;
@@ -353,15 +314,6 @@ impl ModalView for SessionPickerView {
                 self.cycle_sort();
                 ViewAction::None
             }
-            // `a`/`A` toggles the per-workspace scope filter (#1395). The
-            // picker defaults to showing only sessions for the current
-            // workspace so Ctrl+R never restores a different project's
-            // history by surprise; press `a` to broaden to every saved
-            // session.
-            KeyCode::Char('a') | KeyCode::Char('A') => {
-                self.toggle_all_workspaces();
-                ViewAction::None
-            }
             KeyCode::Char('d') | KeyCode::Char('D') => {
                 self.confirm_delete = true;
                 self.status = Some("Delete session? (y/n)".to_string());
@@ -515,7 +467,10 @@ fn build_list_lines(
 
 fn format_session_line(session: &SessionMetadata) -> String {
     let updated = format_relative_time(&session.updated_at);
-    let title = truncate(&session.title, 32);
+    let title = truncate(
+        crate::session_manager::extract_user_prompt(&session.title),
+        32,
+    );
     let mode = session
         .mode
         .as_deref()
@@ -533,7 +488,10 @@ fn format_session_line(session: &SessionMetadata) -> String {
 
 fn build_preview_lines(session: &SavedSession) -> Vec<String> {
     let mut out = Vec::new();
-    out.push(format!("Title: {}", session.metadata.title));
+    out.push(format!(
+        "Title: {}",
+        crate::session_manager::extract_user_prompt(&session.metadata.title)
+    ));
     out.push(format!(
         "Updated: {}",
         session
@@ -551,17 +509,43 @@ fn build_preview_lines(session: &SavedSession) -> Vec<String> {
     }
     out.push("".to_string());
 
-    for message in session.messages.iter().take(6) {
+    // Collect user + assistant messages, showing only final visible dialogue.
+    // ─ USER: strip any <turn_meta> system prefixes, show clean prompt
+    // ─ ASSISTANT: skip Thinking blocks, show only the Text (final answer)
+    // ─ Skip messages with no visible text after cleaning.
+    let mut dialogue_lines: Vec<String> = Vec::new();
+    for message in &session.messages {
         let role = message.role.to_ascii_uppercase();
         let mut text = String::new();
         for block in &message.content {
-            if let crate::models::ContentBlock::Text { text: body, .. } = block {
-                text.push_str(body);
+            match block {
+                crate::models::ContentBlock::Text { text: body, .. } => {
+                    // Strip system-invisible prefixes from user messages;
+                    // strip thinking XML tags from assistant messages
+                    let cleaned = if role == "USER" {
+                        crate::session_manager::extract_user_prompt(body).to_string()
+                    } else {
+                        crate::session_manager::strip_thinking_tags(body)
+                    };
+                    if !cleaned.trim().is_empty() {
+                        if !text.is_empty() {
+                            text.push(' ');
+                        }
+                        text.push_str(&cleaned);
+                    }
+                }
+                // Thinking blocks are internal reasoning — skip entirely
+                crate::models::ContentBlock::Thinking { .. } => {}
+                _ => {}
             }
         }
-        let preview = truncate(&text.replace('\n', " "), 120);
-        out.push(format!("{role}: {preview}"));
+        let trimmed = text.trim().to_string();
+        if !trimmed.is_empty() {
+            let preview = truncate(&trimmed.replace('\n', " "), 120);
+            dialogue_lines.push(format!("{role}: {preview}"));
+        }
     }
+    out.extend(dialogue_lines);
     out
 }
 
@@ -608,14 +592,6 @@ fn truncate(text: &str, width: u16) -> String {
     }
     out.push_str("...");
     out
-}
-
-/// Best-effort canonicalisation of a path so two recordings of the same
-/// workspace match even when one is symlinked or relative. Falls back to
-/// the input path when canonicalisation fails (e.g. for a deleted dir or
-/// during tests with tmp paths that have already been cleaned up).
-fn canonical_or_self(path: PathBuf) -> PathBuf {
-    std::fs::canonicalize(&path).unwrap_or(path)
 }
 
 fn fuzzy_match(query: &str, session: &SessionMetadata) -> bool {
@@ -667,88 +643,7 @@ mod tests {
             model: "deepseek-v4-pro".to_string(),
             workspace: std::path::PathBuf::from("/tmp"),
             mode: Some("agent".to_string()),
-            cost: crate::session_manager::SessionCostSnapshot::default(),
         }
-    }
-
-    fn test_session_in(idx: usize, title: &str, workspace: &str) -> SessionMetadata {
-        let mut s = test_session(idx, title);
-        s.workspace = std::path::PathBuf::from(workspace);
-        s
-    }
-
-    fn picker_with(sessions: Vec<SessionMetadata>, scope: Option<&str>) -> SessionPickerView {
-        let workspace_scope = scope.map(PathBuf::from);
-        let mut view = SessionPickerView {
-            sessions: sessions.clone(),
-            filtered: sessions,
-            selected: 0,
-            list_scroll: Cell::new(0),
-            list_visible_rows: Cell::new(8),
-            search_input: String::new(),
-            search_mode: false,
-            sort_mode: SortMode::Recent,
-            preview_cache: HashMap::new(),
-            current_preview: Vec::new(),
-            confirm_delete: false,
-            status: None,
-            workspace_scope,
-            show_all_workspaces: false,
-        };
-        view.apply_sort_and_filter();
-        view
-    }
-
-    #[test]
-    fn workspace_scope_filters_sessions_to_current_project() {
-        // #1395 reproduction: Ctrl+R in project B must not surface sessions
-        // from project A.
-        let sessions = vec![
-            test_session_in(1, "project-a chat", "/tmp/project-a"),
-            test_session_in(2, "project-b chat", "/tmp/project-b"),
-            test_session_in(3, "another project-a chat", "/tmp/project-a"),
-        ];
-        let view = picker_with(sessions, Some("/tmp/project-b"));
-        assert_eq!(view.filtered.len(), 1, "only project-b session should show");
-        assert_eq!(view.filtered[0].title, "project-b chat");
-    }
-
-    #[test]
-    fn workspace_scope_toggle_a_expands_to_all_workspaces() {
-        let sessions = vec![
-            test_session_in(1, "a", "/tmp/project-a"),
-            test_session_in(2, "b", "/tmp/project-b"),
-            test_session_in(3, "c", "/tmp/project-c"),
-        ];
-        let mut view = picker_with(sessions, Some("/tmp/project-b"));
-        assert_eq!(view.filtered.len(), 1);
-
-        view.toggle_all_workspaces();
-        assert_eq!(view.filtered.len(), 3, "after toggle, every session shows");
-        assert!(view.show_all_workspaces);
-        assert!(
-            view.status
-                .as_deref()
-                .map(|s| s.contains("every workspace"))
-                .unwrap_or(false),
-            "status should announce the new mode, got {:?}",
-            view.status
-        );
-
-        view.toggle_all_workspaces();
-        assert_eq!(view.filtered.len(), 1, "toggling back restores the scope");
-    }
-
-    #[test]
-    fn workspace_scope_none_means_show_all() {
-        // An unscoped picker (no workspace) lists everything — matches the
-        // pre-#1395 behaviour for any caller that opts out.
-        let sessions = vec![
-            test_session_in(1, "a", "/tmp/project-a"),
-            test_session_in(2, "b", "/tmp/project-b"),
-        ];
-        let view = picker_with(sessions, None);
-        assert_eq!(view.filtered.len(), 2);
     }
 
     #[test]
@@ -790,8 +685,6 @@ mod tests {
             current_preview: Vec::new(),
             confirm_delete: false,
             status: None,
-            workspace_scope: None,
-            show_all_workspaces: true,
         };
 
         view.selected = 6;
@@ -805,5 +698,130 @@ mod tests {
         view.selected = 9;
         view.ensure_selected_visible();
         assert_eq!(view.list_scroll.get(), 7);
+    }
+
+    // ─── build_preview_lines tests ───
+
+    fn make_saved_session(
+        messages: Vec<crate::models::Message>,
+    ) -> crate::session_manager::SavedSession {
+        use chrono::Utc;
+        crate::session_manager::SavedSession {
+            schema_version: 1,
+            metadata: crate::session_manager::SessionMetadata {
+                id: "test-session".to_string(),
+                title: "Test Session".to_string(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                message_count: messages.len(),
+                total_tokens: 100,
+                model: "deepseek-v4-pro".to_string(),
+                workspace: std::path::PathBuf::from("/tmp"),
+                mode: Some("agent".to_string()),
+            },
+            messages,
+            system_prompt: None,
+            context_references: Vec::new(),
+        }
+    }
+
+    fn msg(role: &str, text: &str) -> crate::models::Message {
+        crate::models::Message {
+            role: role.to_string(),
+            content: vec![crate::models::ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    fn msg_with_thinking(role: &str, thinking: &str, text: &str) -> crate::models::Message {
+        use crate::models::ContentBlock;
+        let mut blocks = Vec::new();
+        if !thinking.is_empty() {
+            blocks.push(ContentBlock::Thinking {
+                thinking: thinking.to_string(),
+            });
+        }
+        if !text.is_empty() {
+            blocks.push(ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            });
+        }
+        crate::models::Message {
+            role: role.to_string(),
+            content: blocks,
+        }
+    }
+
+    #[test]
+    fn build_preview_shows_user_and_assistant_messages() {
+        let session = make_saved_session(vec![msg("user", "Hello"), msg("assistant", "Hi there!")]);
+        let lines = build_preview_lines(&session);
+        assert!(lines.iter().any(|l| l.contains("USER: Hello")));
+        assert!(lines.iter().any(|l| l.contains("ASSISTANT: Hi there!")));
+    }
+
+    #[test]
+    fn build_preview_strips_turn_meta_from_user_messages() {
+        let session = make_saved_session(vec![
+            msg("user", "<turn_meta>abc</turn_meta>Fix the bug please"),
+            msg("assistant", "I'll help with that."),
+        ]);
+        let lines = build_preview_lines(&session);
+        assert!(
+            !lines.iter().any(|l| l.contains("turn_meta")),
+            "turn_meta leaked into preview"
+        );
+        assert!(lines.iter().any(|l| l.contains("USER: Fix the bug please")));
+    }
+
+    #[test]
+    fn build_preview_skips_thinking_blocks() {
+        let session = make_saved_session(vec![
+            msg("user", "What is 2+2?"),
+            msg_with_thinking("assistant", "Let me think about this...", "2+2 equals 4."),
+        ]);
+        let lines = build_preview_lines(&session);
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("thinking") || l.contains("Let me think"))
+        );
+        assert!(lines.iter().any(|l| l.contains("ASSISTANT: 2+2 equals 4")));
+    }
+
+    #[test]
+    fn build_preview_skips_empty_messages() {
+        let session = make_saved_session(vec![msg("user", ""), msg("assistant", "Response")]);
+        let lines = build_preview_lines(&session);
+        // No empty USER line
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l == "USER: " || (l.starts_with("USER: ") && l.len() <= 7))
+        );
+    }
+
+    #[test]
+    fn build_preview_handles_thinking_only_message() {
+        let session = make_saved_session(vec![
+            msg("user", "prompt"),
+            msg_with_thinking("assistant", "thinking...", ""),
+            msg("user", "follow up"),
+            msg("assistant", "answer"),
+        ]);
+        let lines = build_preview_lines(&session);
+        // The thinking-only assistant message should be skipped
+        assert!(lines.iter().any(|l| l.contains("USER: prompt")));
+        assert!(lines.iter().any(|l| l.contains("USER: follow up")));
+        assert!(lines.iter().any(|l| l.contains("ASSISTANT: answer")));
+        // No "ASSISTANT:" line for the thinking-only message
+        let assistant_count = lines.iter().filter(|l| l.starts_with("ASSISTANT:")).count();
+        assert_eq!(
+            assistant_count, 1,
+            "thinking-only assistant should be skipped"
+        );
     }
 }
