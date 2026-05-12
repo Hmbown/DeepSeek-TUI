@@ -287,6 +287,12 @@ struct ExecArgs {
     /// Emit machine-readable JSON output
     #[arg(long, default_value_t = false)]
     json: bool,
+    /// Resume a previous session by ID or prefix
+    #[arg(long, value_name = "SESSION_ID")]
+    resume: Option<String>,
+    /// Continue the most recent session for this workspace
+    #[arg(long, default_value_t = false)]
+    r#continue: bool,
 }
 
 fn join_prompt_parts(parts: &[String]) -> String {
@@ -672,15 +678,34 @@ async fn main() -> Result<()> {
             }
             Commands::Exec(args) => {
                 let config = load_config_from_cli(&cli)?;
-                let model = args
-                    .model
-                    .or_else(|| config.default_text_model.clone())
-                    .unwrap_or_else(|| config.default_model());
-                let prompt = join_prompt_parts(&args.prompt);
-                if args.auto || cli.yolo {
-                    let workspace = cli.workspace.clone().unwrap_or_else(|| {
-                        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-                    });
+                let workspace = cli.workspace.clone().unwrap_or_else(|| {
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                });
+
+                // Resolve resume session ID from --resume or --continue
+                let resume_session_id = if args.r#continue {
+                    latest_session_id_for_workspace(&workspace)
+                        .ok()
+                        .flatten()
+                        .or_else(|| {
+                            eprintln!("No recent session found for this workspace. Starting fresh.");
+                            None
+                        })
+                } else {
+                    args.resume.clone()
+                };
+
+                // When --resume/--continue is set, always route through run_exec_agent
+                // (even without --auto) so that Op::SyncSession can hydrate the engine
+                // with prior messages and thinking tokens are replayed correctly.
+                // The one-shot paths (run_one_shot / run_one_shot_json) cannot handle
+                // thinking token replay for DeepSeek V4 models.
+                if args.auto || cli.yolo || resume_session_id.is_some() {
+                    let model = args
+                        .model
+                        .or_else(|| config.default_text_model.clone())
+                        .unwrap_or_else(|| config.default_model());
+                    let prompt = join_prompt_parts(&args.prompt);
                     let max_subagents = cli.max_subagents.map_or_else(
                         || config.max_subagents(),
                         |value| value.clamp(1, MAX_SUBAGENTS),
@@ -692,14 +717,25 @@ async fn main() -> Result<()> {
                         &prompt,
                         workspace,
                         max_subagents,
-                        true,
+                        auto_mode, // only auto-approve if --auto/--yolo
                         auto_mode,
                         args.json,
+                        resume_session_id,
                     )
                     .await
                 } else if args.json {
+                    let model = args
+                        .model
+                        .or_else(|| config.default_text_model.clone())
+                        .unwrap_or_else(|| config.default_model());
+                    let prompt = join_prompt_parts(&args.prompt);
                     run_one_shot_json(&config, &model, &prompt).await
                 } else {
+                    let model = args
+                        .model
+                        .or_else(|| config.default_text_model.clone())
+                        .unwrap_or_else(|| config.default_model());
+                    let prompt = join_prompt_parts(&args.prompt);
                     run_one_shot(&config, &model, &prompt).await
                 }
             }
@@ -4381,6 +4417,7 @@ async fn run_exec_agent(
     auto_approve: bool,
     trust_mode: bool,
     json_output: bool,
+    resume_session_id: Option<String>,
 ) -> Result<()> {
     use crate::compaction::CompactionConfig;
     use crate::core::engine::{EngineConfig, spawn_engine};
@@ -4474,6 +4511,66 @@ async fn run_exec_agent(
         AppMode::Agent
     };
 
+    // If --resume/--continue was specified, load the prior session and hydrate
+    // the engine with the saved conversation history before sending the new
+    // prompt. This uses the same Op::SyncSession path that the TUI's resume
+    // flow relies on, so thinking-token replay for DeepSeek V4 models is
+    // handled correctly.
+    let mut loaded_session_id: Option<String> = None;
+    if let Some(ref session_id) = resume_session_id {
+        match crate::session_manager::SessionManager::default_location() {
+            Ok(manager) => {
+                let load_result = manager.load_session_by_prefix(session_id);
+                match load_result {
+                    Ok(saved) => {
+                        let saved_id = saved.metadata.id.clone();
+                        let saved_model = saved.metadata.model.clone();
+                        let saved_workspace = saved.metadata.workspace.clone();
+                        let saved_system_prompt = saved.system_prompt.clone();
+                        let saved_messages = saved.messages.clone();
+
+                        // Warn on workspace mismatch but don't block — the user
+                        // may intentionally resume across workspaces.
+                        if saved_workspace != workspace {
+                            eprintln!(
+                                "Warning: session {} was created in a different workspace ({}). \
+                                 Resuming anyway.",
+                                saved_id,
+                                saved_workspace.display(),
+                            );
+                        }
+
+                        let system_prompt = saved_system_prompt
+                            .map(crate::models::SystemPrompt::Text);
+
+                        engine_handle
+                            .send(Op::SyncSession {
+                                session_id: Some(saved_id.clone()),
+                                messages: saved_messages,
+                                system_prompt,
+                                model: saved_model,
+                                workspace: saved_workspace,
+                            })
+                            .await?;
+
+                        loaded_session_id = Some(saved_id);
+                        if !json_output {
+                            eprintln!("Resumed session: {}", loaded_session_id.as_deref().unwrap());
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error: could not load session '{session_id}': {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: could not open session manager: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     engine_handle
         .send(Op::SendMessage {
             content: prompt.to_string(),
@@ -4521,6 +4618,15 @@ async fn run_exec_agent(
         prompt: prompt.to_string(),
         ..ExecSummary::default()
     };
+
+    // Track the latest engine session state so we can persist it after the
+    // turn completes. The engine pushes SessionUpdated events whenever its
+    // internal session mutates (sync, add_message, compaction, …).
+    let mut latest_session_id: Option<String> = loaded_session_id;
+    let mut latest_messages: Vec<crate::models::Message> = Vec::new();
+    let mut latest_system_prompt: Option<crate::models::SystemPrompt> = None;
+    let mut latest_model: String = String::new();
+    let mut latest_workspace: PathBuf = workspace.clone();
 
     let mut stdout = io::stdout();
     let mut ends_with_newline = false;
@@ -4633,11 +4739,89 @@ async fn run_exec_agent(
                     eprintln!("error: {}", envelope.message);
                 }
             }
-            Event::TurnComplete { status, error, .. } => {
+            Event::TurnComplete { status, error, usage, .. } => {
                 summary.status = Some(format!("{status:?}").to_lowercase());
                 summary.error = error;
+
+                // Save the session so it can be resumed later with --resume.
+                if let Ok(manager) =
+                    crate::session_manager::SessionManager::default_location()
+                {
+                    if !latest_messages.is_empty() {
+                        let total_tokens: u64 =
+                            usage.input_tokens as u64 + usage.output_tokens as u64;
+
+                        let session_id = latest_session_id
+                            .as_deref()
+                            .unwrap_or_default()
+                            .to_string();
+
+                        let saved = if !session_id.is_empty() {
+                            // Try to update an existing session (resume path)
+                            match manager.load_session(&session_id) {
+                                Ok(existing) => {
+                                    crate::session_manager::update_session(
+                                        existing,
+                                        &latest_messages,
+                                        total_tokens,
+                                        latest_system_prompt.as_ref(),
+                                    )
+                                }
+                                Err(_) => {
+                                    // Existing session not found — create fresh with the same ID
+                                    crate::session_manager::create_saved_session_with_id_and_mode(
+                                        session_id,
+                                        &latest_messages,
+                                        &latest_model,
+                                        &latest_workspace,
+                                        total_tokens,
+                                        latest_system_prompt.as_ref(),
+                                        Some("exec"),
+                                    )
+                                }
+                            }
+                        } else {
+                            // Fresh session — generate a new ID
+                            crate::session_manager::create_saved_session_with_mode(
+                                &latest_messages,
+                                &latest_model,
+                                &latest_workspace,
+                                total_tokens,
+                                latest_system_prompt.as_ref(),
+                                Some("exec"),
+                            )
+                        };
+
+                        match manager.save_session(&saved) {
+                            Ok(_) => {
+                                if !json_output {
+                                    eprintln!("session: {}", saved.metadata.id);
+                                }
+                            }
+                            Err(e) => {
+                                if !json_output {
+                                    eprintln!("Warning: failed to save session: {e}");
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let _ = engine_handle.send(Op::Shutdown).await;
                 break;
+            }
+            Event::SessionUpdated {
+                session_id,
+                messages,
+                system_prompt,
+                model,
+                workspace,
+            } => {
+                latest_session_id = Some(session_id);
+                latest_messages = messages;
+                latest_system_prompt = system_prompt;
+                latest_model = model;
+                latest_workspace = workspace;
             }
             _ => {}
         }
