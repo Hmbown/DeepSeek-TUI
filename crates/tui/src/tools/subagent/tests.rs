@@ -326,6 +326,7 @@ fn forked_subagent_messages_preserve_parent_prefix_then_append_task() {
         &assignment,
         &SubAgentType::General,
         Some(&fork_context),
+        None,
     );
 
     assert_eq!(
@@ -346,7 +347,7 @@ fn forked_subagent_messages_preserve_parent_prefix_then_append_task() {
 fn fresh_subagent_messages_keep_existing_single_turn_shape() {
     let assignment = SubAgentAssignment::new("list files".to_string(), None);
     let messages =
-        build_initial_subagent_messages("list files", &assignment, &SubAgentType::Explore, None);
+        build_initial_subagent_messages("list files", &assignment, &SubAgentType::Explore, None, None);
 
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].role, "user");

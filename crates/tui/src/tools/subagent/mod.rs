@@ -4,7 +4,7 @@
 //! and retrieve results. Sub-agents run with a filtered toolset and
 //! inherit the workspace configuration from the main session.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -2632,6 +2632,105 @@ impl ToolSpec for DelegateToAgentTool {
 /// For 0.6.6 we just don't drop the role on the floor: the model sees
 /// "You are operating in the role of `{name}`." as a final line so its
 /// behavior reflects the user's choice.
+/// Read inheritable notes from the parent session's notes file.
+/// Returns a prompt section to be injected into the sub-agent's context, or empty string.
+fn build_inherited_notes_section(notes_path: &Path) -> String {
+    const MAX_INHERITED_NOTES: usize = 20;
+    const MAX_INHERITED_CHARS: usize = 4000;
+
+    let Ok(body) = std::fs::read_to_string(notes_path) else {
+        return String::new();
+    };
+
+    // Notes are stored as JSONL lines after "---\n" separators.
+    let mut notes: Vec<(String, String, bool)> = Vec::new();
+    for segment in body.split("\n---\n") {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        // Try JSON first, fall back to plain text as "observation" with no inheritance.
+        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(segment) {
+            let content = entry
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or(segment);
+            let kind = entry
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("observation");
+            let inherit = entry
+                .get("inherit")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(!matches!(kind, "observation"));
+            if inherit {
+                notes.push((kind.to_string(), content.to_string(), inherit));
+            }
+        }
+        // Plain text notes (old format) are treated as observation, not inherited.
+    }
+
+    if notes.is_empty() {
+        return String::new();
+    }
+
+    // Sort: constraint > task_scope > user_preference > others
+    fn kind_priority(kind: &str) -> u8 {
+        match kind {
+            "constraint" => 0,
+            "task_scope" => 1,
+            "user_preference" => 2,
+            _ => 3,
+        }
+    }
+    notes.sort_by_key(|(k, _, _)| kind_priority(k));
+
+    // Budget: cap by count and total chars. Dedup exact content.
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut total_chars = 0usize;
+    let mut out = String::new();
+    let mut current_kind = String::new();
+
+    let kind_labels: [(&str, &str); 3] = [
+        ("constraint", "### Constraints\n"),
+        ("task_scope", "### Task scope\n"),
+        ("user_preference", "### User preferences\n"),
+    ];
+
+    for (kind, content, _) in notes {
+        if !seen.insert(content.clone()) {
+            continue;
+        }
+        let content_len = content.len();
+        if total_chars + content_len > MAX_INHERITED_CHARS {
+            break;
+        }
+        let label = kind_labels
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .map(|(_, l)| *l)
+            .unwrap_or("### Notes\n");
+        if current_kind != kind {
+            out.push_str(label);
+            current_kind = kind.clone();
+        }
+        out.push_str(&format!("- {}\n", content));
+        total_chars += content_len;
+        if seen.len() >= MAX_INHERITED_NOTES {
+            break;
+        }
+    }
+
+    format!(
+        "## Inherited context from parent agent\n\n\
+         The following notes from the parent session apply.\n\
+         Treat `constraint` and `task_scope` notes as binding unless \
+         overridden by the current task. If any note conflicts with \
+         the explicit task, follow the task and mention the conflict.\n\n\
+         {out}"
+    )
+}
+
 fn build_subagent_system_prompt(
     agent_type: &SubAgentType,
     assignment: &SubAgentAssignment,
@@ -2662,10 +2761,22 @@ fn build_initial_subagent_messages(
     assignment: &SubAgentAssignment,
     agent_type: &SubAgentType,
     fork_context: Option<&SubAgentForkContext>,
+    notes_path: Option<&Path>,
 ) -> Vec<Message> {
     let mut messages = fork_context
         .map(|context| context.messages.clone())
         .unwrap_or_default();
+
+    // Inject inheritable notes from the parent session.
+    // Only for non-fork agents (fork agents already inherit parent context).
+    if fork_context.is_none()
+        && let Some(path) = notes_path
+    {
+        let section = build_inherited_notes_section(path);
+        if !section.is_empty() {
+            messages.push(system_text_message(section));
+        }
+    }
 
     if let Some(context) = fork_context {
         if let Some(state) = context
@@ -2860,7 +2971,7 @@ async fn run_subagent(
         .flatten();
     let request_system = subagent_request_system_prompt(&system_prompt, fork_context);
     let mut messages =
-        build_initial_subagent_messages(&prompt, &assignment, &agent_type, fork_context);
+        build_initial_subagent_messages(&prompt, &assignment, &agent_type, fork_context, Some(&runtime.context.notes_path));
     let runtime_for_tools = runtime.clone().with_fork_context(SubAgentForkContext {
         system: Some(request_system.clone()),
         messages: messages.clone(),
