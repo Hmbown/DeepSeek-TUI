@@ -4050,9 +4050,17 @@ async fn resolve_cli_auto_route(config: &Config, model: &str, prompt: &str) -> C
             auto_model: true,
         }
     } else {
+        // When --model is not `auto`, fall back to the reasoning_effort
+        // declared in the user's config.toml. The previous hard-coded `None`
+        // silently dropped the user's setting on every non-auto-route exec
+        // call, which (for example) prevented vllm + Qwen3 users from
+        // disabling thinking via `reasoning_effort = "off"` and caused
+        // 30+ second SSE idle timeouts on trivial prompts.
         CliAutoRoute {
             model: model.to_string(),
-            reasoning_effort: None,
+            reasoning_effort: config
+                .reasoning_effort()
+                .map(crate::tui::app::ReasoningEffort::from_setting),
             auto_model: false,
         }
     }
