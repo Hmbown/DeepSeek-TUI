@@ -1167,7 +1167,20 @@ async fn run_event_loop(
                         status,
                         error,
                     } => {
-                        force_terminal_repaint = true;
+                        // Only force full repaint for error/interrupted states
+                        // where child processes may have corrupted the terminal
+                        // (scroll region, origin mode). Normal Completed turns
+                        // use the incremental diff renderer — the state changes
+                        // (tool finalization, is_loading → false, status
+                        // string update) are all pure data mutations the diff
+                        // renderer handles cleanly without a clear-then-redraw
+                        // flash.
+                        if !matches!(
+                            status,
+                            crate::core::events::TurnOutcomeStatus::Completed
+                        ) {
+                            force_terminal_repaint = true;
+                        }
                         // Finalize any in-flight tool group. Cancellation
                         // marks still-running entries as Failed so the user
                         // sees they were interrupted rather than the spinner

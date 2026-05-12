@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   window drag-resize. The fix merges both into a single
   `draw_app_frame_inner(full_repaint=true)` call so the clear and the
   redraw land in one batch with no intermediate frame.
+- **TurnComplete no longer forces a full clear+redraw on successful
+  turns.** Every completed turn was unconditionally triggering
+  `force_terminal_repaint = true`, which called
+  `TERMINAL_ORIGIN_RESET` + `terminal.clear()` before redrawing —
+  a clear-then-draw cycle visible as a brief flash on every API
+  response (including intermediate tool-call completions). The
+  full-repaint path is now reserved for `Interrupted` and `Failed`
+  outcomes where child processes may have left the terminal in a
+  corrupted state; normal `Completed` turns use the incremental diff
+  renderer, which handles state transitions (tool finalization,
+  loading → ready, status updates) cleanly without clearing.
 
 ## [0.8.32] - 2026-05-12
 
