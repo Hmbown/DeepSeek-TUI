@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::commands;
 use crate::config::{Config, StatusItem, normalize_model_name};
 use crate::localization::{normalize_configured_locale, resolve_locale};
-use crate::settings::Settings;
+use crate::settings::{Settings, ThemeColorSettings};
 use crate::tui::app::{
     App, AppMode, ComposerDensity, ReasoningEffort, SidebarFocus, TranscriptSpacing,
 };
@@ -58,11 +58,17 @@ pub struct SettingsSection {
     pub show_thinking: bool,
     pub show_tool_details: bool,
     pub locale: UiLocale,
+    pub theme: ThemeValue,
     #[schemars(
         title = "Background color",
         description = "Main TUI background color as #RRGGBB"
     )]
     pub background_color: Option<String>,
+    #[schemars(
+        title = "Theme color overrides",
+        description = "Optional semantic theme colors as #RRGGBB. Leave empty to use the selected preset."
+    )]
+    pub theme_colors: ThemeColorSettings,
     pub composer_density: ComposerDensityValue,
     pub composer_border: bool,
     pub transcript_spacing: TranscriptSpacingValue,
@@ -162,6 +168,15 @@ pub enum UiLocale {
     #[serde(rename = "pt-BR")]
     #[schemars(rename = "pt-BR")]
     PtBr,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeValue {
+    System,
+    Dark,
+    Light,
+    Grayscale,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -281,7 +296,9 @@ pub fn build_document(app: &App, config: &Config) -> Result<ConfigUiDocument> {
             show_thinking: settings.show_thinking,
             show_tool_details: settings.show_tool_details,
             locale: UiLocale::from_setting(&settings.locale)?,
+            theme: ThemeValue::from_setting(&settings.theme)?,
             background_color: settings.background_color.clone(),
+            theme_colors: settings.theme_colors.clone(),
             composer_density: settings.composer_density.as_str().into(),
             composer_border: settings.composer_border,
             transcript_spacing: settings.transcript_spacing.as_str().into(),
@@ -425,45 +442,6 @@ pub fn apply_document(
     for (key, value) in [
         ("model", doc.runtime.model.as_str()),
         ("approval_mode", doc.runtime.approval_mode.as_setting()),
-        ("auto_compact", bool_str(doc.settings.auto_compact)),
-        ("calm_mode", bool_str(doc.settings.calm_mode)),
-        ("low_motion", bool_str(doc.settings.low_motion)),
-        ("fancy_animations", bool_str(doc.settings.fancy_animations)),
-        (
-            "paste_burst_detection",
-            bool_str(doc.settings.paste_burst_detection),
-        ),
-        ("show_thinking", bool_str(doc.settings.show_thinking)),
-        (
-            "show_tool_details",
-            bool_str(doc.settings.show_tool_details),
-        ),
-        ("locale", doc.settings.locale.as_setting()),
-        (
-            "background_color",
-            doc.settings
-                .background_color
-                .as_deref()
-                .unwrap_or("default"),
-        ),
-        (
-            "composer_density",
-            doc.settings.composer_density.as_setting(),
-        ),
-        ("composer_border", bool_str(doc.settings.composer_border)),
-        (
-            "transcript_spacing",
-            doc.settings.transcript_spacing.as_setting(),
-        ),
-        (
-            "status_indicator",
-            doc.settings.status_indicator.as_setting(),
-        ),
-        ("default_mode", doc.settings.default_mode.as_setting()),
-        ("sidebar_width", &doc.settings.sidebar_width.to_string()),
-        ("sidebar_focus", doc.settings.sidebar_focus.as_setting()),
-        ("max_history", &doc.settings.max_history.to_string()),
-        ("cost_currency", doc.settings.cost_currency.as_setting()),
         ("mcp_config_path", doc.config.mcp_config_path.as_str()),
     ] {
         let result = commands::set_config_value(app, key, value, persist);
@@ -480,24 +458,7 @@ pub fn apply_document(
         }
     }
 
-    // default_model is only applied when persisting (it controls the model
-    // for future sessions).  Processing it in the main loop would overwrite
-    // the runtime model the user just chose when persist=false (#346-fix).
-    if persist {
-        let default_model_val = doc.settings.default_model.as_deref().unwrap_or("default");
-        let result = commands::set_config_value(app, "default_model", default_model_val, true);
-        if result.is_error {
-            bail!(
-                "{}",
-                result
-                    .message
-                    .unwrap_or_else(|| "default_model update failed".to_string())
-            );
-        }
-        if let Some(message) = result.message {
-            notes.push(message);
-        }
-    }
+    apply_settings_document(&doc, app, persist, &mut notes)?;
 
     apply_reasoning_effort(app, config, doc.config.reasoning_effort, persist)?;
     let requires_engine_sync = app.compaction_config() != previous_compaction
@@ -534,6 +495,143 @@ pub fn apply_document(
         final_message,
         requires_engine_sync,
     })
+}
+
+fn apply_settings_document(
+    doc: &ConfigUiDocument,
+    app: &mut App,
+    persist: bool,
+    notes: &mut Vec<String>,
+) -> Result<()> {
+    let mut settings = match Settings::load() {
+        Ok(settings) => settings,
+        Err(err) if !persist => {
+            app.status_message = Some(format!(
+                "Settings unavailable; applying session-only override ({err})"
+            ));
+            Settings::default()
+        }
+        Err(err) => bail!("Failed to load settings: {err}"),
+    };
+
+    let sidebar_width = doc.settings.sidebar_width.to_string();
+    let max_history = doc.settings.max_history.to_string();
+    for (key, value) in [
+        ("auto_compact", bool_str(doc.settings.auto_compact)),
+        ("calm_mode", bool_str(doc.settings.calm_mode)),
+        ("low_motion", bool_str(doc.settings.low_motion)),
+        ("fancy_animations", bool_str(doc.settings.fancy_animations)),
+        (
+            "paste_burst_detection",
+            bool_str(doc.settings.paste_burst_detection),
+        ),
+        ("show_thinking", bool_str(doc.settings.show_thinking)),
+        (
+            "show_tool_details",
+            bool_str(doc.settings.show_tool_details),
+        ),
+        ("locale", doc.settings.locale.as_setting()),
+        ("theme", doc.settings.theme.as_setting()),
+        (
+            "background_color",
+            doc.settings
+                .background_color
+                .as_deref()
+                .unwrap_or("default"),
+        ),
+        (
+            "composer_density",
+            doc.settings.composer_density.as_setting(),
+        ),
+        ("composer_border", bool_str(doc.settings.composer_border)),
+        (
+            "transcript_spacing",
+            doc.settings.transcript_spacing.as_setting(),
+        ),
+        (
+            "status_indicator",
+            doc.settings.status_indicator.as_setting(),
+        ),
+        ("default_mode", doc.settings.default_mode.as_setting()),
+        ("sidebar_width", sidebar_width.as_str()),
+        ("sidebar_focus", doc.settings.sidebar_focus.as_setting()),
+        ("max_history", max_history.as_str()),
+        ("cost_currency", doc.settings.cost_currency.as_setting()),
+    ] {
+        settings
+            .set(key, value)
+            .with_context(|| format!("config update failed for {key}"))?;
+    }
+
+    for (key, value) in theme_color_update_values(&doc.settings.theme_colors) {
+        settings
+            .set(key, value)
+            .with_context(|| format!("theme color update failed for {key}"))?;
+    }
+
+    // default_model is only applied when persisting (it controls the model
+    // for future sessions). Applying it session-only would overwrite the
+    // runtime model the user just chose when persist=false (#346-fix).
+    if persist {
+        settings
+            .set(
+                "default_model",
+                doc.settings.default_model.as_deref().unwrap_or("default"),
+            )
+            .context("default_model update failed")?;
+        settings.save().context("Failed to save settings")?;
+        notes.push("Settings saved".to_string());
+    } else {
+        notes.push("Settings updated for this session".to_string());
+    }
+
+    sync_app_settings(app, &settings, persist);
+    Ok(())
+}
+
+fn sync_app_settings(app: &mut App, settings: &Settings, include_default_model: bool) {
+    app.auto_compact = settings.auto_compact;
+    app.calm_mode = settings.calm_mode;
+    app.low_motion = settings.low_motion;
+    app.fancy_animations = settings.fancy_animations;
+    app.use_paste_burst_detection = settings.paste_burst_detection;
+    if !app.use_paste_burst_detection {
+        app.paste_burst.clear_after_explicit_paste();
+    }
+    app.show_thinking = settings.show_thinking;
+    app.show_tool_details = settings.show_tool_details;
+    app.ui_locale = resolve_locale(&settings.locale);
+    app.ui_theme = crate::palette::ui_theme_from_settings_with_overrides(
+        &settings.theme,
+        settings.background_color.as_deref(),
+        &settings.theme_colors.as_overrides(),
+    );
+    app.cost_currency = crate::pricing::CostCurrency::from_setting(&settings.cost_currency)
+        .unwrap_or(crate::pricing::CostCurrency::Usd);
+    app.composer_density = ComposerDensity::from_setting(&settings.composer_density);
+    app.composer_border = settings.composer_border;
+    app.transcript_spacing = TranscriptSpacing::from_setting(&settings.transcript_spacing);
+    app.status_indicator = settings.status_indicator.clone();
+    app.set_mode(AppMode::from_setting(&settings.default_mode));
+    app.max_input_history = settings.max_input_history;
+    app.sidebar_width_percent = settings.sidebar_width_percent;
+    app.set_sidebar_focus(SidebarFocus::from_setting(&settings.sidebar_focus));
+
+    if include_default_model && let Some(ref model) = settings.default_model {
+        app.auto_model = model.trim().eq_ignore_ascii_case("auto");
+        app.model.clone_from(model);
+        app.last_effective_model = None;
+        if app.auto_model {
+            app.reasoning_effort = ReasoningEffort::Auto;
+            app.last_effective_reasoning_effort = None;
+        }
+        app.update_model_compaction_budget();
+        app.session.last_prompt_tokens = None;
+        app.session.last_completion_tokens = None;
+    }
+
+    app.mark_history_updated();
+    app.needs_redraw = true;
 }
 
 pub fn parse_document(value: Value) -> Result<ConfigUiDocument> {
@@ -636,6 +734,60 @@ fn parse_status_items(items: &[StatusItemValue]) -> Vec<StatusItem> {
     items.iter().copied().map(Into::into).collect()
 }
 
+fn theme_color_update_values(colors: &ThemeColorSettings) -> Vec<(&'static str, &str)> {
+    vec![
+        ("theme_colors.surface", colors.surface.as_deref().unwrap_or("default")),
+        ("theme_colors.panel", colors.panel.as_deref().unwrap_or("default")),
+        (
+            "theme_colors.elevated",
+            colors.elevated.as_deref().unwrap_or("default"),
+        ),
+        (
+            "theme_colors.composer",
+            colors.composer.as_deref().unwrap_or("default"),
+        ),
+        (
+            "theme_colors.selection",
+            colors.selection.as_deref().unwrap_or("default"),
+        ),
+        ("theme_colors.header", colors.header.as_deref().unwrap_or("default")),
+        ("theme_colors.footer", colors.footer.as_deref().unwrap_or("default")),
+        (
+            "theme_colors.mode_agent",
+            colors.mode_agent.as_deref().unwrap_or("default"),
+        ),
+        (
+            "theme_colors.mode_yolo",
+            colors.mode_yolo.as_deref().unwrap_or("default"),
+        ),
+        (
+            "theme_colors.mode_plan",
+            colors.mode_plan.as_deref().unwrap_or("default"),
+        ),
+        (
+            "theme_colors.status_ready",
+            colors.status_ready.as_deref().unwrap_or("default"),
+        ),
+        (
+            "theme_colors.status_working",
+            colors.status_working.as_deref().unwrap_or("default"),
+        ),
+        (
+            "theme_colors.status_warning",
+            colors.status_warning.as_deref().unwrap_or("default"),
+        ),
+        ("theme_colors.text_dim", colors.text_dim.as_deref().unwrap_or("default")),
+        ("theme_colors.text_hint", colors.text_hint.as_deref().unwrap_or("default")),
+        (
+            "theme_colors.text_muted",
+            colors.text_muted.as_deref().unwrap_or("default"),
+        ),
+        ("theme_colors.text_body", colors.text_body.as_deref().unwrap_or("default")),
+        ("theme_colors.text_soft", colors.text_soft.as_deref().unwrap_or("default")),
+        ("theme_colors.border", colors.border.as_deref().unwrap_or("default")),
+    ]
+}
+
 impl ApprovalModeValue {
     fn as_setting(self) -> &'static str {
         match self {
@@ -666,6 +818,28 @@ impl UiLocale {
             Some("pt-BR") => Ok(Self::PtBr),
             Some(other) => bail!("unsupported locale '{other}'"),
             None => bail!("invalid locale '{value}'"),
+        }
+    }
+}
+
+impl ThemeValue {
+    fn as_setting(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Dark => "dark",
+            Self::Light => "light",
+            Self::Grayscale => "grayscale",
+        }
+    }
+
+    fn from_setting(value: &str) -> Result<Self> {
+        match crate::palette::normalize_theme_name(value) {
+            Some("system") => Ok(Self::System),
+            Some("dark") => Ok(Self::Dark),
+            Some("light") => Ok(Self::Light),
+            Some("grayscale") => Ok(Self::Grayscale),
+            Some(other) => bail!("unsupported theme '{other}'"),
+            None => bail!("invalid theme '{value}'"),
         }
     }
 }
@@ -1027,6 +1201,57 @@ background_color = "#1A1B26"
     }
 
     #[test]
+    fn build_document_reflects_theme_and_color_overrides_from_settings() {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let temp_root = std::env::temp_dir().join(format!(
+            "deepseek-config-ui-theme-colors-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(temp_root.join(".deepseek")).expect("config dir");
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        fs::write(&config_path, "").expect("seed config");
+        fs::write(
+            temp_root.join(".deepseek").join("settings.toml"),
+            r##"
+theme = "grayscale"
+
+[theme_colors]
+panel = "#202124"
+text_body = "F8F8F2"
+"##,
+        )
+        .expect("seed settings");
+
+        let old_config_path = std::env::var_os("DEEPSEEK_CONFIG_PATH");
+        unsafe {
+            std::env::set_var("DEEPSEEK_CONFIG_PATH", &config_path);
+        }
+
+        let app = app();
+        let config = Config::default();
+        let doc = build_document(&app, &config).expect("document");
+
+        assert_eq!(doc.settings.theme, ThemeValue::Grayscale);
+        assert_eq!(doc.settings.theme_colors.panel.as_deref(), Some("#202124"));
+        assert_eq!(
+            doc.settings.theme_colors.text_body.as_deref(),
+            Some("#f8f8f2")
+        );
+        unsafe {
+            if let Some(value) = old_config_path {
+                std::env::set_var("DEEPSEEK_CONFIG_PATH", value);
+            } else {
+                std::env::remove_var("DEEPSEEK_CONFIG_PATH");
+            }
+        }
+    }
+
+    #[test]
     fn schema_contains_typed_enums() {
         let schema = build_schema();
         let approval_mode = &schema["$defs"]["ApprovalModeValue"]["enum"];
@@ -1038,6 +1263,11 @@ background_color = "#1A1B26"
         assert_eq!(
             locale,
             &serde_json::json!(["auto", "en", "ja", "zh-Hans", "pt-BR"])
+        );
+        let theme = &schema["$defs"]["ThemeValue"]["enum"];
+        assert_eq!(
+            theme,
+            &serde_json::json!(["system", "dark", "light", "grayscale"])
         );
     }
 
