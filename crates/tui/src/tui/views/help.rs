@@ -9,8 +9,9 @@
 //! Keys: any printable character extends the filter, `Backspace` (or `Ctrl+H`)
 //! shrinks it,
 //! `↑`/`↓` (or `Ctrl+P`/`Ctrl+N`) move the selection, `PgUp`/`PgDn` jump by
-//! ten rows, `Home`/`End` jump to ends, and `Esc` closes. Pressing `?` again
-//! at the call-site (`tui::ui`) also toggles the overlay closed.
+//! ten rows, `Home`/`End` jump to ends, and `Esc` (or `Ctrl+C` / `Ctrl+G`)
+//! closes. Pressing `?` again at the call-site (`tui::ui`) also toggles the
+//! overlay closed.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -246,6 +247,15 @@ impl ModalView for HelpView {
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
         match key.code {
             KeyCode::Esc => ViewAction::Close,
+            // `Ctrl+C` (universal terminal cancel) and `Ctrl+G` (emacs
+            // "keyboard quit") both close the overlay so users have a
+            // dependable escape hatch when `Esc` is intercepted by their
+            // terminal or input method (#1559). `q` is intentionally not a
+            // close key because `q` is a valid filter character and would
+            // make it impossible to search for commands like `/quit`.
+            KeyCode::Char('c' | 'g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                ViewAction::Close
+            }
             KeyCode::Up => {
                 self.move_selection(-1);
                 ViewAction::None
@@ -574,6 +584,49 @@ mod tests {
         let mut view = HelpView::new();
         let action = view.handle_key(key(KeyCode::Esc));
         assert!(matches!(action, ViewAction::Close));
+    }
+
+    #[test]
+    fn ctrl_c_closes_overlay() {
+        // #1559: terminals/IMEs occasionally swallow Esc; Ctrl+C is the
+        // universal cancel gesture and must give users a reliable exit.
+        let mut view = HelpView::new();
+        let action = view.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(
+            matches!(action, ViewAction::Close),
+            "Ctrl+C must close the help overlay"
+        );
+    }
+
+    #[test]
+    fn ctrl_g_closes_overlay() {
+        // Emacs convention — `Ctrl+G` is "keyboard quit"; matching it keeps
+        // muscle memory consistent for users who reach for it instinctively.
+        let mut view = HelpView::new();
+        let action = view.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert!(
+            matches!(action, ViewAction::Close),
+            "Ctrl+G must close the help overlay"
+        );
+    }
+
+    #[test]
+    fn plain_c_still_filters_after_ctrl_c_close_binding() {
+        // Regression guard for the close binding above: a bare `c` must keep
+        // typing into the filter so users can search for `/clear`, `/compact`,
+        // etc. — only the Ctrl-modified variant closes.
+        let mut view = HelpView::new();
+        let total = view.filtered.len();
+        let action = view.handle_key(key(KeyCode::Char('c')));
+        assert!(
+            matches!(action, ViewAction::None),
+            "plain `c` must not close the overlay"
+        );
+        assert!(
+            view.filtered.len() <= total,
+            "plain `c` should narrow (or hold) the filtered set, not close"
+        );
+        assert_eq!(view.query, "c", "plain `c` should append to the filter");
     }
 
     #[test]
