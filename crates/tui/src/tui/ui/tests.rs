@@ -2485,6 +2485,19 @@ fn apply_slash_menu_selection_appends_space_for_arg_commands() {
 }
 
 #[test]
+fn apply_slash_menu_selection_keeps_change_executable_without_version() {
+    let mut app = create_test_app();
+    let entries = vec![crate::tui::widgets::SlashMenuEntry {
+        name: "/change".to_string(),
+        description: String::new(),
+        is_skill: false,
+    }];
+
+    assert!(apply_slash_menu_selection(&mut app, &entries, true));
+    assert_eq!(app.input, "/change");
+}
+
+#[test]
 fn apply_slash_menu_selection_uses_skill_command_form() {
     let mut app = create_test_app();
     let entries = vec![crate::tui::widgets::SlashMenuEntry {

@@ -60,7 +60,7 @@ pub fn build_entries(
             description.push_str("  ");
             description.push_str(command.usage);
         }
-        let action = if command_runs_directly(command.name) {
+        let action = if command.runs_directly_from_palette() {
             CommandPaletteAction::ExecuteCommand {
                 command: format!("/{}", command.name),
             }
@@ -389,44 +389,6 @@ fn section_rank(section: PaletteSection) -> usize {
         PaletteSection::Tool => 2,
         PaletteSection::Mcp => 3,
     }
-}
-
-fn command_runs_directly(name: &str) -> bool {
-    matches!(
-        name,
-        "help"
-            | "clear"
-            | "exit"
-            | "models"
-            | "queue"
-            | "stash"
-            | "hooks"
-            | "subagents"
-            | "links"
-            | "home"
-            | "save"
-            | "sessions"
-            | "compact"
-            | "export"
-            | "config"
-            | "yolo"
-            | "agent"
-            | "plan"
-            | "trust"
-            | "logout"
-            | "tokens"
-            | "system"
-            | "context"
-            | "undo"
-            | "retry"
-            | "init"
-            | "settings"
-            | "skills"
-            | "cost"
-            | "jobs"
-            | "mcp"
-            | "task"
-    )
 }
 
 fn format_tool_details(name: &str, description: &str, tags: &[&str]) -> String {
@@ -958,6 +920,26 @@ mod tests {
         assert!(matches!(
             &model.action,
             CommandPaletteAction::InsertText { text } if text == "/model "
+        ));
+    }
+
+    #[test]
+    fn command_palette_runs_change_without_requiring_version() {
+        let entries = build_entries(
+            Locale::En,
+            Path::new("."),
+            Path::new("."),
+            Path::new("mcp.json"),
+            None,
+        );
+        let change = entries
+            .iter()
+            .find(|entry| entry.section == PaletteSection::Command && entry.label == "/change")
+            .expect("change command entry");
+
+        assert!(matches!(
+            &change.action,
+            CommandPaletteAction::ExecuteCommand { command } if command == "/change"
         ));
     }
 

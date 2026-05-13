@@ -113,6 +113,49 @@ impl CommandInfo {
         self.usage.contains('<') || self.usage.contains('[')
     }
 
+    pub fn appends_space_on_menu_selection(&self) -> bool {
+        self.requires_argument() && !self.runs_directly_from_palette()
+    }
+
+    pub fn runs_directly_from_palette(&self) -> bool {
+        matches!(
+            self.name,
+            "help"
+                | "clear"
+                | "exit"
+                | "models"
+                | "queue"
+                | "stash"
+                | "hooks"
+                | "subagents"
+                | "links"
+                | "home"
+                | "save"
+                | "sessions"
+                | "compact"
+                | "export"
+                | "config"
+                | "yolo"
+                | "agent"
+                | "plan"
+                | "trust"
+                | "logout"
+                | "tokens"
+                | "change"
+                | "system"
+                | "context"
+                | "undo"
+                | "retry"
+                | "init"
+                | "settings"
+                | "skills"
+                | "cost"
+                | "jobs"
+                | "mcp"
+                | "task"
+        )
+    }
+
     pub fn palette_command(&self) -> String {
         if self.requires_argument() {
             format!("/{} ", self.name)
@@ -396,7 +439,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "change",
         aliases: &[],
-        usage: "/change",
+        usage: "/change [version]",
         description_id: MessageId::CmdChangeDescription,
     },
     CommandInfo {
@@ -574,7 +617,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "cache" => debug::cache(app, arg),
 
         // ChangeLog command
-        "change" => change::change(app),
+        "change" => change::change(app, arg),
         "system" => debug::system_prompt(app),
         "context" | "ctx" => debug::context(app),
         "edit" => debug::edit(app),

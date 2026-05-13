@@ -241,6 +241,7 @@ pub enum MessageId {
     CmdChangeHeader,
     CmdChangeTranslationQueued,
     CmdChangeTranslationUnavailable,
+    CmdChangePreviousVersion,
     CmdClearDescription,
     CmdCompactDescription,
     CmdConfigDescription,
@@ -538,6 +539,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdChangeHeader,
     MessageId::CmdChangeTranslationQueued,
     MessageId::CmdChangeTranslationUnavailable,
+    MessageId::CmdChangePreviousVersion,
     MessageId::CmdCostReport,
     MessageId::CmdTokensCacheBoth,
     MessageId::CmdTokensCacheHitOnly,
@@ -880,6 +882,9 @@ fn english(id: MessageId) -> &'static str {
         }
         MessageId::CmdChangeTranslationUnavailable => {
             "English release notes are shown below. Translation is unavailable because the current session has no API key or is offline."
+        }
+        MessageId::CmdChangePreviousVersion => {
+            "Previous version: {version} — run `/change {version}` to view it"
         }
         MessageId::CmdClearDescription => "Clear conversation history",
         MessageId::CmdCompactDescription => {
@@ -1247,6 +1252,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdChangeTranslationUnavailable => {
             "英語のリリースノートを以下に表示します。現在のセッションに API キーがないかオフラインのため、翻訳は利用できません。"
         }
+        MessageId::CmdChangePreviousVersion => {
+            "前のバージョン: {version} — `/change {version}` で表示"
+        }
         MessageId::CmdClearDescription => "会話履歴をクリア",
         MessageId::CmdCompactDescription => {
             "コンテキスト圧縮で容量を確保（旧式：v0.6.6 以降はサイクル再起動を推奨）"
@@ -1588,6 +1596,9 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdChangeTranslationUnavailable => {
             "下面显示英文发布说明。当前会话没有 API Key 或处于离线状态，无法翻译。"
         }
+        MessageId::CmdChangePreviousVersion => {
+            "上一个版本: {version} —— 输入 `/change {version}` 查看"
+        }
         MessageId::CmdClearDescription => "清除对话历史",
         MessageId::CmdCompactDescription => {
             "触发上下文压缩以释放空间（旧版命令；v0.6.6 起建议改用循环重启）"
@@ -1894,6 +1905,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdChangeTranslationUnavailable => {
             "As notas de versao em ingles aparecem abaixo. A traducao esta indisponivel porque a sessao atual nao tem chave de API ou esta offline."
+        }
+        MessageId::CmdChangePreviousVersion => {
+            "Versão anterior: {version} — execute `/change {version}` para visualizar"
         }
         MessageId::CmdClearDescription => "Limpar o histórico da conversa",
         MessageId::CmdCompactDescription => {
