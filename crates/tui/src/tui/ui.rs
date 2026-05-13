@@ -7295,16 +7295,10 @@ fn windows_kitty_keyboard_supported_with(
     wt_session: Option<&str>,
     term_program: Option<&str>,
 ) -> bool {
-    if wt_session.is_some_and(|s| !s.is_empty()) {
-        return true;
-    }
-    matches!(
-        term_program
+    wt_session.is_some_and(|s| !s.is_empty())
+        || term_program
             .filter(|s| !s.is_empty())
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
-        Some("vscode")
-    )
+            .is_some_and(|s| s.eq_ignore_ascii_case("vscode"))
 }
 
 /// Re-establish terminal mode flags. Idempotent and best-effort: each
