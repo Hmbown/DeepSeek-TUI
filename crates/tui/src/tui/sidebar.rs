@@ -1909,7 +1909,7 @@ mod tests {
     use crate::config::Config;
     use crate::palette::PaletteMode;
     use crate::tools::plan::StepStatus;
-    use crate::tools::todo::{TodoItem, TodoStatus};
+    use crate::tools::todo::TodoStatus;
     use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{App, TaskPanelEntry, TuiOptions};
     use crate::tui::history::{
