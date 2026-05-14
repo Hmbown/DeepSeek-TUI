@@ -831,20 +831,6 @@ pub struct AutoConfig {
     pub cost_saving: Option<bool>,
 }
 
-/// Per-model context tuning.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-pub struct PerModelContextConfig {
-    #[serde(default)]
-    pub l1_threshold: Option<usize>,
-    #[serde(default)]
-    pub l2_threshold: Option<usize>,
-    #[serde(default)]
-    pub l3_threshold: Option<usize>,
-    #[serde(default)]
-    pub cycle_threshold: Option<usize>,
-}
-
 /// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
