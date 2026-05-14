@@ -195,7 +195,7 @@ function installFailureHint(error) {
     "  If GitHub is unavailable on this network, mirror the release assets and set:",
     "    DEEPSEEK_TUI_RELEASE_BASE_URL=https://<mirror>/<release-asset-directory>/",
     "  The directory must contain deepseek-artifacts-sha256.txt and the platform binaries.",
-    "  See docs/INSTALL.md#npm-download-is-slow-or-times-out-from-mainland-china.",
+    "  See docs/INSTALL.md#npm-binary-download-times-out.",
   ].join("\n");
 }
 
@@ -790,6 +790,12 @@ async function withRetry(label, fn, context = "runtime") {
       logInfo(
         `${label} failed (attempt ${attempt}/${attemptLimit}): ${err.message}; retrying in ${wait} ms`,
       );
+      if (attempt === 1) {
+        const hint = installFailureHint(err);
+        if (hint) {
+          process.stderr.write(`${hint}\n`);
+        }
+      }
       await sleep(wait);
     }
   }
@@ -979,8 +985,55 @@ async function verifyChecksum(filePath, assetName, checksums) {
   }
 }
 
+async function checksumMatches(filePath, assetName, checksums) {
+  const expected = checksums.get(assetName);
+  if (!expected) {
+    throw new NonRetryableError(`Checksum manifest is missing ${assetName}`);
+  }
+  const actual = await sha256File(filePath);
+  return actual === expected;
+}
+
 async function loadChecksums(version, repo, options = {}) {
   return parseChecksumManifest(await downloadText(checksumManifestUrl(version, repo), options));
+}
+
+function existingBinaryCandidates(targetPath, assetName) {
+  const candidates = [targetPath];
+  const assetPath = path.join(path.dirname(targetPath), assetName);
+  if (assetPath !== targetPath) {
+    candidates.push(assetPath);
+  }
+  return candidates;
+}
+
+async function adoptExistingBinaryIfValid(targetPath, assetName, version, getChecksums, marker) {
+  const candidates = [];
+  for (const candidate of existingBinaryCandidates(targetPath, assetName)) {
+    if (await fileExists(candidate)) {
+      candidates.push(candidate);
+    }
+  }
+  if (candidates.length === 0) {
+    return false;
+  }
+
+  const checksums = await getChecksums();
+  for (const candidate of candidates) {
+    if (!(await checksumMatches(candidate, assetName, checksums))) {
+      continue;
+    }
+    preflightGlibc(candidate);
+    if (candidate !== targetPath) {
+      await rename(candidate, targetPath);
+    }
+    if (process.platform !== "win32") {
+      await chmod(targetPath, 0o755);
+    }
+    await writeFile(marker, String(version), "utf8");
+    return true;
+  }
+  return false;
 }
 
 async function ensureBinary(targetPath, assetName, version, repo, getChecksums, options = {}) {
@@ -994,6 +1047,9 @@ async function ensureBinary(targetPath, assetName, version, repo, getChecksums, 
       if (markerVersion === String(version)) {
         return targetPath;
       }
+    }
+    if (await adoptExistingBinaryIfValid(targetPath, assetName, version, getChecksums, marker)) {
+      return targetPath;
     }
   }
   const checksums = await getChecksums();
@@ -1071,9 +1127,11 @@ module.exports = {
   run,
   _internal: {
     isOptionalInstall,
+    adoptExistingBinaryIfValid,
     shouldIgnoreInstallFailure,
     defaultTimeoutMs,
     defaultStallMs,
+    ensureBinary,
     maxAttempts,
     withRetry,
   },

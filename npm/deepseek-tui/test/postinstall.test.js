@@ -89,3 +89,42 @@ test("optional install still swallows wrapped http 5xx failures", async () => {
     }
   }
 });
+
+test("withRetry prints install hint on first retryable failure", async () => {
+  const previousWrite = process.stderr.write;
+  const previousSetTimeout = global.setTimeout;
+  let stderr = "";
+  let attempts = 0;
+  process.stderr.write = (chunk) => {
+    stderr += String(chunk);
+    return true;
+  };
+  global.setTimeout = (callback) => {
+    callback();
+    return 0;
+  };
+
+  try {
+    const result = await _internal.withRetry(
+      "fetch https://github.com/example",
+      async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          const err = new Error("connect ETIMEDOUT 20.205.243.166:443");
+          err.code = "ETIMEDOUT";
+          throw err;
+        }
+        return "ok";
+      },
+      "runtime",
+    );
+
+    assert.equal(result, "ok");
+    assert.equal(attempts, 2);
+    assert.match(stderr, /deepseek-tui install hint:/);
+    assert.match(stderr, /#npm-binary-download-times-out/);
+  } finally {
+    process.stderr.write = previousWrite;
+    global.setTimeout = previousSetTimeout;
+  }
+});

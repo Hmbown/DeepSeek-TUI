@@ -475,6 +475,36 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(DiagnosticsTool))
     }
 
+    /// Include the `pandoc_convert` tool only when the `pandoc`
+    /// binary is present on this host. Same probe-then-decide
+    /// pattern v0.8.31 introduced for Python — when pandoc is
+    /// missing the tool is not registered, so the model never
+    /// sees a binary it can't actually use.
+    #[must_use]
+    pub fn with_pandoc_tools(self) -> Self {
+        if crate::dependencies::resolve_pandoc().is_some() {
+            use super::pandoc::PandocConvertTool;
+            self.with_tool(Arc::new(PandocConvertTool))
+        } else {
+            self
+        }
+    }
+
+    /// Include the `image_ocr` tool only when the `tesseract`
+    /// binary is present on this host. Probe-then-decide mirroring
+    /// `with_pandoc_tools` — when tesseract is missing the tool
+    /// stays out of the catalog, so the model never tries to call
+    /// an OCR engine the host can't actually run.
+    #[must_use]
+    pub fn with_image_ocr_tools(self) -> Self {
+        if crate::dependencies::resolve_tesseract().is_some() {
+            use super::image_ocr::ImageOcrTool;
+            self.with_tool(Arc::new(ImageOcrTool))
+        } else {
+            self
+        }
+    }
+
     /// Include the `load_skill` tool (#434) so the model can pull a
     /// SKILL.md body + companion file list into context with one
     /// call instead of `read_file` + `list_dir` against the path
@@ -554,6 +584,25 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(GithubCloseIssueTool))
     }
 
+    /// Include only read-only durable task, PR-attempt, GitHub, and automation
+    /// inspection tools. Plan mode uses this surface so it can observe state
+    /// without starting work, changing remotes, or mutating automation config.
+    #[must_use]
+    pub fn with_runtime_read_only_task_tools(self) -> Self {
+        use super::automation::{AutomationListTool, AutomationReadTool};
+        use super::github::{GithubIssueContextTool, GithubPrContextTool};
+        use super::tasks::{PrAttemptListTool, PrAttemptReadTool, TaskListTool, TaskReadTool};
+
+        self.with_tool(Arc::new(TaskListTool))
+            .with_tool(Arc::new(TaskReadTool))
+            .with_tool(Arc::new(GithubIssueContextTool))
+            .with_tool(Arc::new(GithubPrContextTool))
+            .with_tool(Arc::new(PrAttemptListTool))
+            .with_tool(Arc::new(PrAttemptReadTool))
+            .with_tool(Arc::new(AutomationListTool))
+            .with_tool(Arc::new(AutomationReadTool))
+    }
+
     /// Include web search tools.
     #[must_use]
     pub fn with_web_tools(self) -> Self {
@@ -565,6 +614,14 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(FetchUrlTool))
             .with_tool(Arc::new(FinanceTool::new()))
             .with_tool(Arc::new(WebRunTool))
+    }
+
+    /// Register the `image_analyze` vision tool.
+    /// Only registered when `[vision_model]` is configured in config.toml.
+    #[must_use]
+    pub fn with_vision_tools(self, config: crate::config::VisionModelConfig) -> Self {
+        use crate::vision::tools::ImageAnalyzeTool;
+        self.with_tool(Arc::new(ImageAnalyzeTool::new(config)))
     }
 
     /// Previously registered the OpenAI-style `multi_tool_use.parallel`
@@ -603,15 +660,22 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(RevertTurnTool))
     }
 
-    /// Include the RLM tool (`rlm`). Runs the full recursive language-model
-    /// loop on a long input (file or inline content); the long input never
-    /// enters the calling model's context window. The Python REPL exposes
-    /// `llm_query` / `llm_query_batched` / `rlm_query` / `rlm_query_batched`
-    /// helpers for sub-LLM work — that's where parallel fan-out belongs.
+    /// Include persistent RLM session tools.
     #[must_use]
-    pub fn with_rlm_tool(self, client: Option<DeepSeekClient>, root_model: String) -> Self {
-        use super::rlm::RlmTool;
-        self.with_tool(Arc::new(RlmTool::new(client, root_model)))
+    pub fn with_rlm_tool(self, client: Option<DeepSeekClient>, _root_model: String) -> Self {
+        use super::rlm::{RlmCloseTool, RlmConfigureTool, RlmEvalTool, RlmOpenTool};
+        self.with_tool(Arc::new(RlmOpenTool))
+            .with_tool(Arc::new(RlmEvalTool::new(client)))
+            .with_tool(Arc::new(RlmConfigureTool))
+            .with_tool(Arc::new(RlmCloseTool))
+    }
+
+    /// Include `handle_read`, the bounded projection reader for symbolic
+    /// `var_handle` payloads.
+    #[must_use]
+    pub fn with_handle_tools(self) -> Self {
+        use super::handle::HandleReadTool;
+        self.with_tool(Arc::new(HandleReadTool))
     }
 
     /// Include the review tool.
@@ -651,6 +715,18 @@ impl ToolRegistryBuilder {
     pub fn with_remember_tool(self) -> Self {
         use super::remember::RememberTool;
         self.with_tool(Arc::new(RememberTool))
+    }
+
+    /// Include the `notify` tool — model-callable desktop notification
+    /// (#1322). Routes through the existing `tui::notifications` OSC 9 /
+    /// BEL pipeline so the user's `[notifications].method` config is
+    /// honoured automatically (including `off`). Always safe to register
+    /// because the tool has no side effects beyond a single terminal
+    /// escape write.
+    #[must_use]
+    pub fn with_notify_tool(self) -> Self {
+        use super::notify::NotifyTool;
+        self.with_tool(Arc::new(NotifyTool))
     }
 
     /// Include MCP tools from a connected pool as first-class registry
@@ -700,8 +776,11 @@ impl ToolRegistryBuilder {
             .with_test_runner_tool()
             .with_validation_tools()
             .with_tool_result_retrieval_tool()
+            .with_handle_tools()
             .with_runtime_task_tools()
-            .with_revert_turn_tool();
+            .with_revert_turn_tool()
+            .with_pandoc_tools()
+            .with_image_ocr_tools();
 
         if allow_shell {
             builder.with_shell_tools()
@@ -769,51 +848,14 @@ impl ToolRegistryBuilder {
         manager: super::subagent::SharedSubAgentManager,
         runtime: super::subagent::SubAgentRuntime,
     ) -> Self {
-        use super::subagent::{
-            AgentAssignTool, AgentCancelTool, AgentCloseTool, AgentListTool, AgentResultTool,
-            AgentResumeTool, AgentSendInputTool, AgentSpawnTool, AgentWaitTool,
-            DelegateToAgentTool,
-        };
+        use super::subagent::{AgentCloseTool, AgentEvalTool, AgentOpenTool};
 
-        self.with_tool(Arc::new(AgentSpawnTool::new(
+        self.with_tool(Arc::new(AgentOpenTool::new(
             manager.clone(),
             runtime.clone(),
         )))
-        .with_tool(Arc::new(AgentSpawnTool::with_name(
-            manager.clone(),
-            runtime.clone(),
-            "spawn_agent",
-        )))
-        .with_tool(Arc::new(DelegateToAgentTool::new(
-            manager.clone(),
-            runtime.clone(),
-        )))
-        .with_tool(Arc::new(AgentResultTool::new(manager.clone())))
-        .with_tool(Arc::new(AgentSendInputTool::new(
-            manager.clone(),
-            "send_input",
-        )))
-        .with_tool(Arc::new(AgentAssignTool::new(
-            manager.clone(),
-            "agent_assign",
-        )))
-        .with_tool(Arc::new(AgentAssignTool::new(
-            manager.clone(),
-            "assign_agent",
-        )))
-        .with_tool(Arc::new(AgentWaitTool::new(manager.clone(), "wait")))
-        .with_tool(Arc::new(AgentSendInputTool::new(
-            manager.clone(),
-            "agent_send_input",
-        )))
-        .with_tool(Arc::new(AgentWaitTool::new(manager.clone(), "agent_wait")))
-        .with_tool(Arc::new(AgentResumeTool::new(
-            manager.clone(),
-            runtime.clone(),
-        )))
-        .with_tool(Arc::new(AgentCloseTool::new(manager.clone())))
-        .with_tool(Arc::new(AgentCancelTool::new(manager.clone())))
-        .with_tool(Arc::new(AgentListTool::new(manager)))
+        .with_tool(Arc::new(AgentEvalTool::new(manager.clone())))
+        .with_tool(Arc::new(AgentCloseTool::new(manager)))
     }
 
     /// Build the registry with the given context.

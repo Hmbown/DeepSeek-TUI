@@ -20,7 +20,13 @@ pub fn visible_slash_menu_entries(app: &App, limit: usize) -> Vec<SlashMenuEntry
     if app.slash_menu_hidden {
         return Vec::new();
     }
-    slash_completion_hints(&app.input, limit, &app.cached_skills, app.ui_locale)
+    slash_completion_hints(
+        &app.input,
+        limit,
+        &app.cached_skills,
+        app.ui_locale,
+        Some(&app.workspace),
+    )
 }
 
 /// Apply the currently-selected slash menu entry to the composer input.
@@ -42,6 +48,7 @@ pub fn apply_slash_menu_selection(
         && !command.ends_with(' ')
         && !command.contains(char::is_whitespace)
         && let Some(info) = commands::get_command_info(command.trim_start_matches('/'))
+        && info.name != "change"
         && (info.usage.contains('<') || info.usage.contains('['))
     {
         command.push(' ');
@@ -63,10 +70,16 @@ pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
         return false;
     }
 
-    let candidates = slash_completion_hints(&app.input, 128, &app.cached_skills, app.ui_locale)
-        .into_iter()
-        .map(|entry| entry.name)
-        .collect::<Vec<_>>();
+    let candidates = slash_completion_hints(
+        &app.input,
+        128,
+        &app.cached_skills,
+        app.ui_locale,
+        Some(&app.workspace),
+    )
+    .into_iter()
+    .map(|entry| entry.name)
+    .collect::<Vec<_>>();
 
     if candidates.is_empty() {
         return false;

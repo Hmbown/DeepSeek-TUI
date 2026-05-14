@@ -40,7 +40,7 @@ impl ToolSpec for GrepFilesTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search for a regex pattern in files within the workspace. Returns matching lines with context."
+        "Search for a regex pattern in workspace files. Use this instead of `grep -r`, `rg`, or `find ... -exec grep` in `exec_shell` — pure-Rust, faster, and respects `.gitignore`. Returns matching lines with context (default: 2 lines before/after each match)."
     }
 
     fn input_schema(&self) -> Value {
@@ -213,15 +213,36 @@ impl ToolSpec for GrepFilesTool {
             }
         }
 
-        // Build result
+        let matches_json: Vec<Value> = results
+            .iter()
+            .map(|item| grep_match_to_json(item, context_lines))
+            .collect();
+
+        // Build result. When context_lines == 1, return the single context
+        // line as a string instead of a one-item array. That keeps the common
+        // "show just the adjacent line" case easy for model callers to read.
         let result = json!({
-            "matches": results,
+            "matches": matches_json,
             "total_matches": total_matches,
             "files_searched": files_searched,
             "truncated": total_matches > max_results,
         });
 
         ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))
+    }
+}
+
+fn grep_match_to_json(item: &GrepMatch, context_lines: usize) -> Value {
+    if context_lines == 1 {
+        json!({
+            "file": item.file,
+            "line_number": item.line_number,
+            "line": item.line,
+            "context_before": item.context_before.first().cloned().unwrap_or_default(),
+            "context_after": item.context_after.first().cloned().unwrap_or_default(),
+        })
+    } else {
+        json!(item)
     }
 }
 
@@ -260,6 +281,16 @@ fn collect_files_recursive(
     for entry in entries {
         let entry = entry.map_err(|e| ToolError::execution_failed(e.to_string()))?;
         let path = entry.path();
+        let file_type = entry.file_type().map_err(|e| {
+            ToolError::execution_failed(format!(
+                "Failed to inspect file type for {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+        if file_type.is_symlink() {
+            continue;
+        }
 
         // Get relative path for pattern matching
         let relative = path.strip_prefix(root).unwrap_or(&path);
@@ -270,9 +301,9 @@ fn collect_files_recursive(
             continue;
         }
 
-        if path.is_dir() {
+        if file_type.is_dir() {
             collect_files_recursive(root, &path, include_patterns, exclude_patterns, files)?;
-        } else if path.is_file() {
+        } else if file_type.is_file() {
             // Check inclusions (if any specified)
             if include_patterns.is_empty() || should_include(&relative_str, include_patterns) {
                 files.push(path);
@@ -305,7 +336,7 @@ fn should_include(path: &str, patterns: &[String]) -> bool {
 
 /// Simple glob pattern matching
 /// Supports: * (any chars), ** (any path), ? (single char)
-fn matches_glob(path: &str, pattern: &str) -> bool {
+pub(crate) fn matches_glob(path: &str, pattern: &str) -> bool {
     // Handle ** for any path
     if pattern.contains("**") {
         let parts: Vec<&str> = pattern.split("**").collect();
@@ -492,6 +523,34 @@ mod tests {
         assert!(result.success);
         assert!(result.content.contains("line2")); // context before
         assert!(result.content.contains("line4")); // context after
+
+        let parsed: Value = serde_json::from_str(&result.content).unwrap();
+        let matches = parsed["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["context_before"], "line2");
+        assert_eq!(matches[0]["context_after"], "line4");
+        assert!(matches[0]["context_before"].is_string());
+        assert!(matches[0]["context_after"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_grep_files_multi_line_context_remains_arrays() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        fs::write(tmp.path().join("test.txt"), "a\nb\nMATCH\nd\ne\n").expect("write");
+
+        let tool = GrepFilesTool;
+        let result = tool
+            .execute(json!({"pattern": "MATCH", "context_lines": 2}), &ctx)
+            .await
+            .expect("execute");
+
+        let parsed: Value = serde_json::from_str(&result.content).unwrap();
+        let matches = parsed["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["context_before"], json!(["a", "b"]));
+        assert_eq!(matches[0]["context_after"], json!(["d", "e"]));
     }
 
     #[tokio::test]
@@ -542,6 +601,31 @@ mod tests {
                 .next()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
         );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_grep_files_does_not_follow_symlinked_files() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path().join("workspace");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&root).expect("mkdir workspace");
+        std::fs::create_dir_all(&outside).expect("mkdir outside");
+        let outside_file = outside.join("secret.txt");
+        fs::write(&outside_file, "NEEDLE\n").expect("write outside");
+        std::os::unix::fs::symlink(&outside_file, root.join("secret.txt")).expect("symlink");
+
+        let ctx = ToolContext::new(root);
+        let tool = GrepFilesTool;
+        let result = tool
+            .execute(json!({"pattern": "NEEDLE"}), &ctx)
+            .await
+            .expect("execute");
+
+        assert!(result.success);
+        let parsed: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(parsed["total_matches"].as_u64().unwrap(), 0);
+        assert_eq!(parsed["files_searched"].as_u64().unwrap(), 0);
     }
 
     #[tokio::test]

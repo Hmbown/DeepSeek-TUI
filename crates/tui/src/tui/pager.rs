@@ -10,6 +10,7 @@
 //! - `Ctrl+F` / PageDown / Space — full page down
 //! - `Ctrl+B` / PageUp / Shift+Space — full page up
 //! - `/` — start search; `n` / `N` — next / previous match
+//! - `c` / `y` — copy the entire pager body to the system clipboard
 //! - `q` / Esc — close pager
 
 use std::cell::Cell;
@@ -25,12 +26,13 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::palette;
-use crate::tui::views::{ModalKind, ModalView, ViewAction};
+use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 
 /// Footer hint shown along the bottom border of the pager. Kept short so it
 /// fits on narrow terminals; full reference lives in the module docs.
-const FOOTER_HINT: &str =
-    " j/k scroll  Space/b page  Ctrl+D/U half  g/G top/bottom  / search  q quit ";
+const FOOTER_HINT_NAV: &str =
+    " j/k scroll  Space page  Ctrl+D/U half  g/G top/bottom  / search  c copy";
+const FOOTER_HINT_EXIT: &str = " q/Esc close ";
 
 pub struct PagerView {
     title: String,
@@ -92,6 +94,16 @@ impl PagerView {
 
     fn scroll_to_bottom(&mut self, max_scroll: usize) {
         self.scroll = max_scroll;
+    }
+
+    /// Plain-text body of the pager joined with `\n`, suitable for sending
+    /// to the system clipboard via `ViewEvent::CopyToClipboard`. Reflects the
+    /// content the user sees, including any width-based wrapping that
+    /// `from_text` introduced — copying the visible text is the expected
+    /// affordance when the user can't reach terminal-native selection inside
+    /// the modal (#1354).
+    pub fn body_text(&self) -> String {
+        self.plain_lines.join("\n")
     }
 
     /// Return the page height (in lines) used for paging keys.
@@ -321,6 +333,20 @@ impl ModalView for PagerView {
                 self.pending_g = false;
                 ViewAction::None
             }
+            // Copy the entire pager body to the clipboard. The pager
+            // intercepts mouse capture so terminal-native selection is
+            // disabled inside it; without this binding users with no
+            // out-of-band copy path would have no way to extract content
+            // they can see (#1354). Both `c` and `y` are wired so users
+            // landing from either OS-clipboard or vim convention find a
+            // working key.
+            KeyCode::Char('c') | KeyCode::Char('y') => {
+                self.pending_g = false;
+                ViewAction::Emit(ViewEvent::CopyToClipboard {
+                    text: self.body_text(),
+                    label: "Pager content".to_string(),
+                })
+            }
             _ => ViewAction::None,
         }
     }
@@ -416,10 +442,15 @@ impl ModalView for PagerView {
             )));
         }
 
-        let footer = Line::from(Span::styled(
-            FOOTER_HINT,
-            Style::default().fg(palette::TEXT_HINT),
-        ));
+        let footer = Line::from(vec![
+            Span::styled(
+                FOOTER_HINT_EXIT,
+                Style::default()
+                    .fg(palette::DEEPSEEK_SKY)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(FOOTER_HINT_NAV, Style::default().fg(palette::TEXT_HINT)),
+        ]);
         let block = Block::default()
             .title(self.title.clone())
             .title_bottom(footer)
@@ -657,13 +688,63 @@ mod tests {
     #[test]
     fn footer_hint_includes_new_bindings() {
         // The rendered pager must surface the new vim-style bindings to
-        // the user; check the footer string covers the headline keys.
-        for needle in &["j/k", "g/G", "Space", "Ctrl+D", "/ search", "q quit"] {
+        // the user; check the footer hint covers the headline keys.
+        for needle in &[
+            "j/k",
+            "g/G",
+            "Space",
+            "Ctrl+D",
+            "/ search",
+            "c copy",
+            "q/Esc close",
+        ] {
+            let full_hint = format!("{FOOTER_HINT_EXIT}{FOOTER_HINT_NAV}");
             assert!(
-                FOOTER_HINT.contains(needle),
-                "footer hint missing {needle:?}: {FOOTER_HINT}"
+                full_hint.contains(needle),
+                "footer hint missing {needle:?}: {full_hint}"
             );
         }
+    }
+
+    #[test]
+    fn c_emits_copy_event_with_full_body() {
+        // #1354: the pager intercepts mouse capture, so users have no way to
+        // copy content out without an in-app key. Both `c` and `y` should
+        // emit a CopyToClipboard event carrying the whole body so the host
+        // dispatcher (in ui.rs) can write through `app.clipboard` and toast
+        // a confirmation.
+        let mut p = make_pager(3);
+        let action = p.handle_key(key(KeyCode::Char('c')));
+        match action {
+            ViewAction::Emit(ViewEvent::CopyToClipboard { text, label }) => {
+                assert_eq!(text, "line-000\nline-001\nline-002");
+                assert_eq!(label, "Pager content");
+            }
+            other => panic!("expected CopyToClipboard emit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn y_emits_copy_event_for_vim_users() {
+        let mut p = make_pager(3);
+        let action = p.handle_key(key(KeyCode::Char('y')));
+        assert!(
+            matches!(action, ViewAction::Emit(ViewEvent::CopyToClipboard { .. })),
+            "y must emit a copy event for vim-yank parity"
+        );
+    }
+
+    #[test]
+    fn copy_keys_inert_in_search_mode() {
+        // Within `/`-search mode `c` and `y` must be treated as search
+        // characters, not as a copy trigger — otherwise users typing a
+        // query that contains either letter would lose their input.
+        let mut p = make_pager(10);
+        let _ = p.handle_key(key(KeyCode::Char('/')));
+        assert!(p.search_mode);
+        let action = p.handle_key(key(KeyCode::Char('c')));
+        assert!(matches!(action, ViewAction::None));
+        assert_eq!(p.search_input, "c");
     }
 
     #[test]
@@ -681,7 +762,7 @@ mod tests {
             bottom.push_str(buf[(x, popup_bottom_y as u16)].symbol());
         }
         assert!(
-            bottom.contains("j/k") || bottom.contains("scroll"),
+            bottom.contains("close") || bottom.contains("scroll"),
             "expected footer hint on bottom border row {popup_bottom_y}, got: {bottom:?}"
         );
     }

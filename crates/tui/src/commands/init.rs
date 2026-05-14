@@ -1,6 +1,7 @@
 //! /init command - Generate AGENTS.md for project
 
 use std::fmt::Write;
+use std::io::Read;
 use std::path::Path;
 
 use crate::tui::app::App;
@@ -11,25 +12,79 @@ use super::CommandResult;
 pub fn init(app: &mut App) -> CommandResult {
     let workspace = &app.workspace;
 
-    // Check if AGENTS.md already exists
+    // Ensure .deepseek/ is gitignored if we're inside a git repo.
+    ensure_deepseek_gitignored(workspace);
+
+    // Check if AGENTS.md already exists — update it in place rather than refusing.
     let agents_path = workspace.join("AGENTS.md");
-    if agents_path.exists() {
-        return CommandResult::message(format!(
-            "AGENTS.md already exists at {}. Delete it first to reinitialize.",
-            agents_path.display()
-        ));
-    }
+    let already_exists = agents_path.exists();
 
     // Detect project type and generate appropriate content
     let content = generate_project_doc(workspace);
 
     // Write the file
     match std::fs::write(&agents_path, &content) {
-        Ok(()) => CommandResult::message(format!(
-            "Created AGENTS.md at {}\n\nEdit this file to customize agent behavior for your project.",
-            agents_path.display()
-        )),
-        Err(e) => CommandResult::error(format!("Failed to create AGENTS.md: {e}")),
+        Ok(()) => {
+            let verb = if already_exists { "Updated" } else { "Created" };
+            CommandResult::message(format!(
+                "{verb} AGENTS.md at {}\n\nEdit this file to customize agent behavior for your project.",
+                agents_path.display()
+            ))
+        }
+        Err(e) => CommandResult::error(format!("Failed to write AGENTS.md: {e}")),
+    }
+}
+
+/// If `workspace` is inside a git repository, ensure `.deepseek/` is listed
+/// in the nearest `.gitignore` so that snapshots, instructions, and other
+/// workspace-local state are not accidentally committed.
+fn ensure_deepseek_gitignored(workspace: &Path) {
+    // Only act if this workspace is a git repo.
+    if !workspace.join(".git").exists() {
+        return;
+    }
+
+    let gitignore = workspace.join(".gitignore");
+    let entry = ".deepseek/";
+
+    // Read existing contents (if any) and check whether the entry is already present.
+    // Check both with and without trailing slash to catch variants like
+    // ".deepseek" and ".deepseek/".
+    if let Ok(existing) = std::fs::read_to_string(&gitignore) {
+        let entry_no_slash = entry.trim_end_matches('/');
+        if existing.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed == entry || trimmed == entry_no_slash
+        }) {
+            return; // already ignored
+        }
+    }
+
+    // Append the entry. If .gitignore doesn't exist yet, create it with a header.
+    // Ensure there's a trailing newline before our entry to avoid joining with
+    // a previous unterminated line.
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&gitignore)
+    {
+        // If the file is non-empty and doesn't end with a newline, add one first.
+        if let Ok(meta) = file.metadata()
+            && meta.len() > 0
+        {
+            // Read last byte to check for trailing newline.
+            if let Ok(mut f) = std::fs::File::open(&gitignore) {
+                use std::io::Seek;
+                if f.seek(std::io::SeekFrom::End(-1)).is_ok() {
+                    let mut buf = [0u8; 1];
+                    if f.read_exact(&mut buf).is_ok() && buf[0] != b'\n' {
+                        let _ = writeln!(file);
+                    }
+                }
+            }
+        }
+        let _ = writeln!(file, "{entry}");
     }
 }
 
@@ -200,18 +255,19 @@ mod tests {
     }
 
     #[test]
-    fn test_init_is_noop_if_exists() {
+    fn test_init_updates_if_exists() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
-        // Create file first
-        std::fs::write(tmpdir.path().join("AGENTS.md"), "existing").unwrap();
+        // Create file first with stale content
+        let agents_path = tmpdir.path().join("AGENTS.md");
+        std::fs::write(&agents_path, "existing stale content").unwrap();
         let result = init(&mut app);
-        assert!(
-            !result.is_error,
-            "existing AGENTS.md is an idempotent no-op, not an error"
-        );
+        assert!(!result.is_error);
         assert!(result.message.is_some());
-        assert!(result.message.unwrap().contains("already exists"));
+        assert!(result.message.unwrap().contains("Updated AGENTS.md"));
+        let new_content = std::fs::read_to_string(&agents_path).unwrap();
+        assert!(new_content.contains("# Project Instructions"));
+        assert!(!new_content.contains("existing stale content"));
     }
 
     #[test]
@@ -280,5 +336,84 @@ version = "1.0.0"
     fn test_extract_cargo_name_not_found() {
         let cargo = "[package]\nversion = \"1.0.0\"";
         assert_eq!(extract_cargo_name(cargo), None);
+    }
+
+    #[test]
+    fn ensure_deepseek_gitignored_creates_gitignore() {
+        let tmpdir = TempDir::new().unwrap();
+        // Simulate a git repo.
+        std::fs::create_dir_all(tmpdir.path().join(".git")).unwrap();
+
+        ensure_deepseek_gitignored(tmpdir.path());
+
+        let content = std::fs::read_to_string(tmpdir.path().join(".gitignore")).unwrap();
+        assert!(content.contains(".deepseek/"));
+    }
+
+    #[test]
+    fn ensure_deepseek_gitignored_appends_to_existing() {
+        let tmpdir = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmpdir.path().join(".git")).unwrap();
+        std::fs::write(tmpdir.path().join(".gitignore"), "target/\n").unwrap();
+
+        ensure_deepseek_gitignored(tmpdir.path());
+
+        let content = std::fs::read_to_string(tmpdir.path().join(".gitignore")).unwrap();
+        assert!(content.contains("target/"));
+        assert!(content.contains(".deepseek/"));
+    }
+
+    #[test]
+    fn ensure_deepseek_gitignored_idempotent() {
+        let tmpdir = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmpdir.path().join(".git")).unwrap();
+
+        ensure_deepseek_gitignored(tmpdir.path());
+        ensure_deepseek_gitignored(tmpdir.path());
+
+        let content = std::fs::read_to_string(tmpdir.path().join(".gitignore")).unwrap();
+        assert_eq!(content.matches(".deepseek/").count(), 1);
+    }
+
+    #[test]
+    fn ensure_deepseek_gitignored_skips_non_git_repo() {
+        let tmpdir = TempDir::new().unwrap();
+        // No .git directory — not a git repo.
+
+        ensure_deepseek_gitignored(tmpdir.path());
+
+        assert!(!tmpdir.path().join(".gitignore").exists());
+    }
+
+    #[test]
+    fn ensure_deepseek_gitignored_handles_no_trailing_newline() {
+        let tmpdir = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmpdir.path().join(".git")).unwrap();
+        // Write a file that does NOT end with a newline.
+        std::fs::write(tmpdir.path().join(".gitignore"), "target/").unwrap();
+
+        ensure_deepseek_gitignored(tmpdir.path());
+
+        let content = std::fs::read_to_string(tmpdir.path().join(".gitignore")).unwrap();
+        // Must have both entries on separate lines.
+        assert!(content.contains("target/"));
+        assert!(content.contains(".deepseek/"));
+        // The entries should be on different lines.
+        let lines: Vec<&str> = content.lines().collect();
+        assert!(lines.len() >= 2);
+    }
+
+    #[test]
+    fn ensure_deepseek_gitignored_detects_variant_without_slash() {
+        let tmpdir = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmpdir.path().join(".git")).unwrap();
+        // Write .deepseek without trailing slash.
+        std::fs::write(tmpdir.path().join(".gitignore"), ".deepseek\n").unwrap();
+
+        ensure_deepseek_gitignored(tmpdir.path());
+
+        let content = std::fs::read_to_string(tmpdir.path().join(".gitignore")).unwrap();
+        // Should NOT add a duplicate entry.
+        assert_eq!(content.matches(".deepseek").count(), 1);
     }
 }

@@ -7,14 +7,16 @@
 //! (`format = "markdown"`); pass `format = "raw"` to keep the bytes intact
 //! when the model wants to do its own parsing.
 
+use super::handle::query_jsonpath;
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
 };
-use crate::network_policy::{Decision, NetworkPolicyDecider, host_from_url};
+use crate::network_policy::{Decision, NetworkPolicyDecider};
 use async_trait::async_trait;
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -73,9 +75,12 @@ impl Format {
 struct FetchResponse {
     url: String,
     status: u16,
+    headers: BTreeMap<String, String>,
     content_type: String,
     content: String,
     truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fields: Option<BTreeMap<String, Vec<Value>>>,
 }
 
 pub struct FetchUrlTool;
@@ -87,7 +92,7 @@ impl ToolSpec for FetchUrlTool {
     }
 
     fn description(&self) -> &'static str {
-        "Fetch a known URL directly (HTTP GET) and return its content. Use this when the user gives a URL or you already know the canonical link — it's faster and more reliable than web_search for known pages."
+        "Fetch a known URL directly (HTTP GET) and return its content. Use this instead of `curl` in `exec_shell` — sandboxed, network-policy aware, and properly decoded. Plain-text endpoints (`.md`, `.txt`, `.json`, `.yaml`, `raw.githubusercontent.com`, public APIs) prefer this over the browser/automation stack. For unknown queries, use `web_search` first."
     }
 
     fn input_schema(&self) -> Value {
@@ -110,6 +115,11 @@ impl ToolSpec for FetchUrlTool {
                 "timeout_ms": {
                     "type": "integer",
                     "description": "Request timeout in milliseconds (default 15,000; max 60,000)."
+                },
+                "fields": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional JSONPath projections for JSON responses. Supports $, .field, [index], [*], and ['field']; returns matches under `fields`."
                 }
             },
             "required": ["url"]
@@ -142,91 +152,58 @@ impl ToolSpec for FetchUrlTool {
             ));
         }
 
-        // Extract host once for reuse across network policy + SSRF checks.
-        let url_host = host_from_url(&url);
-
-        // Per-domain network policy gate (#135). If no policy is attached
-        // (e.g. ad-hoc tests), behavior is permissive — match pre-v0.7.0.
-        if let Some(decider) = context.network_policy.as_ref()
-            && let Some(ref host) = url_host
-        {
-            match decider.evaluate(host, "fetch_url") {
-                Decision::Allow => {}
-                Decision::Deny => {
-                    return Err(ToolError::permission_denied(format!(
-                        "network call to '{host}' blocked by network policy"
-                    )));
-                }
-                Decision::Prompt => {
-                    return Err(ToolError::permission_denied(format!(
-                        "network call to '{host}' requires approval; \
-                         re-run after `/network allow {host}` or set network.default = \"allow\" in config"
-                    )));
-                }
-            }
-        }
-
-        // SSRF protection: resolve hostname and reject private/link-local/loopback IPs.
-        // Prevents LLM-prompted requests to cloud metadata (169.254.169.254),
-        // localhost services, and internal networks.
-        // Pin the validated IP via ClientBuilder::resolve() to close the DNS rebinding
-        // TOCTOU window — reqwest will use the pinned IP instead of re-resolving.
-        let mut dns_pinning = None; // (hostname, validated_ip)
-        if let Some(host) = &url_host {
-            if host == "localhost" || host == "localhost.localdomain" {
-                return Err(ToolError::permission_denied(
-                    "requests to localhost are not allowed",
-                ));
-            }
-            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-                if is_restricted_ip(&ip) {
-                    return Err(ToolError::permission_denied(format!(
-                        "IP {ip} is a restricted address (private/loopback/link-local)"
-                    )));
-                }
-            } else if let Ok(addrs) = tokio::net::lookup_host((&**host, 0u16)).await {
-                let mut first_valid: Option<std::net::IpAddr> = None;
-                for addr in addrs {
-                    validate_dns_resolved_ip(host, &addr.ip(), context.network_policy.as_ref())?;
-                    if first_valid.is_none() {
-                        first_valid = Some(addr.ip());
-                    }
-                }
-                if let Some(validated_ip) = first_valid {
-                    dns_pinning = Some((host.clone(), validated_ip));
-                }
-            }
-            // If DNS resolution fails, let the HTTP request proceed and fail naturally.
-        }
-
         let format = Format::parse(input.get("format").and_then(Value::as_str))?;
         let max_bytes = optional_u64(&input, "max_bytes", DEFAULT_MAX_BYTES).min(HARD_MAX_BYTES);
         let timeout_ms =
             optional_u64(&input, "timeout_ms", DEFAULT_TIMEOUT_MS).min(HARD_MAX_TIMEOUT_MS);
+        let requested_fields = parse_fields(&input)?;
+        let mut current_url = reqwest::Url::parse(&url)
+            .map_err(|e| ToolError::invalid_input(format!("invalid URL: {e}")))?;
+        let mut redirects_followed = 0usize;
 
-        let mut client_builder = reqwest::Client::builder()
-            .timeout(Duration::from_millis(timeout_ms))
-            .user_agent(USER_AGENT)
-            .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS));
+        let resp = loop {
+            let dns_pinning = validate_fetch_target(&current_url, context).await?;
+            let mut client_builder = reqwest::Client::builder()
+                .timeout(Duration::from_millis(timeout_ms))
+                .user_agent(USER_AGENT)
+                .redirect(reqwest::redirect::Policy::none());
 
-        // Pin validated IP to prevent DNS rebinding (TOCTOU) — reqwest will
-        // connect to the validated IP directly instead of re-resolving.
-        if let Some((hostname, validated_ip)) = dns_pinning {
-            client_builder =
-                client_builder.resolve(&hostname, std::net::SocketAddr::new(validated_ip, 0));
-        }
+            // Pin validated IP to prevent DNS rebinding (TOCTOU) — reqwest will
+            // connect to the validated IP directly instead of re-resolving.
+            if let Some((hostname, validated_ip)) = dns_pinning {
+                client_builder =
+                    client_builder.resolve(&hostname, std::net::SocketAddr::new(validated_ip, 0));
+            }
 
-        let client = client_builder.build().map_err(|e| {
-            ToolError::execution_failed(format!("failed to build HTTP client: {e}"))
-        })?;
+            let client = client_builder.build().map_err(|e| {
+                ToolError::execution_failed(format!("failed to build HTTP client: {e}"))
+            })?;
 
-        let resp = client
-            .get(&url)
-            .header("Accept", "text/html,text/plain,application/json,*/*;q=0.5")
-            .header("Accept-Language", "en-US,en;q=0.5")
-            .send()
-            .await
-            .map_err(|e| ToolError::execution_failed(format!("request failed: {e}")))?;
+            let resp = client
+                .get(current_url.clone())
+                .header("Accept", "text/html,text/plain,application/json,*/*;q=0.5")
+                .header("Accept-Language", "en-US,en;q=0.5")
+                .send()
+                .await
+                .map_err(|e| ToolError::execution_failed(format!("request failed: {e}")))?;
+
+            if !resp.status().is_redirection() || redirects_followed >= MAX_REDIRECTS {
+                break resp;
+            }
+
+            let Some(location) = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+            else {
+                break resp;
+            };
+
+            current_url = resp.url().join(location).map_err(|e| {
+                ToolError::execution_failed(format!("invalid redirect location: {e}"))
+            })?;
+            redirects_followed += 1;
+        };
 
         let final_url = resp.url().to_string();
         let status = resp.status();
@@ -236,6 +213,7 @@ impl ToolSpec for FetchUrlTool {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("application/octet-stream")
             .to_string();
+        let headers = response_headers(resp.headers());
 
         let bytes = resp
             .bytes()
@@ -250,6 +228,7 @@ impl ToolSpec for FetchUrlTool {
         };
 
         let body_text = String::from_utf8_lossy(usable).to_string();
+        let fields = project_json_fields(&body_text, &content_type, &requested_fields)?;
         let processed = match format {
             Format::Raw => body_text,
             Format::Text | Format::Markdown => {
@@ -264,9 +243,11 @@ impl ToolSpec for FetchUrlTool {
         let response = FetchResponse {
             url: final_url,
             status: status.as_u16(),
+            headers,
             content_type,
             content: processed,
             truncated,
+            fields,
         };
 
         if !status.is_success() {
@@ -327,6 +308,78 @@ fn is_restricted_ip(ip: &std::net::IpAddr) -> bool {
     }
 }
 
+async fn validate_fetch_target(
+    url: &reqwest::Url,
+    context: &ToolContext,
+) -> Result<Option<(String, std::net::IpAddr)>, ToolError> {
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err(ToolError::invalid_input(
+            "only http:// and https:// URLs are supported",
+        ));
+    }
+
+    let host = url
+        .host_str()
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| ToolError::invalid_input("URL must include a host"))?;
+
+    validate_network_policy(&host, context)?;
+
+    // SSRF protection: resolve hostname and reject private/link-local/loopback IPs.
+    // Prevents LLM-prompted requests to cloud metadata (169.254.169.254),
+    // localhost services, and internal networks.
+    if host == "localhost" || host == "localhost.localdomain" {
+        return Err(ToolError::permission_denied(
+            "requests to localhost are not allowed",
+        ));
+    }
+    // Normalize bracketed IPv6 literals before the literal-IP check so they
+    // route through the same restricted-IP policy as unbracketed forms
+    // (GHSA-88gh-2526-gfrr).
+    let ip_candidate = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host.as_str());
+    if let Ok(ip) = ip_candidate.parse::<std::net::IpAddr>() {
+        if is_restricted_ip(&ip) {
+            return Err(ToolError::permission_denied(format!(
+                "IP {ip} is a restricted address (private/loopback/link-local)"
+            )));
+        }
+        return Ok(None);
+    }
+
+    let mut first_valid: Option<std::net::IpAddr> = None;
+    if let Ok(addrs) = tokio::net::lookup_host((host.as_str(), 0u16)).await {
+        for addr in addrs {
+            validate_dns_resolved_ip(&host, &addr.ip(), context.network_policy.as_ref())?;
+            if first_valid.is_none() {
+                first_valid = Some(addr.ip());
+            }
+        }
+    }
+
+    // If DNS resolution fails, let the HTTP request proceed and fail naturally.
+    Ok(first_valid.map(|validated_ip| (host, validated_ip)))
+}
+
+fn validate_network_policy(host: &str, context: &ToolContext) -> Result<(), ToolError> {
+    let Some(decider) = context.network_policy.as_ref() else {
+        return Ok(());
+    };
+
+    match decider.evaluate(host, "fetch_url") {
+        Decision::Allow => Ok(()),
+        Decision::Deny => Err(ToolError::permission_denied(format!(
+            "network call to '{host}' blocked by network policy"
+        ))),
+        Decision::Prompt => Err(ToolError::permission_denied(format!(
+            "network call to '{host}' requires approval; \
+             re-run after `/network allow {host}` or set network.default = \"allow\" in config"
+        ))),
+    }
+}
+
 fn validate_dns_resolved_ip(
     host: &str,
     ip: &std::net::IpAddr,
@@ -346,6 +399,66 @@ fn validate_dns_resolved_ip(
     Err(ToolError::permission_denied(format!(
         "resolved IP {ip} is a restricted address (private/loopback/link-local)"
     )))
+}
+
+fn parse_fields(input: &Value) -> Result<Vec<String>, ToolError> {
+    let Some(values) = input.get("fields") else {
+        return Ok(Vec::new());
+    };
+    let Some(values) = values.as_array() else {
+        return Err(ToolError::invalid_input("`fields` must be an array"));
+    };
+    let mut fields = Vec::new();
+    for value in values {
+        let Some(field) = value.as_str() else {
+            return Err(ToolError::invalid_input(
+                "`fields` entries must be JSONPath strings",
+            ));
+        };
+        let field = field.trim();
+        if !field.is_empty() {
+            fields.push(field.to_string());
+        }
+    }
+    Ok(fields)
+}
+
+fn response_headers(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, String> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_ascii_lowercase(), value.to_string()))
+        })
+        .collect()
+}
+
+fn project_json_fields(
+    body_text: &str,
+    content_type: &str,
+    fields: &[String],
+) -> Result<Option<BTreeMap<String, Vec<Value>>>, ToolError> {
+    if fields.is_empty() {
+        return Ok(None);
+    }
+    if !content_type.to_ascii_lowercase().contains("json") {
+        return Err(ToolError::invalid_input(
+            "`fields` can only be used with JSON responses",
+        ));
+    }
+    let body_json: Value = serde_json::from_str(body_text).map_err(|e| {
+        ToolError::execution_failed(format!("response body is not valid JSON for `fields`: {e}"))
+    })?;
+    let mut out = BTreeMap::new();
+    for field in fields {
+        let matches = query_jsonpath(&body_json, field).map_err(|e| {
+            ToolError::invalid_input(format!("invalid JSONPath `{field}` in `fields`: {e}"))
+        })?;
+        out.insert(field.clone(), matches);
+    }
+    Ok(Some(out))
 }
 
 /// Strip `<script>` / `<style>` blocks, drop remaining tags, and collapse
@@ -413,6 +526,31 @@ mod tests {
         assert_eq!(Format::parse(Some("raw")).unwrap(), Format::Raw);
         assert_eq!(Format::parse(None).unwrap(), Format::Markdown);
         assert!(Format::parse(Some("yaml")).is_err());
+    }
+
+    #[test]
+    fn project_json_fields_returns_requested_jsonpath_matches() {
+        let fields = vec!["$.items[*].name".to_string(), "$.count".to_string()];
+        let projected = project_json_fields(
+            r#"{"items":[{"name":"alpha"},{"name":"beta"}],"count":2}"#,
+            "application/json",
+            &fields,
+        )
+        .expect("project")
+        .expect("some");
+
+        assert_eq!(
+            projected.get("$.items[*].name").unwrap(),
+            &vec![json!("alpha"), json!("beta")]
+        );
+        assert_eq!(projected.get("$.count").unwrap(), &vec![json!(2)]);
+    }
+
+    #[test]
+    fn project_json_fields_rejects_non_json_content_type() {
+        let fields = vec!["$.name".to_string()];
+        let err = project_json_fields("{}", "text/plain", &fields).expect_err("must reject");
+        assert!(format!("{err}").contains("JSON responses"));
     }
 
     #[tokio::test]
@@ -521,6 +659,83 @@ mod tests {
             .execute(json!({"url": "https://example.com/foo"}), &ctx)
             .await;
         let err = res.expect_err("blocked host should fail");
+        assert!(format!("{err}").contains("blocked"));
+    }
+
+    #[tokio::test]
+    async fn redirected_localhost_hostname_is_rejected() {
+        let url = reqwest::Url::parse("http://localhost:8080/admin").unwrap();
+        let err = validate_fetch_target(&url, &ctx()).await.unwrap_err();
+        assert!(format!("{err}").contains("localhost"));
+    }
+
+    #[tokio::test]
+    async fn redirected_private_ip_literal_is_rejected() {
+        let url = reqwest::Url::parse("http://169.254.169.254/latest/meta-data").unwrap();
+        let err = validate_fetch_target(&url, &ctx()).await.unwrap_err();
+        assert!(format!("{err}").contains("restricted address"));
+    }
+
+    // GHSA-88gh-2526-gfrr — regression coverage for bracketed IPv6 literals.
+    #[tokio::test]
+    async fn rejects_ipv6_literal_loopback() {
+        let url = reqwest::Url::parse("http://[::1]/").unwrap();
+        let err = validate_fetch_target(&url, &ctx())
+            .await
+            .expect_err("[::1] must be rejected as restricted");
+        assert!(format!("{err}").contains("restricted"));
+    }
+
+    #[tokio::test]
+    async fn rejects_ipv6_literal_ula() {
+        let url = reqwest::Url::parse("http://[fc00::1]/").unwrap();
+        let err = validate_fetch_target(&url, &ctx())
+            .await
+            .expect_err("[fc00::1] must be rejected as restricted");
+        assert!(format!("{err}").contains("restricted"));
+    }
+
+    #[tokio::test]
+    async fn rejects_ipv6_literal_link_local() {
+        let url = reqwest::Url::parse("http://[fe80::1]/").unwrap();
+        let err = validate_fetch_target(&url, &ctx())
+            .await
+            .expect_err("[fe80::1] must be rejected as restricted");
+        assert!(format!("{err}").contains("restricted"));
+    }
+
+    #[tokio::test]
+    async fn rejects_ipv6_literal_ipv4_mapped_loopback() {
+        let url = reqwest::Url::parse("http://[::ffff:127.0.0.1]/").unwrap();
+        let err = validate_fetch_target(&url, &ctx())
+            .await
+            .expect_err("[::ffff:127.0.0.1] must be rejected as restricted");
+        assert!(format!("{err}").contains("restricted"));
+    }
+
+    #[tokio::test]
+    async fn rejects_ipv6_literal_unspecified() {
+        let url = reqwest::Url::parse("http://[::]/").unwrap();
+        let err = validate_fetch_target(&url, &ctx())
+            .await
+            .expect_err("[::] must be rejected as restricted");
+        assert!(format!("{err}").contains("restricted"));
+    }
+
+    #[tokio::test]
+    async fn redirected_host_respects_network_policy() {
+        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+        let policy = NetworkPolicy {
+            default: Decision::Deny.into(),
+            allow: vec!["api.deepseek.com".to_string()],
+            deny: vec![],
+            proxy: Vec::new(),
+            audit: false,
+        };
+        let decider = NetworkPolicyDecider::new(policy, None);
+        let ctx = ToolContext::new(PathBuf::from(".")).with_network_policy(decider);
+        let url = reqwest::Url::parse("https://example.com/redirect-target").unwrap();
+        let err = validate_fetch_target(&url, &ctx).await.unwrap_err();
         assert!(format!("{err}").contains("blocked"));
     }
 

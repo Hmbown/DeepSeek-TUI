@@ -12,7 +12,7 @@ pub use install::{
     InstallSource, InstalledSkill, RegistryDocument, RegistryEntry, RegistryFetchResult,
     SkillSyncOutcome, SyncResult, UpdateResult, default_cache_skills_dir,
 };
-pub use system::install_system_skills;
+pub use system::{install_system_skills, is_bundled_skill_name};
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::logging;
 
-const MAX_SKILL_DESCRIPTION_CHARS: usize = 512;
+const MAX_SKILL_DESCRIPTION_CHARS: usize = 280;
 const MAX_AVAILABLE_SKILLS_CHARS: usize = 12_000;
 
 // === Defaults ===
@@ -47,6 +47,7 @@ pub fn agents_global_skills_dir() -> Option<PathBuf> {
 /// ecosystem, so picking up the global path lets users inherit skills
 /// they already installed for other Claude-compatible tools without
 /// re-authoring them in DeepSeek's native layout (#902).
+#[allow(dead_code)]
 #[must_use]
 pub fn claude_global_skills_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|p| p.join(".claude").join("skills"))
@@ -103,12 +104,18 @@ impl SkillRegistry {
     #[must_use]
     pub fn discover(dir: &Path) -> Self {
         let mut registry = Self::default();
-        if !dir.exists() {
+        let Ok(canonical_dir) = fs::canonicalize(dir) else {
+            return registry;
+        };
+        if !canonical_dir.is_dir() {
             return registry;
         }
 
         let mut visited = HashSet::new();
         Self::discover_recursive(dir, 0, &mut registry, &mut visited);
+        registry
+            .skills
+            .sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
         registry
     }
 
@@ -384,6 +391,11 @@ pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
 /// installed (the system-prompt skills block is then suppressed).
 #[must_use]
 pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
+    let home = dirs::home_dir();
+    skills_directories_with_home(workspace, home.as_deref())
+}
+
+fn skills_directories_with_home(workspace: &Path, home_dir: Option<&Path>) -> Vec<PathBuf> {
     let mut candidates = vec![
         workspace.join(".agents").join("skills"),
         workspace.join("skills"),
@@ -391,20 +403,24 @@ pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
         workspace.join(".claude").join("skills"),
         workspace.join(".cursor").join("skills"),
     ];
-    if let Some(global_agents) = agents_global_skills_dir() {
-        candidates.push(global_agents);
+    if let Some(home) = home_dir {
+        candidates.push(home.join(".agents").join("skills"));
+        candidates.push(home.join(".claude").join("skills"));
+        candidates.push(home.join(".deepseek").join("skills"));
+    } else {
+        candidates.push(PathBuf::from("/tmp/deepseek/skills"));
     }
-    if let Some(global_claude) = claude_global_skills_dir() {
-        candidates.push(global_claude);
-    }
-    candidates.push(default_skills_dir());
     existing_skill_dirs(candidates)
 }
 
 fn existing_skill_dirs(candidates: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     let mut out = Vec::new();
+    let mut seen = HashSet::new();
     for path in candidates {
-        if path.is_dir() && !out.iter().any(|p: &PathBuf| p == &path) {
+        let Ok(canonical_path) = fs::canonicalize(&path) else {
+            continue;
+        };
+        if canonical_path.is_dir() && seen.insert(canonical_path) {
             out.push(path);
         }
     }
@@ -441,7 +457,11 @@ pub fn discover_in_workspace(workspace: &Path) -> SkillRegistry {
 /// custom configured directory is appended when it is outside that set.
 #[must_use]
 pub fn discover_for_workspace_and_dir(workspace: &Path, skills_dir: &Path) -> SkillRegistry {
-    let mut dirs = skills_directories(workspace);
+    let dirs = skills_directories(workspace);
+    discover_for_workspace_dirs_and_dir(dirs, skills_dir)
+}
+
+fn discover_for_workspace_dirs_and_dir(mut dirs: Vec<PathBuf>, skills_dir: &Path) -> SkillRegistry {
     if skills_dir.is_dir() && !dirs.iter().any(|p| p == skills_dir) {
         dirs.push(skills_dir.to_path_buf());
     }
@@ -459,6 +479,16 @@ pub fn discover_for_workspace_and_dir(workspace: &Path, skills_dir: &Path) -> Sk
         }
     }
     merged
+}
+
+#[cfg(test)]
+fn discover_for_workspace_and_dir_with_home(
+    workspace: &Path,
+    skills_dir: &Path,
+    home_dir: Option<&Path>,
+) -> SkillRegistry {
+    let dirs = skills_directories_with_home(workspace, home_dir);
+    discover_for_workspace_dirs_and_dir(dirs, skills_dir)
 }
 
 /// Render the system-prompt skills block from every workspace
@@ -489,9 +519,6 @@ fn render_skills_block(registry: &SkillRegistry) -> Option<String> {
         return None;
     }
 
-    let mut skills = registry.list().to_vec();
-    skills.sort_by(|a, b| a.name.cmp(&b.name));
-
     let mut out = String::new();
     out.push_str("## Skills\n");
     out.push_str(
@@ -503,7 +530,7 @@ instructions when using a specific skill.\n\n",
     out.push_str("### Available skills\n");
 
     let mut omitted = 0usize;
-    for skill in skills {
+    for skill in registry.list() {
         // Use the real on-disk path captured at discovery — the directory
         // name can differ from the frontmatter `name` for community
         // installs, in which case `<dir>/<name>/SKILL.md` would not exist
@@ -544,12 +571,10 @@ instructions when using a specific skill.\n\n",
 
     out.push_str(
         "\n### How to use skills\n\
-- Discovery: The list above is the skills available in this session. Skill bodies live on disk at the listed paths.\n\
-- Trigger rules: If the user names a skill (with `$SkillName`, `/skill <name>`, or plain text) OR the task clearly matches a skill description above, use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.\n\
-- Missing/blocked: If a named skill is missing or its `SKILL.md` cannot be read, say so briefly and continue with the best fallback.\n\
-- Progressive disclosure: After deciding to use a skill, read only that skill's `SKILL.md`. When it references relative paths such as `scripts/foo.py`, resolve them relative to the skill directory.\n\
-- Context hygiene: Load only the specific referenced files needed for the task. Avoid bulk-loading unrelated skill resources.\n\
-- Safety: Do not execute scripts from a community skill unless the user explicitly asks or the skill has been trusted for script use.\n",
+- Skill bodies live on disk at the listed paths. When a skill is relevant, open only that skill's `SKILL.md` and the specific companion files it references.\n\
+- Trigger rules: use a skill when the user names it (`$SkillName`, `/skill <name>`, or plain text) or the task clearly matches its description. Do not carry skills across turns unless re-mentioned.\n\
+- Missing/blocked: if a named skill is missing or cannot be read, say so briefly and continue with the best fallback.\n\
+- Safety: do not execute scripts from a community skill unless the user explicitly asks or the skill has been trusted for script use.\n",
     );
 
     Some(out)
@@ -760,6 +785,48 @@ mod tests {
         assert!(
             rendered.chars().count() < super::MAX_AVAILABLE_SKILLS_CHARS + 4_000,
             "rendered length should stay near the budget"
+        );
+    }
+
+    #[test]
+    fn render_skills_block_preserves_registry_precedence_under_prompt_budget() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut registry = super::SkillRegistry::default();
+        registry.skills.push(super::Skill {
+            name: "workspace-priority".to_string(),
+            description: "must survive truncation".to_string(),
+            body: "body".to_string(),
+            path: tmpdir
+                .path()
+                .join(".claude")
+                .join("skills")
+                .join("workspace-priority")
+                .join("SKILL.md"),
+        });
+
+        let big_desc = "y".repeat(super::MAX_SKILL_DESCRIPTION_CHARS - 20);
+        for i in 0..200 {
+            registry.skills.push(super::Skill {
+                name: format!("aaa-global-{i:03}"),
+                description: big_desc.clone(),
+                body: "body".to_string(),
+                path: tmpdir
+                    .path()
+                    .join(".deepseek")
+                    .join("skills")
+                    .join(format!("aaa-global-{i:03}"))
+                    .join("SKILL.md"),
+            });
+        }
+
+        let rendered = super::render_skills_block(&registry).expect("skill context");
+        assert!(
+            rendered.contains("workspace-priority"),
+            "higher-precedence workspace skills must not be reordered behind globals:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("additional skills omitted from this prompt budget"),
+            "fixture should exceed prompt budget"
         );
     }
 
@@ -1196,6 +1263,45 @@ mod tests {
         assert!(
             names.contains(&"git-conventions"),
             "hidden root must still be walked: {names:?}"
+        );
+    }
+
+    /// Mirrors the qa_pty `skills_menu_shows_local_and_global_skills`
+    /// scenario without the PTY harness: a workspace-level skill in
+    /// `.agents/skills/` and a global skill in `~/.deepseek/skills/`
+    /// must both be discoverable.
+    #[test]
+    fn discover_finds_both_workspace_and_global_skills() {
+        let tmpdir = TempDir::new().unwrap();
+        let workspace = tmpdir.path().join("workspace");
+        let home = tmpdir.path().join("home");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        write_skill(
+            &workspace.join(".agents").join("skills"),
+            "workspace-beta",
+            "Workspace beta skill",
+            "body",
+        );
+        write_skill(
+            &home.join(".deepseek").join("skills"),
+            "global-alpha",
+            "Global alpha skill",
+            "body",
+        );
+
+        let skills_dir = workspace.join(".agents").join("skills");
+        let registry =
+            super::discover_for_workspace_and_dir_with_home(&workspace, &skills_dir, Some(&home));
+
+        let names: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"workspace-beta"),
+            "workspace-beta from .agents/skills must be discovered: {names:?}",
+        );
+        assert!(
+            names.contains(&"global-alpha"),
+            "global-alpha from ~/.deepseek/skills must be discovered: {names:?}",
         );
     }
 }

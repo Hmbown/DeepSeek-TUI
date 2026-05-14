@@ -3,6 +3,7 @@
 > Terminal coding agent for DeepSeek V4. It runs from the `deepseek` command, streams reasoning blocks, edits local workspaces with approval gates, and includes an auto mode that chooses both model and thinking level per turn.
 
 [简体中文 README](README.zh-CN.md)
+[日本語 README](README.ja-JP.md)
 
 ## Install
 
@@ -61,19 +62,23 @@ It is built around DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), includ
 - **Thinking-mode streaming** — see DeepSeek reasoning blocks as the model works
 - **Full tool suite** — file ops, shell execution, git, web search/browse, apply-patch, sub-agents, MCP servers
 - **1M-token context** — context tracking, manual or configured compaction, and prefix-cache telemetry
+- **Prefix-cache stability tracking** — a footer chip surfaces how stable the cached prefix has been across recent turns so cost-busting edits are visible before they land
 - **Three modes** — Plan (read-only explore), Agent (interactive with approval), YOLO (auto-approved)
 - **Reasoning-effort tiers** — cycle through `off → high → max` with `Shift + Tab`
 - **Session save/resume** — checkpoint and resume long-running sessions
 - **Workspace rollback** — side-git pre/post-turn snapshots with `/restore` and `revert_turn`, without touching your repo's `.git`
+- **OS-level sandbox** — Seatbelt on macOS, Landlock on Linux, Job Objects on Windows; shell commands run with workspace-scoped filesystem access only
 - **Durable task queue** — background tasks can survive restarts
 - **HTTP/SSE runtime API** — `deepseek serve --http` for headless agent workflows
 - **MCP protocol** — connect to Model Context Protocol servers for extended tooling; please see [docs/MCP.md](docs/MCP.md)
-- **Native RLM** (`rlm_query`) — run batched analysis through cheap `deepseek-v4-flash` children using the same API client
+- **Native RLM** (`rlm_open`/`rlm_eval`) — persistent REPL sessions for batched analysis; run cheap `deepseek-v4-flash` children with bounded helpers like `peek`, `search`, `chunk`, and `sub_query_batch`
 - **LSP diagnostics** — inline error/warning surfacing after every edit via rust-analyzer, pyright, typescript-language-server, gopls, clangd
 - **User memory** — optional persistent note file injected into the system prompt for cross-session preferences
 - **Localized UI** — `en`, `ja`, `zh-Hans`, `pt-BR` with auto-detection
-- **Live cost tracking** — per-turn and session-level token usage and cost estimates; cache hit/miss breakdown
-- **Skills system** — composable, installable instruction packs from GitHub with no backend service required
+- **Live cost tracking** — per-turn and session-level token usage and cost estimates; cache hit/miss breakdown; CNY display when the session locale is `zh-Hans`
+- **Skills system** — composable, installable instruction packs from GitHub; ships with a bundled starter set (`skill-creator`, `mcp-builder`, `plugin-creator`, `v4-best-practices`, `documents`, `presentations`, `spreadsheets`, `pdf`, `feishu`, `skill-installer`, `delegate`) so `/skills` is useful from first launch
+- **Terminal-native notifications** — OSC 9 (iTerm2/WezTerm/Ghostty), OSC 99 (Kitty), OSC 777 (Ghostty), plus desktop notification fallback
+- **Built-in theme picker** — Catppuccin, Tokyo Night, Dracula, Gruvbox alongside the original light/dark palettes; switch live with `/theme`
 
 ---
 
@@ -82,6 +87,17 @@ It is built around DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), includ
 `deepseek` (dispatcher CLI) → `deepseek-tui` (companion binary) → ratatui interface ↔ async engine ↔ OpenAI-compatible streaming client. Tool calls route through a typed registry (shell, file ops, git, web, sub-agents, MCP, RLM) and results stream back into the transcript. The engine manages session state, turn tracking, the durable task queue, and an LSP subsystem that feeds post-edit diagnostics into the model's context before the next reasoning step.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full walkthrough.
+
+### Sub-agents: Concurrent Background Execution
+
+DeepSeek TUI can dispatch multiple sub-agents that run in parallel — like a concurrent task queue:
+
+- **Non-blocking launch.** `agent_open` returns immediately. The child gets its own fresh context and tool registry and runs independently. The parent keeps working.
+- **Background execution.** Sub-agents execute concurrently (default cap: 10, configurable to 20). The engine manages the pool — no polling loop needed.
+- **Completion notification.** When a sub-agent finishes, the runtime delivers a structured `<deepseek:subagent.done>` event with a summary, evidence list, and execution metrics. The parent model reads the `summary` field and integrates findings.
+- **Bounded result retrieval.** Large transcripts are parked behind `var_handle` references. The model calls `handle_read` for slices, ranges, or JSONPath projections — keeping the parent context lean.
+
+See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) for the full sub-agent reference.
 
 ---
 
@@ -225,40 +241,27 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## What's New In v0.8.20
+## What's New In v0.8.35
 
-A hotfix release for Chinese reasoning language, DeepSeek endpoint defaults,
-and the v0.8.18 TUI/runtime/install polish.
+A post-release cleanup branch for the `v0.8.34` line. It keeps the
+model-facing surface stable while trimming first-turn context, clarifying
+context-pressure behavior, and reducing sidebar noise during long runs.
 [Full changelog](CHANGELOG.md).
 
-- **Chinese reasoning stays Chinese** - when the latest user message is in
-  Simplified Chinese, V4 `reasoning_content` and the final reply are prompted
-  to stay in Simplified Chinese even on an English system locale.
-- **DeepSeek beta endpoint stays default worldwide** - Chinese locales and
-  legacy `deepseek-cn` configs now use `https://api.deepseek.com/beta`, so
-  strict tool mode and other beta-gated features remain available.
-- **`deepseek-cn` is legacy-only** - it is no longer advertised as a separate
-  provider. Existing configs still parse it as a backwards-compatible alias for
-  `deepseek`.
-- **Plain `deepseek` starts fresh** - opening a second terminal in the same
-  folder now creates a new session instead of silently re-entering the same
-  interrupted checkpoint. Use `deepseek --continue` when you want recovery.
-- **Docker is a supported install path** - release builds publish
-  `ghcr.io/hmbown/deepseek-tui` images with `latest`, semver, and `vX.Y.Z`
-  tags; Docker publishing is part of the release gate.
-- **Chinese destructive approval dialogs are localized** - zh-Hans approval
-  copy keeps explicit destructive-risk wording while English defaults stay
-  unchanged.
-- **Transcript scrollbar dragging** - with mouse capture enabled, drag the
-  transcript scrollbar thumb to move through long sessions.
-- **Viewport drift fix** - terminal scroll margins and origin mode are reset
-  before key repaints, with a PTY regression for the blank-top-rows bug.
-- **npm installs are more resilient** - transient release-download failures
-  are recoverable at postinstall time, while checksum, platform, glibc, and
-  runtime failures remain fatal.
-- **Plus**: FreeBSD secrets-crate compile fallback, Docker Buildx cache-race
-  fix, readable light-theme toggles, softer long-session text colors, Windows
-  sandbox guarantee cleanup, and rustup mirror/install troubleshooting updates.
+- **First-turn context is leaner.** Hidden tool/cache state is excluded
+  from the generated project pack, and `/context` now names prompt layers
+  instead of showing one opaque blob.
+- **Prompt rules are de-conflicted.** Useful `deepseek` diagnostics are
+  allowed, simple one-step work no longer forces checklist ceremony, and
+  sustained sessions consistently suggest `/compact` around 60%.
+- **Automatic compaction stays conservative.** The 80% threshold remains
+  an opt-in hard guardrail so DeepSeek V4 prefix-cache behavior is not
+  disturbed by default.
+- **The Tasks sidebar settles down.** Completed live-tool rows expire
+  after a short linger, and very old running shell rows collapse instead
+  of filling the right rail.
+- **`auto_compact` help is honest.** Settings now report the real default:
+  off.
 
 ---
 
@@ -267,6 +270,8 @@ and the v0.8.18 TUI/runtime/install polish.
 ```bash
 deepseek                                         # interactive TUI
 deepseek "explain this function"                 # one-shot prompt
+deepseek exec --auto --output-format stream-json "fix this bug"  # NDJSON backend stream
+deepseek exec --resume <SESSION_ID> "follow up"  # continue a non-interactive session
 deepseek --model deepseek-v4-flash "summarize"   # model override
 deepseek --model auto "fix this bug"             # auto-select model + thinking
 deepseek --yolo                                  # auto-approve tools
@@ -282,7 +287,7 @@ deepseek resume <SESSION_ID>                     # resume a specific session by 
 deepseek fork <SESSION_ID>                       # fork a session at a chosen turn
 deepseek serve --http                            # HTTP/SSE API server
 deepseek serve --acp                             # ACP stdio adapter for Zed/custom agents
-deepseek pr <N>                                  # fetch PR and pre-seed review prompt
+deepseek run pr <N>                              # fetch PR and pre-seed review prompt
 deepseek mcp list                                # list configured MCP servers
 deepseek mcp validate                            # validate MCP config/connectivity
 deepseek mcp-server                              # run dispatcher MCP stdio server
@@ -292,9 +297,11 @@ deepseek update                                  # check for and apply binary up
 Docker images are published to GHCR for release builds:
 
 ```bash
+docker volume create deepseek-tui-home
+
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v ~/.deepseek:/home/deepseek/.deepseek \
+  -v deepseek-tui-home:/home/deepseek/.deepseek \
   ghcr.io/hmbown/deepseek-tui:latest
 ```
 
@@ -320,6 +327,10 @@ The first ACP slice supports new sessions and prompt responses through your
 existing DeepSeek config/API key. Tool-backed editing and checkpoint replay are
 not exposed through ACP yet.
 
+Community-maintained adapter: [acp-deepseek-adapter](https://github.com/rockeverm3m/acp-deepseek-adapter)
+bridges `deepseek exec --auto` to `cc-connect` for users who need tool-backed
+ACP workflows outside the built-in Zed slice.
+
 ### Keyboard Shortcuts
 
 | Key | Action |
@@ -343,9 +354,9 @@ Full shortcut catalog: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
 
 | Mode | Behavior |
 | --- | --- |
-| **Plan** 🔍 | Read-only investigation — model explores and proposes a plan (`update_plan` + `checklist_write`) before making changes |
-| **Agent** 🤖 | Default interactive mode — multi-step tool use with approval gates; model outlines work via `checklist_write` |
-| **YOLO** ⚡ | Auto-approve all tools in a trusted workspace; still maintains plan and checklist for visibility |
+| **Plan** 🔍 | Read-only investigation — model explores and proposes a plan before making changes; multi-step investigations use `checklist_write` |
+| **Agent** 🤖 | Default interactive mode — multi-step tool use with approval gates; substantial work is tracked with `checklist_write` |
+| **YOLO** ⚡ | Auto-approve all tools in a trusted workspace; multi-step work still keeps a visible checklist |
 
 ---
 
@@ -365,6 +376,7 @@ Key environment variables:
 | `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `openai`, `openrouter`, `novita`, `fireworks`, `sglang`, `vllm`, `ollama` |
 | `DEEPSEEK_PROFILE` | Config profile name |
 | `DEEPSEEK_MEMORY` | Set to `on` to enable user memory |
+| `DEEPSEEK_ALLOW_INSECURE_HTTP=1` | Allow non-local `http://` API base URLs on trusted networks |
 | `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
 | `OPENAI_BASE_URL` / `OPENAI_MODEL` | Generic OpenAI-compatible endpoint and model ID |
 | `SGLANG_BASE_URL` | Self-hosted SGLang endpoint |
@@ -419,6 +431,13 @@ Instructions for the agent go here.
 
 Commands: `/skills` (list), `/skill <name>` (activate), `/skill new` (scaffold), `/skill install github:<owner>/<repo>` (community), `/skill update` / `uninstall` / `trust`. Community installs from GitHub require no backend service. Installed skills appear in the model-visible session context; the agent can auto-select relevant skills via the `load_skill` tool when your task matches their descriptions.
 
+First launch also installs bundled system skills for common workflows:
+`skill-creator`, `delegate`, `v4-best-practices`, `plugin-creator`,
+`skill-installer`, `mcp-builder`, `documents`, `presentations`,
+`spreadsheets`, `pdf`, and `feishu`. These live under
+`~/.deepseek/skills` and are versioned so new bundles are added on upgrade
+without recreating skills the user deliberately deleted.
+
 ---
 
 ## Documentation
@@ -446,6 +465,8 @@ Full Changelog: [CHANGELOG.md](CHANGELOG.md).
 
 - **[DeepSeek](https://github.com/deepseek-ai)** — thank you for the models and support that power every turn. 感谢 DeepSeek 提供模型与支持，让每一次交互成为可能。
 - **[DataWhale](https://github.com/datawhalechina)** 🐋 — thank you for your support and for welcoming us into the Whale Brother family. 感谢 DataWhale 的支持，并欢迎我们加入“鲸兄弟”大家庭。
+- **[OpenWarp](https://github.com/zerx-lab/warp)** — thank you for prioritizing DeepSeek TUI support and for collaborating on a better terminal-agent experience.
+- **[Open Design](https://github.com/nexu-io/open-design)** — thank you for support and collaboration around design-forward agent workflows.
 
 This project ships with help from a growing community of contributors:
 
@@ -484,7 +505,7 @@ This project ships with help from a growing community of contributors:
 - **Unic (YuniqueUnic)** — Schema-driven config UI (TUI + web)
 - **Jason** — SSRF security hardening
 - **[axobase001](https://github.com/axobase001)** — snapshot orphan cleanup, npm install guards, session telemetry fixes, model-scope cache clear, symlinked skill support, and npm mirror-escape-hatch guidance (#975, #1032, #1047, #1049, #1052, #1019, #1051, #1056)
-- **[MengZ-super](https://github.com/MengZ-super)** — `/theme` command for dark/light toggle and SSE gzip/brotli decompression (#1057, #1061)
+- **[MengZ-super](https://github.com/MengZ-super)** — `/theme` command foundation and SSE gzip/brotli decompression (#1057, #1061)
 - **[DI-HUO-MING-YI](https://github.com/DI-HUO-MING-YI)** — Plan-mode read-only sandbox safety fix (#1077)
 - **[bevis-wong](https://github.com/bevis-wong)** — precise paste-Enter auto-submit reproducer (#1073)
 - **[Duducoco](https://github.com/Duducoco)** and **[AlphaGogoo](https://github.com/AlphaGogoo)** — skills slash-menu and `/skills` coverage fix (#1068, #1083)
@@ -492,6 +513,7 @@ This project ships with help from a growing community of contributors:
 - **[THINKER-ONLY](https://github.com/THINKER-ONLY)** — OpenRouter and custom-endpoint model-ID preservation (#1066)
 - **[Jefsky](https://github.com/Jefsky)** — DeepSeek endpoint correction report (#1079, #1084)
 - **[wlon](https://github.com/wlon)** — NVIDIA NIM provider API-key preference diagnosis (#1081)
+- **[Horace Liu](https://github.com/liuhq)** — Nix package support and install documentation (#1173)
 
 ---
 

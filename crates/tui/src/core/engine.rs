@@ -38,7 +38,7 @@ use crate::mcp::McpPool;
 use crate::models::ToolCaller;
 use crate::models::{
     ContentBlock, ContentBlockStart, Delta, LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS, Message,
-    MessageRequest, StreamEvent, SystemBlock, SystemPrompt, Tool, Usage,
+    MessageRequest, StreamEvent, SystemPrompt, Tool, Usage,
 };
 use crate::prompts;
 use crate::seam_manager::{SeamConfig, SeamManager};
@@ -95,6 +95,10 @@ pub struct EngineConfig {
     /// `instructions = [...]` config (or the per-project override).
     /// Resolved via `expand_path` so `~` works.
     pub instructions: Vec<PathBuf>,
+    pub project_context_pack_enabled: bool,
+    /// When true, the model is instructed to respond in the current locale
+    /// and a post-hoc translation layer replaces remaining English output.
+    pub translation_enabled: bool,
     /// Maximum number of assistant steps before stopping.
     pub max_steps: u32,
     /// Maximum number of concurrently active subagents.
@@ -128,6 +132,10 @@ pub struct EngineConfig {
     pub network_policy: Option<crate::network_policy::NetworkPolicyDecider>,
     /// Whether to take side-git workspace snapshots before/after each turn.
     pub snapshots_enabled: bool,
+    /// Maximum workspace size (in bytes) before snapshots self-disable on
+    /// first init. `0` disables the cap. Resolved from
+    /// `[snapshots] max_workspace_gb` × 1 GB at engine construction.
+    pub snapshots_max_workspace_bytes: u64,
     /// Post-edit LSP diagnostics injection (#136). When `None`, the engine
     /// constructs a disabled manager so the field is always present.
     pub lsp_config: Option<crate::lsp::LspConfig>,
@@ -142,38 +150,22 @@ pub struct EngineConfig {
     /// Path to the user memory file (#489). Always populated; only
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
+    pub vision_config: Option<crate::config::VisionModelConfig>,
     pub goal_objective: Option<String>,
     /// Resolved BCP-47 locale tag (e.g. `"en"`, `"zh-Hans"`, `"ja"`)
     /// for the `## Environment` block in the system prompt. The
     /// caller resolves this from `Settings` once at engine
     /// construction; the engine never touches disk for it.
     pub locale_tag: String,
-    /// Verbatim window size: last N turns are always sent in full to the API.
-    /// Older messages may be omitted/replaced with semantic context. Default: 16.
-    pub verbatim_window_turns: usize,
-    /// Whether vector memory (semantic search) is enabled.
-    pub vector_memory_enabled: bool,
-    /// Path to the LanceDB vector database directory.
-    pub vector_memory_path: PathBuf,
-    /// Embedding dimension for vector memory.
-    pub vector_memory_dim: usize,
-    /// Maximum number of items in the in-memory cache before eviction.
-    /// Default: 1000. Lower for memory-constrained devices.
-    pub max_memory_items: usize,
-    /// Minimum similarity score (0-1) for retrieved memories/summaries
-    /// to be included in the request context. Below this threshold,
-    /// results are filtered out as noise. Default: 0.4.
-    pub min_similarity_score: f64,
-    /// Whether code_index (Tier 4) is enabled. Requires `vector-memory`
-    /// feature. Disabled by default because it needs a full-project
-    /// index pass on startup.
-    #[allow(dead_code)]
-    pub code_index_enabled: bool,
     /// When true, force `tool_choice: "required"` and opt compatible function
     /// schemas into DeepSeek beta strict mode.
     pub strict_tool_mode: bool,
     /// Workshop / large-tool-output routing (#548). `None` disables routing.
     pub workshop: Option<crate::tools::large_output_router::WorkshopConfig>,
+    /// Which search backend `web_search` should use. Default: DuckDuckGo.
+    pub search_provider: crate::config::SearchProvider,
+    /// API key for Tavily or Bocha. `None` for DuckDuckGo.
+    pub search_api_key: Option<String>,
 }
 
 impl Default for EngineConfig {
@@ -187,6 +179,8 @@ impl Default for EngineConfig {
             mcp_config_path: PathBuf::from("mcp.json"),
             skills_dir: crate::skills::default_skills_dir(),
             instructions: Vec::new(),
+            project_context_pack_enabled: true,
+            translation_enabled: false,
             max_steps: 100,
             max_subagents: DEFAULT_MAX_SUBAGENTS,
             features: Features::with_defaults(),
@@ -198,22 +192,54 @@ impl Default for EngineConfig {
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy: None,
             snapshots_enabled: true,
+            snapshots_max_workspace_bytes:
+                crate::snapshot::DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT,
             lsp_config: None,
             runtime_services: RuntimeToolServices::default(),
             subagent_model_overrides: HashMap::new(),
             memory_enabled: false,
             memory_path: PathBuf::from("./memory.md"),
-            verbatim_window_turns: 16,
-            vector_memory_enabled: false,
-            vector_memory_path: PathBuf::from("/tmp/lancedb"),
-            vector_memory_dim: 384,
-            max_memory_items: 1000,
-            min_similarity_score: 0.4,
-            code_index_enabled: false,
+            vision_config: None,
             strict_tool_mode: false,
             goal_objective: None,
             locale_tag: "en".to_string(),
             workshop: None,
+            search_provider: crate::config::SearchProvider::default(),
+            search_api_key: None,
+        }
+    }
+}
+
+/// Reason the active turn was cancelled. The token from `tokio_util`
+/// does not carry a cause, so the engine keeps a sibling latch for
+/// approval and user-input waits that need to explain cancellation.
+///
+/// `External`, `Preempted`, and `Internal` are reserved for the
+/// remaining direct cancellation paths tracked in #1541.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum CancelReason {
+    /// User-initiated cancel (Esc, `/cancel`, click cancel on modal).
+    User,
+    /// External / runtime-API cancel (HTTP `DELETE /v1/threads/...`,
+    /// task manager stop, parent agent cancel).
+    External,
+    /// Cancel triggered when a new turn starts before the previous one
+    /// finished — e.g. plain Enter while busy after the queueing path
+    /// pre-empts the running turn.
+    Preempted,
+    /// Engine internals tore down the turn (drop, channel close,
+    /// shutdown). Rare — surfaced as an internal error.
+    Internal,
+}
+
+impl CancelReason {
+    fn describe(self) -> &'static str {
+        match self {
+            Self::User => "user cancelled the request",
+            Self::External => "request cancelled by external caller",
+            Self::Preempted => "request was preempted by a new turn",
+            Self::Internal => "engine torn down before approval resolved",
         }
     }
 }
@@ -227,6 +253,10 @@ pub struct EngineHandle {
     pub rx_event: Arc<RwLock<mpsc::Receiver<Event>>>,
     /// Shared pointer to the cancellation token for the current request.
     cancel_token: Arc<StdMutex<CancellationToken>>,
+    /// Latched reason for the most recent cancellation. Read by the
+    /// approval / user-input handlers to enrich their error strings.
+    /// Cleared by the engine when a fresh turn starts.
+    cancel_reason: Arc<StdMutex<Option<CancelReason>>>,
     /// Send approval decisions to the engine
     tx_approval: mpsc::Sender<ApprovalDecision>,
     /// Send user input responses to the engine
@@ -235,91 +265,8 @@ pub struct EngineHandle {
     tx_steer: mpsc::Sender<String>,
 }
 
-impl EngineHandle {
-    /// Send an operation to the engine
-    pub async fn send(&self, op: Op) -> Result<()> {
-        self.tx_op.send(op).await?;
-        Ok(())
-    }
-
-    /// Cancel the current request
-    pub fn cancel(&self) {
-        match self.cancel_token.lock() {
-            Ok(token) => token.cancel(),
-            Err(poisoned) => poisoned.into_inner().cancel(),
-        }
-    }
-
-    /// Check if a request is currently cancelled
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn is_cancelled(&self) -> bool {
-        match self.cancel_token.lock() {
-            Ok(token) => token.is_cancelled(),
-            Err(poisoned) => poisoned.into_inner().is_cancelled(),
-        }
-    }
-
-    /// Approve a pending tool call
-    pub async fn approve_tool_call(&self, id: impl Into<String>) -> Result<()> {
-        self.tx_approval
-            .send(ApprovalDecision::Approved { id: id.into() })
-            .await?;
-        Ok(())
-    }
-
-    /// Deny a pending tool call
-    pub async fn deny_tool_call(&self, id: impl Into<String>) -> Result<()> {
-        self.tx_approval
-            .send(ApprovalDecision::Denied { id: id.into() })
-            .await?;
-        Ok(())
-    }
-
-    /// Retry a tool call with an elevated sandbox policy.
-    pub async fn retry_tool_with_policy(
-        &self,
-        id: impl Into<String>,
-        policy: crate::sandbox::SandboxPolicy,
-    ) -> Result<()> {
-        self.tx_approval
-            .send(ApprovalDecision::RetryWithPolicy {
-                id: id.into(),
-                policy,
-            })
-            .await?;
-        Ok(())
-    }
-
-    /// Submit a response for request_user_input.
-    pub async fn submit_user_input(
-        &self,
-        id: impl Into<String>,
-        response: UserInputResponse,
-    ) -> Result<()> {
-        self.tx_user_input
-            .send(UserInputDecision::Submitted {
-                id: id.into(),
-                response,
-            })
-            .await?;
-        Ok(())
-    }
-
-    /// Cancel a request_user_input prompt.
-    pub async fn cancel_user_input(&self, id: impl Into<String>) -> Result<()> {
-        self.tx_user_input
-            .send(UserInputDecision::Cancelled { id: id.into() })
-            .await?;
-        Ok(())
-    }
-
-    /// Steer an in-flight turn with additional user input.
-    pub async fn steer(&self, content: impl Into<String>) -> Result<()> {
-        self.tx_steer.send(content.into()).await?;
-        Ok(())
-    }
-}
+// `impl EngineHandle { ... }` moved to `engine/handle.rs` so the
+// mailbox API can be reviewed independently of the engine internals.
 
 // === Engine ===
 
@@ -348,6 +295,11 @@ pub struct Engine {
     pub(super) rx_subagent_completion: mpsc::UnboundedReceiver<SubAgentCompletion>,
     cancel_token: CancellationToken,
     shared_cancel_token: Arc<StdMutex<CancellationToken>>,
+    /// Latched reason for the current cancellation, mirrored to
+    /// `EngineHandle::cancel_reason`. Read by `approval.rs` when
+    /// surfacing the "Request cancelled while awaiting …" error so the
+    /// user-facing message names a cause.
+    pub(super) cancel_reason: Arc<StdMutex<Option<CancelReason>>>,
     tool_exec_lock: Arc<RwLock<()>>,
     capacity_controller: CapacityController,
     /// Append-only layered context manager (#159). Opt-in for v0.7.5 while
@@ -371,17 +323,6 @@ pub struct Engine {
     /// Diagnostics collected during the current step's tool calls. Drained
     /// and forwarded as a synthetic user message before the next API call.
     pending_lsp_blocks: Vec<crate::lsp::DiagnosticBlock>,
-
-    /// Vector database service for semantic memory (#vector-memory).
-    /// Lazily initialized in `spawn_engine`. `None` when the feature is
-    /// disabled or initialization failed.
-    vector_db: Option<crate::vector_db::VectorDbService>,
-
-    /// Most recently built retrieved context during `prepare_request_context`.
-    /// Cached so sub-agents can inherit the parent's semantic retrieval
-    /// results without re-querying the vector DB. Set on each request and
-    /// cleared when no vector DB is available.
-    last_retrieved_context: Option<crate::vector_db::RetrievedContext>,
 }
 
 // === Internal tool helpers ===
@@ -398,6 +339,13 @@ impl Engine {
                 *poisoned.into_inner() = token;
             }
         }
+        // Fresh turn → clear any latched cancellation reason from the
+        // previous turn so a downstream "request cancelled" message
+        // doesn't inherit a stale cause.
+        match self.cancel_reason.lock() {
+            Ok(mut slot) => *slot = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
+        }
     }
 
     fn env_only_api_key_recovery_hint(api_config: &Config) -> Option<String> {
@@ -410,6 +358,7 @@ impl Engine {
             ApiProvider::Deepseek | ApiProvider::DeepseekCN => "DEEPSEEK_API_KEY",
             ApiProvider::NvidiaNim => "NVIDIA_API_KEY/NVIDIA_NIM_API_KEY",
             ApiProvider::Openai => "OPENAI_API_KEY",
+            ApiProvider::Atlascloud => "ATLASCLOUD_API_KEY",
             ApiProvider::Openrouter => "OPENROUTER_API_KEY",
             ApiProvider::Novita => "NOVITA_API_KEY",
             ApiProvider::Fireworks => "FIREWORKS_API_KEY",
@@ -449,6 +398,7 @@ impl Engine {
         let (tx_subagent_completion, rx_subagent_completion) = mpsc::unbounded_channel();
         let cancel_token = CancellationToken::new();
         let shared_cancel_token = Arc::new(StdMutex::new(cancel_token.clone()));
+        let cancel_reason: Arc<StdMutex<Option<CancelReason>>> = Arc::new(StdMutex::new(None));
         let tool_exec_lock = Arc::new(RwLock::new(()));
 
         // Create clients for both providers
@@ -481,13 +431,27 @@ impl Engine {
                 prompts::PromptSessionContext {
                     user_memory_block: user_memory_block.as_deref(),
                     goal_objective: config.goal_objective.as_deref(),
+                    project_context_pack_enabled: config.project_context_pack_enabled,
                     locale_tag: &config.locale_tag,
+                    translation_enabled: config.translation_enabled,
                 },
                 session.approval_mode,
             );
         let stable_prompt = Some(system_prompt);
         session.last_system_prompt_hash = Some(system_prompt_hash(stable_prompt.as_ref()));
         session.system_prompt = stable_prompt;
+
+        // Initialize prefix-cache stability monitor (lazy-pin).
+        // The system prompt is available now but the tool catalog isn't
+        // fully built until the first turn, so we start unpinned. The
+        // first `check_and_update` call in the turn loop will pin the
+        // fingerprint automatically.
+        let _ = session.prefix_stability.get_or_insert_with(|| {
+            // Use the tool registry's spec names for fingerprinting.
+            // At this point tool spec builders may not be registered yet,
+            // so we start with None — fingerprint will pin on first request.
+            crate::prefix_cache::PrefixStabilityManager::new_unpinned()
+        });
 
         let subagent_manager =
             new_shared_subagent_manager(config.workspace.clone(), config.max_subagents);
@@ -581,6 +545,7 @@ impl Engine {
             rx_subagent_completion,
             cancel_token: cancel_token.clone(),
             shared_cancel_token: shared_cancel_token.clone(),
+            cancel_reason: cancel_reason.clone(),
             tool_exec_lock,
             capacity_controller,
             seam_manager,
@@ -590,8 +555,6 @@ impl Engine {
             pending_lsp_blocks: Vec::new(),
             workshop_vars,
             sandbox_backend,
-            vector_db: None,
-            last_retrieved_context: None,
         };
         engine.rehydrate_latest_canonical_state();
 
@@ -599,6 +562,7 @@ impl Engine {
             tx_op,
             rx_event: Arc::new(RwLock::new(rx_event)),
             cancel_token: shared_cancel_token,
+            cancel_reason,
             tx_approval,
             tx_user_input,
             tx_steer,
@@ -610,9 +574,6 @@ impl Engine {
     /// Run the engine event loop
     #[allow(clippy::too_many_lines)]
     pub async fn run(mut self) {
-        // Initialize vector database before processing any operations.
-        self.init_vector_db().await;
-
         while let Some(op) = self.rx_op.recv().await {
             match op {
                 Op::SendMessage {
@@ -627,6 +588,7 @@ impl Engine {
                     trust_mode,
                     auto_approve,
                     approval_mode,
+                    translation_enabled,
                 } => {
                     self.handle_send_message(
                         content,
@@ -640,6 +602,7 @@ impl Engine {
                         trust_mode,
                         auto_approve,
                         approval_mode,
+                        translation_enabled,
                     )
                     .await;
                 }
@@ -767,11 +730,17 @@ impl Engine {
                         .await;
                 }
                 Op::SyncSession {
+                    session_id,
                     messages,
                     system_prompt,
                     model,
                     workspace,
                 } => {
+                    if let Some(session_id) = session_id {
+                        self.session.id = session_id;
+                    } else if messages.is_empty() && system_prompt.is_none() {
+                        self.session.id = uuid::Uuid::new_v4().to_string();
+                    }
                     self.session.messages = messages;
                     self.session.compaction_summary_prompt =
                         extract_compaction_summary_prompt(system_prompt.clone());
@@ -797,15 +766,6 @@ impl Engine {
                 }
                 Op::CompactContext => {
                     self.handle_manual_compaction().await;
-                }
-                Op::Rlm {
-                    content,
-                    model,
-                    child_model,
-                    max_depth,
-                } => {
-                    self.handle_rlm(content, model, child_model, max_depth)
-                        .await;
                 }
                 Op::EditLastTurn { new_message } => {
                     // #383: /edit — remove the last user+assistant exchange
@@ -838,6 +798,7 @@ impl Engine {
                         self.session.trust_mode,
                         self.session.auto_approve,
                         self.session.approval_mode,
+                        self.config.translation_enabled,
                     )
                     .await;
                 }
@@ -862,6 +823,7 @@ impl Engine {
         let _ = self
             .tx_event
             .send(Event::SessionUpdated {
+                session_id: self.session.id.clone(),
                 messages: self.session.messages.clone(),
                 system_prompt: self.session.system_prompt.clone(),
                 model: self.session.model.clone(),
@@ -924,6 +886,7 @@ impl Engine {
         trust_mode: bool,
         auto_approve: bool,
         approval_mode: crate::tui::approval::ApprovalMode,
+        translation_enabled: bool,
     ) {
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.reset_cancel_token();
@@ -936,23 +899,28 @@ impl Engine {
         self.turn_counter = self.turn_counter.saturating_add(1);
         self.capacity_controller.mark_turn_start(self.turn_counter);
 
-        // Snapshot the workspace BEFORE we touch a single tool. Run the git
-        // work on the blocking pool so the async runtime stays responsive;
-        // failure is non-fatal (the helper logs at WARN).
-        if self.config.snapshots_enabled {
-            let pre_workspace = self.session.workspace.clone();
-            let pre_seq = self.turn_counter;
-            let _ = tokio::task::spawn_blocking(move || pre_turn_snapshot(&pre_workspace, pre_seq))
-                .await;
-        }
-
-        // Emit turn started event
+        // Emit turn started event IMMEDIATELY so the UI knows the turn is
+        // active. The snapshot below can take 30+ seconds on slow filesystems
+        // (e.g. WSL2 /mnt/c) and must not delay the TurnStarted event.
         let _ = self
             .tx_event
             .send(Event::TurnStarted {
                 turn_id: turn.id.clone(),
             })
             .await;
+
+        // Snapshot the workspace BEFORE we touch a single tool. Run the git
+        // work on the blocking pool so the async runtime stays responsive;
+        // failure is non-fatal (the helper logs at WARN).
+        if self.config.snapshots_enabled {
+            let pre_workspace = self.session.workspace.clone();
+            let pre_seq = self.turn_counter;
+            let pre_cap = self.config.snapshots_max_workspace_bytes;
+            let _ = tokio::task::spawn_blocking(move || {
+                pre_turn_snapshot(&pre_workspace, pre_seq, pre_cap)
+            })
+            .await;
+        }
 
         // A new turn means any leftover retry banner (success cleared
         // it, failure pinned it) is no longer relevant — reset to idle
@@ -987,10 +955,6 @@ impl Engine {
             .observe_user_message(&content, &self.session.workspace);
         let force_update_plan_first = should_force_update_plan_first(mode, &content);
 
-        // Clone content before it's moved into user_text_message_with_turn_metadata,
-        // so we can use it later for sub-agent context retrieval (#12).
-        let content_for_subagent = content.clone();
-
         // Add user message to session
         let user_msg = self.user_text_message_with_turn_metadata(content);
         self.session.add_message(user_msg);
@@ -1005,6 +969,7 @@ impl Engine {
         self.config.allow_shell = allow_shell;
         self.session.trust_mode = trust_mode;
         self.config.trust_mode = trust_mode;
+        self.config.translation_enabled = translation_enabled;
         self.session.auto_approve = auto_approve;
         self.session.approval_mode = if auto_approve {
             crate::tui::approval::ApprovalMode::Auto
@@ -1034,18 +999,10 @@ impl Engine {
                 Some(&self.subagent_manager),
             )
             .await;
-
-            // Build a retrieved-context block for sub-agent inheritance (#12).
-            // We run a preliminary semantic search here so sub-agents inherit
-            // the parent's context without re-querying the vector DB.
-            let parent_retrieved_block =
-                self.build_retrieved_context_for_subagent(&content_for_subagent).await;
-
             Some(SubAgentForkContext {
                 system: self.session.system_prompt.clone(),
                 messages: self.messages_with_turn_metadata(),
                 structured_state_block: state.to_system_block(),
-                parent_retrieved_block,
             })
         } else {
             None
@@ -1181,8 +1138,9 @@ impl Engine {
         if self.config.snapshots_enabled {
             let post_workspace = self.session.workspace.clone();
             let post_seq = self.turn_counter;
+            let post_cap = self.config.snapshots_max_workspace_bytes;
             crate::utils::spawn_blocking_supervised("post-turn-snapshot", move || {
-                post_turn_snapshot(&post_workspace, post_seq);
+                post_turn_snapshot(&post_workspace, post_seq, post_cap);
             });
         }
     }
@@ -1240,7 +1198,6 @@ impl Engine {
                 if !result.messages.is_empty() || self.session.messages.is_empty() {
                     let messages_after = result.messages.len();
                     self.session.messages = result.messages;
-                    self.store_compaction_summary_to_vector_db(&result.summary_prompt).await;
                     self.merge_compaction_summary(result.summary_prompt);
                     self.emit_session_updated().await;
                     let removed = messages_before.saturating_sub(messages_after);
@@ -1286,100 +1243,6 @@ impl Engine {
                 usage: zero_usage,
                 status: turn_status,
                 error: turn_error,
-            })
-            .await;
-    }
-
-    /// Handle a Recursive Language Model (RLM) query — Algorithm 1 from
-    /// Zhang et al. (arXiv:2512.24601).
-    ///
-    /// The prompt is stored as PROMPT in a REPL variable. The root LLM
-    /// only sees metadata about the REPL state, never the prompt text
-    /// directly. The model generates Python code, which is executed by
-    /// the REPL. When FINAL() is called, the loop ends.
-    async fn handle_rlm(
-        &mut self,
-        content: String,
-        model: String,
-        child_model: String,
-        max_depth: u32,
-    ) {
-        use crate::rlm::turn::run_rlm_turn;
-
-        let Some(ref client) = self.deepseek_client else {
-            let err = self
-                .deepseek_client_error
-                .as_deref()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "API client not configured".to_string());
-            let _ = self
-                .tx_event
-                .send(Event::error(ErrorEnvelope::fatal_auth(format!(
-                    "RLM error: {err}"
-                ))))
-                .await;
-            return;
-        };
-
-        let _ = self
-            .tx_event
-            .send(Event::status("RLM turn started".to_string()))
-            .await;
-
-        let result = run_rlm_turn(
-            client,
-            model,
-            content,
-            child_model,
-            self.tx_event.clone(),
-            max_depth,
-        )
-        .await;
-
-        let has_error = result.error.is_some();
-        if let Some(ref err) = result.error {
-            let _ = self
-                .tx_event
-                .send(Event::error(ErrorEnvelope::tool(format!(
-                    "RLM error: {err}"
-                ))))
-                .await;
-        }
-
-        if !result.answer.is_empty() {
-            // Add the final answer as an assistant message in the session.
-            self.add_session_message(crate::models::Message {
-                role: "assistant".to_string(),
-                content: vec![crate::models::ContentBlock::Text {
-                    text: result.answer.clone(),
-                    cache_control: None,
-                }],
-            })
-            .await;
-
-            let _ = self
-                .tx_event
-                .send(Event::MessageDelta {
-                    index: 0,
-                    content: result.answer.clone(),
-                })
-                .await;
-            let _ = self
-                .tx_event
-                .send(Event::MessageComplete { index: 0 })
-                .await;
-        }
-
-        let _ = self
-            .tx_event
-            .send(Event::TurnComplete {
-                usage: result.usage,
-                status: if has_error {
-                    crate::core::events::TurnOutcomeStatus::Failed
-                } else {
-                    crate::core::events::TurnOutcomeStatus::Completed
-                },
-                error: result.error,
             })
             .await;
     }
@@ -1465,7 +1328,6 @@ impl Engine {
         if !compacted_messages.is_empty() || self.session.messages.is_empty() {
             self.session.messages = compacted_messages;
         }
-        self.store_compaction_summary_to_vector_db(&summary_prompt).await;
         self.merge_compaction_summary(summary_prompt);
 
         let trimmed = self.trim_oldest_messages_to_budget(target_budget);
@@ -1558,16 +1420,17 @@ impl Engine {
             ctx = ctx.with_sandbox_backend(std::sync::Arc::clone(backend));
         }
 
+        // Wire search provider config.
+        ctx.search_provider = self.config.search_provider;
+        ctx.search_api_key = self.config.search_api_key.clone();
+
         let policy = sandbox_policy_for_mode(mode, &self.session.workspace);
         let mut ctx = ctx.with_elevated_sandbox_policy(policy);
         if matches!(mode, AppMode::Plan) {
             ctx = ctx.with_shell_network_denied_hint(
-                "Shell command blocked: Plan mode runs shell commands in a read-only sandbox — no writes, no network. Use Agent mode (`/agent`) for any command that creates or modifies files, or that needs network access.",
+                "Shell command blocked: Plan mode runs shell commands in a read-only sandbox — no writes, no network. Use Agent mode (`/mode agent`) for any command that creates or modifies files, or that needs network access.",
             );
         }
-        // Expose vector DB service to tools so they can read/write
-        // semantic memories (e.g. `remember` tool #vector-memory).
-        ctx.vector_db = self.vector_db.clone();
         ctx
     }
 
@@ -1600,7 +1463,7 @@ impl Engine {
             let _ = self
                 .tx_event
                 .send(Event::status(format!(
-                    "Failed to connect MCP server '{server}': {err}"
+                    "Failed to connect MCP server '{server}': {err:#}"
                 )))
                 .await;
         }
@@ -1923,7 +1786,9 @@ impl Engine {
             prompts::PromptSessionContext {
                 user_memory_block: user_memory_block.as_deref(),
                 goal_objective: self.config.goal_objective.as_deref(),
+                project_context_pack_enabled: self.config.project_context_pack_enabled,
                 locale_tag: &self.config.locale_tag,
+                translation_enabled: self.config.translation_enabled,
             },
             self.session.approval_mode,
         );
@@ -1947,343 +1812,6 @@ impl Engine {
         let merged = merge_system_prompts(self.session.system_prompt.as_ref(), summary_prompt);
         self.session.last_system_prompt_hash = Some(system_prompt_hash(merged.as_ref()));
         self.session.system_prompt = merged;
-    }
-
-    /// Store a compaction summary into the vector database (Tier 2).
-    ///
-    /// Extracts the summary text from the `SystemPrompt` and writes it
-    /// as a `HistorySummary` record in the LanceDB `history_summaries`
-    /// table. Best-effort: errors are logged but never propagated.
-    pub(super) async fn store_compaction_summary_to_vector_db(
-        &self,
-        summary_prompt: &Option<SystemPrompt>,
-    ) {
-        let Some(ref vdb) = self.vector_db else {
-            return;
-        };
-        let Some(prompt) = summary_prompt else {
-            return;
-        };
-        let raw = match prompt {
-            SystemPrompt::Text(text) => text.clone(),
-            SystemPrompt::Blocks(blocks) => blocks
-                .iter()
-                .map(|b| b.text.clone())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        };
-        // Extract only the first summary section: from the first "## "
-        // heading to the next "---" separator, stripping boilerplate
-        // section headers like "## 📋 Conversation Summary (Auto-Generated)",
-        // "## 🔍 Workflow Context", "## 💡 What to Do Next".
-        let summary_text = if let Some(start) = raw.find("## ") {
-            let from_heading = &raw[start..];
-            if let Some(end) = from_heading.find("\n---") {
-                from_heading[..end].trim().to_string()
-            } else {
-                from_heading.trim().to_string()
-            }
-        } else {
-            raw
-        };
-        if summary_text.is_empty() {
-            return;
-        }
-        let summary = crate::vector_db::HistorySummary {
-            id: uuid::Uuid::new_v4().to_string(),
-            turn_range: "auto".to_string(),
-            summary: summary_text,
-            key_files: None,
-            session_id: self.session.id.clone(),
-            created_at: chrono::Utc::now(),
-            score: 0.0,
-        };
-        if let Err(e) = vdb.store_summary(summary).await {
-            tracing::warn!("failed to store compaction summary in vector db: {e}");
-        }
-    }
-
-    /// Initialize the vector database service from engine config.
-    pub(crate) async fn init_vector_db(&mut self) {
-        if !self.config.vector_memory_enabled {
-            return;
-        }
-        let path = &self.config.vector_memory_path;
-        let dim = self.config.vector_memory_dim;
-        let max_items = self.config.max_memory_items;
-        let min_score = self.config.min_similarity_score;
-        match crate::vector_db::VectorDbService::connect(path, dim, max_items, min_score).await {
-            Ok(svc) => {
-                tracing::info!(
-                    "Vector memory initialized at {} (dim={})",
-                    path.display(),
-                    dim
-                );
-                svc.warmup_embedder().await;
-                self.vector_db = Some(svc);
-            }
-            Err(e) => {
-                tracing::warn!("Failed to initialize vector database: {e}");
-            }
-        }
-    }
-
-    /// Build a `RetrievedContext` for the current session state.
-    ///
-    /// Computes the verbatim window, then retrieves relevant memories and
-    /// history summaries from the vector database for injection into the
-    /// system prompt. When vector DB is unavailable, returns a context where
-    /// all messages are verbatim.
-    pub(super) async fn build_verbatim_window_for_request(
-        &mut self,
-        messages: &[Message],
-    ) -> crate::vector_db::RetrievedContext {
-        let total = messages.len();
-        if total == 0 || self.vector_db.is_none() {
-            let verbatim = (0..total).collect();
-            return crate::vector_db::RetrievedContext {
-                verbatim_messages: verbatim,
-                window_extended: false,
-                memory_blocks: Vec::new(),
-                summary_blocks: Vec::new(),
-            };
-        }
-
-        // Collect tool call/result indices from message history.
-        let mut tool_call_indices: Vec<(String, usize)> = Vec::new();
-        let mut tool_result_indices: Vec<(String, usize)> = Vec::new();
-        for (i, msg) in messages.iter().enumerate() {
-            for block in &msg.content {
-                match block {
-                    ContentBlock::ToolUse { id, .. } => {
-                        tool_call_indices.push((id.clone(), i));
-                    }
-                    ContentBlock::ToolResult { tool_use_id, .. } => {
-                        tool_result_indices.push((tool_use_id.clone(), i));
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // Compute a dynamic verbatim window: we keep at least
-        // `verbatim_window_turns * 2` messages, but we cap the total
-        // token budget of verbatim messages at ~4K tokens per turn
-        // to prevent massive tool-call rounds from blowing the budget.
-        let min_window = self.config.verbatim_window_turns.max(1) * 2;
-        let max_tokens = self.config.verbatim_window_turns * 4_000;
-        let vw = crate::vector_db::VerbatimWindow::build(
-            total,
-            min_window,
-            &[],
-            &tool_call_indices,
-            &tool_result_indices,
-        );
-
-        // Walk backwards from the last message in the window and stop
-        // when the accumulated token estimate exceeds max_tokens.
-        // This keeps the verbatim window bounded by both turn count
-        // AND token budget.
-        let mut capped_indices: Vec<usize> = Vec::new();
-        let mut token_budget_used = 0usize;
-        for &idx in vw.indices.iter().rev() {
-            let msg_tokens = messages.get(idx).map(|m| {
-                m.content.iter().map(|c| match c {
-                    ContentBlock::Text { text, .. } => text.len() / 4,
-                    ContentBlock::Thinking { .. } => 0, // not sent verbatim
-                    ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
-                        .map(|s| s.len() / 4).unwrap_or(100),
-                    ContentBlock::ToolResult { content, .. } => content.len() / 4,
-                    _ => 0,
-                }).sum::<usize>()
-            }).unwrap_or(0);
-            if token_budget_used + msg_tokens > max_tokens && !capped_indices.is_empty() {
-                break; // budget exhausted
-            }
-            token_budget_used = token_budget_used.saturating_add(msg_tokens);
-            capped_indices.push(idx);
-        }
-        capped_indices.reverse(); // restore chronological order
-        let verbatim_count = capped_indices.len();
-        let history_count = total.saturating_sub(verbatim_count);
-
-        let mut memory_blocks: Vec<String> = Vec::new();
-        let mut summary_blocks: Vec<String> = Vec::new();
-
-        if history_count > 0 {
-            let query = messages
-                .iter()
-                .rev()
-                .take(3)
-                .filter_map(|m| {
-                    if m.role != "user" {
-                        return None;
-                    }
-                    m.content.iter().find_map(|block| {
-                        if let ContentBlock::Text { text, .. } = block {
-                            (!text.starts_with("<turn_meta>")).then(|| text.clone())
-                        } else {
-                            None
-                        }
-                    })
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-
-            if !query.is_empty() {
-                if let Some(ref vdb) = self.vector_db {
-                    // Retrieve relevant memories (Tier 3)
-                    match vdb.search_memories(&query, 3, None).await {
-                        Ok(results) if !results.is_empty() => {
-                            tracing::debug!(
-                                memory_count = results.len(),
-                                "found relevant memories from vector store"
-                            );
-                            for r in &results {
-                                let tag = r
-                                    .tags
-                                    .as_ref()
-                                    .and_then(|t| t.split(',').next())
-                                    .unwrap_or("memory");
-                                memory_blocks
-                                    .push(format!("[{tag}] {}", r.content));
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::warn!("vector memory search failed: {e}");
-                        }
-                    }
-
-                    // Retrieve relevant history summaries (Tier 2)
-                    match vdb.search_summaries(&query, 2).await {
-                        Ok(results) if !results.is_empty() => {
-                            tracing::debug!(
-                                summary_count = results.len(),
-                                "found relevant history summaries from vector store"
-                            );
-                            for s in &results {
-                                summary_blocks.push(s.summary.clone());
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::warn!("vector summary search failed: {e}");
-                        }
-                    }
-                }
-            }
-        }
-
-        crate::vector_db::RetrievedContext {
-            verbatim_messages: capped_indices,
-            window_extended: vw.extended,
-            memory_blocks,
-            summary_blocks,
-        }
-    }
-
-    /// Augment the system prompt with vector-retrieved context blocks.
-    ///
-    /// Appends a `<retrieved_context>` text block to the existing system
-    /// prompt. Returns the original prompt unchanged when the retrieved
-    /// context is empty.
-    fn augment_system_prompt_with_context(
-        system: Option<SystemPrompt>,
-        retrieved: &crate::vector_db::RetrievedContext,
-    ) -> Option<SystemPrompt> {
-        let context_block = retrieved.to_system_block()?;
-        let Some(existing) = system else {
-            return Some(SystemPrompt::Text(context_block));
-        };
-        let augmented = match existing {
-            SystemPrompt::Text(base) => {
-                SystemPrompt::Text(format!("{base}\n\n{context_block}"))
-            }
-            SystemPrompt::Blocks(mut blocks) => {
-                blocks.push(SystemBlock {
-                    block_type: "text".to_string(),
-                    text: context_block,
-                    cache_control: None,
-                });
-                SystemPrompt::Blocks(blocks)
-            }
-        };
-        Some(augmented)
-    }
-
-    /// Build a simple retrieved-context block for sub-agent inheritance.
-    ///
-    /// Searches the vector DB using the user's latest message as query
-    /// and returns a `<retrieved_context>` text block. Best-effort:
-    /// returns `None` when vector DB is unavailable or search fails.
-    async fn build_retrieved_context_for_subagent(
-        &self,
-        user_message: &str,
-    ) -> Option<String> {
-        let vdb = self.vector_db.as_ref()?;
-        let memories = vdb.search_memories(user_message, 3, None).await.ok()?;
-        let summaries = vdb.search_summaries(user_message, 2).await.ok()?;
-
-        let mut parts: Vec<String> = Vec::new();
-        for m in &memories {
-            let tag = m.tags.as_deref().unwrap_or("memory");
-            parts.push(format!("- [{tag}] {}", m.content));
-        }
-        for s in &summaries {
-            parts.push(format!("- [history] {}", s.summary));
-        }
-
-        if parts.is_empty() {
-            return None;
-        }
-        Some(format!(
-            "<parent_retrieved_context>\n{}\n</parent_retrieved_context>\n\
-            The above context was retrieved by the parent agent. Use it as \
-            background knowledge for this task.",
-            parts.join("\n")
-        ))
-    }
-
-    /// Prepare the final message list and system prompt for the API request.
-    ///
-    /// Applies the verbatim window to filter messages and augments the
-    /// system prompt with retrieved semantic context from the vector DB.
-    /// Returns `(filtered_messages, augmented_system_prompt)`.
-    pub(super) async fn prepare_request_context(
-        &mut self,
-    ) -> (Vec<Message>, Option<SystemPrompt>) {
-        let all_messages = self.messages_with_turn_metadata();
-        let retrieved = self
-            .build_verbatim_window_for_request(&all_messages)
-            .await;
-
-        // Cache the retrieved context so sub-agents can inherit the
-        // parent's semantic retrieval results (#12).
-        self.last_retrieved_context = Some(retrieved.clone());
-
-        // Filter messages to only the verbatim window
-        let filtered: Vec<Message> = retrieved
-            .verbatim_messages
-            .iter()
-            .filter_map(|&idx| all_messages.get(idx).cloned())
-            .collect();
-
-        let augmented_system =
-            Self::augment_system_prompt_with_context(
-                self.session.system_prompt.clone(),
-                &retrieved,
-            );
-
-        tracing::debug!(
-            verbatim = retrieved.verbatim_messages.len(),
-            total = all_messages.len(),
-            memories = retrieved.memory_blocks.len(),
-            summaries = retrieved.summary_blocks.len(),
-            "prepared request context"
-        );
-
-        (filtered, augmented_system)
     }
 }
 
@@ -2373,10 +1901,12 @@ pub(crate) fn mock_engine_handle() -> MockEngineHandle {
     let (tx_steer, rx_steer) = mpsc::channel(64);
     let cancel_token = CancellationToken::new();
     let shared_cancel_token = Arc::new(StdMutex::new(cancel_token.clone()));
+    let cancel_reason: Arc<StdMutex<Option<CancelReason>>> = Arc::new(StdMutex::new(None));
     let handle = EngineHandle {
         tx_op,
         rx_event: Arc::new(RwLock::new(rx_event)),
         cancel_token: shared_cancel_token,
+        cancel_reason,
         tx_approval,
         tx_user_input,
         tx_steer,
@@ -2395,6 +1925,7 @@ pub(crate) fn mock_engine_handle() -> MockEngineHandle {
 mod approval;
 mod capacity_flow;
 mod context;
+mod handle;
 pub(crate) use context::compact_tool_result_for_context;
 use context::{
     COMPACTION_SUMMARY_MARKER, MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP,
@@ -2412,12 +1943,14 @@ mod tool_setup;
 mod turn_loop;
 
 use self::approval::{ApprovalDecision, ApprovalResult, UserInputDecision};
+#[cfg(test)]
+use self::dispatch::should_parallelize_tool_batch;
 use self::dispatch::{
-    ParallelToolResult, ParallelToolResultEntry, ToolExecGuard, ToolExecOutcome, ToolExecutionPlan,
-    caller_allowed_for_tool, caller_type_for_tool_use, final_tool_input, format_tool_error,
-    mcp_tool_approval_description, mcp_tool_is_parallel_safe, mcp_tool_is_read_only,
-    parse_parallel_tool_calls, parse_tool_input, should_force_update_plan_first,
-    should_parallelize_tool_batch, should_stop_after_plan_tool,
+    ParallelToolResult, ParallelToolResultEntry, ToolExecGuard, ToolExecOutcome,
+    ToolExecutionBatch, ToolExecutionPlan, caller_allowed_for_tool, caller_type_for_tool_use,
+    final_tool_input, format_tool_error, mcp_tool_approval_description, mcp_tool_is_parallel_safe,
+    mcp_tool_is_read_only, parse_parallel_tool_calls, parse_tool_input,
+    plan_tool_execution_batches, should_force_update_plan_first, should_stop_after_plan_tool,
 };
 use self::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 #[cfg(test)]
@@ -2431,15 +1964,20 @@ use self::streaming::{
     should_transparently_retry_stream, stream_chunk_timeout_secs,
 };
 use self::tool_catalog::{
-    CODE_EXECUTION_TOOL_NAME, MULTI_TOOL_PARALLEL_NAME, REQUEST_USER_INPUT_NAME,
-    active_tools_for_step, build_model_tool_catalog, ensure_advanced_tooling,
-    execute_code_execution_tool, execute_tool_search, initial_active_tools, is_tool_search_tool,
-    maybe_activate_requested_deferred_tool, missing_tool_error_message,
+    CODE_EXECUTION_TOOL_NAME, JS_EXECUTION_TOOL_NAME, MULTI_TOOL_PARALLEL_NAME,
+    REQUEST_USER_INPUT_NAME, active_tools_for_step, build_model_tool_catalog,
+    ensure_advanced_tooling, execute_code_execution_tool, execute_tool_search,
+    initial_active_tools, is_tool_search_tool, maybe_hydrate_requested_deferred_tool,
+    missing_tool_error_message,
 };
 #[cfg(test)]
-use self::tool_catalog::{TOOL_SEARCH_BM25_NAME, should_default_defer_tool};
+use self::tool_catalog::{
+    TOOL_SEARCH_BM25_NAME, maybe_activate_requested_deferred_tool,
+    preflight_requested_deferred_tool, should_default_defer_tool,
+};
 use self::tool_execution::emit_tool_audit;
 use self::tool_setup::sandbox_policy_for_mode;
+use crate::tools::js_execution::execute_js_execution_tool;
 
 #[cfg(test)]
 mod tests;

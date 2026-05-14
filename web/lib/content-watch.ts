@@ -13,7 +13,7 @@
  * Both surface as drafts in CURATED_KV under `draft:linkcheck:<...>` and
  * `draft:semantic-drift:<...>`, picked up by the existing /admin listing.
  */
-import { agentChat, saveDraft, type AgentDraft, VOICE_CONSTRAINTS } from "./community-agent";
+import { agentChat, saveDraft, type AgentDraft, type DeepSeekEnv, VOICE_CONSTRAINTS } from "./community-agent";
 
 interface KVNamespace {
   get(k: string): Promise<string | null>;
@@ -25,7 +25,16 @@ interface KVNamespace {
 interface WatchEnv {
   CURATED_KV?: KVNamespace;
   DEEPSEEK_API_KEY?: string;
+  DEEPSEEK_BASE_URL?: string;
+  DEEPSEEK_MODEL?: string;
   GITHUB_TOKEN?: string;
+}
+
+function dsEnv(env: WatchEnv): DeepSeekEnv {
+  return {
+    baseUrl: env.DEEPSEEK_BASE_URL ?? process.env.DEEPSEEK_BASE_URL,
+    model: env.DEEPSEEK_MODEL ?? process.env.DEEPSEEK_MODEL,
+  };
 }
 
 // --- Link checker ---
@@ -137,6 +146,75 @@ If nothing is drifted, return { "drifts": [] }.
 
 ${VOICE_CONSTRAINTS}`;
 
+function startsWithAsciiCI(input: string, index: number, needle: string): boolean {
+  if (index + needle.length > input.length) return false;
+  return input.slice(index, index + needle.length).toLowerCase() === needle;
+}
+
+function isWhitespace(c: string | undefined): boolean {
+  return c === " " || c === "\n" || c === "\r" || c === "\t" || c === "\f";
+}
+
+function tagNameBoundary(input: string, index: number): boolean {
+  const c = input[index];
+  return c === undefined || c === ">" || c === "/" || isWhitespace(c);
+}
+
+function findClosingRawTextTag(input: string, from: number, tagName: "script" | "style"): number {
+  const closePrefix = `</${tagName}`;
+  for (let i = from; i < input.length; i += 1) {
+    if (startsWithAsciiCI(input, i, closePrefix) && tagNameBoundary(input, i + closePrefix.length)) {
+      const close = input.indexOf(">", i + closePrefix.length);
+      return close === -1 ? input.length : close + 1;
+    }
+  }
+  return input.length;
+}
+
+function collapseWhitespace(input: string): string {
+  let out = "";
+  let pendingSpace = false;
+  for (const c of input) {
+    if (isWhitespace(c)) {
+      pendingSpace = out.length > 0;
+      continue;
+    }
+    if (pendingSpace) out += " ";
+    out += c;
+    pendingSpace = false;
+  }
+  return out.trim();
+}
+
+function stripHtmlForPrompt(input: string): string {
+  let out = "";
+  for (let i = 0; i < input.length;) {
+    if (input[i] !== "<") {
+      out += input[i];
+      i += 1;
+      continue;
+    }
+
+    if (startsWithAsciiCI(input, i, "<script") && tagNameBoundary(input, i + "<script".length)) {
+      out += " ";
+      const openEnd = input.indexOf(">", i + 1);
+      i = openEnd === -1 ? input.length : findClosingRawTextTag(input, openEnd + 1, "script");
+      continue;
+    }
+    if (startsWithAsciiCI(input, i, "<style") && tagNameBoundary(input, i + "<style".length)) {
+      out += " ";
+      const openEnd = input.indexOf(">", i + 1);
+      i = openEnd === -1 ? input.length : findClosingRawTextTag(input, openEnd + 1, "style");
+      continue;
+    }
+
+    out += " ";
+    const tagEnd = input.indexOf(">", i + 1);
+    i = tagEnd === -1 ? input.length : tagEnd + 1;
+  }
+  return collapseWhitespace(out).slice(0, 8000);
+}
+
 export async function runSemanticDrift(env: WatchEnv): Promise<{ ok: boolean; drafted: number; reason?: string }> {
   if (!env.CURATED_KV || !env.DEEPSEEK_API_KEY) {
     return { ok: false, drafted: 0, reason: "missing CURATED_KV or DEEPSEEK_API_KEY" };
@@ -160,11 +238,8 @@ export async function runSemanticDrift(env: WatchEnv): Promise<{ ok: boolean; dr
     return { ok: false, drafted: 0, reason: "no changelog or commits available" };
   }
 
-  // Strip HTML tags + collapse whitespace to keep prompt size tractable.
-  const stripHtml = (h: string) => h.replace(/<script[\s\S]*?<\/script>/g, "").replace(/<style[\s\S]*?<\/style>/g, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 8000);
-
-  const homepageText = stripHtml(homepageHtml);
-  const docsText = stripHtml(docsHtml);
+  const homepageText = stripHtmlForPrompt(homepageHtml);
+  const docsText = stripHtmlForPrompt(docsHtml);
   const changelogHead = changelog.slice(0, 4000);
   const commitMsgs = commits.slice(0, 30).map((c) => `- ${c.sha.slice(0, 7)}: ${c.commit.message.split("\n")[0]}`).join("\n");
 
@@ -189,6 +264,7 @@ ${docsText}`;
       ],
       env.DEEPSEEK_API_KEY,
       true,
+      dsEnv(env),
     );
   } catch (e) {
     return { ok: false, drafted: 0, reason: `LLM call failed: ${e}` };

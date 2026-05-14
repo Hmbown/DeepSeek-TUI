@@ -34,7 +34,7 @@ pub struct CompactionConfig {
     /// Hard floor — `should_compact` returns `false` when total session
     /// tokens fall below this number, regardless of `enabled` or
     /// `token_threshold`. Defaults to [`MINIMUM_AUTO_COMPACTION_TOKENS`]
-    /// (50K, was 500K before v0.8.20). Tests that want to exercise the threshold
+    /// (500K) for v0.8.11+. Tests that want to exercise the threshold
     /// logic at small fixture sizes can set this to `0` to disable the
     /// floor.
     pub auto_floor_tokens: usize,
@@ -50,10 +50,15 @@ impl Default for CompactionConfig {
             // `compaction_threshold_for_model_and_effort`. Real per-model
             // values are still derived through that helper.
             enabled: true,
-            // Fallback default (800K). Real call sites override this via
-            // `compaction_threshold_for_model_and_effort`. When vector memory
-            // is enabled, the effective threshold is lowered by the engine's
-            // per-model compaction config.
+            // v0.8.11: 50K was a 128K-era leftover that biased every
+            // unconfigured caller toward "compact almost immediately on V4."
+            // Bumped to 800K (80% of V4's 1M window) so the dead-code
+            // default matches the hard automatic compaction guardrail. This
+            // is intentionally later than the model-visible 60% "suggest
+            // /compact during sustained work" guidance; automatic replacement
+            // compaction rewrites the cacheable prefix and remains opt-in.
+            // Real call sites override this via
+            // `compaction_threshold_for_model_and_effort`.
             token_threshold: 800_000,
             model: DEFAULT_TEXT_MODEL.to_string(),
             cache_summary: true,
@@ -62,40 +67,22 @@ impl Default for CompactionConfig {
     }
 }
 
-/// Hard floor for automatic compaction.
+/// Hard floor for automatic compaction in v0.8.11+.
 ///
 /// Below this token count, `should_compact` returns `false` regardless of
 /// `enabled` or `token_threshold`. The point of the floor is V4 prefix-cache
 /// economics: compaction rewrites the stable prefix, which destroys the KV
-/// cache. At very low token counts the prefix cache is healthy and
-/// compaction's cost dwarfs its benefit.
-///
-/// v0.8.20+: lowered from 500K to 50K. Now that the vector memory system is
-/// in place, compaction serves a dual purpose — not just freeing token
-/// budget, but also populating the LanceDB `history_summaries` table for
-/// semantic retrieval (Tier 2). Even at moderate token counts, summarization
-/// creates durable context the model can retrieve later.
+/// cache. At low token counts the prefix cache is healthy and compaction's
+/// cost (full re-prefill at miss prices) dwarfs its benefit (a tiny budget
+/// reclaim). Above the floor compaction can still be net-positive — cache
+/// is already pressured, the prefix has drifted, and freeing budget matters.
 ///
 /// Manual `/compact` slash command bypasses this floor with explicit user
-/// agency. The `auto_floor_tokens` field in `CompactionConfig` allows
-/// per-model overrides via `compaction_threshold_for_model_and_effort`.
-/// Hard floor for auto compaction when the vector memory system is active
-/// (Tier 2–4, LanceDB + fastembed). With vector retrieval, compaction serves
-/// a dual purpose — not just freeing token budget, but also populating the
-/// LanceDB `history_summaries` table for semantic retrieval in future turns.
-/// Even at moderate token counts, summarization creates durable context the
-/// model can retrieve later.
+/// agency.
 ///
-/// When vector memory is disabled, the higher
-/// [`MINIMUM_AUTO_COMPACTION_TOKENS_WITHOUT_VECTOR`] applies instead.
-pub const MINIMUM_AUTO_COMPACTION_TOKENS: usize = 50_000;
-
-/// Hard floor for auto compaction when the vector memory system is NOT active.
-/// Kept at the original v0.8.11 value (500K) to protect V4 prefix cache
-/// economics: below 500K total tokens, rewriting the prefix for compaction
-/// loses KV-cache hits (~90% discount) for marginal budget gains. Without
-/// vector retrieval, there is no secondary benefit to compacting early.
-pub const MINIMUM_AUTO_COMPACTION_TOKENS_WITHOUT_VECTOR: usize = 500_000;
+/// Constant rather than configurable for v0.8.11. If anyone needs to dial
+/// it (smaller models, opinionated workflows), we can add a setting later.
+pub const MINIMUM_AUTO_COMPACTION_TOKENS: usize = 500_000;
 
 pub const KEEP_RECENT_MESSAGES: usize = 4;
 const RECENT_WORKING_SET_WINDOW: usize = 12;
@@ -111,6 +98,7 @@ const LARGE_CONTEXT_SUMMARY_TOOL_RESULT_SNIPPET_CHARS: usize = 4_000;
 const LARGE_CONTEXT_SUMMARY_INPUT_MAX_CHARS: usize = 120_000;
 const LARGE_CONTEXT_SUMMARY_INPUT_HEAD_CHARS: usize = 72_000;
 const LARGE_CONTEXT_SUMMARY_INPUT_TAIL_CHARS: usize = 36_000;
+const TOOL_PRUNE_STOP_CHECK_BYTES: usize = 16 * 1024;
 const LARGE_CONTEXT_SUMMARY_MAX_TOKENS: u32 = 2_048;
 const LARGE_CONTEXT_WINDOW_TOKENS: u32 = 500_000;
 const CACHE_ALIGNED_SUMMARY_CONTEXT_BUDGET_PERCENT: usize = 85;
@@ -633,37 +621,22 @@ pub fn should_compact(
     workspace: Option<&Path>,
     external_pins: Option<&[usize]>,
     external_working_set_paths: Option<&[String]>,
-    vector_db_enabled: bool,
 ) -> bool {
     if !config.enabled {
         return false;
     }
 
-    // Hard floor enforcement. When the vector memory system is active,
-    // the floor is 50K (see `MINIMUM_AUTO_COMPACTION_TOKENS`); without
-    // it, the floor is 500K (`MINIMUM_AUTO_COMPACTION_TOKENS_WITHOUT_VECTOR`).
-    // Below the floor, automatic compaction is refused because rewriting
-    // the prefix kills V4's prefix cache for little budget recovery.
-    // Manual `/compact` and the `compact_now` tool bypass this floor.
-    //
-    // When `auto_floor_tokens` is 0 the floor is explicitly disabled
-    // (used by tests). Otherwise, for non-vector users we enforce at least
-    // the without-vector floor.
-    let effective_floor = if config.auto_floor_tokens == 0 {
-        0
-    } else if vector_db_enabled {
-        config.auto_floor_tokens
-    } else {
-        config
-            .auto_floor_tokens
-            .max(MINIMUM_AUTO_COMPACTION_TOKENS_WITHOUT_VECTOR)
-    };
-    if effective_floor > 0 {
+    // v0.8.11: hard floor enforcement. Below the floor (default 500K tokens
+    // — see `MINIMUM_AUTO_COMPACTION_TOKENS`), automatic compaction is
+    // refused because rewriting the prefix kills V4's prefix cache for
+    // little budget recovery. Manual `/compact` and the `compact_now` tool
+    // bypass this floor by going through different code paths.
+    if config.auto_floor_tokens > 0 {
         let total_session_tokens: usize = messages
             .iter()
             .map(|m| estimate_tokens_for_message(m, false))
             .sum();
-        if total_session_tokens < effective_floor {
+        if total_session_tokens < config.auto_floor_tokens {
             return false;
         }
     }
@@ -781,13 +754,25 @@ struct ToolResultPruneCandidate {
     original_len: usize,
 }
 
+#[cfg(test)]
+fn prune_tool_results(messages: &mut [Message], protected_window: usize) -> usize {
+    prune_tool_results_until(messages, protected_window, |_, _| false)
+}
+
 /// Mechanically prune old verbose tool results before paying for an LLM summary.
 ///
 /// The most recent `protected_window` messages stay byte-for-byte intact. Older
 /// duplicate tool results keep the freshest full body and replace earlier
 /// copies with one-line summaries; non-duplicate old results are summarized only
 /// when they exceed the normal summary snippet size.
-pub fn prune_tool_results(messages: &mut [Message], protected_window: usize) -> usize {
+fn prune_tool_results_until<F>(
+    messages: &mut [Message],
+    protected_window: usize,
+    mut should_stop: F,
+) -> usize
+where
+    F: FnMut(&[Message], usize) -> bool,
+{
     let cutoff = messages.len().saturating_sub(protected_window);
     if cutoff == 0 {
         return 0;
@@ -824,6 +809,12 @@ pub fn prune_tool_results(messages: &mut [Message], protected_window: usize) -> 
         }
     }
 
+    // The maps above are fully populated before pruning starts, so the order below
+    // only changes which message bytes are rewritten first. Pruning from newest to
+    // oldest lets callers stop as soon as enough bytes were saved, preserving the
+    // earlier JSON request prefix for byte-level KV caches.
+    candidates.reverse();
+
     let mut bytes_saved = 0usize;
     for candidate in candidates {
         let duplicate_count = count_by_key.get(&candidate.key).copied().unwrap_or(0);
@@ -853,6 +844,10 @@ pub fn prune_tool_results(messages: &mut [Message], protected_window: usize) -> 
             bytes_saved = bytes_saved.saturating_add(content.len().saturating_sub(summary.len()));
             *content = summary;
             *content_blocks = None;
+
+            if should_stop(messages, bytes_saved) {
+                break;
+            }
         }
     }
 
@@ -907,28 +902,54 @@ pub async fn compact_messages_safe(
     const MAX_RETRIES: u32 = 3;
     const BASE_DELAY_MS: u64 = 1000;
 
+    let was_over_threshold = should_compact(
+        messages,
+        config,
+        workspace,
+        external_pins,
+        external_working_set_paths,
+    );
     let mut pruned_messages = messages.to_vec();
-    let pruned_bytes = prune_tool_results(&mut pruned_messages, KEEP_RECENT_MESSAGES);
-    let compaction_input: &[Message] = if pruned_bytes > 0 {
-        logging::info(format!(
-            "Local tool-result prune saved {pruned_bytes} bytes before LLM compaction"
-        ));
-        let was_over_threshold = should_compact(
-            messages,
-            config,
-            workspace,
-            external_pins,
-            external_working_set_paths,
-            false, // prune path: assume no vector DB (conservative)
-        );
-        let now_under_threshold = !should_compact(
+    let mut now_under_threshold = false;
+    let mut next_stop_check_bytes = 0usize;
+    let pruned_bytes = prune_tool_results_until(
+        &mut pruned_messages,
+        KEEP_RECENT_MESSAGES,
+        |candidate_messages, bytes_saved| {
+            if !was_over_threshold || bytes_saved < next_stop_check_bytes {
+                return false;
+            }
+
+            // Stop at the first suffix-side prune check that clears the threshold.
+            // The check itself is a full compaction-plan pass, so bound it by saved
+            // bytes instead of running it after every candidate in huge sessions.
+            next_stop_check_bytes = bytes_saved.saturating_add(TOOL_PRUNE_STOP_CHECK_BYTES);
+            now_under_threshold = !should_compact(
+                candidate_messages,
+                config,
+                workspace,
+                external_pins,
+                external_working_set_paths,
+            );
+            now_under_threshold
+        },
+    );
+    if was_over_threshold && pruned_bytes > 0 && !now_under_threshold {
+        // The throttled in-loop check may skip the exact candidate that clears the
+        // budget. Do one final pass so a successful local prune still avoids LLM compaction.
+        now_under_threshold = !should_compact(
             &pruned_messages,
             config,
             workspace,
             external_pins,
             external_working_set_paths,
-            false,
         );
+    }
+
+    let compaction_input: &[Message] = if pruned_bytes > 0 {
+        logging::info(format!(
+            "Local tool-result prune saved {pruned_bytes} bytes before LLM compaction"
+        ));
         if was_over_threshold && now_under_threshold {
             return Ok(CompactionResult {
                 messages: pruned_messages,
@@ -1606,6 +1627,60 @@ mod tests {
     }
 
     #[test]
+    fn prune_tool_results_preserves_prefix_bytes_when_reverse_prune_is_enough() {
+        let older_verbose = "old ".repeat(SUMMARY_TOOL_RESULT_SNIPPET_CHARS + 40);
+        let newer_verbose = "new ".repeat(SUMMARY_TOOL_RESULT_SNIPPET_CHARS + 40);
+        let mut messages = vec![
+            tool_use("call-old", "read_file", json!({"path": "old.txt"})),
+            tool_result("call-old", &older_verbose),
+            tool_use("call-new", "read_file", json!({"path": "new.txt"})),
+            tool_result("call-new", &newer_verbose),
+            msg("user", "protected tail"),
+        ];
+        let original = messages.clone();
+
+        // Simulate the caller clearing its token budget after one suffix prune.
+        let saved = prune_tool_results_until(&mut messages, 1, |_, saved| saved > 0);
+
+        assert!(saved > 0);
+        assert_eq!(&messages[..3], &original[..3]);
+        assert_eq!(&messages[4..], &original[4..]);
+        let ContentBlock::ToolResult { content, .. } = &messages[3].content[0] else {
+            panic!("expected pruned tool result");
+        };
+        assert!(content.contains("[read_file] tool result pruned"));
+        assert!(content.contains("new.txt"));
+        assert!(content.len() < newer_verbose.len());
+    }
+
+    #[test]
+    fn prune_tool_results_stops_after_newest_duplicate_prune() {
+        let oldest = "oldest ".repeat(80);
+        let middle = "middle ".repeat(80);
+        let latest = "latest ".repeat(80);
+        let mut messages = vec![
+            tool_use("call-1", "read_file", json!({"path": "Cargo.toml"})),
+            tool_result("call-1", &oldest),
+            tool_use("call-2", "read_file", json!({"path": "Cargo.toml"})),
+            tool_result("call-2", &middle),
+            tool_use("call-3", "read_file", json!({"path": "Cargo.toml"})),
+            tool_result("call-3", &latest),
+            msg("user", "protected tail"),
+        ];
+        let original = messages.clone();
+
+        let saved = prune_tool_results_until(&mut messages, 1, |_, saved| saved > 0);
+
+        assert!(saved > 0);
+        assert_eq!(&messages[..3], &original[..3]);
+        assert_eq!(&messages[4..], &original[4..]);
+        let ContentBlock::ToolResult { content, .. } = &messages[3].content[0] else {
+            panic!("expected middle duplicate to be pruned");
+        };
+        assert!(content.contains("[read_file] tool result pruned"));
+    }
+
+    #[test]
     fn prune_tool_results_dedupes_identical_reads_but_keeps_latest_full_body() {
         let first = "first ".repeat(80);
         let second = "second ".repeat(80);
@@ -1838,7 +1913,7 @@ mod tests {
                 }],
             })
             .collect();
-        assert!(!should_compact(&messages, &config, None, None, None, false));
+        assert!(!should_compact(&messages, &config, None, None, None));
     }
 
     /// v0.8.11: message-count is no longer a compaction trigger. Long
@@ -1867,7 +1942,7 @@ mod tests {
             .collect();
         // Token total stays minuscule so the token threshold is not hit;
         // without the prior message-count trigger, no compaction.
-        assert!(!should_compact(&many_messages, &config, None, None, None, false));
+        assert!(!should_compact(&many_messages, &config, None, None, None));
     }
 
     #[test]
@@ -1972,7 +2047,7 @@ mod tests {
             .map(|_| msg("user", "Work on src/compaction.rs right now"))
             .collect();
 
-        assert!(!should_compact(&messages, &config, None, None, None, false));
+        assert!(!should_compact(&messages, &config, None, None, None));
     }
 
     // v0.8.11: removed `should_compact_counts_only_unpinned_messages` and
@@ -2247,7 +2322,7 @@ mod tests {
             .collect();
 
         // Total tokens: ~120, which exceeds 100
-        assert!(should_compact(&messages, &config, None, None, None, false));
+        assert!(should_compact(&messages, &config, None, None, None));
     }
 
     #[test]
@@ -2261,30 +2336,33 @@ mod tests {
         // Create short messages
         let messages: Vec<Message> = (0..5).map(|_| msg("user", "short")).collect();
 
-        assert!(!should_compact(&messages, &config, None, None, None, false));
+        assert!(!should_compact(&messages, &config, None, None, None));
     }
 
-    /// v0.8.20: the 50K hard floor blocks auto-compaction when total
-    /// tokens fall below the floor. This protects the V4 prefix cache
-    /// at very low token counts where compaction's cache-break cost
-    /// dwarfs the benefit.
+    /// v0.8.11: the 500K hard floor blocks auto-compaction even when the
+    /// token-percentage threshold would otherwise fire. This is the V4
+    /// prefix-cache protection — below 500K total tokens, rewriting the
+    /// prefix loses cache for tiny budget gains.
     #[test]
-    fn auto_compaction_floor_blocks_below_floor_even_when_threshold_says_yes() {
+    fn auto_compaction_floor_blocks_below_500k_even_when_threshold_says_yes() {
         let config = CompactionConfig {
             enabled: true,
             token_threshold: 100, // would normally fire instantly
+            // Use the production default explicitly so this test pins the
+            // floor's contract rather than relying on `Default`.
             auto_floor_tokens: MINIMUM_AUTO_COMPACTION_TOKENS,
             ..Default::default()
         };
 
-        // 10 short messages → ~30 tokens total, way under 50K floor.
         let messages: Vec<Message> = (0..10).map(|_| msg("user", &"x".repeat(50))).collect();
-        assert!(!should_compact(&messages, &config, None, None, None, false));
+        // Total tokens way under 500K, so floor blocks compaction.
+        assert!(!should_compact(&messages, &config, None, None, None));
     }
 
-    /// Once total tokens cross the floor, the threshold logic takes over.
+    /// v0.8.11: when total tokens cross the 500K floor, the existing
+    /// threshold/message-count logic takes over again.
     #[test]
-    fn auto_compaction_floor_yields_to_threshold_logic_above_floor() {
+    fn auto_compaction_floor_yields_to_threshold_logic_above_500k() {
         let config = CompactionConfig {
             enabled: true,
             token_threshold: 2_000_000,
@@ -2292,26 +2370,30 @@ mod tests {
             ..Default::default()
         };
 
-        // 110 messages @ ~500 tokens each → ~55K total tokens.
-        // Above the floor (50K), below threshold (2M): no compaction.
-        // Use vector_db_enabled=true so the floor is 50K (not 500K).
-        let messages: Vec<Message> = (0..110).map(|_| msg("user", &"x".repeat(2000))).collect();
-        assert!(!should_compact(&messages, &config, None, None, None, true));
+        // Each message ~500 tokens; 1100 messages → ~550K total tokens.
+        // That's above the floor (500K) AND below the deliberately high
+        // token_threshold, so auto-compaction stays off — by threshold,
+        // not floor.
+        let messages: Vec<Message> = (0..1100).map(|_| msg("user", &"x".repeat(2000))).collect();
+        assert!(!should_compact(&messages, &config, None, None, None));
 
-        // Crank threshold below total → compaction fires.
+        // Crank threshold below total → compaction fires now that we're
+        // past the floor.
         let config_lower = CompactionConfig {
-            token_threshold: 10_000,
+            token_threshold: 100_000,
             ..config
         };
-        assert!(should_compact(&messages, &config_lower, None, None, None, true));
+        assert!(should_compact(&messages, &config_lower, None, None, None));
     }
 
-    /// `CompactionConfig::default()` ships with the floor set to
-    /// `MINIMUM_AUTO_COMPACTION_TOKENS`.
+    /// `CompactionConfig::default()` ships with the 500K floor on by
+    /// default — production callers via `..Default::default()` get the
+    /// safety guarantee automatically.
     #[test]
-    fn compaction_config_default_carries_correct_floor() {
+    fn compaction_config_default_carries_500k_floor() {
         let config = CompactionConfig::default();
         assert_eq!(config.auto_floor_tokens, MINIMUM_AUTO_COMPACTION_TOKENS);
+        assert_eq!(config.auto_floor_tokens, 500_000);
     }
 
     #[test]

@@ -22,8 +22,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.100"
 arboard = "3.4"
-deepseek-secrets = { path = "../secrets", version = "0.8.20" }
-deepseek-tools = { path = "../tools", version = "0.8.20" }
+deepseek-secrets = { path = "../secrets", version = "0.8.35" }
+deepseek-tools = { path = "../tools", version = "0.8.35" }
 schemaui = { version = "0.12.0", default-features = false, optional = true }
 async-stream = "0.3.6"
 async-trait = "0.1"
@@ -37,7 +37,7 @@ dotenvy = "0.15.7"
 dirs = "6.0.0"
 fd-lock = "4.0.4"
 futures-util = "0.3.31"
-ratatui = "0.29"
+ratatui = "0.30"
 regex = "1.11"
 reqwest = { version = "0.13.1", default-features = false, features = ["blocking", "json", "stream", "multipart", "rustls", "http2", "gzip", "brotli"] }
 similar = "2"
@@ -56,6 +56,8 @@ chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3.16"
 thiserror = "2.0"
 tracing = "0.1"
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
 tower-http = { version = "0.6", features = ["cors"] }
 wait-timeout = "0.2"
 multimap = "0.10.0"
