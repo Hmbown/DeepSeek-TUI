@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workflow now mirrors Feishu/Lighthouse release branches, so Tencent
   Lighthouse bootstrap can use CNB before the release branch merges.
 
+### Changed
+
+- **Bing is the default `web_search` backend.** DuckDuckGo remains selectable
+  with `[search] provider = "duckduckgo"` and keeps its Bing fallback path.
+
 ## [0.8.36] - 2026-05-14
 
 ### Added
