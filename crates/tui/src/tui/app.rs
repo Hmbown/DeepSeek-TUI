@@ -4187,11 +4187,103 @@ mod tests {
         assert_eq!(app.input, "Size 12;34M");
     }
 
+    // initial_onboarding_state tests
+    // These pin the logic that decides whether the TUI shows the
+    // onboarding flow (Welcome → Language → ApiKey → …) or goes
+    // straight to the chat view.  Getting this wrong either locks
+    // first-run users out of the API-key prompt or nags returning
+    // users whose key is already configured.
+
+    #[test]
+    fn skip_onboarding_suppresses_all_onboarding_states() {
+        assert_eq!(
+            initial_onboarding_state(true, false, true, true),
+            OnboardingState::None
+        );
+        assert_eq!(
+            initial_onboarding_state(true, true, true, true),
+            OnboardingState::None
+        );
+    }
+
+    #[test]
+    fn fully_configured_returning_user_skips_onboarding() {
+        assert_eq!(
+            initial_onboarding_state(false, true, false, false),
+            OnboardingState::None
+        );
+    }
+
+    #[test]
+    fn returning_user_missing_api_key_goes_to_api_key_screen() {
+        assert_eq!(
+            initial_onboarding_state(false, true, true, false),
+            OnboardingState::ApiKey
+        );
+        // workspace trust doesn't affect the api-key gate
+        assert_eq!(
+            initial_onboarding_state(false, true, true, true),
+            OnboardingState::ApiKey
+        );
+    }
+
+    #[test]
+    fn first_run_user_always_starts_at_welcome() {
+        assert_eq!(
+            initial_onboarding_state(false, false, false, false),
+            OnboardingState::Welcome
+        );
+        assert_eq!(
+            initial_onboarding_state(false, false, true, false),
+            OnboardingState::Welcome
+        );
+        assert_eq!(
+            initial_onboarding_state(false, false, false, true),
+            OnboardingState::Welcome
+        );
+    }
+
+    #[test]
+    fn onboarding_workspace_trust_gate_only_fires_for_onboarded_user() {
+        assert!(onboarding_is_workspace_trust_gate(false, true, false, true));
+        assert!(!onboarding_is_workspace_trust_gate(true, true, false, true));
+        assert!(!onboarding_is_workspace_trust_gate(false, true, true, true));
+        assert!(!onboarding_is_workspace_trust_gate(
+            false, false, false, true
+        ));
+    }
+
     #[test]
     fn onboarded_user_still_gets_workspace_trust_prompt_when_needed() {
         assert_eq!(
             initial_onboarding_state(false, true, false, true),
             OnboardingState::TrustDirectory
+        );
+    }
+
+    // App::new tests: missing key is detected
+
+    #[test]
+    fn app_new_detects_missing_api_key_with_default_config() {
+        // Config::default() carries no api_key and the test runner
+        // should not have DEEPSEEK_API_KEY in its environment.
+        let app = App::new(test_options(false), &Config::default());
+        assert!(
+            app.onboarding_needs_api_key,
+            "default config (no key) must set onboarding_needs_api_key"
+        );
+    }
+
+    #[test]
+    fn app_new_with_explicit_api_key_does_not_trigger_onboarding() {
+        let config = Config {
+            api_key: Some("sk-test-onboarding-key".to_string()),
+            ..Config::default()
+        };
+        let app = App::new(test_options(false), &config);
+        assert!(
+            !app.onboarding_needs_api_key,
+            "explicit config.api_key must satisfy the onboarding check"
         );
     }
 
