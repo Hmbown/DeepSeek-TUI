@@ -1,5 +1,6 @@
-# Example CNB config for the Tencent Lighthouse remote-first path.
-# Copy to .cnb.yml only after you are ready to enable CNB jobs.
+# Historical CNB config template for the Tencent Lighthouse remote-first path.
+# The active pipeline now lives in the repository-root .cnb.yml so the GitHub
+# -> CNB one-way mirror cannot overwrite CNB-only pipeline edits.
 
 main:
   push:

@@ -1,16 +1,27 @@
 # CNB Deploy Templates
 
-These files are examples for turning the existing CNB mirror into a deploy
-button for Tencent Lighthouse. They are intentionally not active in the repo
-root yet.
+The root `.cnb.yml` is intentionally source-controlled in GitHub because CNB is
+a one-way mirror from GitHub. Do not add or edit `.cnb.yml` only on the CNB
+side; the next GitHub sync will overwrite it.
 
-Copy them only after the Lighthouse instance is already working manually:
+The active root `.cnb.yml` does two things:
+
+- runs Feishu bridge and version-drift checks when CNB receives `main`;
+- builds Linux x64 release assets from `v*` tags, creates the CNB release, and
+  uploads `deepseek-linux-x64`, `deepseek-tui-linux-x64`, and
+  `deepseek-artifacts-sha256.txt`.
+
+The files in this directory are retained as deploy-button templates for Tencent
+Lighthouse. Copy only the deploy environment file after the Lighthouse instance
+is already working manually:
 
 ```bash
 mkdir -p .cnb
-cp deploy/tencent-lighthouse/cnb/cnb.yml.example .cnb.yml
 cp deploy/tencent-lighthouse/cnb/tag_deploy.yml.example .cnb/tag_deploy.yml
 ```
+
+If you also need to customize `.cnb.yml`, edit the root file in GitHub and let
+the one-way mirror carry it to CNB.
 
 ## Required CNB Secrets
 

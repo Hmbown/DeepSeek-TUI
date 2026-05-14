@@ -26,6 +26,25 @@ GitHub Actions workflow:
 - **Retry:** each push is retried up to three times with linear
   backoff (5s, 10s) before the workflow gives up.
 
+CNB pipeline configuration is also source-controlled in GitHub at
+[`/.cnb.yml`](../.cnb.yml). This is deliberate: the sync workflow force-mirrors
+GitHub refs to CNB, so pipeline files created only on the CNB side will be
+overwritten. Submit `.cnb.yml` changes through GitHub PRs and let the one-way
+mirror carry them to CNB.
+
+## CNB tag releases
+
+When CNB receives a `v*` tag, the root `.cnb.yml` tag pipeline builds Linux x64
+release assets from source and publishes a CNB release with:
+
+- `deepseek-linux-x64`
+- `deepseek-tui-linux-x64`
+- `deepseek-artifacts-sha256.txt`
+
+This gives users who can reach CNB but not GitHub a CNB-native release path.
+GitHub remains the canonical full release matrix; the CNB tag pipeline is the
+China-friendly Linux x64 fallback.
+
 ## Verifying the mirror after a release
 
 After `release.yml` completes for a `vX.Y.Z` tag, the CNB mirror
@@ -118,10 +137,9 @@ expired:
 
 ## Binary release assets and `deepseek update`
 
-CNB is a code mirror only — it does not host binary release assets.
-Users behind GitHub-blocking networks should not rely on GitHub-only
-`deepseek update` downloads unless they have a release-asset mirror. Use
-one of these paths:
+CNB now builds Linux x64 assets for `v*` tags from the source-controlled
+`.cnb.yml` pipeline. GitHub remains the canonical full release matrix. Users
+behind GitHub-blocking networks should use one of these paths:
 
 - **`cargo install`** from the CNB mirror:
   ```bash
@@ -131,17 +149,19 @@ one of these paths:
   (Both binaries are required — the dispatcher and the TUI ship
   separately; see `AGENTS.md` for the two-binary install rationale.)
 
+- **CNB release assets** for Linux x64, when the matching CNB tag pipeline has
+  completed successfully. Download `deepseek-linux-x64`,
+  `deepseek-tui-linux-x64`, and `deepseek-artifacts-sha256.txt` from the CNB
+  release for `vX.Y.Z`, then verify the binaries against the manifest.
+
 - **`DEEPSEEK_TUI_RELEASE_BASE_URL`** environment variable, if a
-  third-party CDN mirror of the GitHub Release assets exists. The npm
+  CDN mirror of release assets exists. The npm
   wrapper installer and `deepseek update` read this variable to redirect
   binary downloads. For `deepseek update`, also set
   `DEEPSEEK_TUI_VERSION=X.Y.Z` so the updater can label the mirrored
   release without contacting GitHub. The directory pointed to must contain
   `deepseek-artifacts-sha256.txt` and the platform binaries; format matches
   a GitHub Release asset directory.
-
-A first-party binary CDN mirror for CNB users is on the v0.8.32+
-roadmap; it is not part of v0.8.31.
 
 ## Tencent Cloud remote-first path
 
