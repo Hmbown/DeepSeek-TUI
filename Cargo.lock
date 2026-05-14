@@ -1193,6 +1193,7 @@ name = "deepseek-config"
 version = "0.8.35"
 dependencies = [
  "anyhow",
+ "deepseek-execpolicy",
  "deepseek-secrets",
  "dirs",
  "serde",
@@ -1224,6 +1225,7 @@ version = "0.8.35"
 dependencies = [
  "anyhow",
  "deepseek-protocol",
+ "globset",
  "serde",
 ]
 
@@ -1311,6 +1313,7 @@ dependencies = [
  "clap_complete",
  "colored",
  "crossterm 0.28.1",
+ "deepseek-execpolicy",
  "deepseek-secrets",
  "deepseek-tools",
  "dirs",

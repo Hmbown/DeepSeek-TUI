@@ -166,6 +166,9 @@ pub struct EngineConfig {
     pub search_provider: crate::config::SearchProvider,
     /// API key for Tavily or Bocha. `None` for DuckDuckGo.
     pub search_api_key: Option<String>,
+    /// Typed permission rules used before falling back to the legacy approval
+    /// prompt path for shell and file tools.
+    pub exec_policy_engine: deepseek_execpolicy::ExecPolicyEngine,
 }
 
 impl Default for EngineConfig {
@@ -206,6 +209,7 @@ impl Default for EngineConfig {
             workshop: None,
             search_provider: crate::config::SearchProvider::default(),
             search_api_key: None,
+            exec_policy_engine: deepseek_execpolicy::ExecPolicyEngine::default(),
         }
     }
 }
@@ -1947,10 +1951,11 @@ use self::approval::{ApprovalDecision, ApprovalResult, UserInputDecision};
 use self::dispatch::should_parallelize_tool_batch;
 use self::dispatch::{
     ParallelToolResult, ParallelToolResultEntry, ToolExecGuard, ToolExecOutcome,
-    ToolExecutionBatch, ToolExecutionPlan, caller_allowed_for_tool, caller_type_for_tool_use,
-    final_tool_input, format_tool_error, mcp_tool_approval_description, mcp_tool_is_parallel_safe,
-    mcp_tool_is_read_only, parse_parallel_tool_calls, parse_tool_input,
+    ToolExecutionBatch, ToolExecutionPlan, ToolPermissionOverride, caller_allowed_for_tool,
+    caller_type_for_tool_use, final_tool_input, format_tool_error, mcp_tool_approval_description,
+    mcp_tool_is_parallel_safe, mcp_tool_is_read_only, parse_parallel_tool_calls, parse_tool_input,
     plan_tool_execution_batches, should_force_update_plan_first, should_stop_after_plan_tool,
+    tool_permission_override_for_call,
 };
 use self::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 #[cfg(test)]
