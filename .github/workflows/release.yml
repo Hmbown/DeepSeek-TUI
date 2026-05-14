@@ -333,6 +333,34 @@ jobs:
 
             See [CHANGELOG.md](https://github.com/Hmbown/DeepSeek-TUI/blob/main/CHANGELOG.md) for the full notes for this release.
 
+  homebrew:
+    needs: [release, resolve]
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # Checkout main (not the tag) so the release-infra script is always
+      # available, even for tags created before this workflow was added.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Download checksum manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download ${{ needs.resolve.outputs.tag }} \
+            --repo ${{ github.repository }} \
+            --pattern 'deepseek-artifacts-sha256.txt' \
+            --dir /tmp
+      - name: Update Homebrew tap
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+          MANIFEST: /tmp/deepseek-artifacts-sha256.txt
+          TAP_REPO: Hmbown/homebrew-deepseek-tui
+          TOKEN: ${{ secrets.HOMEBREW_TAP_PAT || secrets.RELEASE_TAG_PAT }}
+        run: bash .github/scripts/update-homebrew-tap.sh
+
 # npm publish is intentionally not automated. The npm account requires 2FA OTP
 # on every publish, and a granular automation token that bypasses 2FA has not
 # been provisioned. Release the npm wrapper manually from a developer machine
