@@ -419,6 +419,7 @@ mod tests {
     fn picker_initial_selection_matches_app_state() {
         let (mut app, _lock) = create_test_app();
         app.model = "deepseek-v4-flash".to_string();
+        app.auto_model = false;
         app.reasoning_effort = ReasoningEffort::Max;
         let view = ModelPickerView::new(&app);
         assert_eq!(view.resolved_model(), "deepseek-v4-flash");
@@ -460,6 +461,7 @@ mod tests {
     fn picker_normalizes_low_medium_to_high() {
         let (mut app, _lock) = create_test_app();
         app.reasoning_effort = ReasoningEffort::Medium;
+        app.auto_model = false;
         let view = ModelPickerView::new(&app);
         assert_eq!(
             view.resolved_effort(),
@@ -487,6 +489,7 @@ mod tests {
     fn picker_preserves_unknown_model_via_custom_row() {
         let (mut app, _lock) = create_test_app();
         app.model = "deepseek-v4-pro-2026-04-XX".to_string();
+        app.auto_model = false;
         let view = ModelPickerView::new(&app);
         assert!(view.show_custom_model_row);
         assert_eq!(view.resolved_model(), "deepseek-v4-pro-2026-04-XX");
@@ -534,6 +537,7 @@ mod tests {
     fn enter_emits_apply_event_with_selection() {
         let (mut app, _lock) = create_test_app();
         app.reasoning_effort = ReasoningEffort::High;
+        app.auto_model = false;
         let mut view = ModelPickerView::new(&app);
         view.handle_key(KeyEvent::new(
             KeyCode::Tab,

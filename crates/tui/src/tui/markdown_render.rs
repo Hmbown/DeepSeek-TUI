@@ -771,9 +771,15 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<(
             && let Some(end) = rest[1..].find('*')
         {
             let inner = &rest[1..1 + end];
-            out.push((inner.to_string(), italic_style));
-            rest = &rest[1 + end + 1..];
-            continue;
+            let after = &rest[1 + end + 1..];
+            // Closing delimiter must not be immediately followed by a
+            // letter, digit, or underscore (otherwise it's part of an
+            // identifier like `deepseek_tui`, not italic markup).
+            if !after.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+                out.push((inner.to_string(), italic_style));
+                rest = after;
+                continue;
+            }
         }
         // _italic_
         if rest.starts_with('_')
@@ -781,9 +787,14 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<(
             && let Some(end) = rest[1..].find('_')
         {
             let inner = &rest[1..1 + end];
-            out.push((inner.to_string(), italic_style));
-            rest = &rest[1 + end + 1..];
-            continue;
+            let after = &rest[1 + end + 1..];
+            // Closing delimiter must not be immediately followed by a
+            // letter, digit, or underscore.
+            if !after.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+                out.push((inner.to_string(), italic_style));
+                rest = after;
+                continue;
+            }
         }
         // `inline code`
         if let Some(end) = rest.strip_prefix('`').and_then(|s| s.find('`')) {
@@ -1189,6 +1200,39 @@ fn push_word_breaking_chars(
 mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier, Style};
+
+    #[test]
+    fn underscores_inside_identifiers_render_as_literal_text() {
+        // Regression for PR #1455 / @tiger-dog: previously the inline
+        // markdown parser ate the underscore in `deepseek_tui` because
+        // it matched the `_italic_` pattern without a CommonMark-style
+        // boundary check. The closing `_` followed by `t` (a letter)
+        // must now be treated as part of the identifier, not as
+        // markup. The same rule applies to `*` so identifiers like
+        // `crate*foo` round-trip cleanly.
+        let cases = [
+            "crate deepseek_tui handles approvals",
+            "see foo_bar_baz for details",
+            "look at *not_emphasised*tail",
+        ];
+        for source in cases {
+            let parsed = parse(source);
+            let rendered: String = render_parsed(&parsed, 80, Style::default())
+                .iter()
+                .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+                .collect();
+            // The original identifier (with underscores intact) must
+            // appear in the rendered output. We don't assert on style
+            // here — that's an implementation detail; we assert on
+            // the user-visible character sequence.
+            for token in source.split_whitespace().filter(|t| t.contains('_')) {
+                assert!(
+                    rendered.contains(token),
+                    "identifier {token:?} must survive markdown rendering of {source:?}; got {rendered:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn render_markdown_matches_parse_then_render() {

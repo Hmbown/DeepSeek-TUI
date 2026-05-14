@@ -439,6 +439,41 @@ target/debug/build/libsqlite3-sys-*/build-script-build
 # fine — the AV is blocking Cargo's process-spawning path specifically.
 ```
 
+### npm binary download times out
+
+If `deepseek` waits several seconds and prints `connect ETIMEDOUT` or
+`EAI_AGAIN` while fetching from `github.com`, the npm wrapper installed
+successfully but the prebuilt binary download from GitHub Releases is blocked
+or unreliable on your network. This download is separate from the npm registry
+package download.
+
+Use one of these paths:
+
+1. Set a proxy and retry:
+
+   ```bash
+   export HTTPS_PROXY=http://your-proxy:port
+   deepseek
+   ```
+
+2. Mirror the release assets internally and set `DEEPSEEK_TUI_RELEASE_BASE_URL`:
+
+   ```bash
+   export DEEPSEEK_TUI_RELEASE_BASE_URL=https://your-mirror.example.com/DeepSeek-TUI/
+   deepseek
+   ```
+
+   The directory must contain `deepseek-artifacts-sha256.txt` and the platform
+   binaries from the GitHub release.
+
+3. Install via Cargo, which builds locally and does not download GitHub release
+   assets. See [Section 3](#3-install-via-cargo-any-tier-1-rust-target).
+
+4. Download both `deepseek` and `deepseek-tui` manually from the
+   [Releases page](https://github.com/Hmbown/DeepSeek-TUI/releases), place them
+   in a directory on `PATH`, and make them executable. See
+   [Section 4](#4-manual-download-from-github-releases).
+
 ---
 
 ## 7. Verifying your install

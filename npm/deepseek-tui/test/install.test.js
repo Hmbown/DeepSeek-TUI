@@ -39,6 +39,7 @@ test("install failure hint explains release base override for blocked GitHub dow
     assert.match(hint, /DEEPSEEK_TUI_RELEASE_BASE_URL/);
     assert.match(hint, /deepseek-artifacts-sha256\.txt/);
     assert.match(hint, /platform binaries/);
+    assert.match(hint, /#npm-binary-download-times-out/);
   } finally {
     if (previous === undefined) {
       delete process.env.DEEPSEEK_TUI_RELEASE_BASE_URL;

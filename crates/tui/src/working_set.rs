@@ -261,8 +261,8 @@ impl Workspace {
 const COMPLETIONS_WALK_DEPTH: usize = 6;
 
 /// Hard cap on the number of `(file or directory)` entries indexed by
-/// [`WorkingSet::build_file_index`]. The fuzzy-resolve index is a
-/// convenience for [`WorkingSet::fuzzy_resolve`]; missing entries fall
+/// [`Workspace::build_file_index`]. The fuzzy-resolve index is a
+/// convenience for [`Workspace::fuzzy_resolve`]; missing entries fall
 /// back to literal-path resolution. Capping here keeps the first
 /// `fuzzy_resolve` call bounded on huge workspaces (#697 reported a
 /// ~10s hang on the first turn). For typical projects 50K is well

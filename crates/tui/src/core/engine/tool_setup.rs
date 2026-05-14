@@ -48,6 +48,7 @@ impl Engine {
                 .with_diagnostics_tool()
                 .with_skill_tools()
                 .with_validation_tools()
+                .with_handle_tools()
                 .with_runtime_read_only_task_tools()
                 .with_todo_tool(todo_list)
                 .with_plan_tool(plan_state)
@@ -90,6 +91,13 @@ impl Engine {
         // fail; surfacing it would just waste catalog slots.
         if self.config.memory_enabled {
             builder = builder.with_remember_tool();
+        }
+
+        // Register image_analyze tool when vision_model is configured and feature enabled.
+        if self.config.features.enabled(Feature::VisionModel)
+            && let Some(ref vision_config) = self.config.vision_config
+        {
+            builder = builder.with_vision_tools(vision_config.clone());
         }
 
         // Register the `notify` tool unconditionally (#1322). It has no

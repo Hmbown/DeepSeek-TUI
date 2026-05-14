@@ -854,7 +854,7 @@ impl Engine {
                         let mgr = self.subagent_manager.read().await;
                         mgr.running_count()
                     };
-                    if running > 0 {
+                    if should_hold_turn_for_subagents(completions.len(), running) {
                         let _ = self
                             .tx_event
                             .send(Event::status(format!(
@@ -1067,6 +1067,7 @@ impl Engine {
                             | "exec_wait"
                             | "exec_interact"
                             | CODE_EXECUTION_TOOL_NAME
+                            | JS_EXECUTION_TOOL_NAME
                     )
                 {
                     blocked_error = Some(ToolError::permission_denied(format!(
@@ -1107,6 +1108,7 @@ impl Engine {
                     && tool_def.is_none()
                     && !McpPool::is_mcp_tool(&tool_name)
                     && tool_name != CODE_EXECUTION_TOOL_NAME
+                    && tool_name != JS_EXECUTION_TOOL_NAME
                     && !is_tool_search_tool(&tool_name)
                 {
                     blocked_error = Some(ToolError::not_available(missing_tool_error_message(
@@ -1131,6 +1133,13 @@ impl Engine {
                     approval_required = true;
                     approval_description =
                         "Run model-provided Python code in local execution sandbox".to_string();
+                    supports_parallel = false;
+                    read_only = false;
+                } else if tool_name == JS_EXECUTION_TOOL_NAME {
+                    approval_required = true;
+                    approval_description =
+                        "Run model-provided JavaScript code in local Node.js execution sandbox"
+                            .to_string();
                     supports_parallel = false;
                     read_only = false;
                 } else if is_tool_search_tool(&tool_name) {
@@ -1418,6 +1427,31 @@ impl Engine {
                         continue;
                     }
 
+                    if tool_name == JS_EXECUTION_TOOL_NAME {
+                        let started_at = Instant::now();
+                        let result =
+                            execute_js_execution_tool(&tool_input, &self.session.workspace).await;
+
+                        let _ = self
+                            .tx_event
+                            .send(Event::ToolCallComplete {
+                                id: tool_id.clone(),
+                                name: tool_name.clone(),
+                                result: result.clone(),
+                            })
+                            .await;
+
+                        outcomes[plan.index] = Some(ToolExecOutcome {
+                            index: plan.index,
+                            id: tool_id,
+                            name: tool_name,
+                            input: tool_input,
+                            started_at,
+                            result,
+                        });
+                        continue;
+                    }
+
                     if is_tool_search_tool(&tool_name) {
                         let started_at = Instant::now();
                         let result = execute_tool_search(
@@ -1561,8 +1595,9 @@ impl Engine {
                     {
                         let ws = self.session.workspace.clone();
                         let tid = tool_id.clone();
+                        let cap = self.config.snapshots_max_workspace_bytes;
                         let _ = tokio::task::spawn_blocking(move || {
-                            crate::core::turn::pre_tool_snapshot(&ws, &tid)
+                            crate::core::turn::pre_tool_snapshot(&ws, &tid, cap)
                         })
                         .await;
                     }
@@ -1858,6 +1893,10 @@ fn usage_has_signal(usage: &Usage) -> bool {
         || usage.server_tool_use.is_some()
 }
 
+fn should_hold_turn_for_subagents(queued_completions: usize, running_children: usize) -> bool {
+    queued_completions > 0 || running_children > 0
+}
+
 /// Resolve an `"auto"` reasoning-effort tier to a concrete value.
 ///
 /// When the configured effort is `"auto"`, inspects the last user message
@@ -1931,6 +1970,13 @@ mod tests {
         assert!(text.contains("Do not tell the user they pasted sentinels"));
         assert!(text.contains("<deepseek:subagent.done>"));
         assert!(text.contains("Build passed"));
+    }
+
+    #[test]
+    fn turn_holds_open_for_running_or_completed_subagents() {
+        assert!(should_hold_turn_for_subagents(1, 0));
+        assert!(should_hold_turn_for_subagents(0, 1));
+        assert!(!should_hold_turn_for_subagents(0, 0));
     }
 
     #[test]

@@ -68,7 +68,7 @@ It is built around DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), includ
 - **Durable task queue** — background tasks can survive restarts
 - **HTTP/SSE runtime API** — `deepseek serve --http` for headless agent workflows
 - **MCP protocol** — connect to Model Context Protocol servers for extended tooling; please see [docs/MCP.md](docs/MCP.md)
-- **Native RLM** (`rlm_query`) — run batched analysis through cheap `deepseek-v4-flash` children using the same API client
+- **Native RLM** (`rlm_open`/`rlm_eval`) — persistent REPL sessions for batched analysis; run cheap `deepseek-v4-flash` children with bounded helpers like `peek`, `search`, `chunk`, and `sub_query_batch`
 - **LSP diagnostics** — inline error/warning surfacing after every edit via rust-analyzer, pyright, typescript-language-server, gopls, clangd
 - **User memory** — optional persistent note file injected into the system prompt for cross-session preferences
 - **Localized UI** — `en`, `ja`, `zh-Hans`, `pt-BR` with auto-detection
@@ -82,6 +82,17 @@ It is built around DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), includ
 `deepseek` (dispatcher CLI) → `deepseek-tui` (companion binary) → ratatui interface ↔ async engine ↔ OpenAI-compatible streaming client. Tool calls route through a typed registry (shell, file ops, git, web, sub-agents, MCP, RLM) and results stream back into the transcript. The engine manages session state, turn tracking, the durable task queue, and an LSP subsystem that feeds post-edit diagnostics into the model's context before the next reasoning step.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full walkthrough.
+
+### Sub-agents: Concurrent Background Execution
+
+DeepSeek TUI can dispatch multiple sub-agents that run in parallel — like a concurrent task queue:
+
+- **Non-blocking launch.** `agent_open` returns immediately. The child gets its own fresh context and tool registry and runs independently. The parent keeps working.
+- **Background execution.** Sub-agents execute concurrently (default cap: 10, configurable to 20). The engine manages the pool — no polling loop needed.
+- **Completion notification.** When a sub-agent finishes, the runtime delivers a structured `<deepseek:subagent.done>` event with a summary, evidence list, and execution metrics. The parent model reads the `summary` field and integrates findings.
+- **Bounded result retrieval.** Large transcripts are parked behind `var_handle` references. The model calls `handle_read` for slices, ranges, or JSONPath projections — keeping the parent context lean.
+
+See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) for the full sub-agent reference.
 
 ---
 
@@ -225,106 +236,52 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## What's New In v0.8.29
+## What's New In v0.8.33
 
-A maintenance release anchored by a v0.8.27 / v0.8.28 regression fix
-plus 25 community PRs. [Full changelog](CHANGELOG.md).
+A sub-agent and RLM renovation release. The model-facing delegation
+surface is now session-oriented: `rlm_open` / `rlm_eval` /
+`rlm_configure` / `rlm_close` for persistent RLM work, `agent_open` /
+`agent_eval` / `agent_close` for named sub-agent sessions, and
+`handle_read` for bounded retrieval from large results. Six tool
+papercuts fixed, two community PRs landed, and the sidebar gets a
+cleaner "Work" tab. [Full changelog](CHANGELOG.md).
 
-- **Scroll demon, gone for good** (#1085 regression). Parallel sub-
-  agents running `exec_shell` would scroll the alt-screen out from
-  under ratatui's diff renderer, leaving a blank band growing above
-  the header. Three layers of defence now: a `tracing-subscriber`
-  writing to `~/.deepseek/logs/tui-YYYY-MM-DD.log`, an fd-level
-  `dup2` stderr redirect for the alt-screen lifetime (Unix), and
-  module-level `#![deny(clippy::print_stdout, clippy::print_stderr)]`
-  on the TUI runtime modules. New `eprintln!`s inside `tools/`,
-  `core/`, `tui/`, `network_policy.rs`, or `runtime_threads.rs` now
-  fail CI.
-- **Ctrl+R session restore is workspace-scoped** (#1395, PR #1397 from
-  **@linzhiqin2003**) — previously listed every saved session on disk,
-  which meant Project A's history could leak into Project B.
-- **Runtime version visible in the header.** A discreet `v0.8.29`
-  chip sits in the header's right cluster alongside the provider /
-  effort / Live / context chips. Drops first under tight terminal
-  width.
-- **MCP HTTP transport honors HTTP(S)_PROXY** (#1408 from
-  **@hlx98007**) — corporate / Clash / Shadowsocks proxies now apply
-  to MCP HTTP connections, matching every other tool on the box.
-  `NO_PROXY` honored.
-- **MCP discovery survives malformed items** (#1410 from
-  **@Liu-Vince**) — one bad tool / resource / prompt entry no
-  longer drops the whole page; the malformed entry is skipped and
-  the rest of the catalogue surfaces normally.
-- **MCP SSE accepts CRLF-framed endpoint events** (#1309, PR #1358
-  from **@reidliu41**) — FastMCP / uvicorn streams no longer time
-  out waiting for LF-only event separators.
-- **Composer ignores leaked mouse-report bytes** (#1418, PR #1421
-  from **@reidliu41**) — terminal chains that leak `[<35;44;18M`
-  style mouse reports into stdin no longer fill the input area.
-- **Footer chips respect the available width** (#1357, PR #1417 from
-  **@Wenjunyun123**) — long cache / aux chips drop before crowding
-  the left status line or composer area on narrow terminals.
-- **Note management commands** (PR #1407 from **@reidliu41**) —
-  `/note add`, `/note list`, and friends for persistent maintainer
-  notes inside the TUI.
-- **`/init`-style global AGENTS.md merges with project AGENTS.md**
-  (#1157, PR #1399 from **@linzhiqin2003**) — your `~/.deepseek/
-  AGENTS.md` baseline now layers under the workspace's own
-  AGENTS.md instead of being shadowed.
-- **Language directive: thinking matches the user's message language**
-  (#1118, PR #1398 from **@linzhiqin2003**) — `reasoning_content`
-  follows the latest user message language, not the project context's
-  inferred `lang`.
-- **Web search filters spam-stuffed SERPs** (#964, PR #1396 from
-  **@linzhiqin2003**) — Bing / DDG fallback paths drop the
-  generated-content / SEO-farm domains that were poisoning quick
-  lookups.
-- **Auto routing recognises CJK debug / search keywords** (PRs #1401
-  and #1402 from **@linzhiqin2003**) — `--model auto` and the
-  reasoning-effort picker correctly route Chinese / Japanese
-  technical queries instead of falling through to the generic
-  baseline.
-- **Deferred tools hydrate schemas before first execution** (#1419,
-  PR #1429 from **@SamhandsomeLee**) — `edit_file` and other
-  deferred tools now load, show their expected fields, and ask the
-  model to retry instead of executing guessed argument names.
-- **DeepSeek aliases replay thinking-mode tool turns** (PR #1428
-  from **@Beltran12138**) — `deepseek-chat` and
-  `deepseek-reasoner` now get the same `reasoning_content` replay
-  treatment as explicit V4 model IDs, avoiding second-turn 400s
-  after tool calls.
-- **Skill completions stay under `/skill`** (#1437, PR #1442 from
-  **@reidliu41**) — large local skill collections no longer crowd
-  the root slash-command menu.
-- **`edit_file` rejects no-op replacements** (PR #1460 from
-  **@xiluoduyu**) — identical `search` / `replace` values now fail
-  validation instead of returning an empty diff.
-- **Windows terminal layout gets width-stable glyphs** (#1314,
-  PR #1465 from **@CrepuscularIRIS**) — header and file-tree icons
-  no longer rely on SMP emoji that cmd / PowerShell can mismeasure.
-- **Ghostty uses low-motion rendering by default** (#1445, PR #1468
-  from **@CrepuscularIRIS**) — affected terminals avoid animation
-  flicker without manual config.
-- **Docker buildx provenance EPERM failures get a hint** (#1449,
-  PR #1469 from **@CrepuscularIRIS**) — macOS shell output points at
-  the provenance flag when that restricted metadata write fails.
-- **Windows CMD mouse-wheel fallback scrolls the transcript**
-  (#1443, PR #1471 from **@CrepuscularIRIS**) — wheel events mapped
-  to Up / Down no longer cycle composer history when mouse capture
-  is off.
-- **Sync-to-CNB workflow hardened** — explicit `permissions:
-  contents: read`, narrowed trigger to `main` + `v*` tags (no longer
-  mirrors feature branches), `actions/checkout` bumped v3 → v4.
-- **+438 LOC of new test coverage** for `error_taxonomy`,
-  `parse_pages_arg`, web-search precedence, and
-  `sanitize_stream_chunk` control-byte filtering (PRs #1403-#1406
-  from **@linzhiqin2003**).
+- **Persistent RLM sessions.** RLM work now uses `rlm_open` /
+  `rlm_eval` / `rlm_close` with bounded REPL helpers (`peek`,
+  `search`, `chunk`, `sub_query`, `sub_query_batch`, `finalize`)
+  — the model drives the REPL through tool calls instead of a
+  foreground loop.
+- **Fork-aware sub-agent sessions.** `agent_open` supports named
+  sessions, `fork_context` for prompt-cache-friendly perspective
+  fanout, and bounded recursive depth. Sub-agent results and
+  transcripts can be parked behind `var_handle` references.
+- **Shared `handle_read` tool.** Large structured results (RLM
+  finals, sub-agent transcripts, tool artifacts) return typed handles
+  with slice, range, count, and JSONPath projections — the model
+  reads back only what it needs.
+- **Text selection now works during streaming.** The loading-state
+  mouse filter drops inert move events but allows transcript and
+  scrollbar drags to continue — the known issue from v0.8.32 is
+  resolved.
+- **Grayscale theme.** Use `/theme grayscale` for a quiet black/white
+  palette, or `/set theme grayscale --save` to make it the saved default.
+- **Session history picker.** `/sessions` and `Ctrl+R` now put full
+  session history on the left, the session list on the right, number keys
+  `1`-`9` open visible histories, and `PgUp` / `PgDn` scroll history.
+- **Six tool papercuts fixed.** `file_search` safer excludes;
+  `grep_files` returns clean strings; `fetch_url` JSON field
+  projection and headers; `edit_file` indentation fuzz;
+  `exec_shell` merged stdout/stderr; `revert_turn` rejects no-ops.
+- **CLI reasoning-effort honoured** on `--reasoning-effort high`
+  non-auto exec routes (PR #1511 from **@h3c-hexin**).
+- **Sidebar "Work" tab.** The former "Plan" / "Todos" tabs are now
+  one "Work" panel for the active checklist, consistent across Plan,
+  Agent, and YOLO modes.
+- **`/relay` command with CJK aliases** (`/接力`) for structured
+  multi-session handoff prompts.
 
-Thanks to **@linzhiqin2003** (10 landings this cycle),
-**@reidliu41** (5 landings), **@CrepuscularIRIS** (4 landings),
-**@SamhandsomeLee**, **@Beltran12138**, **@Wenjunyun123**,
-**@hlx98007**, **@Liu-Vince**, **@xiluoduyu**, and
-**@shenxiaodaosanhua** for the bug report.
+Thanks to **@reidliu41** and **@h3c-hexin** for community
+contributions in this release.
 
 ---
 
@@ -333,6 +290,8 @@ Thanks to **@linzhiqin2003** (10 landings this cycle),
 ```bash
 deepseek                                         # interactive TUI
 deepseek "explain this function"                 # one-shot prompt
+deepseek exec --auto --output-format stream-json "fix this bug"  # NDJSON backend stream
+deepseek exec --resume <SESSION_ID> "follow up"  # continue a non-interactive session
 deepseek --model deepseek-v4-flash "summarize"   # model override
 deepseek --model auto "fix this bug"             # auto-select model + thinking
 deepseek --yolo                                  # auto-approve tools
@@ -514,6 +473,8 @@ Full Changelog: [CHANGELOG.md](CHANGELOG.md).
 
 - **[DeepSeek](https://github.com/deepseek-ai)** — thank you for the models and support that power every turn. 感谢 DeepSeek 提供模型与支持，让每一次交互成为可能。
 - **[DataWhale](https://github.com/datawhalechina)** 🐋 — thank you for your support and for welcoming us into the Whale Brother family. 感谢 DataWhale 的支持，并欢迎我们加入“鲸兄弟”大家庭。
+- **[OpenWarp](https://github.com/zerx-lab/warp)** — thank you for prioritizing DeepSeek TUI support and for collaborating on a better terminal-agent experience.
+- **[Open Design](https://github.com/nexu-io/open-design)** — thank you for support and collaboration around design-forward agent workflows.
 
 This project ships with help from a growing community of contributors:
 
@@ -552,7 +513,7 @@ This project ships with help from a growing community of contributors:
 - **Unic (YuniqueUnic)** — Schema-driven config UI (TUI + web)
 - **Jason** — SSRF security hardening
 - **[axobase001](https://github.com/axobase001)** — snapshot orphan cleanup, npm install guards, session telemetry fixes, model-scope cache clear, symlinked skill support, and npm mirror-escape-hatch guidance (#975, #1032, #1047, #1049, #1052, #1019, #1051, #1056)
-- **[MengZ-super](https://github.com/MengZ-super)** — `/theme` command for dark/light toggle and SSE gzip/brotli decompression (#1057, #1061)
+- **[MengZ-super](https://github.com/MengZ-super)** — `/theme` command foundation and SSE gzip/brotli decompression (#1057, #1061)
 - **[DI-HUO-MING-YI](https://github.com/DI-HUO-MING-YI)** — Plan-mode read-only sandbox safety fix (#1077)
 - **[bevis-wong](https://github.com/bevis-wong)** — precise paste-Enter auto-submit reproducer (#1073)
 - **[Duducoco](https://github.com/Duducoco)** and **[AlphaGogoo](https://github.com/AlphaGogoo)** — skills slash-menu and `/skills` coverage fix (#1068, #1083)

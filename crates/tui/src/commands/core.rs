@@ -307,6 +307,21 @@ pub fn home_dashboard(app: &mut App) -> CommandResult {
     CommandResult::message(stats)
 }
 
+/// Toggle output translation to the current system language on/off.
+///
+/// When enabled, the model is instructed to respond in the current locale and an
+/// interception layer translates any remaining English output before it
+/// reaches the user.
+pub fn translate(app: &mut App) -> CommandResult {
+    app.translation_enabled = !app.translation_enabled;
+    let locale = app.ui_locale;
+    if app.translation_enabled {
+        CommandResult::message(tr(locale, MessageId::CmdTranslateOn))
+    } else {
+        CommandResult::message(tr(locale, MessageId::CmdTranslateOff))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,6 +545,8 @@ mod tests {
     #[test]
     fn model_reset_same_model_keeps_turn_cache_history() {
         let mut app = create_test_app();
+        app.auto_model = false;
+        app.model = "deepseek-v4-pro".to_string();
         app.push_turn_cache_record(TurnCacheRecord {
             input_tokens: 100,
             output_tokens: 25,

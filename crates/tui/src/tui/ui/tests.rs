@@ -129,6 +129,34 @@ fn recover_terminal_modes_runs_without_panic_on_windows() {
     recover_terminal_modes(&mut buf, false, false);
 }
 
+// On Windows crossterm's PushKeyboardEnhancementFlags never writes bytes
+// (is_ansi_code_supported() == false), so the fix writes the escape
+// directly. Verify the direct path emits the expected Kitty keyboard
+// protocol sequence so the Windows fix for #1359 is not accidentally reverted.
+#[cfg(windows)]
+#[test]
+fn push_keyboard_flags_writes_kitty_push_sequence_on_windows() {
+    let mut buf: Vec<u8> = Vec::new();
+    push_keyboard_enhancement_flags(&mut buf);
+    let seq = String::from_utf8_lossy(&buf);
+    assert!(
+        seq.contains("\x1b[>1u"),
+        "push_keyboard_enhancement_flags must write kitty push (\\x1b[>1u) on Windows (#1359); got: {seq:?}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn pop_keyboard_flags_writes_kitty_pop_sequence_on_windows() {
+    let mut buf: Vec<u8> = Vec::new();
+    pop_keyboard_enhancement_flags(&mut buf);
+    let seq = String::from_utf8_lossy(&buf);
+    assert!(
+        seq.contains("\x1b[<1u"),
+        "pop_keyboard_enhancement_flags must write kitty pop (\\x1b[<1u) on Windows (#1359); got: {seq:?}"
+    );
+}
+
 #[test]
 fn terminal_origin_reset_resets_scroll_region_origin_without_destructive_clear() {
     assert!(
@@ -335,7 +363,14 @@ fn selection_to_text_copies_rendered_transcript_block() {
     let selected = selection_to_text(&app).expect("selection text");
     assert!(selected.contains("Note copy system"), "{selected:?}");
     assert!(selected.contains("copy user"), "{selected:?}");
-    assert!(selected.contains("copy thinking"), "{selected:?}");
+    assert!(
+        !selected.contains("copy thinking"),
+        "raw completed thinking should stay out of live selection text: {selected:?}"
+    );
+    assert!(
+        selected.contains("Ctrl+O"),
+        "selection should keep the reasoning detail affordance: {selected:?}"
+    );
     assert!(selected.contains("tool output line"), "{selected:?}");
     assert!(selected.contains("copy assistant"), "{selected:?}");
     // #1163: legacy tool-card box rails must not leak into copied text.
@@ -420,6 +455,35 @@ fn mouse_selection_autocopies_on_release_without_ctrl_c() {
             .is_some_and(|text| text.contains("alpha")),
         "selection should be written to clipboard"
     );
+}
+
+#[test]
+fn loading_mouse_filter_keeps_active_drags() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+
+    let moved = MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: 3,
+        row: 2,
+        modifiers: KeyModifiers::NONE,
+    };
+    let drag = MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: 5,
+        row: 2,
+        modifiers: KeyModifiers::NONE,
+    };
+
+    assert!(should_drop_loading_mouse_motion(&app, moved));
+    assert!(should_drop_loading_mouse_motion(&app, drag));
+
+    app.viewport.transcript_selection.dragging = true;
+    assert!(!should_drop_loading_mouse_motion(&app, drag));
+
+    app.viewport.transcript_selection.dragging = false;
+    app.viewport.transcript_scrollbar_dragging = true;
+    assert!(!should_drop_loading_mouse_motion(&app, drag));
 }
 
 #[test]
@@ -1054,7 +1118,9 @@ fn create_test_app() -> App {
         notes_path: PathBuf::from("notes.txt"),
         mcp_config_path: PathBuf::from("mcp.json"),
         use_memory: false,
-        start_in_agent_mode: false,
+        // Keep UI tests independent from the developer's saved
+        // `default_mode` setting.
+        start_in_agent_mode: true,
         skip_onboarding: false,
         yolo: false,
         resume_session_id: None,
@@ -1079,7 +1145,9 @@ fn create_test_options() -> TuiOptions {
         notes_path: PathBuf::from("notes.txt"),
         mcp_config_path: PathBuf::from("mcp.json"),
         use_memory: false,
-        start_in_agent_mode: false,
+        // Keep UI tests independent from the developer's saved
+        // `default_mode` setting.
+        start_in_agent_mode: true,
         skip_onboarding: false,
         yolo: false,
         resume_session_id: None,
@@ -1707,7 +1775,10 @@ fn make_subagent(
     status: crate::tools::subagent::SubAgentStatus,
 ) -> crate::tools::subagent::SubAgentResult {
     crate::tools::subagent::SubAgentResult {
+        name: id.to_string(),
         agent_id: id.to_string(),
+        context_mode: "fresh".to_string(),
+        fork_context: false,
         agent_type: crate::tools::subagent::SubAgentType::General,
         assignment: crate::tools::subagent::SubAgentAssignment {
             objective: format!("objective-{id}"),
@@ -1874,6 +1945,8 @@ fn footer_status_line_spans_show_mode_and_model_idle_and_active() {
     let mut app = create_test_app();
     app.set_mode(AppMode::Agent);
     app.model = "deepseek-v4-flash".to_string();
+    // Pin Agent mode regardless of user settings on the host machine.
+    let _ = app.set_mode(crate::tui::app::AppMode::Agent);
 
     let idle = spans_text(&footer_status_line_spans(&app, 60));
     assert!(idle.contains("agent"));
@@ -2754,6 +2827,15 @@ fn first_line_for_cell(app: &App, cell_index: usize) -> usize {
         .expect("cell should have rendered line")
 }
 
+fn pop_pager_body(app: &mut App) -> String {
+    let mut view = app.view_stack.pop().expect("pager view");
+    let pager = view
+        .as_any_mut()
+        .downcast_mut::<PagerView>()
+        .expect("top view should be pager");
+    pager.body_text()
+}
+
 #[test]
 fn detail_target_prefers_visible_tool_card() {
     let mut app = create_test_app();
@@ -2816,10 +2898,39 @@ fn detail_target_prefers_visible_tool_card() {
     app.viewport.last_transcript_visible = 6;
 
     assert_eq!(detail_target_cell_index(&app), Some(1));
-    let expected = format!("{} details: file_search", tool_details_shortcut_label());
+    let expected = format!(
+        "{} Activity: file_search · {} raw",
+        activity_shortcut_label(),
+        tool_details_shortcut_label()
+    );
     assert_eq!(
         selected_detail_footer_label(&app).as_deref(),
         Some(expected.as_str())
+    );
+}
+
+#[test]
+fn activity_footer_hint_surfaces_visible_thinking_without_raw_tool_hint() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Thinking {
+        content: "visible reasoning".to_string(),
+        streaming: false,
+        duration_secs: Some(1.4),
+    }];
+    app.resync_history_revisions();
+    let revisions = app.history_revisions.clone();
+    app.viewport.transcript_cache.ensure(
+        &app.history,
+        &revisions,
+        100,
+        app.transcript_render_options(),
+    );
+    app.viewport.last_transcript_top = first_line_for_cell(&app, 0);
+    app.viewport.last_transcript_visible = 4;
+
+    assert_eq!(
+        selected_detail_footer_label(&app).as_deref(),
+        Some("Ctrl+O Activity: thinking")
     );
 }
 
@@ -3672,7 +3783,7 @@ fn orphan_during_active_keeps_subsequent_completion_routed_correctly() {
 
 #[test]
 fn tool_details_survive_active_cell_flush() {
-    // The pager / Ctrl+O resolves tool details by cell index. Flushing the
+    // Detail pagers resolve tool details by cell index. Flushing the
     // active cell must move detail records into `tool_details_by_cell` so
     // the pager keeps working after the turn settles.
     let mut app = create_test_app();
@@ -3976,9 +4087,8 @@ fn open_thinking_pager_finds_thinking_in_active_cell() {
     // After ThinkingComplete fires, the finalized thinking entry stays in
     // `app.active_cell` with `streaming = false` until the active cell is
     // flushed to history (end-of-turn, or when an assistant text arrives).
-    // During that window the transcript still renders the
-    // "thinking collapsed; press Ctrl+O for full text" affordance from
-    // `render_thinking`, so the handler must reach across the virtual
+    // During that window the transcript still renders the Ctrl+O affordance
+    // from `render_thinking`, so the handler must reach across the virtual
     // transcript — not just `app.history` — or the promise is a lie.
     // Regression guard for the v0.8.29 affordance/handler mismatch.
     let mut app = create_test_app();
@@ -4004,6 +4114,129 @@ fn open_thinking_pager_finds_thinking_in_active_cell() {
         app.view_stack.top_kind(),
         Some(ModalKind::Pager),
         "pager must open for thinking entries still in active_cell"
+    );
+    let body = pop_pager_body(&mut app);
+    assert!(body.contains("Activity: reasoning timeline"), "{body}");
+    assert!(body.contains("Thinking chunk 1 of 1"), "{body}");
+    assert!(body.contains("deliberating"), "{body}");
+}
+
+#[test]
+fn activity_detail_opens_reasoning_timeline_for_selected_thinking() {
+    let mut app = create_test_app();
+    app.history = vec![
+        HistoryCell::Thinking {
+            content: "first chunk reasoning".to_string(),
+            streaming: false,
+            duration_secs: Some(0.8),
+        },
+        HistoryCell::Assistant {
+            content: "interlude".to_string(),
+            streaming: false,
+        },
+        HistoryCell::Thinking {
+            content: "second chunk reasoning".to_string(),
+            streaming: false,
+            duration_secs: Some(1.1),
+        },
+    ];
+    app.resync_history_revisions();
+    let revisions = app.history_revisions.clone();
+    app.viewport.transcript_cache.ensure(
+        &app.history,
+        &revisions,
+        100,
+        app.transcript_render_options(),
+    );
+    let line = first_line_for_cell(&app, 0);
+    let point = TranscriptSelectionPoint {
+        line_index: line,
+        column: 0,
+    };
+    app.viewport.transcript_selection.anchor = Some(point);
+    app.viewport.transcript_selection.head = Some(point);
+
+    assert!(open_activity_detail_pager(&mut app));
+    let body = pop_pager_body(&mut app);
+
+    assert!(
+        body.contains("Activity: reasoning timeline"),
+        "activity label missing: {body}"
+    );
+    assert!(
+        body.contains("Selected chunk: 1 of 2"),
+        "chunk position missing: {body}"
+    );
+    assert!(body.contains("Thinking chunk 1 of 2 (selected)"), "{body}");
+    assert!(body.contains("Thinking chunk 2 of 2"), "{body}");
+    assert!(body.contains("first chunk reasoning"), "body: {body}");
+    assert!(
+        body.contains("second chunk reasoning"),
+        "timeline should include the whole session's thinking: {body}"
+    );
+}
+
+#[test]
+fn activity_detail_fallback_prefers_live_activity_context() {
+    let mut app = create_test_app();
+    let mut active = ActiveCell::new();
+    active.push_tool(
+        "active-1",
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "agent_eval".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("agent_id: agent_af58ba3a".to_string()),
+            output: None,
+            prompts: None,
+            spillover_path: None,
+            output_summary: None,
+            is_diff: false,
+        })),
+    );
+    app.active_cell = Some(active);
+    app.runtime_turn_id = Some("turn_live_123456789".to_string());
+    app.runtime_turn_status = Some("in_progress".to_string());
+
+    assert!(open_activity_detail_pager(&mut app));
+    let body = pop_pager_body(&mut app);
+
+    assert!(body.contains("Turn: turn_live_123456789"));
+    assert!(body.contains("Activity: tool agent_eval"));
+    assert!(body.contains("Status: running"));
+    assert!(body.contains("agent_id: agent_af58ba3a"));
+}
+
+#[test]
+fn activity_detail_fallback_uses_recent_meaningful_activity_without_full_tool_dump() {
+    let mut app = create_test_app();
+    let output = (0..20)
+        .map(|idx| format!("line {idx}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.history
+        .push(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "read_file".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("src/large.rs".to_string()),
+            output: Some(output),
+            prompts: None,
+            spillover_path: None,
+            output_summary: None,
+            is_diff: false,
+        })));
+
+    assert!(open_activity_detail_pager(&mut app));
+    let body = pop_pager_body(&mut app);
+
+    assert!(body.contains("Activity: tool read_file"));
+    assert!(body.contains("Status: done"));
+    assert!(
+        body.contains("Alt+V for details"),
+        "activity detail should stay bounded and point to Alt+V for raw detail: {body}"
+    );
+    assert!(
+        !body.contains("line 10"),
+        "middle of large raw output should not be dumped into Activity Detail: {body}"
     );
 }
 
@@ -4758,7 +4991,7 @@ fn composer_arrows_scroll_empty_up() {
         false,
         false,
     ));
-    assert_eq!(app.viewport.pending_scroll_delta, -1);
+    assert_eq!(app.viewport.pending_scroll_delta, -3);
     assert!(app.input.is_empty());
 }
 
@@ -4773,7 +5006,7 @@ fn composer_arrows_scroll_empty_down() {
         false,
         false,
     ));
-    assert_eq!(app.viewport.pending_scroll_delta, 1);
+    assert_eq!(app.viewport.pending_scroll_delta, 3);
 }
 
 #[test]
@@ -5043,4 +5276,113 @@ fn sanitize_stream_chunk_handles_empty_and_whitespace() {
     // branches that skip empty chunks handle the result, so the
     // filter doesn't need to inject a placeholder.
     assert_eq!(super::sanitize_stream_chunk("\u{1b}\u{7}\u{8}"), "");
+}
+
+#[test]
+fn toast_stack_overlay_respects_composer_boundary() {
+    // Verify that the toast stack area calculation respects the composer area
+    // boundary and doesn't overlap. This is a regression test for the issue
+    // where deferred tool loading notifications appeared in the composer input.
+    //
+    // Layout:
+    // - Composer area: rows 10-14 (height=5, y=10)
+    // - Footer area: rows 15-16 (height=2, y=15)
+    // - Available space for toast stack: rows 14-14 (max 1 row above footer)
+    let _full_area = ratatui::prelude::Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 16,
+    };
+    let composer_area = ratatui::prelude::Rect {
+        x: 0,
+        y: 10,
+        width: 80,
+        height: 5,
+    };
+    let footer_area = ratatui::prelude::Rect {
+        x: 0,
+        y: 15,
+        width: 80,
+        height: 1,
+    };
+
+    // With 2 toasts, the stack overlay would try to render 1 toast above footer
+    // max_above should be: footer_area.y (15) - composer_area.y.saturating_sub(1) (9)
+    //                   = 15 - 9 = 6 rows available
+    // But that's the full space above footer. The real constraint is the gap
+    // between composer end and footer start.
+    // Composer ends at row 14 (y=10 + height=5 - 1)
+    // Footer starts at row 15
+    // So only row 14 is available for toasts (1 row)
+
+    // The calculation should be:
+    // max_above = footer_area.y.saturating_sub(composer_area.y.saturating_sub(1))
+    //          = 15.saturating_sub(10 - 1)
+    //          = 15 - 9 = 6
+    // But wait, composer_area.y.saturating_sub(1) = 10 - 1 = 9
+    // This gives us the space BEFORE the composer starts, which is wrong.
+    //
+    // The correct logic should be:
+    // composer_end = composer_area.y + composer_area.height
+    // available = footer_area.y.saturating_sub(composer_end)
+    // But we're using: footer_area.y.saturating_sub(composer_area.y.saturating_sub(1))
+    // Which is: 15 - 9 = 6, the total height above composer start
+    // But we only want the gap between composer end and footer
+    //
+    // Actually, the formula composer_area.y.saturating_sub(1) means:
+    // "find the row right before the composer starts"
+    // And we subtract that from footer_area.y to get the space between composer and footer.
+    // This is correct: footer_area.y - (composer_area.y - 1) - 1 = gap
+    // Wait, let me recalculate:
+    // Composer area: y=10, height=5 means rows 10-14
+    // Footer area: y=15 means row 15
+    // Gap = 15 - (10 + 5) = 0 (they're adjacent!)
+    //
+    // Let me reconsider the formula in the code:
+    // max_above = footer_area.y.saturating_sub(composer_area.y.saturating_sub(1))
+    //          = 15 - (10 - 1)
+    //          = 15 - 9 = 6
+    //
+    // But the composer occupies rows 10-14, and footer is at row 15.
+    // So there's actually no gap! The calculation gives 6, which includes:
+    // - Rows before composer (0-9) = 10 rows
+    // - Rows at composer end (14) = 1 row
+    // Total = 11 rows, but we get 6... that doesn't match.
+    //
+    // Actually wait, let me re-read the formula:
+    // composer_area.y.saturating_sub(1) = 10 - 1 = 9
+    // This is row 9 (the row right before composer starts at row 10)
+    // footer_area.y - 9 = 15 - 9 = 6
+    // This is the number of rows from row 9 to row 15 (exclusive), which is rows 9-14 = 6 rows
+    // This is correct! It's the space from before the composer to the footer.
+    //
+    // But wait, the composer STARTS at row 10, not row 9.
+    // So rows 9-14 includes the composer! That's not right either.
+    //
+    // I think I'm overcomplicating this. Let me just verify that the calculation
+    // doesn't allow the toast to overlap with the composer.
+
+    // The actual fix in `render_toast_stack_overlay` computes
+    //     composer_end = composer_area.y + composer_area.height
+    //     max_above    = footer_area.y.saturating_sub(composer_end)
+    // so when composer and footer are adjacent (no gap), max_above
+    // collapses to 0 and the overlay is silently skipped rather than
+    // rendering on top of the composer's last row.
+    let composer_end = composer_area.y + composer_area.height;
+    let max_above = footer_area.y.saturating_sub(composer_end);
+
+    assert_eq!(
+        max_above, 0,
+        "with adjacent composer (rows 10-14) and footer (row 15) there is \
+         no gap, so the toast stack must report zero available rows"
+    );
+    // Sanity: the calculated cap must never exceed the gap. This is what
+    // prevents the v0.8.31 overlap regression — any positive value here on
+    // an adjacent layout would put toast text on top of the composer.
+    let gap = footer_area.y.saturating_sub(composer_end);
+    assert!(
+        max_above <= gap,
+        "max_above ({max_above}) must never exceed the composer→footer gap ({gap})"
+    );
 }

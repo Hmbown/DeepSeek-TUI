@@ -36,6 +36,7 @@ pub enum Locale {
     En,
     Ja,
     ZhHans,
+    ZhHant,
     PtBr,
 }
 
@@ -45,7 +46,18 @@ impl Locale {
             Self::En => "en",
             Self::Ja => "ja",
             Self::ZhHans => "zh-Hans",
+            Self::ZhHant => "zh-Hant",
             Self::PtBr => "pt-BR",
+        }
+    }
+
+    pub fn translation_target_name(self) -> &'static str {
+        match self {
+            Self::En => "English",
+            Self::Ja => "Japanese (日本語)",
+            Self::ZhHans => "Simplified Chinese (简体中文)",
+            Self::ZhHant => "Traditional Chinese (繁體中文)",
+            Self::PtBr => "Brazilian Portuguese (Português do Brasil)",
         }
     }
 
@@ -76,6 +88,14 @@ impl Locale {
                 fallback: "en",
                 coverage: LocaleCoverage::V076Core,
             },
+            Self::ZhHant => LocaleSpec {
+                tag: "zh-Hant",
+                display_name: "Chinese Traditional",
+                script: "Hant",
+                direction: TextDirection::Ltr,
+                fallback: "zh-Hans",
+                coverage: LocaleCoverage::V076Core,
+            },
             Self::PtBr => LocaleSpec {
                 tag: "pt-BR",
                 display_name: "Portuguese (Brazil)",
@@ -89,7 +109,7 @@ impl Locale {
 
     #[allow(dead_code)]
     pub fn shipped() -> &'static [Self] {
-        &[Self::En, Self::Ja, Self::ZhHans, Self::PtBr]
+        &[Self::En, Self::Ja, Self::ZhHans, Self::ZhHant, Self::PtBr]
     }
 }
 
@@ -217,6 +237,10 @@ pub enum MessageId {
     CmdAttachDescription,
     CmdAnchorDescription,
     CmdCacheDescription,
+    CmdChangeDescription,
+    CmdChangeHeader,
+    CmdChangeTranslationQueued,
+    CmdChangeTranslationUnavailable,
     CmdClearDescription,
     CmdCompactDescription,
     CmdConfigDescription,
@@ -232,6 +256,7 @@ pub enum MessageId {
     CmdHelpDescription,
     CmdHomeDescription,
     CmdHooksDescription,
+    CmdAgentDescription,
     CmdGoalDescription,
     CmdRecapDescription,
     CmdInitDescription,
@@ -250,6 +275,7 @@ pub enum MessageId {
     CmdProviderDescription,
     CmdQueueDescription,
     CmdRecallDescription,
+    CmdRelayDescription,
     CmdRenameDescription,
     CmdRestoreDescription,
     CmdRetryDescription,
@@ -268,6 +294,12 @@ pub enum MessageId {
     CmdSystemDescription,
     CmdTaskDescription,
     CmdTokensDescription,
+    CmdTranslateDescription,
+    CmdTranslateOff,
+    CmdTranslateOn,
+    TranslationInProgress,
+    TranslationComplete,
+    TranslationFailed,
     CmdTrustDescription,
     CmdLspDescription,
     CmdShareDescription,
@@ -456,6 +488,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdHelpDescription,
     MessageId::CmdHomeDescription,
     MessageId::CmdHooksDescription,
+    MessageId::CmdAgentDescription,
     MessageId::CmdInitDescription,
     MessageId::CmdJobsDescription,
     MessageId::CmdLinksDescription,
@@ -471,6 +504,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdProviderDescription,
     MessageId::CmdQueueDescription,
     MessageId::CmdRecallDescription,
+    MessageId::CmdRelayDescription,
     MessageId::CmdRenameDescription,
     MessageId::CmdRestoreDescription,
     MessageId::CmdRetryDescription,
@@ -489,6 +523,12 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdSystemDescription,
     MessageId::CmdTaskDescription,
     MessageId::CmdTokensDescription,
+    MessageId::CmdTranslateDescription,
+    MessageId::CmdTranslateOff,
+    MessageId::CmdTranslateOn,
+    MessageId::TranslationInProgress,
+    MessageId::TranslationComplete,
+    MessageId::TranslationFailed,
     MessageId::CmdTrustDescription,
     MessageId::CmdLspDescription,
     MessageId::CmdShareDescription,
@@ -499,6 +539,10 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdCacheHeader,
     MessageId::CmdCacheNoData,
     MessageId::CmdCacheTotals,
+    MessageId::CmdChangeDescription,
+    MessageId::CmdChangeHeader,
+    MessageId::CmdChangeTranslationQueued,
+    MessageId::CmdChangeTranslationUnavailable,
     MessageId::CmdCostReport,
     MessageId::CmdTokensCacheBoth,
     MessageId::CmdTokensCacheHitOnly,
@@ -630,6 +674,56 @@ pub fn tr(locale: Locale, id: MessageId) -> &'static str {
     fallback_translation(translation(locale, id), id)
 }
 
+pub fn thinking_translation_placeholder(locale: Locale) -> &'static str {
+    match locale {
+        Locale::En => "Thinking; translating when complete...",
+        Locale::Ja => "思考中です。完了後に日本語へ翻訳します...",
+        Locale::ZhHans => "正在思考，完成后翻译为简体中文...",
+        Locale::ZhHant => "正在思考，完成後翻譯為繁體中文...",
+        Locale::PtBr => "Pensando; traduzindo ao concluir...",
+    }
+}
+
+pub fn thinking_translation_in_progress(locale: Locale) -> &'static str {
+    match locale {
+        Locale::En => "Translating thinking content...",
+        Locale::Ja => "思考内容を翻訳中...",
+        Locale::ZhHans => "正在翻译思考内容...",
+        Locale::ZhHant => "正在翻譯思考內容...",
+        Locale::PtBr => "Traduzindo o conteúdo de raciocínio...",
+    }
+}
+
+pub fn thinking_translation_complete(locale: Locale) -> &'static str {
+    match locale {
+        Locale::En => "Thinking translation complete",
+        Locale::Ja => "思考内容の翻訳が完了しました",
+        Locale::ZhHans => "思考内容翻译完成",
+        Locale::ZhHant => "思考內容翻譯完成",
+        Locale::PtBr => "Tradução do raciocínio concluída",
+    }
+}
+
+pub fn thinking_translation_failed(locale: Locale) -> &'static str {
+    match locale {
+        Locale::En => "Thinking translation failed",
+        Locale::Ja => "思考内容の翻訳に失敗しました",
+        Locale::ZhHans => "思考内容翻译失败",
+        Locale::ZhHant => "思考內容翻譯失敗",
+        Locale::PtBr => "Falha ao traduzir o raciocínio",
+    }
+}
+
+pub fn hidden_translation_failed(locale: Locale) -> &'static str {
+    match locale {
+        Locale::En => "Translation failed; original text is hidden.",
+        Locale::Ja => "翻訳に失敗しました。原文は非表示です。",
+        Locale::ZhHans => "翻译失败，原文已隐藏。",
+        Locale::ZhHant => "翻譯失敗，原文已隱藏。",
+        Locale::PtBr => "A tradução falhou; o texto original está oculto.",
+    }
+}
+
 #[allow(dead_code)]
 pub fn missing_message_ids(locale: Locale) -> Vec<MessageId> {
     ALL_MESSAGE_IDS
@@ -726,7 +820,7 @@ fn parse_locale(value: &str) -> Option<Locale> {
             || value.contains("-hk")
             || value.contains("-mo")
         {
-            return None;
+            return Some(Locale::ZhHant);
         }
         return Some(Locale::ZhHans);
     }
@@ -784,6 +878,14 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdCacheDescription => {
             "Show DeepSeek prefix-cache hit/miss stats for the last N turns"
         }
+        MessageId::CmdChangeDescription => "Show the latest changelog entry",
+        MessageId::CmdChangeHeader => "Latest Changelog",
+        MessageId::CmdChangeTranslationQueued => {
+            "English release notes are shown below. A translated version will be requested next; if the provider is unavailable, this English text is the fallback."
+        }
+        MessageId::CmdChangeTranslationUnavailable => {
+            "English release notes are shown below. Translation is unavailable because the current session has no API key or is offline."
+        }
         MessageId::CmdClearDescription => "Clear conversation history",
         MessageId::CmdCompactDescription => {
             "Trigger context compaction to free up space (legacy; v0.6.6 prefers cycle restart)"
@@ -801,6 +903,9 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdHelpDescription => "Show help information",
         MessageId::CmdHomeDescription => "Show home dashboard with stats and quick actions",
         MessageId::CmdHooksDescription => "List configured lifecycle hooks (read-only)",
+        MessageId::CmdAgentDescription => {
+            "Open a persistent sub-agent session: /agent [0-3] <task>"
+        }
         MessageId::CmdGoalDescription => "Set a session goal with optional token budget",
         MessageId::CmdRecapDescription => "Print a structured session state summary",
         MessageId::CmdInitDescription => "Generate AGENTS.md for project",
@@ -819,23 +924,22 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdModelsDescription => "List available models from API",
         MessageId::CmdNetworkDescription => "Manage network allow and deny rules",
         MessageId::CmdNoteDescription => "Add, list, edit, or remove workspace notes",
-        MessageId::CmdThemeDescription => "Toggle between dark and light theme",
+        MessageId::CmdThemeDescription => "Switch theme: dark, light, grayscale, or system",
         MessageId::CmdProviderDescription => {
             "Switch or view the active LLM backend (deepseek | nvidia-nim | ollama)"
         }
         MessageId::CmdQueueDescription => "View or edit queued messages",
         MessageId::CmdRecallDescription => "Search prior cycle archives (BM25 over message text)",
+        MessageId::CmdRelayDescription => "Create a session relay (接力) for a fresh thread",
         MessageId::CmdRenameDescription => "Rename the current session",
         MessageId::CmdRestoreDescription => {
             "Roll back the workspace to a prior pre/post-turn snapshot. With no arg, lists recent snapshots."
         }
         MessageId::CmdRetryDescription => "Retry the last request",
         MessageId::CmdReviewDescription => "Run a structured code review on a file, diff, or PR",
-        MessageId::CmdRlmDescription => {
-            "Recursive Language Model (RLM) turn — store the prompt in a Python REPL and let the model write code to process it, with `llm_query()` / `sub_rlm()` for sub-LLM calls."
-        }
+        MessageId::CmdRlmDescription => "Open a persistent RLM context: /rlm [0-3] <file_or_text>",
         MessageId::CmdSaveDescription => "Save session to file",
-        MessageId::CmdSessionsDescription => "Open session picker",
+        MessageId::CmdSessionsDescription => "Open session history picker",
         MessageId::CmdSettingsDescription => "Show persistent settings",
         MessageId::CmdSkillDescription => {
             "Activate a skill, or install/update/uninstall/trust a community skill"
@@ -855,6 +959,16 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdSystemDescription => "Show current system prompt",
         MessageId::CmdTaskDescription => "Manage background tasks",
         MessageId::CmdTokensDescription => "Show token usage for session",
+        MessageId::CmdTranslateDescription => {
+            "Toggle output translation to the current system language on/off"
+        }
+        MessageId::CmdTranslateOff => "Output translation disabled (original model output shown)",
+        MessageId::CmdTranslateOn => {
+            "Output translation enabled: model responses will be shown in your system language"
+        }
+        MessageId::TranslationInProgress => "Translating assistant output...",
+        MessageId::TranslationComplete => "Translation complete",
+        MessageId::TranslationFailed => "Translation failed",
         MessageId::CmdTrustDescription => {
             "Manage workspace trust and per-path allowlist (`/trust add <path>`, `/trust list`, `/trust on|off`)"
         }
@@ -949,7 +1063,7 @@ fn english(id: MessageId) -> &'static str {
             "Open details for the selected tool or message (when input is empty)"
         }
         MessageId::KbToolDetailsPager => "Open tool-details pager",
-        MessageId::KbThinkingPager => "Open thinking pager",
+        MessageId::KbThinkingPager => "Open Activity Detail",
         MessageId::KbLiveTranscript => "Open live transcript overlay (sticky-tail auto-scroll)",
         MessageId::KbBacktrackMessage => {
             "Backtrack to a previous user message (Left/Right step, Enter to rewind)"
@@ -959,7 +1073,7 @@ fn english(id: MessageId) -> &'static str {
         }
         MessageId::KbJumpPlanAgentYolo => "Jump directly to Plan / Agent / YOLO mode",
         MessageId::KbAltJumpPlanAgentYolo => "Alternative jump to Plan / Agent / YOLO mode",
-        MessageId::KbFocusSidebar => "Focus Plan / Todos / Tasks / Agents / Auto sidebar",
+        MessageId::KbFocusSidebar => "Focus Work / Tasks / Agents / Context / Auto sidebar",
         MessageId::KbTogglePlanAgent => "Toggle between Plan and Agent modes",
         MessageId::KbSessionPicker => "Open the session picker",
         MessageId::KbPasteAttach => "Paste text or attach a clipboard image",
@@ -1018,7 +1132,7 @@ fn english(id: MessageId) -> &'static str {
             "Pick the UI language. You can change it any time with `/settings set locale <tag>`."
         }
         MessageId::OnboardLanguageFooter => {
-            "Press 1-5 to choose, or Enter to keep the current setting"
+            "Press 1-6 to choose, or Enter to keep the current setting"
         }
         // Onboarding — API key entry.
         MessageId::OnboardApiKeyTitle => "Connect your DeepSeek API key",
@@ -1072,8 +1186,22 @@ fn translation(locale: Locale, id: MessageId) -> Option<&'static str> {
         Locale::En => Some(english(id)),
         Locale::Ja => japanese(id),
         Locale::ZhHans => chinese_simplified(id),
+        Locale::ZhHant => traditional_chinese(id),
         Locale::PtBr => portuguese_brazil(id),
     }
+}
+
+fn traditional_chinese(id: MessageId) -> Option<&'static str> {
+    Some(match id {
+        MessageId::CmdRelayDescription => "為新執行緒建立會話接力摘要",
+        MessageId::CmdTranslateDescription => "切換輸出翻譯為目前系統語言的開關狀態",
+        MessageId::CmdTranslateOff => "輸出翻譯已關閉（顯示原始模型輸出）",
+        MessageId::CmdTranslateOn => "輸出翻譯已開啟：模型回覆將以繁體中文顯示",
+        MessageId::TranslationInProgress => "正在翻譯助理輸出...",
+        MessageId::TranslationComplete => "翻譯完成",
+        MessageId::TranslationFailed => "翻譯失敗",
+        other => chinese_simplified(other)?,
+    })
 }
 
 fn japanese(id: MessageId) -> Option<&'static str> {
@@ -1120,6 +1248,14 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdCacheDescription => {
             "直近 N ターンの DeepSeek プレフィックスキャッシュのヒット/ミス統計を表示"
         }
+        MessageId::CmdChangeDescription => "最新の更新履歴を表示",
+        MessageId::CmdChangeHeader => "最新の更新履歴",
+        MessageId::CmdChangeTranslationQueued => {
+            "英語のリリースノートを以下に表示します。次に翻訳を依頼します。プロバイダーを利用できない場合は、この英語版がフォールバックです。"
+        }
+        MessageId::CmdChangeTranslationUnavailable => {
+            "英語のリリースノートを以下に表示します。現在のセッションに API キーがないかオフラインのため、翻訳は利用できません。"
+        }
         MessageId::CmdClearDescription => "会話履歴をクリア",
         MessageId::CmdCompactDescription => {
             "コンテキスト圧縮で容量を確保（旧式：v0.6.6 以降はサイクル再起動を推奨）"
@@ -1141,6 +1277,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdHooksDescription => {
             "設定済みのライフサイクルフックを一覧表示（読み取り専用）"
         }
+        MessageId::CmdAgentDescription => {
+            "永続サブエージェントセッションを開く: /agent [0-3] <task>"
+        }
         MessageId::CmdGoalDescription => "トークンバジェット付きのセッション目標を設定",
         MessageId::CmdRecapDescription => "構造化されたセッション状態のサマリーを表示",
         MessageId::CmdInitDescription => "プロジェクト用に AGENTS.md を生成",
@@ -1159,7 +1298,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdModelsDescription => "API から利用可能なモデルを一覧表示",
         MessageId::CmdNetworkDescription => "ネットワーク許可・拒否ルールを管理",
         MessageId::CmdNoteDescription => "ワークスペースノートの追加、一覧、編集、削除",
-        MessageId::CmdThemeDescription => "テーマ（ダーク/ライト）を切り替え",
+        MessageId::CmdThemeDescription => {
+            "テーマを切り替え（ダーク/ライト/グレースケール/システム）"
+        }
         MessageId::CmdProviderDescription => {
             "現在の LLM バックエンドを切り替え・確認（deepseek | nvidia-nim | ollama）"
         }
@@ -1167,17 +1308,16 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdRecallDescription => {
             "過去のサイクルアーカイブを検索（メッセージ本文への BM25 検索）"
         }
+        MessageId::CmdRelayDescription => "新しいスレッド用のセッションリレー（接力）を作成",
         MessageId::CmdRenameDescription => "現在のセッションの名前を変更",
         MessageId::CmdRestoreDescription => {
             "ワークスペースを以前のターン前/後スナップショットへロールバック。引数なしで最近のスナップショットを一覧表示。"
         }
         MessageId::CmdRetryDescription => "直前のリクエストを再試行",
         MessageId::CmdReviewDescription => "ファイル・diff・PR に対して構造化コードレビューを実行",
-        MessageId::CmdRlmDescription => {
-            "再帰言語モデル（RLM）ターン — プロンプトを Python REPL に格納し、モデルが処理コードを記述。サブ LLM 呼び出しは `llm_query()` / `sub_rlm()`。"
-        }
+        MessageId::CmdRlmDescription => "永続 RLM コンテキストを開く: /rlm [0-3] <file_or_text>",
         MessageId::CmdSaveDescription => "セッションをファイルに保存",
-        MessageId::CmdSessionsDescription => "セッションピッカーを開く",
+        MessageId::CmdSessionsDescription => "セッション履歴ピッカーを開く",
         MessageId::CmdSettingsDescription => "永続化された設定を表示",
         MessageId::CmdSkillDescription => {
             "スキルを有効化、またはコミュニティスキルをインストール／更新／アンインストール／信頼"
@@ -1197,6 +1337,14 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSystemDescription => "現在のシステムプロンプトを表示",
         MessageId::CmdTaskDescription => "バックグラウンドタスクを管理",
         MessageId::CmdTokensDescription => "セッションのトークン使用量を表示",
+        MessageId::CmdTranslateDescription => "出力翻訳を現在のシステム言語に切り替え",
+        MessageId::CmdTranslateOff => "出力翻訳が無効になりました（元のモデル出力を表示）",
+        MessageId::CmdTranslateOn => {
+            "出力翻訳が有効になりました：モデル応答は現在のシステム言語で表示されます"
+        }
+        MessageId::TranslationInProgress => "アシスタント出力を翻訳中...",
+        MessageId::TranslationComplete => "翻訳が完了しました",
+        MessageId::TranslationFailed => "翻訳に失敗しました",
         MessageId::CmdTrustDescription => {
             "ワークスペースの信頼設定とパス別許可リストを管理（`/trust add <path>`、`/trust list`、`/trust on|off`）"
         }
@@ -1290,7 +1438,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
             "選択中のツールまたはメッセージの詳細を開く（入力が空の時）"
         }
         MessageId::KbToolDetailsPager => "ツール詳細のページャーを開く",
-        MessageId::KbThinkingPager => "思考内容のページャーを開く",
+        MessageId::KbThinkingPager => "Activity Detail を開く",
         MessageId::KbLiveTranscript => "ライブ会話履歴オーバーレイを開く（自動追尾スクロール）",
         MessageId::KbBacktrackMessage => {
             "前のユーザーメッセージに戻る（左右でステップ、Enter で巻き戻し）"
@@ -1300,7 +1448,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         }
         MessageId::KbJumpPlanAgentYolo => "Plan / Agent / YOLO モードに直接ジャンプ",
         MessageId::KbAltJumpPlanAgentYolo => "Plan / Agent / YOLO モードへの代替ジャンプ",
-        MessageId::KbFocusSidebar => "Plan / Todos / Tasks / Agents / Auto サイドバーにフォーカス",
+        MessageId::KbFocusSidebar => {
+            "Work / Tasks / Agents / Context / Auto サイドバーにフォーカス"
+        }
         MessageId::KbTogglePlanAgent => "Plan モードと Agent モードを切り替え",
         MessageId::KbSessionPicker => "セッションピッカーを開く",
         MessageId::KbPasteAttach => "テキストを貼り付けまたはクリップボード画像を添付",
@@ -1362,7 +1512,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::OnboardLanguageBlurb => {
             "UI 言語を選んでください。`/settings set locale <tag>` でいつでも変更できます。"
         }
-        MessageId::OnboardLanguageFooter => "1〜5 で選択、または Enter で現在の設定を維持",
+        MessageId::OnboardLanguageFooter => "1〜6 で選択、または Enter で現在の設定を維持",
         // Onboarding — API key entry.
         MessageId::OnboardApiKeyTitle => "DeepSeek API キーを設定",
         MessageId::OnboardApiKeyStep1 => {
@@ -1446,6 +1596,14 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdAnchorDescription => "钉选关键事实，在压缩后自动注入上下文",
         MessageId::CmdAttachDescription => "附加图片或视频媒体；文本文件或目录请使用 @path",
         MessageId::CmdCacheDescription => "显示最近 N 轮的 DeepSeek 前缀缓存命中/未命中统计",
+        MessageId::CmdChangeDescription => "显示最新的更新日志",
+        MessageId::CmdChangeHeader => "最新更新日志",
+        MessageId::CmdChangeTranslationQueued => {
+            "下面显示英文发布说明。接下来会请求模型翻译；如果当前提供商不可用，这段英文内容就是备用结果。"
+        }
+        MessageId::CmdChangeTranslationUnavailable => {
+            "下面显示英文发布说明。当前会话没有 API Key 或处于离线状态，无法翻译。"
+        }
         MessageId::CmdClearDescription => "清除对话历史",
         MessageId::CmdCompactDescription => {
             "触发上下文压缩以释放空间（旧版命令；v0.6.6 起建议改用循环重启）"
@@ -1463,6 +1621,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdHelpDescription => "显示帮助信息",
         MessageId::CmdHomeDescription => "显示主页面板，含统计与快捷操作",
         MessageId::CmdHooksDescription => "列出已配置的生命周期钩子（只读）",
+        MessageId::CmdAgentDescription => "打开持久子代理会话：/agent [0-3] <task>",
         MessageId::CmdGoalDescription => "设置带有可选令牌预算的会话目标",
         MessageId::CmdRecapDescription => "输出结构化的会话状态摘要",
         MessageId::CmdInitDescription => "为项目生成 AGENTS.md",
@@ -1479,23 +1638,22 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdModelsDescription => "列出 API 中可用的模型",
         MessageId::CmdNetworkDescription => "管理网络允许和拒绝规则",
         MessageId::CmdNoteDescription => "添加、列出、编辑或删除工作区笔记",
-        MessageId::CmdThemeDescription => "在浅色和深色主题之间切换",
+        MessageId::CmdThemeDescription => "切换主题：深色、浅色、灰度或系统",
         MessageId::CmdProviderDescription => {
             "切换或查看当前 LLM 后端（deepseek | nvidia-nim | ollama）"
         }
         MessageId::CmdQueueDescription => "查看或编辑已排队的消息",
         MessageId::CmdRecallDescription => "搜索此前的循环归档（基于消息文本的 BM25 检索）",
+        MessageId::CmdRelayDescription => "为新线程创建会话接力摘要",
         MessageId::CmdRenameDescription => "重命名当前会话",
         MessageId::CmdRestoreDescription => {
             "将工作区回滚到此前的轮次前/后快照。不带参数时列出最近的快照。"
         }
         MessageId::CmdRetryDescription => "重试上一次请求",
         MessageId::CmdReviewDescription => "对文件、diff 或 PR 进行结构化代码审查",
-        MessageId::CmdRlmDescription => {
-            "递归语言模型（RLM）轮次 —— 将提示词存入 Python REPL，让模型编写代码进行处理；可用 `llm_query()` / `sub_rlm()` 调用子 LLM。"
-        }
+        MessageId::CmdRlmDescription => "打开持久 RLM 上下文：/rlm [0-3] <file_or_text>",
         MessageId::CmdSaveDescription => "将会话保存到文件",
-        MessageId::CmdSessionsDescription => "打开会话选择器",
+        MessageId::CmdSessionsDescription => "打开会话历史选择器",
         MessageId::CmdSettingsDescription => "显示持久化设置",
         MessageId::CmdSkillDescription => "激活技能，或安装/更新/卸载/信任社区技能",
         MessageId::CmdSkillsDescription => {
@@ -1511,6 +1669,12 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSystemDescription => "显示当前系统提示词",
         MessageId::CmdTaskDescription => "管理后台任务",
         MessageId::CmdTokensDescription => "显示本次会话的 token 用量",
+        MessageId::CmdTranslateDescription => "切换输出翻译为当前系统语言的开/关状态",
+        MessageId::CmdTranslateOff => "输出翻译已关闭（显示原始模型输出）",
+        MessageId::CmdTranslateOn => "输出翻译已开启：模型回复将以当前系统语言显示",
+        MessageId::TranslationInProgress => "正在翻译助手输出...",
+        MessageId::TranslationComplete => "翻译完成",
+        MessageId::TranslationFailed => "翻译失败",
         MessageId::CmdTrustDescription => {
             "管理工作区信任与按路径的白名单（`/trust add <path>`、`/trust list`、`/trust on|off`）"
         }
@@ -1594,7 +1758,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::KbLastMessagePager => "打开最后一条消息的分页器（输入框为空时）",
         MessageId::KbSelectedDetails => "打开选中工具或消息的详情（输入框为空时）",
         MessageId::KbToolDetailsPager => "打开工具详情分页器",
-        MessageId::KbThinkingPager => "打开思考内容分页器",
+        MessageId::KbThinkingPager => "打开 Activity Detail",
         MessageId::KbLiveTranscript => "打开实时对话覆盖层（自动滚动尾随）",
         MessageId::KbBacktrackMessage => "回退到之前的用户消息（左右键步进，Enter 回退）",
         MessageId::KbCompleteCycleModes => {
@@ -1602,7 +1766,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         }
         MessageId::KbJumpPlanAgentYolo => "直接跳转到 Plan / Agent / YOLO 模式",
         MessageId::KbAltJumpPlanAgentYolo => "替代快捷键跳转到 Plan / Agent / YOLO 模式",
-        MessageId::KbFocusSidebar => "聚焦 Plan / 待办 / 任务 / 代理 / 代理 / 自动侧边栏",
+        MessageId::KbFocusSidebar => "聚焦 Work / 任务 / 代理 / Context / 自动侧边栏",
         MessageId::KbTogglePlanAgent => "在 Plan 和 Agent 模式之间切换",
         MessageId::KbSessionPicker => "打开会话选择器",
         MessageId::KbPasteAttach => "粘贴文本或附加剪贴板图片",
@@ -1658,7 +1822,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::OnboardLanguageBlurb => {
             "选择界面语言。可随时使用 `/settings set locale <tag>` 修改。"
         }
-        MessageId::OnboardLanguageFooter => "按 1-5 选择，或按 Enter 保留当前设置",
+        MessageId::OnboardLanguageFooter => "按 1-6 选择，或按 Enter 保留当前设置",
         // Onboarding — API key entry.
         MessageId::OnboardApiKeyTitle => "连接你的 DeepSeek API 密钥",
         MessageId::OnboardApiKeyStep1 => {
@@ -1740,6 +1904,14 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdCacheDescription => {
             "Exibir estatísticas de hit/miss do cache de prefixo DeepSeek nas últimas N rodadas"
         }
+        MessageId::CmdChangeDescription => "Mostrar a entrada mais recente do changelog",
+        MessageId::CmdChangeHeader => "Changelog Mais Recente",
+        MessageId::CmdChangeTranslationQueued => {
+            "As notas de versao em ingles aparecem abaixo. Uma versao traduzida sera solicitada em seguida; se o provedor estiver indisponivel, este texto em ingles sera o fallback."
+        }
+        MessageId::CmdChangeTranslationUnavailable => {
+            "As notas de versao em ingles aparecem abaixo. A traducao esta indisponivel porque a sessao atual nao tem chave de API ou esta offline."
+        }
         MessageId::CmdClearDescription => "Limpar o histórico da conversa",
         MessageId::CmdCompactDescription => {
             "Compactar o contexto para liberar espaço (legado; a v0.6.6 prefere o reinício de ciclo)"
@@ -1763,6 +1935,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdHooksDescription => {
             "Listar hooks de ciclo de vida configurados (somente leitura)"
         }
+        MessageId::CmdAgentDescription => {
+            "Abrir uma sessão persistente de sub-agente: /agent [0-3] <task>"
+        }
         MessageId::CmdGoalDescription => {
             "Definir uma meta de sessão com orçamento de tokens opcional"
         }
@@ -1785,7 +1960,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdModelsDescription => "Listar os modelos disponíveis pela API",
         MessageId::CmdNetworkDescription => "Gerenciar regras de rede permitidas e bloqueadas",
         MessageId::CmdNoteDescription => "Adicionar, listar, editar ou remover notas do workspace",
-        MessageId::CmdThemeDescription => "Alternar entre o tema claro e escuro",
+        MessageId::CmdThemeDescription => "Alternar tema: escuro, claro, tons de cinza ou sistema",
         MessageId::CmdProviderDescription => {
             "Trocar ou exibir o backend LLM ativo (deepseek | nvidia-nim | ollama)"
         }
@@ -1793,6 +1968,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdRecallDescription => {
             "Buscar arquivos de ciclos anteriores (BM25 sobre o texto das mensagens)"
         }
+        MessageId::CmdRelayDescription => "Criar um relay da sessão para um novo thread",
         MessageId::CmdRenameDescription => "Renomear a sessão atual",
         MessageId::CmdRestoreDescription => {
             "Reverter o workspace a um snapshot pré/pós-turno anterior. Sem argumento, lista os snapshots recentes."
@@ -1802,10 +1978,10 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
             "Executar uma revisão de código estruturada em um arquivo, diff ou PR"
         }
         MessageId::CmdRlmDescription => {
-            "Turno do Recursive Language Model (RLM) — guarda o prompt em um REPL Python e deixa o modelo escrever o código que o processa; use `llm_query()` / `sub_rlm()` para chamadas a sub-LLMs."
+            "Abrir um contexto RLM persistente: /rlm [0-3] <file_or_text>"
         }
         MessageId::CmdSaveDescription => "Salvar a sessão em arquivo",
-        MessageId::CmdSessionsDescription => "Abrir o seletor de sessões",
+        MessageId::CmdSessionsDescription => "Abrir seletor de histórico de sessões",
         MessageId::CmdSettingsDescription => "Exibir as configurações persistidas",
         MessageId::CmdSkillDescription => {
             "Ativar uma skill, ou instalar/atualizar/desinstalar/confiar em uma skill da comunidade"
@@ -1825,6 +2001,18 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSystemDescription => "Exibir o prompt de sistema atual",
         MessageId::CmdTaskDescription => "Gerenciar tarefas em segundo plano",
         MessageId::CmdTokensDescription => "Exibir o uso de tokens da sessão",
+        MessageId::CmdTranslateDescription => {
+            "Alternar tradução de saída para o idioma atual do sistema"
+        }
+        MessageId::CmdTranslateOff => {
+            "Tradução de saída desativada (saída original do modelo exibida)"
+        }
+        MessageId::CmdTranslateOn => {
+            "Tradução de saída ativada: as respostas serão exibidas no idioma do sistema"
+        }
+        MessageId::TranslationInProgress => "Traduzindo saída do assistente...",
+        MessageId::TranslationComplete => "Tradução concluída",
+        MessageId::TranslationFailed => "Falha na tradução",
         MessageId::CmdTrustDescription => {
             "Gerenciar a confiança do workspace e a allowlist por caminho (`/trust add <path>`, `/trust list`, `/trust on|off`)"
         }
@@ -1924,7 +2112,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
             "Abrir detalhes da ferramenta ou mensagem selecionada (quando entrada vazia)"
         }
         MessageId::KbToolDetailsPager => "Abrir paginador de detalhes da ferramenta",
-        MessageId::KbThinkingPager => "Abrir paginador de raciocínio",
+        MessageId::KbThinkingPager => "Abrir Activity Detail",
         MessageId::KbLiveTranscript => "Abrir sobreposição de transcrição ao vivo (auto-scroll)",
         MessageId::KbBacktrackMessage => {
             "Retroceder para mensagem anterior do usuário (esquerda/direita, Enter para rebobinar)"
@@ -1934,7 +2122,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::KbJumpPlanAgentYolo => "Pular direto para modo Plan / Agent / YOLO",
         MessageId::KbAltJumpPlanAgentYolo => "Salto alternativo para modo Plan / Agent / YOLO",
-        MessageId::KbFocusSidebar => "Focar barra lateral Plan / Todos / Tasks / Agents / Auto",
+        MessageId::KbFocusSidebar => "Focar barra lateral Work / Tasks / Agents / Context / Auto",
         MessageId::KbTogglePlanAgent => "Alternar entre modos Plan e Agent",
         MessageId::KbSessionPicker => "Abrir seletor de sessões",
         MessageId::KbPasteAttach => "Colar texto ou anexar imagem da área de transferência",
@@ -1999,7 +2187,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
             "Escolha o idioma da interface. Você pode mudá-lo a qualquer momento com `/settings set locale <tag>`."
         }
         MessageId::OnboardLanguageFooter => {
-            "Pressione 1-5 para escolher, ou Enter para manter a configuração atual"
+            "Pressione 1-6 para escolher, ou Enter para manter a configuração atual"
         }
         // Onboarding — API key entry.
         MessageId::OnboardApiKeyTitle => "Conecte sua chave de API DeepSeek",
@@ -2062,9 +2250,10 @@ mod tests {
         assert_eq!(normalize_configured_locale("auto"), Some("auto"));
         assert_eq!(normalize_configured_locale("ja_JP.UTF-8"), Some("ja"));
         assert_eq!(normalize_configured_locale("zh-CN"), Some("zh-Hans"));
+        assert_eq!(normalize_configured_locale("zh-TW"), Some("zh-Hant"));
+        assert_eq!(normalize_configured_locale("zh_HK.UTF-8"), Some("zh-Hant"));
         assert_eq!(normalize_configured_locale("pt"), Some("pt-BR"));
         assert_eq!(normalize_configured_locale("pt-PT"), Some("pt-BR"));
-        assert_eq!(normalize_configured_locale("zh-TW"), None);
     }
 
     #[test]
@@ -2078,6 +2267,12 @@ mod tests {
                 (key == "LANG").then(|| "zh_CN.UTF-8".to_string())
             }),
             Locale::ZhHans
+        );
+        assert_eq!(
+            resolve_locale_with_env("auto", |key| {
+                (key == "LANG").then(|| "zh_TW.UTF-8".to_string())
+            }),
+            Locale::ZhHant
         );
         assert_eq!(resolve_locale_with_env("auto", |_| None), Locale::En);
     }

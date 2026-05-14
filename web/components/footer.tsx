@@ -127,8 +127,8 @@ export function Footer({ locale = "en" }: { locale?: Locale }) {
       <div className="hairline-t">
         <div className="mx-auto max-w-[1400px] px-6 py-4 flex flex-col gap-2 text-[0.78rem] text-ink-soft">
           <div>
-            {isZh ? "咨询、投资、研究合作、媒体采访 — " : "For consulting, investors, researchers, or press — "}
-            <a href="mailto:hunter@shannonlabs.dev" className="font-mono text-ink hover:text-indigo">hunter@shannonlabs.dev</a>
+            {isZh ? "安全报告、负责任披露、漏洞协调 — " : "For security reports, responsible disclosure, or vulnerability coordination — "}
+            <a href="mailto:security@deepseek-tui.com" className="font-mono text-ink hover:text-indigo">security@deepseek-tui.com</a>
           </div>
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 font-mono text-[0.7rem] text-ink-mute uppercase tracking-widest">
             <span>© {new Date().getFullYear()} · DeepSeek TUI · Hmbown</span>

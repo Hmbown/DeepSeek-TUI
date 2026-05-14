@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::io::{self, Stdout, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -12,11 +13,15 @@ use crossterm::{
         self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
         EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
         KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
-        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+// On Windows the push/pop helpers write the escapes directly; crossterm's
+// PushKeyboardEnhancementFlags / PopKeyboardEnhancementFlags commands are
+// never referenced, so the imports are gated to avoid -D warnings failures.
+#[cfg(not(windows))]
+use crossterm::event::{PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
 use ratatui::{
     Frame, Terminal,
     layout::{Constraint, Direction, Layout, Rect, Size},
@@ -98,7 +103,8 @@ use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
 };
 use super::history::{
-    HistoryCell, ToolCell, ToolStatus, history_cells_from_message, summarize_tool_output,
+    HistoryCell, ToolCell, ToolStatus, TranscriptRenderOptions, history_cells_from_message,
+    summarize_tool_output,
 };
 use super::slash_menu::{
     apply_slash_menu_selection, try_autocomplete_slash_command, visible_slash_menu_entries,
@@ -124,6 +130,7 @@ const SLASH_MENU_LIMIT: usize = 128;
 const MENTION_MENU_LIMIT: usize = 6;
 const MIN_CHAT_HEIGHT: u16 = 3;
 const MIN_COMPOSER_HEIGHT: u16 = 2;
+const COMPOSER_ARROW_SCROLL_LINES: usize = 3;
 const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
 const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
 const UI_IDLE_POLL_MS: u64 = 48;
@@ -138,8 +145,26 @@ const UI_STATUS_ANIMATION_MS: u64 = 80;
 const WORKSPACE_CONTEXT_REFRESH_SECS: u64 = 15;
 const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 240;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
+const PERIODIC_FULL_REPAINT_EVERY_N: u64 = 50;
 
 type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
+
+type PendingToolUses = Vec<(String, String, serde_json::Value)>;
+
+#[derive(Debug)]
+enum TranslationEvent {
+    AssistantMessage {
+        history_index: Option<usize>,
+        original_text: String,
+        translated: anyhow::Result<String>,
+        thinking: Option<String>,
+        tool_uses: PendingToolUses,
+    },
+    Thinking {
+        placeholder: String,
+        translated: anyhow::Result<String>,
+    },
+}
 // Reset scroll region (`\x1b[r`), origin mode (`\x1b[?6l`), and home the cursor
 // (`\x1b[H`) before letting ratatui's diff renderer repaint. The destructive
 // `\x1b[2J\x1b[3J` pair was previously appended here to also wipe the visible
@@ -262,6 +287,14 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     // (`REPORT_EVENT_TYPES`, `REPORT_ALL_KEYS_AS_ESCAPE_CODES`) emit
     // release events that the existing key handlers would mis-route
     // as duplicate presses.
+    //
+    // On Windows, crossterm's `PushKeyboardEnhancementFlags` command always
+    // reports the terminal as unsupported (`is_ansi_code_supported` returns
+    // false), so the escape is written directly instead. VSCode's integrated
+    // terminal and Windows Terminal ≥1.17 honour the kitty keyboard protocol
+    // and will correctly disambiguate Shift+Enter from plain Enter once this
+    // sequence is received. Terminals that do not understand it silently
+    // ignore it.
     recover_terminal_modes(&mut stdout, use_mouse_capture, use_bracketed_paste);
     let color_depth = palette::ColorDepth::detect();
     let palette_mode = palette::PaletteMode::detect();
@@ -272,7 +305,18 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     );
     let backend = ColorCompatBackend::new(stdout, color_depth, palette_mode);
     let mut terminal = Terminal::new(backend)?;
-    reset_terminal_viewport(&mut terminal)?;
+    // At this point Settings hasn't loaded yet, so we can't read the
+    // user's `synchronized_output` knob. Use the same env-based Ptyxis
+    // detection that `Settings::apply_env_overrides` uses, so the
+    // startup viewport reset matches what every later draw will do on
+    // this terminal. A user who has explicitly set
+    // `synchronized_output = "on"` to override Ptyxis detection will
+    // get sync wrap from the main draw loop onward; the one-time
+    // startup viewport reset stays opt-out for them, which is the safe
+    // default because the cost is at most brief tearing on the first
+    // frame.
+    let sync_output_at_init = !crate::settings::detected_ptyxis_terminal();
+    reset_terminal_viewport(&mut terminal, sync_output_at_init)?;
     let event_broker = EventBroker::new();
 
     // Local mutable copy so runtime config flips (e.g. `/provider` switch)
@@ -392,6 +436,8 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         // #456: plumb the App's HookExecutor so `exec_shell` can surface
         // the configured `shell_env` hooks. Wrapped in Arc once and shared.
         hook_executor: Some(std::sync::Arc::new(app.hooks.clone())),
+        handle_store: app.runtime_services.handle_store.clone(),
+        rlm_sessions: app.runtime_services.rlm_sessions.clone(),
     };
     refresh_active_task_panel(&mut app, &task_manager).await;
 
@@ -399,6 +445,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
 
     // Spawn the Engine - it will handle all API communication
     let engine_handle = spawn_engine(engine_config, config);
+    let translation_client = Arc::new(DeepSeekClient::new(config)?);
 
     if !app.api_messages.is_empty() {
         let _ = engine_handle
@@ -433,6 +480,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         engine_handle,
         task_manager,
         &event_broker,
+        translation_client,
     )
     .await;
     automation_cancel.cancel();
@@ -448,7 +496,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     persistence_actor::persist(PersistRequest::ClearCheckpoint);
     persistence_actor::persist(PersistRequest::Shutdown);
 
-    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    pop_keyboard_enhancement_flags(terminal.backend_mut());
     execute!(terminal.backend_mut(), DisableFocusChange)?;
     disable_raw_mode()?;
     if use_alt_screen {
@@ -552,6 +600,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         skills_dir: app.skills_dir.clone(),
         instructions: config.instructions_paths(),
         project_context_pack_enabled: config.project_context_pack_enabled(),
+        translation_enabled: app.translation_enabled,
         // Effectively unlimited. V4 has a 1M context window and the user
         // wants the model running until it's actually done. The previous cap
         // of 100 hit the ceiling on long multi-step plans (wide refactors,
@@ -575,6 +624,10 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
         }),
         snapshots_enabled: config.snapshots_config().enabled,
+        snapshots_max_workspace_bytes: config
+            .snapshots_config()
+            .max_workspace_gb
+            .saturating_mul(1024 * 1024 * 1024),
         lsp_config: config
             .lsp
             .clone()
@@ -583,10 +636,17 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         subagent_model_overrides: config.subagent_model_overrides(),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
+        vision_config: config.vision_model_config(),
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: app.goal.goal_objective.clone(),
         locale_tag: app.ui_locale.tag().to_string(),
         workshop: config.workshop.clone(),
+        search_provider: config
+            .search
+            .as_ref()
+            .and_then(|s| s.provider)
+            .unwrap_or_default(),
+        search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
     }
 }
 
@@ -634,7 +694,11 @@ fn active_rlm_task_entries(app: &App) -> Vec<TaskPanelEntry> {
             let HistoryCell::Tool(ToolCell::Generic(generic)) = entry else {
                 return None;
             };
-            if generic.name != "rlm" || generic.status != ToolStatus::Running {
+            if !matches!(
+                generic.name.as_str(),
+                "rlm_open" | "rlm_eval" | "rlm_configure" | "rlm_close" | "rlm"
+            ) || generic.status != ToolStatus::Running
+            {
                 return None;
             }
             let summary = generic
@@ -660,9 +724,14 @@ async fn run_event_loop(
     mut engine_handle: EngineHandle,
     task_manager: SharedTaskManager,
     event_broker: &EventBroker,
+    translation_client: Arc<DeepSeekClient>,
 ) -> Result<()> {
     // Track streaming state
     let mut current_streaming_text = String::new();
+    let (translation_tx, mut translation_rx) =
+        tokio::sync::mpsc::unbounded_channel::<TranslationEvent>();
+    let mut pending_translations = 0usize;
+    let mut pending_thinking_translations = 0usize;
     let mut last_queue_state = (app.queued_messages.clone(), app.queued_draft.clone());
     let mut last_task_refresh = Instant::now()
         .checked_sub(Duration::from_secs(2))
@@ -676,15 +745,100 @@ async fn run_event_loop(
     // codex's frame coalescing that maps cleanly onto our poll-based loop.
     let mut frame_rate_limiter = crate::tui::frame_rate_limiter::FrameRateLimiter::default();
     let mut web_config_session: Option<WebConfigSession> = None;
-    // #376: native-copy escape — hold Shift to bypass alt-screen mouse capture
-    // for terminal-native text selection.
-    let mut shift_bypass_active = false;
     let mut terminal_paused_at: Option<Instant> = None;
     let mut force_terminal_repaint = false;
+    let mut draws_since_last_full_repaint: u64 = 0;
 
     loop {
         if !drain_web_config_events(&mut web_config_session, app, config, &engine_handle).await {
             web_config_session = None;
+        }
+
+        while let Ok(event) = translation_rx.try_recv() {
+            match event {
+                TranslationEvent::AssistantMessage {
+                    history_index,
+                    original_text,
+                    translated,
+                    thinking,
+                    tool_uses,
+                } => {
+                    pending_translations = pending_translations.saturating_sub(1);
+                    pending_thinking_translations = pending_thinking_translations.saturating_sub(1);
+                    let text = match translated {
+                        Ok(text) => {
+                            app.status_message = Some(
+                                crate::localization::tr(
+                                    app.ui_locale,
+                                    crate::localization::MessageId::TranslationComplete,
+                                )
+                                .to_string(),
+                            );
+                            text
+                        }
+                        Err(err) => {
+                            tracing::warn!("assistant translation failed: {err}");
+                            app.status_message = Some(format!(
+                                "{}: {err}",
+                                crate::localization::tr(
+                                    app.ui_locale,
+                                    crate::localization::MessageId::TranslationFailed,
+                                )
+                            ));
+                            crate::localization::hidden_translation_failed(app.ui_locale)
+                                .to_string()
+                        }
+                    };
+
+                    if let Some(index) = history_index
+                        && let Some(HistoryCell::Assistant { content, .. }) =
+                            app.history.get_mut(index)
+                    {
+                        *content = text.clone();
+                        app.bump_history_cell(index);
+                    }
+                    if !replace_matching_assistant_text(app, &original_text, text.clone()) {
+                        push_assistant_message(app, text, thinking, tool_uses);
+                    }
+                    if pending_translations == 0
+                        && !matches!(app.runtime_turn_status.as_deref(), Some("in_progress"))
+                    {
+                        app.is_loading = pending_translations > 0;
+                    }
+                    app.needs_redraw = true;
+                }
+                TranslationEvent::Thinking {
+                    placeholder,
+                    translated,
+                } => {
+                    pending_translations = pending_translations.saturating_sub(1);
+                    let text = match translated {
+                        Ok(text) => {
+                            app.status_message = Some(
+                                crate::localization::thinking_translation_complete(app.ui_locale)
+                                    .to_string(),
+                            );
+                            text
+                        }
+                        Err(err) => {
+                            tracing::warn!("thinking translation failed: {err}");
+                            app.status_message = Some(format!(
+                                "{}: {err}",
+                                crate::localization::thinking_translation_failed(app.ui_locale)
+                            ));
+                            crate::localization::hidden_translation_failed(app.ui_locale)
+                                .to_string()
+                        }
+                    };
+                    replace_pending_thinking_translation(app, &placeholder, text);
+                    if pending_translations == 0
+                        && !matches!(app.runtime_turn_status.as_deref(), Some("in_progress"))
+                    {
+                        app.is_loading = false;
+                    }
+                    app.needs_redraw = true;
+                }
+            }
         }
 
         if last_task_refresh.elapsed() >= Duration::from_millis(2500) {
@@ -753,7 +907,9 @@ async fn run_event_loop(
                             }
                             stash_reasoning_buffer_into_last_reasoning(app);
                         }
+                        let mut completed_message_index = None;
                         if let Some(index) = app.streaming_message_index.take() {
+                            completed_message_index = Some(index);
                             let remaining = app.streaming_state.finalize_block_text(0);
                             if !remaining.is_empty() {
                                 append_streaming_text(app, index, &remaining);
@@ -771,40 +927,55 @@ async fn run_event_loop(
                             transcript_batch_updated = true;
                         }
 
-                        let mut blocks = Vec::new();
                         let thinking = app.last_reasoning.take();
-                        if let Some(thinking) = thinking {
-                            blocks.push(ContentBlock::Thinking { thinking });
-                        }
-                        if !current_streaming_text.is_empty() {
-                            blocks.push(ContentBlock::Text {
-                                text: current_streaming_text.clone(),
-                                cache_control: None,
-                            });
-                        }
-                        for (id, name, input) in app.pending_tool_uses.drain(..) {
-                            blocks.push(ContentBlock::ToolUse {
-                                id,
-                                name,
-                                input,
-                                caller: None,
-                            });
-                        }
+                        let tool_uses = app.pending_tool_uses.drain(..).collect::<Vec<_>>();
+                        let history_index = completed_message_index;
 
-                        // DeepSeek rejects assistant messages that contain only reasoning blocks.
-                        // Keep reasoning in transcript cells, but only persist assistant turns that
-                        // include visible text and/or tool calls.
-                        let has_sendable_content = blocks.iter().any(|block| {
-                            matches!(
-                                block,
-                                ContentBlock::Text { .. } | ContentBlock::ToolUse { .. }
-                            )
-                        });
-                        if has_sendable_content {
-                            app.api_messages.push(Message {
-                                role: "assistant".to_string(),
-                                content: blocks,
+                        if app.translation_enabled
+                            && !current_streaming_text.is_empty()
+                            && crate::tui::translation::needs_translation(&current_streaming_text)
+                        {
+                            app.status_message = Some(
+                                crate::localization::tr(
+                                    app.ui_locale,
+                                    crate::localization::MessageId::TranslationInProgress,
+                                )
+                                .to_string(),
+                            );
+                            app.is_loading = true;
+                            pending_translations = pending_translations.saturating_add(1);
+                            let tx = translation_tx.clone();
+                            let client = translation_client.clone();
+                            let original_text = current_streaming_text.clone();
+                            let translation_model = app
+                                .last_effective_model
+                                .clone()
+                                .unwrap_or_else(|| app.model.clone());
+                            let target_language =
+                                app.ui_locale.translation_target_name().to_string();
+                            tokio::spawn(async move {
+                                let translated = crate::tui::translation::translate_text(
+                                    &original_text,
+                                    &client,
+                                    &translation_model,
+                                    &target_language,
+                                )
+                                .await;
+                                let _ = tx.send(TranslationEvent::AssistantMessage {
+                                    history_index,
+                                    original_text,
+                                    translated,
+                                    thinking,
+                                    tool_uses,
+                                });
                             });
+                        } else {
+                            push_assistant_message(
+                                app,
+                                current_streaming_text.clone(),
+                                thinking,
+                                tool_uses,
+                            );
                         }
                     }
                     EngineEvent::ThinkingStarted { .. } => {
@@ -812,6 +983,11 @@ async fn run_event_loop(
                         // visually with the tool calls that follow until the
                         // next assistant prose chunk flushes the group.
                         if start_streaming_thinking_block(app) {
+                            transcript_batch_updated = true;
+                        }
+                        if app.translation_enabled {
+                            let entry_idx = ensure_streaming_thinking_active_entry(app);
+                            set_streaming_thinking_placeholder(app, entry_idx);
                             transcript_batch_updated = true;
                         }
                     }
@@ -829,12 +1005,76 @@ async fn run_event_loop(
                         app.streaming_state.push_content(0, &sanitized);
                         let committed = app.streaming_state.commit_text(0);
                         if !committed.is_empty() {
-                            append_streaming_thinking(app, entry_idx, &committed);
+                            if app.translation_enabled {
+                                set_streaming_thinking_placeholder(app, entry_idx);
+                            } else {
+                                append_streaming_thinking(app, entry_idx, &committed);
+                            }
                             transcript_batch_updated = true;
                         }
                     }
                     EngineEvent::ThinkingComplete { .. } => {
-                        if finalize_current_streaming_thinking(app) {
+                        if app.translation_enabled {
+                            let original_thinking = app.reasoning_buffer.clone();
+                            let _ = app.streaming_state.finalize_block_text(0);
+                            let duration = app
+                                .thinking_started_at
+                                .take()
+                                .map(|t| t.elapsed().as_secs_f32());
+                            if finalize_streaming_thinking_active_entry(app, duration, "") {
+                                transcript_batch_updated = true;
+                            }
+                            if !original_thinking.is_empty()
+                                && crate::tui::translation::needs_translation(&original_thinking)
+                            {
+                                app.status_message = Some(
+                                    crate::localization::thinking_translation_in_progress(
+                                        app.ui_locale,
+                                    )
+                                    .to_string(),
+                                );
+                                app.is_loading = true;
+                                pending_translations = pending_translations.saturating_add(1);
+                                pending_thinking_translations =
+                                    pending_thinking_translations.saturating_add(1);
+                                let tx = translation_tx.clone();
+                                let client = translation_client.clone();
+                                let translation_model = app
+                                    .last_effective_model
+                                    .clone()
+                                    .unwrap_or_else(|| app.model.clone());
+                                let placeholder =
+                                    crate::localization::thinking_translation_placeholder(
+                                        app.ui_locale,
+                                    )
+                                    .to_string();
+                                let target_language =
+                                    app.ui_locale.translation_target_name().to_string();
+                                tokio::spawn(async move {
+                                    let translated = crate::tui::translation::translate_text(
+                                        &original_thinking,
+                                        &client,
+                                        &translation_model,
+                                        &target_language,
+                                    )
+                                    .await;
+                                    let _ = tx.send(TranslationEvent::Thinking {
+                                        placeholder,
+                                        translated,
+                                    });
+                                });
+                            } else {
+                                let placeholder =
+                                    crate::localization::thinking_translation_placeholder(
+                                        app.ui_locale,
+                                    );
+                                replace_pending_thinking_translation(
+                                    app,
+                                    placeholder,
+                                    original_thinking,
+                                );
+                            }
+                        } else if finalize_current_streaming_thinking(app) {
                             transcript_batch_updated = true;
                         }
                         stash_reasoning_buffer_into_last_reasoning(app);
@@ -845,9 +1085,17 @@ async fn run_event_loop(
                         // Note this dispatch so the next sub-agent `Started`
                         // mailbox envelope routes into the right card kind
                         // (delegate vs fanout).
-                        if matches!(name.as_str(), "agent_spawn" | "rlm" | "delegate") {
+                        if matches!(
+                            name.as_str(),
+                            "agent_open"
+                                | "agent_spawn"
+                                | "rlm_open"
+                                | "rlm_eval"
+                                | "rlm"
+                                | "delegate"
+                        ) {
                             app.pending_subagent_dispatch = Some(name.clone());
-                            if name == "rlm" {
+                            if matches!(name.as_str(), "rlm_open" | "rlm_eval" | "rlm") {
                                 // New fanout invocation — children should
                                 // group under a fresh card, not the
                                 // previous fanout's leftover.
@@ -886,7 +1134,9 @@ async fn run_event_loop(
                         // poll. Also merge shell jobs (#373).
                         if matches!(
                             name.as_str(),
-                            "agent_spawn"
+                            "agent_open"
+                                | "agent_spawn"
+                                | "agent_close"
                                 | "agent_cancel"
                                 | "todo_write"
                                 | "task_shell_start"
@@ -897,7 +1147,9 @@ async fn run_event_loop(
                         }
                         if matches!(
                             name.as_str(),
-                            "agent_spawn"
+                            "agent_open"
+                                | "agent_eval"
+                                | "agent_close"
                                 | "agent_cancel"
                                 | "agent_wait"
                                 | "agent_result"
@@ -944,7 +1196,11 @@ async fn run_event_loop(
                         status,
                         error,
                     } => {
-                        force_terminal_repaint = true;
+                        if !matches!(status, crate::core::events::TurnOutcomeStatus::Completed)
+                            || draws_since_last_full_repaint >= PERIODIC_FULL_REPAINT_EVERY_N
+                        {
+                            force_terminal_repaint = true;
+                        }
                         // Finalize any in-flight tool group. Cancellation
                         // marks still-running entries as Failed so the user
                         // sees they were interrupted rather than the spinner
@@ -1425,6 +1681,7 @@ async fn run_event_loop(
                                 app.use_alt_screen,
                                 app.use_mouse_capture,
                                 app.use_bracketed_paste,
+                                app.synchronized_output_enabled,
                             )?;
                             event_broker.resume_events();
                             terminal_paused_at = None;
@@ -1499,6 +1756,7 @@ async fn run_event_loop(
                                 app.use_alt_screen,
                                 app.use_mouse_capture,
                                 app.use_bracketed_paste,
+                                app.synchronized_output_enabled,
                             )?;
                             event_broker.resume_events();
                             terminal_paused_at = None;
@@ -1681,7 +1939,11 @@ async fn run_event_loop(
         } else if let Some(entry_idx) = app.streaming_thinking_active_entry {
             let committed = app.streaming_state.commit_text(0);
             if !committed.is_empty() {
-                append_streaming_thinking(app, entry_idx, &committed);
+                if app.translation_enabled {
+                    set_streaming_thinking_placeholder(app, entry_idx);
+                } else {
+                    append_streaming_thinking(app, entry_idx, &committed);
+                }
                 transcript_batch_updated = true;
             }
         }
@@ -1740,6 +2002,9 @@ async fn run_event_loop(
             && last_status_frame.elapsed()
                 >= Duration::from_millis(status_animation_interval_ms(app))
         {
+            if animate_pending_thinking_translation(app, pending_thinking_translations > 0) {
+                app.mark_history_updated();
+            }
             if !app.low_motion && history_has_live_motion(&app.history) {
                 app.mark_history_updated();
             }
@@ -1760,6 +2025,7 @@ async fn run_event_loop(
                 app.use_alt_screen,
                 app.use_mouse_capture,
                 app.use_bracketed_paste,
+                app.synchronized_output_enabled,
             )?;
             event_broker.resume_events();
             terminal_paused_at = None;
@@ -1810,8 +2076,14 @@ async fn run_event_loop(
             None
         };
         if app.needs_redraw && draw_wait.is_none() {
+            let was_full_repaint = force_terminal_repaint;
             draw_app_frame_inner(terminal, app, force_terminal_repaint)?;
             force_terminal_repaint = false;
+            if was_full_repaint {
+                draws_since_last_full_repaint = 0;
+            } else {
+                draws_since_last_full_repaint = draws_since_last_full_repaint.saturating_add(1);
+            }
             frame_rate_limiter.mark_emitted(Instant::now());
             app.needs_redraw = false;
         }
@@ -1958,7 +2230,6 @@ async fn run_event_loop(
                     );
                 }
 
-                reset_terminal_viewport(terminal)?;
                 app.handle_resize(final_w, final_h);
                 // #macos-resize: some terminals (macOS Terminal.app, Windows
                 // ConHost) briefly report stale dimensions via
@@ -1974,11 +2245,8 @@ async fn run_event_loop(
                     let backend = terminal.backend_mut();
                     backend.force_size(Size::new(final_w, final_h));
                 }
-                // Draw immediately so the cleared screen gets repainted before
-                // any other events can interleave. Without this, the next
-                // iteration's draw can race against fast follow-up input and
-                // leave the user staring at a blank/partial frame.
-                draw_app_frame(terminal, app)?;
+                draw_app_frame_inner(terminal, app, true)?;
+                draws_since_last_full_repaint = 0;
                 {
                     let backend = terminal.backend_mut();
                     backend.clear_forced_size();
@@ -1990,33 +2258,9 @@ async fn run_event_loop(
             if app.use_mouse_capture
                 && let Event::Mouse(mouse) = evt
             {
-                // #376: hold Shift to bypass alt-screen mouse capture for
-                // terminal-native text selection. While bypass is active,
-                // mouse events pass through to the terminal instead of
-                // being consumed by the TUI.
-                if mouse.modifiers.contains(KeyModifiers::SHIFT) {
-                    if !shift_bypass_active {
-                        let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
-                        shift_bypass_active = true;
-                        app.push_status_toast(
-                            "Native selection \u{2014} release Shift to return",
-                            StatusToastLevel::Info,
-                            Some(3_000),
-                        );
-                    }
-                    // Let the terminal handle this mouse event natively.
+                if should_drop_loading_mouse_motion(app, mouse) {
                     continue;
                 }
-                if shift_bypass_active {
-                    let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
-                    shift_bypass_active = false;
-                    app.push_status_toast(
-                        "Mouse capture restored",
-                        StatusToastLevel::Info,
-                        Some(2_000),
-                    );
-                }
-
                 let events = handle_mouse_event(app, mouse);
                 if handle_view_events(
                     terminal,
@@ -2059,7 +2303,7 @@ async fn run_event_loop(
                         app.onboarding = OnboardingState::Welcome;
                         app.status_message = None;
                     }
-                    // Language picker hotkeys: 1-5 select + persist (#566).
+                    // Language picker hotkeys select + persist (#566).
                     //
                     // Note: this used to be a single match-guard with `&& let`,
                     // but `if_let_guard` is a nightly-only feature on Rust
@@ -2454,7 +2698,7 @@ async fn run_event_loop(
                 KeyCode::Char('o')
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && app.input.is_empty()
-                        && open_thinking_pager(app) =>
+                        && open_activity_detail_pager(app) =>
                 {
                     continue;
                 }
@@ -2466,8 +2710,8 @@ async fn run_event_loop(
                 }
                 KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
                     if key.modifiers.contains(KeyModifiers::CONTROL) {
-                        app.set_sidebar_focus(SidebarFocus::Plan);
-                        app.status_message = Some("Sidebar focus: plan".to_string());
+                        app.set_sidebar_focus(SidebarFocus::Work);
+                        app.status_message = Some("Sidebar focus: work".to_string());
                     } else {
                         app.set_mode(AppMode::Plan);
                     }
@@ -2475,8 +2719,8 @@ async fn run_event_loop(
                 }
                 KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
                     if key.modifiers.contains(KeyModifiers::CONTROL) {
-                        app.set_sidebar_focus(SidebarFocus::Todos);
-                        app.status_message = Some("Sidebar focus: todos".to_string());
+                        app.set_sidebar_focus(SidebarFocus::Tasks);
+                        app.status_message = Some("Sidebar focus: tasks".to_string());
                     } else {
                         app.set_mode(AppMode::Agent);
                     }
@@ -2484,8 +2728,8 @@ async fn run_event_loop(
                 }
                 KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
                     if key.modifiers.contains(KeyModifiers::CONTROL) {
-                        app.set_sidebar_focus(SidebarFocus::Tasks);
-                        app.status_message = Some("Sidebar focus: tasks".to_string());
+                        app.set_sidebar_focus(SidebarFocus::Agents);
+                        app.status_message = Some("Sidebar focus: agents".to_string());
                     } else {
                         app.set_mode(AppMode::Yolo);
                     }
@@ -2496,26 +2740,23 @@ async fn run_event_loop(
                     continue;
                 }
                 KeyCode::Char('!') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    app.set_sidebar_focus(SidebarFocus::Plan);
-                    app.status_message = Some("Sidebar focus: plan".to_string());
+                    app.set_sidebar_focus(SidebarFocus::Work);
+                    app.status_message = Some("Sidebar focus: work".to_string());
                     continue;
                 }
                 KeyCode::Char('@') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    app.set_sidebar_focus(SidebarFocus::Todos);
-                    app.status_message = Some("Sidebar focus: todos".to_string());
-                    continue;
-                }
-                KeyCode::Char('#') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_sidebar_focus(SidebarFocus::Tasks);
                     app.status_message = Some("Sidebar focus: tasks".to_string());
                     continue;
                 }
-                KeyCode::Char('$') if key.modifiers.contains(KeyModifiers::ALT) => {
+                KeyCode::Char('#') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_sidebar_focus(SidebarFocus::Agents);
                     app.status_message = Some("Sidebar focus: agents".to_string());
                     continue;
                 }
-                KeyCode::Char('%') if key.modifiers.contains(KeyModifiers::ALT) => {
+                KeyCode::Char('$') | KeyCode::Char('%')
+                    if key.modifiers.contains(KeyModifiers::ALT) =>
+                {
                     app.set_sidebar_focus(SidebarFocus::Context);
                     app.status_message = Some("Sidebar focus: context".to_string());
                     continue;
@@ -2835,6 +3076,49 @@ async fn run_event_loop(
                         app.view_stack.push(HelpView::new_for_locale(app.ui_locale));
                     }
                     continue;
+                }
+                // Shift+Enter steers a running turn. When idle, the
+                // normal composer-newline branch below still handles it
+                // as a multiline input gesture.
+                KeyCode::Enter
+                    if app.is_loading
+                        && key.modifiers.contains(KeyModifiers::SHIFT)
+                        && !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    if let Some(input) = app.submit_input() {
+                        if input.starts_with('/') {
+                            if execute_command_input(
+                                terminal,
+                                app,
+                                &mut engine_handle,
+                                &task_manager,
+                                config,
+                                &mut web_config_session,
+                                &input,
+                            )
+                            .await?
+                            {
+                                return Ok(());
+                            }
+                        } else {
+                            let queued = if let Some(mut draft) = app.queued_draft.take() {
+                                draft.display = input;
+                                draft
+                            } else {
+                                build_queued_message(app, input)
+                            };
+                            if let Err(err) =
+                                steer_user_message(app, &engine_handle, queued.clone()).await
+                            {
+                                app.queue_message(queued);
+                                app.status_message = Some(format!(
+                                    "Steer failed ({err}); queued {} message(s)",
+                                    app.queued_message_count()
+                                ));
+                            }
+                        }
+                    }
                 }
                 // Input handling
                 _ if is_composer_newline_key(key) => {
@@ -3764,6 +4048,66 @@ fn append_streaming_text(app: &mut App, index: usize, text: &str) {
     }
 }
 
+fn push_assistant_message(
+    app: &mut App,
+    text: String,
+    thinking: Option<String>,
+    tool_uses: PendingToolUses,
+) {
+    let mut blocks = Vec::new();
+    if let Some(thinking) = thinking {
+        blocks.push(ContentBlock::Thinking { thinking });
+    }
+    if !text.is_empty() {
+        blocks.push(ContentBlock::Text {
+            text,
+            cache_control: None,
+        });
+    }
+    for (id, name, input) in tool_uses {
+        blocks.push(ContentBlock::ToolUse {
+            id,
+            name,
+            input,
+            caller: None,
+        });
+    }
+
+    let has_sendable_content = blocks.iter().any(|block| {
+        matches!(
+            block,
+            ContentBlock::Text { .. } | ContentBlock::ToolUse { .. }
+        )
+    });
+    if has_sendable_content {
+        app.api_messages.push(Message {
+            role: "assistant".to_string(),
+            content: blocks,
+        });
+    }
+}
+
+fn replace_matching_assistant_text(
+    app: &mut App,
+    original_text: &str,
+    translated_text: String,
+) -> bool {
+    for message in app.api_messages.iter_mut().rev() {
+        if message.role != "assistant" {
+            continue;
+        }
+        for block in &mut message.content {
+            if let ContentBlock::Text { text, .. } = block
+                && text == original_text
+            {
+                *text = translated_text;
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Ensure an in-flight Thinking entry exists in `active_cell` and return its
 /// entry index. If no thinking entry is currently streaming, push a fresh one.
 /// P2.3: thinking shares the active cell with subsequent tool calls so the
@@ -3802,6 +4146,93 @@ fn append_streaming_thinking(app: &mut App, entry_idx: usize, text: &str) {
     };
     if mutated {
         app.bump_active_cell_revision();
+    }
+}
+
+fn thinking_translation_placeholder_frame(app: &App) -> String {
+    let base = crate::localization::thinking_translation_placeholder(app.ui_locale);
+    let elapsed = app
+        .thinking_started_at
+        .or(app.turn_started_at)
+        .map(|started| started.elapsed().as_secs_f32())
+        .unwrap_or_default();
+    let frame = match (elapsed.mul_add(2.0, 0.0) as usize) % 4 {
+        0 => "|",
+        1 => "/",
+        2 => "-",
+        _ => "\\",
+    };
+    format!("{base} ({elapsed:.1}s {frame})")
+}
+
+fn set_streaming_thinking_placeholder(app: &mut App, entry_idx: usize) {
+    let base = crate::localization::thinking_translation_placeholder(app.ui_locale);
+    let next = thinking_translation_placeholder_frame(app);
+    let mutated = if let Some(active) = app.active_cell.as_mut()
+        && let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(entry_idx)
+        && (content.is_empty() || content.starts_with(base))
+    {
+        if *content != next {
+            *content = next;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if mutated {
+        app.bump_active_cell_revision();
+    }
+}
+
+fn animate_pending_thinking_translation(app: &mut App, translation_pending: bool) -> bool {
+    if !app.translation_enabled {
+        return false;
+    }
+    let thinking_streaming = app.streaming_thinking_active_entry.is_some();
+    if !translation_pending && !thinking_streaming {
+        return false;
+    }
+    let base = crate::localization::thinking_translation_placeholder(app.ui_locale);
+    let next = thinking_translation_placeholder_frame(app);
+
+    if let Some(active) = app.active_cell.as_mut() {
+        for idx in (0..active.entry_count()).rev() {
+            if let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(idx)
+                && content.starts_with(base)
+                && *content != next
+            {
+                *content = next.clone();
+                app.bump_active_cell_revision();
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn replace_pending_thinking_translation(app: &mut App, placeholder: &str, translated_text: String) {
+    if let Some(active) = app.active_cell.as_mut() {
+        for idx in (0..active.entry_count()).rev() {
+            if let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(idx)
+                && content.starts_with(placeholder)
+            {
+                *content = translated_text;
+                app.bump_active_cell_revision();
+                return;
+            }
+        }
+    }
+
+    for idx in (0..app.history.len()).rev() {
+        if let Some(HistoryCell::Thinking { content, .. }) = app.history.get_mut(idx)
+            && content.starts_with(placeholder)
+        {
+            *content = translated_text;
+            app.bump_history_cell(idx);
+            return;
+        }
     }
 }
 
@@ -3944,7 +4375,7 @@ fn handle_composer_history_arrow(
     match key.code {
         KeyCode::Up => {
             if scroll_on_empty {
-                app.scroll_up(1);
+                app.scroll_up(COMPOSER_ARROW_SCROLL_LINES);
             } else {
                 app.history_up();
             }
@@ -3952,7 +4383,7 @@ fn handle_composer_history_arrow(
         }
         KeyCode::Down => {
             if scroll_on_empty {
-                app.scroll_down(1);
+                app.scroll_down(COMPOSER_ARROW_SCROLL_LINES);
             } else {
                 app.history_down();
             }
@@ -4174,6 +4605,7 @@ async fn dispatch_user_message(
                 goal_objective: app.goal.goal_objective.as_deref(),
                 project_context_pack_enabled: config.project_context_pack_enabled(),
                 locale_tag: app.ui_locale.tag(),
+                translation_enabled: app.translation_enabled,
             },
         ),
     );
@@ -4262,6 +4694,7 @@ async fn dispatch_user_message(
             trust_mode: app.trust_mode,
             auto_approve: app.mode == AppMode::Yolo,
             approval_mode: app.approval_mode,
+            translation_enabled: app.translation_enabled,
         })
         .await
     {
@@ -4966,22 +5399,6 @@ async fn apply_command_result(
                 let queued = build_queued_message(app, content);
                 submit_or_steer_message(app, config, engine_handle, queued).await?;
             }
-            AppAction::Rlm {
-                prompt,
-                model,
-                child_model,
-                max_depth,
-            } => {
-                app.status_message = Some("RLM turn starting...".to_string());
-                let _ = engine_handle
-                    .send(Op::Rlm {
-                        content: prompt,
-                        model,
-                        child_model,
-                        max_depth,
-                    })
-                    .await;
-            }
             AppAction::ListSubAgents => {
                 let _ = engine_handle.send(Op::ListSubAgents).await;
             }
@@ -5054,6 +5471,7 @@ async fn apply_command_result(
                         app.use_alt_screen,
                         app.use_mouse_capture,
                         app.use_bracketed_paste,
+                        app.synchronized_output_enabled,
                     )?;
                     match editor_result {
                         Ok(outcome) => {
@@ -5506,6 +5924,8 @@ async fn execute_command_input(
             providers.deepseek.api_key = None;
             providers.deepseek_cn.api_key = None;
             providers.nvidia_nim.api_key = None;
+            providers.openai.api_key = None;
+            providers.atlascloud.api_key = None;
             providers.openrouter.api_key = None;
             providers.novita.api_key = None;
             providers.fireworks.api_key = None;
@@ -5889,6 +6309,7 @@ fn render(f: &mut Frame, app: &mut App) {
             crate::config::ApiProvider::DeepseekCN => None,
             crate::config::ApiProvider::NvidiaNim => Some("NIM"),
             crate::config::ApiProvider::Openai => Some("OpenAI"),
+            crate::config::ApiProvider::Atlascloud => Some("Atlas"),
             crate::config::ApiProvider::Openrouter => Some("OR"),
             crate::config::ApiProvider::Novita => Some("Novita"),
             crate::config::ApiProvider::Fireworks => Some("Fireworks"),
@@ -6011,7 +6432,7 @@ fn render(f: &mut Frame, app: &mut App) {
     // Toast stack overlay (#439): when multiple status toasts are queued,
     // surface the older ones as a 1-2 line strip above the footer so a
     // burst of events isn't collapsed to a single visible message.
-    render_toast_stack_overlay(f, size, chunks[5], app);
+    render_toast_stack_overlay(f, size, chunks[3], chunks[4], app);
 
     if !app.view_stack.is_empty() {
         // The live transcript overlay snapshots the app's history + active
@@ -6041,7 +6462,15 @@ fn draw_app_frame_inner(
     full_repaint: bool,
 ) -> Result<()> {
     terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
-    let _ = terminal.backend_mut().write_all(BEGIN_SYNC_UPDATE);
+    // DEC 2026 wrapping is on by default but can be turned off for
+    // terminals that mishandle it (Ptyxis 50.x + VTE 0.84.x flashes the
+    // whole viewport on every wrapped frame instead of deferring as the
+    // standard requires). Settings::synchronized_output_enabled resolves
+    // the user's setting against the Ptyxis env auto-detect.
+    let wrap_in_sync_update = app.synchronized_output_enabled;
+    if wrap_in_sync_update {
+        let _ = terminal.backend_mut().write_all(BEGIN_SYNC_UPDATE);
+    }
 
     // Run fallible draw operations in a closure so END_SYNC_UPDATE is
     // always sent even if an intermediate step fails. Without this, a
@@ -6058,13 +6487,11 @@ fn draw_app_frame_inner(
     })();
 
     // Always end the synchronized update, regardless of success or failure.
-    let _ = terminal.backend_mut().write_all(END_SYNC_UPDATE);
+    if wrap_in_sync_update {
+        let _ = terminal.backend_mut().write_all(END_SYNC_UPDATE);
+    }
     let _ = terminal.backend_mut().flush();
     result
-}
-
-fn draw_app_frame(terminal: &mut AppTerminal, app: &mut App) -> Result<()> {
-    draw_app_frame_inner(terminal, app, false)
 }
 
 /// Pull the latest snapshot of cells / revisions / render options into the
@@ -6599,6 +7026,7 @@ async fn apply_provider_picker_api_key(
             }
             ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
             ApiProvider::Openai => &mut providers.openai,
+            ApiProvider::Atlascloud => &mut providers.atlascloud,
             ApiProvider::Openrouter => &mut providers.openrouter,
             ApiProvider::Novita => &mut providers.novita,
             ApiProvider::Fireworks => &mut providers.fireworks,
@@ -6951,7 +7379,7 @@ fn pause_terminal(
     // to a child process so it doesn't inherit a half-configured input
     // mode. Best-effort — terminals that didn't accept the flags
     // silently ignore the pop. Matches the shutdown and panic paths.
-    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    pop_keyboard_enhancement_flags(terminal.backend_mut());
     execute!(terminal.backend_mut(), DisableFocusChange)?;
     disable_raw_mode()?;
     if use_alt_screen {
@@ -6971,6 +7399,7 @@ fn resume_terminal(
     use_alt_screen: bool,
     use_mouse_capture: bool,
     use_bracketed_paste: bool,
+    sync_output_enabled: bool,
 ) -> Result<()> {
     enable_raw_mode()?;
     if use_alt_screen {
@@ -6981,11 +7410,11 @@ fn resume_terminal(
         use_mouse_capture,
         use_bracketed_paste,
     );
-    reset_terminal_viewport(terminal)?;
+    reset_terminal_viewport(terminal, sync_output_enabled)?;
     Ok(())
 }
 
-fn reset_terminal_viewport(terminal: &mut AppTerminal) -> Result<()> {
+fn reset_terminal_viewport(terminal: &mut AppTerminal, sync_output_enabled: bool) -> Result<()> {
     // Reset scroll margins and origin mode before clearing. Some interactive
     // child processes leave DECSTBM/DECOM behind; if ratatui's diff renderer
     // then writes "row 0", terminals can place it relative to the leaked
@@ -6999,7 +7428,12 @@ fn reset_terminal_viewport(terminal: &mut AppTerminal) -> Result<()> {
     // (`\x1b[?2026h` … `\x1b[?2026l`) so GPU-accelerated terminals
     // (Ghostty, VSCode, Kitty, WezTerm) defer rendering until the whole
     // frame is staged. Terminals that don't support it silently ignore.
-    let _ = terminal.backend_mut().write_all(BEGIN_SYNC_UPDATE);
+    // The wrap is opt-out via `synchronized_output = "off"` for terminals
+    // that mishandle the sequence (Ptyxis 50.x on VTE 0.84.x flashes the
+    // whole viewport on each wrapped frame).
+    if sync_output_enabled {
+        let _ = terminal.backend_mut().write_all(BEGIN_SYNC_UPDATE);
+    }
 
     let result = (|| -> Result<()> {
         terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
@@ -7009,12 +7443,32 @@ fn reset_terminal_viewport(terminal: &mut AppTerminal) -> Result<()> {
     })();
 
     // Always end the synchronized update, regardless of success or failure.
-    let _ = terminal.backend_mut().write_all(END_SYNC_UPDATE);
+    if sync_output_enabled {
+        let _ = terminal.backend_mut().write_all(END_SYNC_UPDATE);
+    }
     let _ = terminal.backend_mut().flush();
     result
 }
 
 fn push_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
+    // crossterm's PushKeyboardEnhancementFlags command unconditionally
+    // returns Unsupported on Windows (is_ansi_code_supported() == false), so
+    // the ANSI escape is written directly on that platform. Modern Windows
+    // terminals (VSCode integrated terminal, Windows Terminal ≥1.17) honour
+    // the kitty keyboard protocol; terminals that do not silently discard it.
+    #[cfg(windows)]
+    {
+        let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES.bits();
+        if let Err(err) = write!(writer, "\x1b[>{}u", flags).and_then(|()| writer.flush()) {
+            tracing::debug!(
+                target: "kitty_keyboard",
+                ?err,
+                "PushKeyboardEnhancementFlags direct write failed on Windows"
+            );
+        }
+        return;
+    }
+    #[cfg(not(windows))]
     if let Err(err) = execute!(
         writer,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
@@ -7025,6 +7479,29 @@ fn push_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
             "PushKeyboardEnhancementFlags ignored (terminal lacks support)"
         );
     }
+}
+
+pub(crate) fn pop_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
+    // Mirror of push_keyboard_enhancement_flags: crossterm's
+    // PopKeyboardEnhancementFlags also has is_ansi_code_supported() == false
+    // on Windows, so write the pop escape directly to restore the terminal to
+    // its pre-launch keyboard mode.
+    // pub(crate) so the panic hook in main.rs and external_editor.rs can
+    // also call the Windows-aware path instead of using the raw crossterm
+    // execute!() macro which silently no-ops on Windows.
+    #[cfg(windows)]
+    {
+        if let Err(err) = write!(writer, "\x1b[<1u").and_then(|()| writer.flush()) {
+            tracing::debug!(
+                target: "kitty_keyboard",
+                ?err,
+                "PopKeyboardEnhancementFlags direct write failed on Windows"
+            );
+        }
+        return;
+    }
+    #[cfg(not(windows))]
+    let _ = execute!(writer, PopKeyboardEnhancementFlags);
 }
 
 /// Re-establish terminal mode flags. Idempotent and best-effort: each
@@ -7039,6 +7516,13 @@ fn push_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
 /// Excluded by design: raw mode and the alternate screen — those persist
 /// across focus events and are only re-established by `resume_terminal`
 /// after a suspension, which always runs a separate path.
+///
+/// Note: calling this on every FocusGained event pushes one extra Kitty
+/// keyboard mode level onto the terminal's stack without a preceding pop.
+/// After N focus cycles the stack reaches depth N; at shutdown only one
+/// level is popped. On terminals with a finite stack this is benign because
+/// the terminal clears the stack on process exit. A future improvement is
+/// to pop-then-push here so the stack stays at depth ≤1.
 fn recover_terminal_modes<W: Write>(
     writer: &mut W,
     use_mouse_capture: bool,
@@ -7079,7 +7563,13 @@ const TOAST_STACK_MAX_VISIBLE: usize = 3;
 /// toast continues to render in the footer line itself; this strip is for
 /// the older entries the user would otherwise miss when statuses arrive in
 /// bursts.
-fn render_toast_stack_overlay(f: &mut Frame, full_area: Rect, footer_area: Rect, app: &mut App) {
+fn render_toast_stack_overlay(
+    f: &mut Frame,
+    full_area: Rect,
+    composer_area: Rect,
+    footer_area: Rect,
+    app: &mut App,
+) {
     let toasts = app.active_status_toasts(TOAST_STACK_MAX_VISIBLE);
     if toasts.len() < 2 || footer_area.y == 0 {
         return;
@@ -7087,7 +7577,11 @@ fn render_toast_stack_overlay(f: &mut Frame, full_area: Rect, footer_area: Rect,
     // Drop the most recent (rendered inline by the footer), keep the rest.
     let extra = toasts.len() - 1;
     let stack_height = extra.min(TOAST_STACK_MAX_VISIBLE - 1) as u16;
-    let max_above = footer_area.y.min(full_area.height);
+    // Toast stack can only use space between composer and footer.
+    // Composer occupies rows [composer_area.y, composer_area.y + composer_area.height).
+    // Toast must start at or after row (composer_area.y + composer_area.height).
+    let composer_end = composer_area.y + composer_area.height;
+    let max_above = footer_area.y.saturating_sub(composer_end);
     if stack_height == 0 || max_above == 0 {
         return;
     }
@@ -7464,7 +7958,7 @@ fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatu
             // status. RLM is different today: it is a foreground tool call,
             // so keep it in the live tool footer until the async RLM
             // workbench lands (#513).
-            if generic.name == "agent_spawn" {
+            if matches!(generic.name.as_str(), "agent_open" | "agent_spawn") {
                 return;
             }
             snapshot.record(format!("tool {}", generic.name), generic.status, None);
@@ -8212,6 +8706,21 @@ pub(crate) fn truncate_line_to_width(text: &str, max_width: usize) -> String {
     out
 }
 
+fn should_drop_loading_mouse_motion(app: &App, mouse: MouseEvent) -> bool {
+    if !app.is_loading {
+        return false;
+    }
+
+    match mouse.kind {
+        MouseEventKind::Moved => true,
+        MouseEventKind::Drag(_) => {
+            !app.viewport.transcript_selection.dragging
+                && !app.viewport.transcript_scrollbar_dragging
+        }
+        _ => false,
+    }
+}
+
 fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
     if app.view_stack.top_kind() == Some(ModalKind::ContextMenu) {
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
@@ -8230,7 +8739,10 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
             let update = app.viewport.mouse_scroll.on_scroll(ScrollDirection::Up);
-            app.viewport.pending_scroll_delta += update.delta_lines;
+            app.viewport.pending_scroll_delta = app
+                .viewport
+                .pending_scroll_delta
+                .saturating_add(update.delta_lines);
             if update.delta_lines != 0 {
                 app.user_scrolled_during_stream = true;
                 app.needs_redraw = true;
@@ -8238,7 +8750,10 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
         }
         MouseEventKind::ScrollDown => {
             let update = app.viewport.mouse_scroll.on_scroll(ScrollDirection::Down);
-            app.viewport.pending_scroll_delta += update.delta_lines;
+            app.viewport.pending_scroll_delta = app
+                .viewport
+                .pending_scroll_delta
+                .saturating_add(update.delta_lines);
             if update.delta_lines != 0 {
                 app.user_scrolled_during_stream = true;
                 app.needs_redraw = true;
@@ -8834,21 +9349,68 @@ fn open_pager_for_last_message(app: &mut App) -> bool {
     true
 }
 
-/// Open a pager showing the full thinking block. Targets the cell at the
-/// current selection if it's a Thinking cell; otherwise falls back to the
-/// most recent Thinking cell across the virtual transcript (history +
-/// in-flight `active_cell`). Bound to Ctrl+O so users can read reasoning
-/// content that's been collapsed in calm-mode rendering.
-///
-/// The virtual-index lookup matters: after `ThinkingComplete` fires the
-/// finalized thinking entry sits in `active_cell` with `streaming = false`
-/// until the active cell flushes to history. During that window the
-/// transcript already renders the "thinking collapsed; press Ctrl+O for
-/// full text" affordance, so the handler must address active-cell entries
-/// or the affordance becomes a lie.
+/// Compatibility wrapper for the old test name. The user-facing Ctrl+O
+/// surface is now Activity Detail, not a thinking-only pager.
+#[cfg(test)]
 fn open_thinking_pager(app: &mut App) -> bool {
-    let selected_cell = app
+    open_activity_detail_pager(app)
+}
+
+/// Open a pager for the activity the user is most likely asking about.
+///
+/// Ctrl+O uses this path. It prefers an explicitly selected activity cell,
+/// then a live activity in the current turn, then the most recent meaningful
+/// activity across history + active cells. Tool activity is intentionally
+/// rendered through the compact live view so Activity Detail does not become
+/// an accidental raw-output dump; Alt+V remains the direct full tool-detail
+/// surface.
+fn open_activity_detail_pager(app: &mut App) -> bool {
+    let Some(idx) = activity_target_cell_index(app) else {
+        app.status_message = Some("No activity detail available".to_string());
+        return true;
+    };
+
+    let width = app
         .viewport
+        .last_transcript_area
+        .map(|area| area.width)
+        .unwrap_or(80);
+    let Some(text) = activity_detail_text(app, idx, width) else {
+        app.status_message = Some("No activity detail available".to_string());
+        return true;
+    };
+    let title = if matches!(
+        app.cell_at_virtual_index(idx),
+        Some(HistoryCell::Thinking { .. })
+    ) {
+        "Reasoning Timeline"
+    } else {
+        "Activity Detail"
+    };
+    app.view_stack
+        .push(PagerView::from_text(title, &text, width.saturating_sub(2)));
+    true
+}
+
+fn activity_target_cell_index(app: &App) -> Option<usize> {
+    if let Some(selected) = selected_transcript_cell_index(app)
+        && app
+            .cell_at_virtual_index(selected)
+            .is_some_and(is_meaningful_activity_cell)
+    {
+        return Some(selected);
+    }
+
+    current_activity_cell_index(app).or_else(|| {
+        (0..app.virtual_cell_count()).rev().find(|&idx| {
+            app.cell_at_virtual_index(idx)
+                .is_some_and(is_meaningful_activity_cell)
+        })
+    })
+}
+
+fn selected_transcript_cell_index(app: &App) -> Option<usize> {
+    app.viewport
         .transcript_selection
         .ordered_endpoints()
         .and_then(|(start, _)| {
@@ -8859,45 +9421,315 @@ fn open_thinking_pager(app: &mut App) -> bool {
                 .and_then(|meta| meta.cell_line())
                 .map(|(cell_index, _)| cell_index)
         })
+}
+
+fn current_activity_cell_index(app: &App) -> Option<usize> {
+    let active = app.active_cell.as_ref()?;
+    let base = app.history.len();
+    for desired_rank in [0, 1, 2] {
+        if let Some((entry_idx, _)) = active
+            .entries()
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, cell)| activity_cell_rank(cell) == Some(desired_rank))
+        {
+            return Some(base + entry_idx);
+        }
+    }
+    None
+}
+
+fn is_meaningful_activity_cell(cell: &HistoryCell) -> bool {
+    activity_cell_rank(cell).is_some()
+}
+
+fn activity_cell_rank(cell: &HistoryCell) -> Option<u8> {
+    match cell {
+        HistoryCell::Thinking {
+            streaming: true, ..
+        } => Some(0),
+        HistoryCell::Tool(tool) => match tool_status_for_activity(tool) {
+            Some(ToolStatus::Running) => Some(0),
+            Some(ToolStatus::Failed) => Some(1),
+            Some(ToolStatus::Success) => Some(2),
+            None => Some(2),
+        },
+        HistoryCell::SubAgent(_) => Some(0),
+        HistoryCell::Error { .. } => Some(1),
+        HistoryCell::Thinking { .. } => Some(2),
+        _ => None,
+    }
+}
+
+fn activity_detail_text(app: &App, cell_index: usize, width: u16) -> Option<String> {
+    let cell = app.cell_at_virtual_index(cell_index)?;
+    if matches!(cell, HistoryCell::Thinking { .. }) {
+        return reasoning_timeline_text(app, cell_index);
+    }
+
+    let mut sections = Vec::new();
+
+    if let Some(turn_id) = app.runtime_turn_id.as_ref() {
+        let status = app.runtime_turn_status.as_deref().unwrap_or("in progress");
+        sections.push(format!(
+            "Turn: {} ({status})",
+            truncate_line_to_width(turn_id, 24)
+        ));
+    }
+
+    sections.push(format!(
+        "Activity: {}",
+        activity_cell_label(app, cell_index, cell)
+    ));
+
+    if let Some(status) = activity_status_line(cell) {
+        sections.push(status);
+    }
+
+    if let Some((position, total)) = thinking_chunk_position(app, cell_index) {
+        sections.push(format!("Thinking chunk: {position} of {total}"));
+    }
+
+    sections.push(String::new());
+    sections.push(activity_cell_to_text(cell, width));
+    Some(sections.join("\n"))
+}
+
+fn reasoning_timeline_text(app: &App, selected_cell_index: usize) -> Option<String> {
+    let thinking_indices: Vec<usize> = (0..app.virtual_cell_count())
         .filter(|&idx| {
             matches!(
                 app.cell_at_virtual_index(idx),
-                Some(crate::tui::history::HistoryCell::Thinking { .. })
-            )
-        });
-
-    let target_idx = selected_cell.or_else(|| {
-        (0..app.virtual_cell_count()).rev().find(|&idx| {
-            matches!(
-                app.cell_at_virtual_index(idx),
-                Some(crate::tui::history::HistoryCell::Thinking { .. })
+                Some(HistoryCell::Thinking { .. })
             )
         })
+        .collect();
+    if thinking_indices.is_empty() {
+        return None;
+    }
+
+    let selected_position = thinking_indices
+        .iter()
+        .position(|&idx| idx == selected_cell_index)
+        .map(|idx| idx + 1);
+    let total = thinking_indices.len();
+    let running = thinking_indices.iter().any(|&idx| {
+        matches!(
+            app.cell_at_virtual_index(idx),
+            Some(HistoryCell::Thinking {
+                streaming: true,
+                ..
+            })
+        )
     });
 
-    let Some(idx) = target_idx else {
-        app.status_message = Some("No thinking blocks to expand".to_string());
-        return true;
-    };
-
-    let width = app
-        .viewport
-        .last_transcript_area
-        .map(|area| area.width)
-        .unwrap_or(80);
-    let text = {
-        let Some(cell) = app.cell_at_virtual_index(idx) else {
-            app.status_message = Some("No thinking blocks to expand".to_string());
-            return true;
-        };
-        history_cell_to_text(cell, width)
-    };
-    app.view_stack.push(PagerView::from_text(
-        "Thinking",
-        &text,
-        width.saturating_sub(2),
+    let mut sections = Vec::new();
+    if let Some(turn_id) = app.runtime_turn_id.as_ref() {
+        let status = app.runtime_turn_status.as_deref().unwrap_or("in progress");
+        sections.push(format!(
+            "Turn: {} ({status})",
+            truncate_line_to_width(turn_id, 24)
+        ));
+    }
+    sections.push("Activity: reasoning timeline".to_string());
+    sections.push(format!(
+        "Status: {} · {total} chunk{}",
+        if running { "running" } else { "done" },
+        if total == 1 { "" } else { "s" }
     ));
-    true
+    if let Some(position) = selected_position {
+        sections.push(format!("Selected chunk: {position} of {total}"));
+    }
+    sections.push(String::new());
+
+    for (position, cell_index) in thinking_indices.iter().copied().enumerate() {
+        let Some(HistoryCell::Thinking {
+            content,
+            streaming,
+            duration_secs,
+        }) = app.cell_at_virtual_index(cell_index)
+        else {
+            continue;
+        };
+        let position = position + 1;
+        let marker = if Some(position) == selected_position {
+            " (selected)"
+        } else {
+            ""
+        };
+        let mut status = if *streaming {
+            "running".to_string()
+        } else {
+            "done".to_string()
+        };
+        if let Some(duration_secs) = duration_secs {
+            status.push_str(" · ");
+            status.push_str(&format!("{duration_secs:.1}s"));
+        }
+        sections.push(format!("Thinking chunk {position} of {total}{marker}"));
+        sections.push(format!("Status: {status}"));
+        let body = content.trim();
+        if body.is_empty() {
+            sections.push("(no reasoning text recorded)".to_string());
+        } else {
+            sections.push(body.to_string());
+        }
+        sections.push(String::new());
+    }
+
+    Some(sections.join("\n"))
+}
+
+fn activity_cell_label(app: &App, cell_index: usize, cell: &HistoryCell) -> String {
+    match cell {
+        HistoryCell::Thinking { .. } => "thinking".to_string(),
+        HistoryCell::Error { .. } => "error".to_string(),
+        HistoryCell::SubAgent(_) => "sub-agent".to_string(),
+        HistoryCell::Tool(_) => {
+            detail_target_label(app, cell_index).unwrap_or_else(|| "tool activity".to_string())
+        }
+        _ => "message".to_string(),
+    }
+}
+
+fn activity_status_line(cell: &HistoryCell) -> Option<String> {
+    match cell {
+        HistoryCell::Thinking {
+            streaming,
+            duration_secs,
+            ..
+        } => {
+            let mut line = if *streaming {
+                "Status: running".to_string()
+            } else {
+                "Status: done".to_string()
+            };
+            if let Some(duration_secs) = duration_secs {
+                line.push_str(" · ");
+                line.push_str(&format!("{duration_secs:.1}s"));
+            }
+            Some(line)
+        }
+        HistoryCell::Tool(tool) => {
+            let status = tool_status_for_activity(tool)?;
+            let mut line = format!("Status: {}", activity_status_label(status));
+            if let Some(duration_ms) = tool_duration_for_activity(tool) {
+                line.push_str(" · ");
+                line.push_str(&format_activity_duration_ms(duration_ms));
+            }
+            Some(line)
+        }
+        HistoryCell::Error { severity, .. } => Some(format!("Status: {:?}", severity)),
+        HistoryCell::SubAgent(_) => None,
+        _ => None,
+    }
+}
+
+fn tool_status_for_activity(tool: &ToolCell) -> Option<ToolStatus> {
+    match tool {
+        ToolCell::Exec(cell) => Some(cell.status),
+        ToolCell::Exploring(cell) => {
+            if cell
+                .entries
+                .iter()
+                .any(|entry| entry.status == ToolStatus::Running)
+            {
+                Some(ToolStatus::Running)
+            } else if cell
+                .entries
+                .iter()
+                .any(|entry| entry.status == ToolStatus::Failed)
+            {
+                Some(ToolStatus::Failed)
+            } else {
+                Some(ToolStatus::Success)
+            }
+        }
+        ToolCell::PlanUpdate(cell) => Some(cell.status),
+        ToolCell::PatchSummary(cell) => Some(cell.status),
+        ToolCell::Review(cell) => Some(cell.status),
+        ToolCell::DiffPreview(_) => Some(ToolStatus::Success),
+        ToolCell::Mcp(cell) => Some(cell.status),
+        ToolCell::ViewImage(_) => Some(ToolStatus::Success),
+        ToolCell::WebSearch(cell) => Some(cell.status),
+        ToolCell::Generic(cell) => Some(cell.status),
+    }
+}
+
+fn tool_duration_for_activity(tool: &ToolCell) -> Option<u64> {
+    match tool {
+        ToolCell::Exec(cell) => cell.duration_ms.or_else(|| {
+            (cell.status == ToolStatus::Running).then(|| {
+                u64::try_from(
+                    cell.started_at
+                        .map(|started| started.elapsed().as_millis())
+                        .unwrap_or_default(),
+                )
+                .unwrap_or(u64::MAX)
+            })
+        }),
+        _ => None,
+    }
+}
+
+fn activity_status_label(status: ToolStatus) -> &'static str {
+    match status {
+        ToolStatus::Running => "running",
+        ToolStatus::Success => "done",
+        ToolStatus::Failed => "failed",
+    }
+}
+
+fn format_activity_duration_ms(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    }
+}
+
+fn thinking_chunk_position(app: &App, cell_index: usize) -> Option<(usize, usize)> {
+    if !matches!(
+        app.cell_at_virtual_index(cell_index),
+        Some(HistoryCell::Thinking { .. })
+    ) {
+        return None;
+    }
+
+    let mut total = 0usize;
+    let mut position = None;
+    for idx in 0..app.virtual_cell_count() {
+        if matches!(
+            app.cell_at_virtual_index(idx),
+            Some(HistoryCell::Thinking { .. })
+        ) {
+            total += 1;
+            if idx == cell_index {
+                position = Some(total);
+            }
+        }
+    }
+    position.map(|pos| (pos, total))
+}
+
+fn activity_cell_to_text(cell: &HistoryCell, width: u16) -> String {
+    let lines = match cell {
+        HistoryCell::Tool(_) => cell.lines_with_options(
+            width,
+            TranscriptRenderOptions {
+                calm_mode: true,
+                low_motion: true,
+                ..TranscriptRenderOptions::default()
+            },
+        ),
+        _ => cell.transcript_lines(width),
+    };
+    lines
+        .iter()
+        .map(line_to_plain)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn open_tool_details_pager(app: &mut App) -> bool {
@@ -9064,17 +9896,42 @@ fn selected_detail_footer_label(app: &App) -> Option<String> {
     if app.viewport.transcript_selection.is_active() {
         return None;
     }
-    let cell_index = app.detail_cell_index_for_viewport(
-        app.viewport.last_transcript_top,
-        app.viewport.last_transcript_visible.max(1),
-        app.viewport.transcript_cache.line_meta(),
-    )?;
-    let label = detail_target_label(app, cell_index)?;
+    let cell_index = activity_footer_target_cell_index(app)?;
+    let cell = app.cell_at_virtual_index(cell_index)?;
+    let label = truncate_line_to_width(&activity_cell_label(app, cell_index, cell), 30);
+    let raw_hint = if app.cell_has_detail_target(cell_index) {
+        format!(" · {} raw", tool_details_shortcut_label())
+    } else {
+        String::new()
+    };
     Some(format!(
-        "{} details: {}",
-        tool_details_shortcut_label(),
-        truncate_line_to_width(&label, 34)
+        "{} Activity: {label}{raw_hint}",
+        activity_shortcut_label()
     ))
+}
+
+fn activity_footer_target_cell_index(app: &App) -> Option<usize> {
+    let line_meta = app.viewport.transcript_cache.line_meta();
+    let start = app
+        .viewport
+        .last_transcript_top
+        .min(line_meta.len().saturating_sub(1));
+    let end = start
+        .saturating_add(app.viewport.last_transcript_visible.max(1))
+        .min(line_meta.len());
+    for meta in line_meta.iter().take(end).skip(start) {
+        let Some((cell_index, _)) = meta.cell_line() else {
+            continue;
+        };
+        if app
+            .cell_at_virtual_index(cell_index)
+            .is_some_and(is_meaningful_activity_cell)
+        {
+            return Some(cell_index);
+        }
+    }
+
+    activity_target_cell_index(app)
 }
 
 fn detail_target_label(app: &App, cell_index: usize) -> Option<String> {
@@ -9151,6 +10008,10 @@ fn tool_details_shortcut_label() -> &'static str {
     } else {
         "Alt+V"
     }
+}
+
+fn activity_shortcut_label() -> &'static str {
+    "Ctrl+O"
 }
 
 /// Modifier predicate for the v0.8.30 family of `Alt+<letter>` transcript-
