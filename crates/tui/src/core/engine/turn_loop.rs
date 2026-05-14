@@ -1215,7 +1215,7 @@ impl Engine {
                 {
                     crate::logging::warn(message.clone());
                     guard_result = Some(
-                        ToolResult::success(message)
+                        ToolResult::error(message)
                             .with_metadata(json!({"loop_guard": "identical_tool_call"})),
                     );
                 }
@@ -1788,7 +1788,7 @@ impl Engine {
                             content: vec![ContentBlock::ToolResult {
                                 tool_use_id: outcome.id,
                                 content: output_for_context,
-                                is_error: None,
+                                is_error: tool_result_context_error_flag(&output),
                                 content_blocks: None,
                             }],
                         })

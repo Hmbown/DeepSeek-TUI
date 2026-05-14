@@ -279,6 +279,10 @@ pub(super) fn tool_plan_is_parallel_safe(plan: &ToolExecutionPlan) -> bool {
     plan.read_only && plan.supports_parallel && !plan.approval_required && !plan.interactive
 }
 
+pub(super) fn tool_result_context_error_flag(result: &ToolResult) -> Option<bool> {
+    (!result.success).then_some(true)
+}
+
 pub(super) fn plan_tool_execution_batches(
     plans: Vec<ToolExecutionPlan>,
 ) -> Vec<ToolExecutionBatch> {

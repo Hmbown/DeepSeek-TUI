@@ -385,6 +385,18 @@ fn tool_exec_outcome_tracks_duration() {
 }
 
 #[test]
+fn failed_tool_results_are_marked_as_context_errors() {
+    assert_eq!(
+        tool_result_context_error_flag(&ToolResult::success("ok")),
+        None
+    );
+    assert_eq!(
+        tool_result_context_error_flag(&ToolResult::error("blocked")),
+        Some(true)
+    );
+}
+
+#[test]
 fn yolo_mode_keeps_tools_preloaded() {
     assert!(!should_default_defer_tool("exec_shell", AppMode::Yolo));
     assert!(!should_default_defer_tool(
