@@ -279,11 +279,17 @@ impl Engine {
                 }
             }
 
+            // Prepare request context: filter messages via verbatim window and
+            // augment system prompt with retrieved semantic context from
+            // the vector database (Tier 2 memory + Tier 3 summaries).
+            let (filtered_messages, augmented_system) =
+                self.prepare_request_context().await;
+
             let request = MessageRequest {
                 model: self.session.model.clone(),
-                messages: self.messages_with_turn_metadata(),
+                messages: filtered_messages,
                 max_tokens: effective_max_output_tokens(&self.session.model),
-                system: self.session.system_prompt.clone(),
+                system: augmented_system,
                 tools: active_tools.clone(),
                 tool_choice: if active_tools.is_some() {
                     if self.config.strict_tool_mode {
