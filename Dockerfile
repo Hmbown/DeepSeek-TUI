@@ -33,10 +33,10 @@ RUN if [ "${TARGETARCH}" = "arm64" ] && [ "${BUILDPLATFORM}" != "${TARGETPLATFOR
     fi \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-      pkg-config libdbus-1-dev \
+      pkg-config libdbus-1-dev libsqlite3-dev \
     && if [ "${TARGETARCH}" = "arm64" ] && [ "${BUILDPLATFORM}" != "${TARGETPLATFORM}" ]; then \
       apt-get install -y --no-install-recommends \
-        gcc-aarch64-linux-gnu libc6-dev-arm64-cross libdbus-1-dev:arm64; \
+        gcc-aarch64-linux-gnu libc6-dev-arm64-cross libdbus-1-dev:arm64 libsqlite3-dev:arm64; \
     fi \
     && rm -rf /var/lib/apt/lists/*
 
@@ -70,6 +70,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libdbus-1-3 \
+    libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user with explicit UID/GID for filesystem ownership clarity.
