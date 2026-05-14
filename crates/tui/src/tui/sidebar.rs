@@ -25,7 +25,7 @@ use crate::tools::todo::{TodoItem, TodoStatus};
 use super::app::{App, SidebarFocus, TaskPanelEntry};
 use super::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus, summarize_tool_output};
 use super::subagent_routing::active_fanout_counts;
-use super::ui_text::truncate_line_to_width;
+use super::ui_text::{concise_shell_command_label, truncate_line_to_width};
 
 /// Tolerance for floating-point cost comparison in the sidebar breakdown.
 /// Must be large enough that accumulated f64 error across hundreds of turns
@@ -821,17 +821,19 @@ fn sidebar_tool_row_from_cell(cell: &HistoryCell) -> Option<SidebarToolRow> {
     };
     match tool {
         ToolCell::Exec(exec) => Some(SidebarToolRow {
-            name: "run".to_string(),
-            status: exec.status,
-            summary: compact_join([
-                exec.command.clone(),
-                exec.output_summary.clone().unwrap_or_default(),
-                exec.output
-                    .as_deref()
-                    .map(first_nonempty_line)
-                    .unwrap_or_default()
-                    .to_string(),
-            ]),
+            name: concise_shell_command_label(&exec.command, 48),
+            status: shell_status_for_sidebar(
+                &exec.command,
+                exec.status,
+                exec.output_summary.as_deref(),
+                exec.output.as_deref(),
+            ),
+            summary: shell_summary_for_sidebar(
+                &exec.command,
+                exec.status,
+                exec.output_summary.as_deref(),
+                exec.output.as_deref(),
+            ),
             duration_ms: exec.duration_ms.or_else(|| {
                 (exec.status == ToolStatus::Running).then(|| {
                     u64::try_from(
@@ -934,6 +936,87 @@ fn sidebar_tool_row_from_cell(cell: &HistoryCell) -> Option<SidebarToolRow> {
     }
 }
 
+fn shell_status_for_sidebar(
+    command: &str,
+    status: ToolStatus,
+    output_summary: Option<&str>,
+    output: Option<&str>,
+) -> ToolStatus {
+    if status == ToolStatus::Failed && looks_like_pending_ci(command, output_summary, output) {
+        ToolStatus::Running
+    } else {
+        status
+    }
+}
+
+fn shell_summary_for_sidebar(
+    command: &str,
+    status: ToolStatus,
+    output_summary: Option<&str>,
+    output: Option<&str>,
+) -> String {
+    if status == ToolStatus::Failed && looks_like_pending_ci(command, output_summary, output) {
+        return format!(
+            "Waiting for CI \u{00B7} {} details",
+            crate::tui::key_shortcuts::tool_details_shortcut_label()
+        );
+    }
+
+    let summary = compact_join([
+        output_summary.unwrap_or_default().to_string(),
+        output
+            .map(first_nonempty_line)
+            .unwrap_or_default()
+            .to_string(),
+    ]);
+    if status == ToolStatus::Failed {
+        failure_summary_with_hint(&summary)
+    } else {
+        summary
+    }
+}
+
+fn looks_like_pending_ci(
+    command: &str,
+    output_summary: Option<&str>,
+    output: Option<&str>,
+) -> bool {
+    let command_label = concise_shell_command_label(command, 80).to_ascii_lowercase();
+    if !command_label.starts_with("gh pr checks") && !command_label.starts_with("gh run watch") {
+        return false;
+    }
+
+    let text = compact_join([
+        output_summary.unwrap_or_default().to_string(),
+        output.unwrap_or_default().to_string(),
+    ])
+    .to_ascii_lowercase();
+    if text.is_empty() {
+        return false;
+    }
+    let pending = ["pending", "queued", "in_progress", "in progress", "waiting"]
+        .iter()
+        .any(|needle| text.contains(needle));
+    let hard_failure = ["failed", "failure", "error", "cancelled", "canceled"]
+        .iter()
+        .any(|needle| text.contains(needle));
+    pending && !hard_failure
+}
+
+fn failure_summary_with_hint(summary: &str) -> String {
+    let hint = format!(
+        "inspect details with {}",
+        crate::tui::key_shortcuts::tool_details_shortcut_label()
+    );
+    if summary.trim().is_empty() {
+        hint
+    } else if summary.contains(&hint) {
+        summary.to_string()
+    } else {
+        format!("{summary} \u{00B7} {hint}")
+    }
+}
+
 fn friendly_generic_tool_name(name: &str) -> &str {
     match name {
         "task_shell_start" => "start shell job",
@@ -997,8 +1080,8 @@ fn background_task_duplicates_live_tool(
     !command.is_empty()
         && active_rows.iter().any(|row| {
             row.status == ToolStatus::Running
-                && row.name == "run"
-                && normalize_activity_text(&row.summary).contains(&command)
+                && normalize_activity_text(&format!("{} {}", row.name, row.summary))
+                    .contains(&command)
         })
 }
 
@@ -1012,9 +1095,29 @@ fn editorial_tool_rows(rows: Vec<SidebarToolRow>, limit: usize) -> Vec<SidebarTo
 
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut low_value_groups: Vec<(usize, SidebarToolRow, usize)> = Vec::new();
+    let mut ci_poll_groups: Vec<(usize, SidebarToolRow, usize)> = Vec::new();
     let mut seen_success: Vec<String> = Vec::new();
 
-    for (order, row) in rows.into_iter().enumerate() {
+    for (order, mut row) in rows.into_iter().enumerate() {
+        if row.status == ToolStatus::Failed {
+            row.summary = failure_summary_with_hint(&row.summary);
+        }
+
+        if is_ci_poll_row(&row) {
+            if let Some((_, grouped, count)) = ci_poll_groups
+                .iter_mut()
+                .find(|(_, grouped, _)| grouped.name == row.name)
+            {
+                *count += 1;
+                if grouped.duration_ms.is_none() {
+                    grouped.duration_ms = row.duration_ms;
+                }
+            } else {
+                ci_poll_groups.push((order, row, 1));
+            }
+            continue;
+        }
+
         if is_low_value_tool(&row.name) && row.status == ToolStatus::Success {
             if let Some((_, grouped, count)) = low_value_groups
                 .iter_mut()
@@ -1038,6 +1141,23 @@ fn editorial_tool_rows(rows: Vec<SidebarToolRow>, limit: usize) -> Vec<SidebarTo
             seen_success.push(key);
         }
 
+        candidates.push(Candidate {
+            rank: tool_row_rank(&row),
+            order,
+            row,
+        });
+    }
+
+    for (order, mut row, count) in ci_poll_groups {
+        if count > 1 {
+            let command = row.name.clone();
+            row.name = "Waiting for CI".to_string();
+            row.summary = format!(
+                "{command} \u{00B7} {count} polls collapsed \u{00B7} {} details",
+                crate::tui::key_shortcuts::tool_details_shortcut_label()
+            );
+            row.status = ToolStatus::Running;
+        }
         candidates.push(Candidate {
             rank: tool_row_rank(&row),
             order,
@@ -1073,6 +1193,10 @@ fn sidebar_row_identity(row: &SidebarToolRow) -> String {
         row.name.trim(),
         normalize_activity_text(row.summary.as_str())
     )
+}
+
+fn is_ci_poll_row(row: &SidebarToolRow) -> bool {
+    row.name.starts_with("gh pr checks") || row.name.starts_with("gh run watch")
 }
 
 fn normalize_activity_text(text: &str) -> String {
@@ -1566,14 +1690,22 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
 /// Maximum visible items in the todos area above the composer.
 const TODOS_PANEL_MAX_ITEMS: usize = 6;
 
+// Cached todos panel height so a transient lock failure doesn't collapse
+// the panel for a single frame. Per-thread, zero means "uninitialised".
+thread_local! {
+    static LAST_TODOS_HEIGHT: std::cell::Cell<u16> = std::cell::Cell::new(0);
+}
+
 /// Compute the height needed for the todos area above the composer.
-/// Returns 0 when the checklist is empty.
+/// Returns 0 when the checklist is empty. Falls back to the last known
+/// height on lock contention to prevent layout flicker.
 pub fn todos_panel_height(app: &App) -> u16 {
     let snapshot = match app.todos.try_lock() {
         Ok(todos) => todos.snapshot(),
-        Err(_) => return 0,
+        Err(_) => return LAST_TODOS_HEIGHT.with(|h| h.get()),
     };
     if snapshot.items.is_empty() {
+        LAST_TODOS_HEIGHT.with(|h| h.set(0));
         return 0;
     }
     // Title + progress summary + N visible items (capped, one line
@@ -1585,7 +1717,9 @@ pub fn todos_panel_height(app: &App) -> u16 {
         total
     };
     let remaining = total.saturating_sub(TODOS_PANEL_MAX_ITEMS);
-    2 + items as u16 + u16::from(remaining > 0)
+    let height = 2 + items as u16 + u16::from(remaining > 0);
+    LAST_TODOS_HEIGHT.with(|h| h.set(height));
+    height
 }
 
 fn todos_window_start(items: &[TodoItem], max_items: usize) -> usize {
@@ -1614,7 +1748,8 @@ fn todos_window_start(items: &[TodoItem], max_items: usize) -> usize {
 ///
 /// Shows checklist progress with a title, completion summary, and each item on
 /// its own line with status markers. Width below 24 columns silently renders
-/// nothing. Items beyond the cap show a "+N more" footer.
+/// nothing. The visible window scrolls to keep the in-progress (or first
+/// non-completed) item in view, matching the Work sidebar checklist behavior.
 ///
 /// Design follows Claude Code's pattern of placing the checklist above
 /// the composer/input area so the user can see task progress at a glance
@@ -1650,7 +1785,7 @@ pub fn render_todos_panel(f: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(vec![
         Span::styled(
             format!("{}%", snapshot.completion_pct),
-            Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
+            Style::default().fg(palette::STATUS_SUCCESS).bold(),
         ),
         Span::styled(
             format!(" complete ({completed}/{total})"),
@@ -1668,8 +1803,8 @@ pub fn render_todos_panel(f: &mut Frame, area: Rect, app: &App) {
     for item in snapshot.items[start..end].iter() {
         let (prefix, color) = match item.status {
             TodoStatus::Pending => ("[ ]", palette::TEXT_MUTED),
-            TodoStatus::InProgress => ("[~]", palette::DEEPSEEK_SKY),
-            TodoStatus::Completed => ("[x]", palette::DEEPSEEK_BLUE),
+            TodoStatus::InProgress => ("[~]", palette::STATUS_WARNING),
+            TodoStatus::Completed => ("[x]", palette::STATUS_SUCCESS),
         };
         let text = format!("{prefix} #{} {}", item.id, item.content);
         lines.push(Line::from(Span::styled(
@@ -2059,10 +2194,8 @@ mod tests {
             })),
         );
         app.active_cell = Some(active);
-        app.active_tool_entry_completed_at.insert(
-            0,
-            Instant::now() - ACTIVE_TOOL_COMPLETED_ROW_TTL - Duration::from_secs(1),
-        );
+        let expired_at = instant_older_than(ACTIVE_TOOL_COMPLETED_ROW_TTL + Duration::from_secs(1));
+        app.active_tool_entry_completed_at.insert(0, expired_at);
 
         let text = lines_to_text(&task_panel_lines(&app, 64, 8));
 
@@ -2070,6 +2203,16 @@ mod tests {
             !text.iter().any(|line| line.contains("[x] read_file")),
             "expired completed active row should leave the sidebar: {text:?}"
         );
+    }
+
+    fn instant_older_than(age: Duration) -> Instant {
+        if let Some(instant) = Instant::now().checked_sub(age) {
+            return instant;
+        }
+
+        let instant = Instant::now();
+        std::thread::sleep(age);
+        instant
     }
 
     #[test]
@@ -2111,10 +2254,8 @@ mod tests {
                     command: command.to_string(),
                     status: ToolStatus::Running,
                     output: None,
-                    started_at: Some(
-                        Instant::now() - ACTIVE_TOOL_STALE_RUNNING_ROW_TTL - Duration::from_secs(1),
-                    ),
-                    duration_ms: None,
+                    started_at: None,
+                    duration_ms: Some(ACTIVE_TOOL_STALE_RUNNING_ROW_TTL.as_millis() as u64 + 1),
                     source: ExecSource::Assistant,
                     interaction: None,
                     output_summary: None,
@@ -2247,6 +2388,77 @@ mod tests {
     }
 
     #[test]
+    fn tasks_panel_collapses_repeated_pending_ci_polls() {
+        let mut app = create_test_app();
+        for _ in 0..3 {
+            app.history.push(HistoryCell::Tool(ToolCell::Exec(ExecCell {
+                command: "cd /tmp/repo && sleep 15 && gh pr checks 1616 --repo Hmbown/DeepSeek-TUI"
+                    .to_string(),
+                status: ToolStatus::Failed,
+                output: Some("Lint pending\nTest pending".to_string()),
+                started_at: None,
+                duration_ms: Some(15_000),
+                source: ExecSource::Assistant,
+                interaction: None,
+                output_summary: Some("2 checks pending".to_string()),
+            })));
+        }
+
+        let text = lines_to_text(&task_panel_lines(&app, 80, 12));
+
+        assert!(
+            text.iter().any(|line| line.contains("[~] Waiting for CI")),
+            "pending CI should not render as a hard failure: {text:?}"
+        );
+        assert!(
+            text.iter().any(|line| line.contains("gh pr checks 1616")),
+            "concise command label should remain visible: {text:?}"
+        );
+        assert!(
+            text.iter().any(|line| line.contains("3 polls collapsed")),
+            "repeated polling should collapse into one row: {text:?}"
+        );
+        assert!(
+            text.iter()
+                .any(|line| line.contains(crate::tui::key_shortcuts::tool_details_shortcut_label())),
+            "collapsed CI row should point to details: {text:?}"
+        );
+        assert!(
+            !text.iter().any(|line| line.contains("[!] gh pr checks")),
+            "pending CI should not look like a real failure: {text:?}"
+        );
+    }
+
+    #[test]
+    fn tasks_panel_failed_shell_rows_point_to_activity_details() {
+        let mut app = create_test_app();
+        app.history.push(HistoryCell::Tool(ToolCell::Exec(ExecCell {
+            command: "cargo test -p deepseek-tui".to_string(),
+            status: ToolStatus::Failed,
+            output: Some("test failed".to_string()),
+            started_at: None,
+            duration_ms: Some(1_250),
+            source: ExecSource::Assistant,
+            interaction: None,
+            output_summary: Some("test failed".to_string()),
+        })));
+
+        let text = lines_to_text(&task_panel_lines(&app, 80, 8));
+
+        assert!(
+            text.iter().any(|line| line.contains("[!] cargo test")),
+            "failed shell command should keep its concise label: {text:?}"
+        );
+        assert!(
+            text.iter().any(|line| line.contains(&format!(
+                "inspect details with {}",
+                crate::tui::key_shortcuts::tool_details_shortcut_label()
+            ))),
+            "failed row should include the next action: {text:?}"
+        );
+    }
+
+    #[test]
     fn tasks_panel_keeps_duration_and_status_on_recent_shell_rows() {
         let mut app = create_test_app();
         app.history.push(HistoryCell::Tool(ToolCell::Exec(ExecCell {
@@ -2263,7 +2475,8 @@ mod tests {
         let text = lines_to_text(&task_panel_lines(&app, 80, 8));
 
         assert!(
-            text.iter().any(|line| line.contains("[x] run 1.2s")),
+            text.iter()
+                .any(|line| line.contains("[x] cargo check 1.2s")),
             "status marker and duration should stay in the row label: {text:?}"
         );
         assert!(
