@@ -153,8 +153,8 @@ fn push_keyboard_flags_writes_kitty_push_sequence_on_windows() {
     push_keyboard_enhancement_flags(&mut buf);
     let seq = String::from_utf8_lossy(&buf);
     assert!(
-        seq.contains("\x1b[>1u"),
-        "push_keyboard_enhancement_flags must write kitty push (\\x1b[>1u) on Windows (#1359); got: {seq:?}"
+        seq.contains("\x1b[>0u"),
+        "push_keyboard_enhancement_flags must write kitty probe (\\x1b[>0u) on Windows (#1599); got: {seq:?}"
     );
 }
 
