@@ -82,6 +82,35 @@ URLs (`localhost`, `127.0.0.1`, `[::1]`, `0.0.0.0`) do not read the secret store
 unless API-key auth is explicitly requested; use an env var or config-file key
 when a local server does require bearer auth.
 
+### Custom OpenAI-Compatible Gateways
+
+For a third-party service that implements the OpenAI Chat Completions API, use
+the built-in `openai` provider name and point its provider table at the gateway:
+
+```toml
+provider = "openai"
+default_text_model = "your-model-id"
+
+[providers.openai]
+api_key = "YOUR_OPENAI_COMPATIBLE_API_KEY"
+base_url = "https://your-gateway.example/v1"
+```
+
+Do not invent a custom provider name; `provider` must be one of the known
+providers listed above. Put the endpoint under `[providers.openai]`, not the
+legacy top-level `base_url`, so the OpenAI-compatible provider receives it.
+`default_text_model` is the model ID sent to the gateway; if you keep several
+provider tables in one config, `[providers.openai].model` can be used as the
+OpenAI-provider-specific override.
+
+Local HTTP endpoints such as Ollama, SGLang, and vLLM are allowed by default
+when they use localhost or loopback addresses. For a non-local `http://`
+gateway, launch with `DEEPSEEK_ALLOW_INSECURE_HTTP=1` only on a trusted network:
+
+```bash
+DEEPSEEK_ALLOW_INSECURE_HTTP=1 deepseek
+```
+
 Third-party OpenAI-compatible gateways that need extra request headers can set
 `http_headers = { "X-Model-Provider-Id" = "your-model-provider" }` at the top
 level or under a provider table such as `[providers.deepseek]`. When configured,
@@ -298,10 +327,12 @@ replacement compaction. You can inspect or update these from the TUI with
 
 Common settings keys:
 
-- `theme` (`system`, `dark`, `light`, `grayscale`; default `system`):
-  `system` follows terminal background detection, `dark`/`light` use the
-  DeepSeek palettes, and `grayscale` is the low-opinion black/white theme.
-  Aliases such as `whale`, `mono`, and `black-white` are accepted.
+- `theme` (`system`, `dark`, `light`, `grayscale`, `catppuccin-mocha`,
+  `tokyo-night`, `dracula`, `gruvbox-dark`; default `system`): `system`
+  follows terminal background detection, `dark`/`light` use the DeepSeek
+  palettes, `grayscale` is the low-opinion black/white theme, and the named
+  community presets apply across the TUI. Aliases such as `whale`, `mono`,
+  `black-white`, `tokyonight`, and `gruvbox` are accepted.
 - `auto_compact` (on/off, default off)
 - `paste_burst_detection` (on/off, default on): fallback rapid-key paste
   detection for terminals that do not emit bracketed-paste events. This is
@@ -322,10 +353,12 @@ Common settings keys:
   context panel, `/cost`, `/tokens`, and long-turn notification summaries. The
   aliases `rmb` and `yuan` normalize to `cny`.
 - `default_mode` (agent, plan, yolo; legacy `normal` is accepted and normalized to `agent`)
-- `sidebar_focus` (`auto`, `work`, `tasks`, `agents`, `context`; default
+- `sidebar_focus` (`auto`, `work`, `tasks`, `agents`, `context`, `hidden`; default
   `auto`): selects the right sidebar focus. `auto` prioritizes Work, Tasks,
   Agents, then optional Context, and uses Work as the single quiet empty state.
-  Legacy `plan` and `todos` values are accepted and normalized to `work`.
+  `hidden` disables the right sidebar entirely so raw terminal selection cannot
+  cross from the transcript into sidebar borders. Legacy `plan` and `todos`
+  values are accepted and normalized to `work`.
 - `max_history` (number of submitted input history entries; cleared drafts are
   also kept locally for composer history search)
 - `default_model` (model name override)
@@ -412,7 +445,13 @@ If you are upgrading from older releases:
   keys such as `worker`, `explorer`, `general`, `explore`, `plan`, and
   `review`. Values must normalize to a supported DeepSeek model id before an
   agent is spawned.
-- `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is a directory containing `SKILL.md`). Workspace-local `.agents/skills` or `./skills` are preferred when present; the runtime also discovers global agentskills.io-compatible `~/.agents/skills` and the broader Claude-ecosystem `~/.claude/skills`.
+- `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is
+  a directory containing `SKILL.md`). Workspace-local `.agents/skills` or
+  `./skills` are preferred when present; the runtime also discovers global
+  agentskills.io-compatible `~/.agents/skills` and the broader Claude-ecosystem
+  `~/.claude/skills`. First launch installs versioned bundled skills for common
+  workflows including skill creation, delegation, MCP/plugin scaffolding,
+  documents, presentations, spreadsheets, PDFs, and Feishu/Lark.
 - `mcp_config_path` (string, optional): defaults to `~/.deepseek/mcp.json`.
   It is visible in `/config` and can be changed from the TUI. The new path is
   used immediately by `/mcp`, but rebuilding the model-visible MCP tool pool
@@ -480,7 +519,7 @@ If you are upgrading from older releases:
   `false`. When `true`, the notification body includes the elapsed
   duration and the turn's cost in the configured display currency.
 - `tui.alternate_screen` (string, optional): `auto`, `always`, or `never`. This is retained for config compatibility, but interactive sessions now always use the TUI-owned alternate screen so host terminal scrollback cannot hijack the viewport.
-- `tui.mouse_capture` (bool, optional, default `true` on non-Windows terminals when the alternate screen is active; `false` on Windows and inside JetBrains JediTerm — PyCharm/IDEA/CLion/etc. — where mouse-event escapes leak into the input stream as garbled text, see #878 / #898): enable internal mouse scrolling, transcript selection, right-click context actions, and transcript scrollbar dragging. TUI-owned drag selection copies only transcript text and keeps selection scoped to the transcript pane. Set this to `false` or run with `--no-mouse-capture` for raw terminal selection; set it to `true` or run with `--mouse-capture` to opt in anywhere it's defaulted off. On Windows, raw terminal selection may cross the right sidebar because the terminal, not the TUI, owns the selection.
+- `tui.mouse_capture` (bool, optional, default `true` on non-Windows terminals and on Windows Terminal/ConEmu/Cmder when the alternate screen is active; `false` on legacy Windows console and inside JetBrains JediTerm — PyCharm/IDEA/CLion/etc. — where mouse-event escapes leak into the input stream as garbled text, see #878 / #898): enable internal mouse scrolling, transcript selection, right-click context actions, and transcript scrollbar dragging. TUI-owned drag selection copies only transcript text and keeps selection scoped to the transcript pane. Set this to `false` or run with `--no-mouse-capture` for raw terminal selection; set it to `true` or run with `--mouse-capture` to opt in anywhere it's defaulted off. On raw terminal selection, especially on legacy Windows console or when mouse capture is disabled, selection may cross the right sidebar because the terminal, not the TUI, owns the selection.
 - `tui.terminal_probe_timeout_ms` (int, optional, default `500`): startup terminal-mode probe timeout in milliseconds. Values are clamped to `100..=5000`; timeout emits a warning and aborts startup instead of hanging indefinitely.
 - `tui.osc8_links` (bool, optional, default `true`): emit OSC 8 escape sequences around URLs in transcript output so terminals that support them (iTerm2, Terminal.app 13+, Ghostty, Kitty, WezTerm, Alacritty, recent gnome-terminal/konsole) render them as Cmd+click hyperlinks. Terminals without OSC 8 support render the plain URL and ignore the escape. Set `false` for terminals that misrender the sequence; selection/clipboard output always strips the escapes.
 - `hooks` (optional): lifecycle hooks configuration (see `config.example.toml`).
@@ -581,6 +620,18 @@ You can also override features for a single run:
 
 Use `deepseek-tui features list` to inspect known flags and their effective state.
 
+## Web Search Provider
+
+`web_search` uses Bing by default and does not require an API key. DuckDuckGo
+remains selectable for users who explicitly want it, and Tavily or Bocha can be
+selected when an API-backed provider is preferred.
+
+```toml
+[search]
+provider = "bing" # bing | duckduckgo | tavily | bocha
+# api_key = "tvly-YOUR_KEY" # required for tavily and bocha
+```
+
 ## Local Media Attachments
 
 Use `@path/to/file` in the composer to add local text file or directory context
@@ -661,7 +712,7 @@ configure reasoning effort.
 - `--plugins` — scaffold `~/.deepseek/plugins/` with a `README.md` and an
   `example/PLUGIN.md` placeholder using the same frontmatter shape as
   `SKILL.md`. Plugins are not loaded automatically either; reference them
-  from a skill or MCP wrapper when you want them active.
+  from a skill, hook, or MCP wrapper when you want them active.
 - `--all` now scaffolds MCP + skills + tools + plugins together.
 - `--clean` — list `~/.deepseek/sessions/checkpoints/latest.json` and
   `offline_queue.json` if they exist. Pass `--force` to actually remove them.

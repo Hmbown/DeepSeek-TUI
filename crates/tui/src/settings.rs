@@ -28,7 +28,7 @@ use crate::palette::{normalize_hex_rgb_color, normalize_theme_name};
 /// # Example `~/.deepseek/tui.toml`
 ///
 /// ```toml
-/// theme    = "dark"        # "system" | "dark" | "light" | "grayscale"
+/// theme    = "dark"        # "system" | "dark" | "light" | "grayscale" | "catppuccin-mocha" | ...
 /// font_size = 14
 ///
 /// [keybinds]
@@ -43,7 +43,7 @@ use crate::palette::{normalize_hex_rgb_color, normalize_theme_name};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TuiPrefs {
-    /// UI colour theme: `"dark"` | `"light"` | `"grayscale"` | `"system"`.
+    /// UI colour theme.
     /// Default `"dark"`.
     pub theme: String,
     /// Terminal font size hint forwarded to supporting front-ends (e.g. the
@@ -152,7 +152,7 @@ impl TuiPrefs {
         let theme = self.theme.trim().to_ascii_lowercase();
         let Some(theme) = normalize_theme_name(&theme) else {
             anyhow::bail!(
-                "Invalid tui.toml theme '{}': expected system, dark, light, or grayscale.",
+                "Invalid tui.toml theme '{}': expected system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, or gruvbox-dark.",
                 self.theme
             );
         };
@@ -193,9 +193,13 @@ pub struct Settings {
     pub show_thinking: bool,
     /// Show detailed tool output
     pub show_tool_details: bool,
-    /// UI locale: auto, en, ja, zh-Hans, pt-BR
+    /// UI locale: auto, en, ja, zh-Hans, pt-BR, es-419
     pub locale: String,
-    /// UI theme: system, dark, light, grayscale
+    /// Named UI theme. Accepts `"system"` (follow terminal background),
+    /// `"dark"`, `"light"`, `"grayscale"`, or one of the community
+    /// presets: `"catppuccin-mocha"`, `"tokyo-night"`, `"dracula"`,
+    /// `"gruvbox-dark"`. The `background_color` setting still overrides the
+    /// surface color on top of the resolved theme.
     pub theme: String,
     /// Optional main TUI background color as a 6-digit hex RGB value.
     pub background_color: Option<String>,
@@ -213,7 +217,7 @@ pub struct Settings {
     pub default_mode: String,
     /// Sidebar width as percentage of terminal width
     pub sidebar_width_percent: u16,
-    /// Sidebar focus mode: auto, work, tasks, agents, context
+    /// Sidebar focus mode: auto, work, tasks, agents, context, hidden
     pub sidebar_focus: String,
     /// Enable the session-context panel (#504). Shows working set, tokens,
     /// cost, MCP/LSP status, cycle count, and memory info.
@@ -353,8 +357,8 @@ impl Settings {
             s.locale = normalize_configured_locale(&s.locale)
                 .unwrap_or("en")
                 .to_string();
-            s.theme = normalize_settings_theme(&s.theme).to_string();
             s.background_color = normalize_optional_background_color(s.background_color.as_deref());
+            s.theme = normalize_settings_theme(&s.theme).to_string();
             s.default_model = s.default_model.as_deref().and_then(normalize_default_model);
             s
         };
@@ -372,16 +376,18 @@ impl Settings {
             self.low_motion = true;
             self.fancy_animations = false;
         }
-        // VS Code (TERM_PROGRAM=vscode, #1356) and Ghostty (TERM_PROGRAM=ghostty,
-        // #1445) both produce visible flicker at 120 FPS: VS Code's compositor
-        // cannot keep pace; Ghostty's GPU compositor flash-renders each full-screen
-        // repaint. Drop to the 30 FPS low-motion cap for both automatically.
+        // VS Code (TERM_PROGRAM=vscode, #1356), Ghostty (TERM_PROGRAM=ghostty,
+        // #1445), and a few VTE terminals (#1470) produce visible flicker at
+        // 120 FPS. Drop to the 30 FPS low-motion cap for them automatically.
         // Like NO_ANIMATIONS above, this unconditionally overrides any
         // disk-loaded value — consistent precedence: env signals always win.
+        let vte_env_forces_low_motion = std::env::var_os("TILIX_ID").is_some_and(|v| !v.is_empty())
+            || std::env::var_os("TERMINATOR_UUID").is_some_and(|v| !v.is_empty());
         if matches!(
             std::env::var("TERM_PROGRAM").as_deref(),
             Ok("vscode") | Ok("ghostty")
-        ) {
+        ) || vte_env_forces_low_motion
+        {
             self.low_motion = true;
             self.fancy_animations = false;
         }
@@ -473,18 +479,26 @@ impl Settings {
             "locale" | "language" => {
                 let Some(locale) = normalize_configured_locale(value) else {
                     anyhow::bail!(
-                        "Failed to update setting: invalid locale '{value}'. Expected: auto, en, ja, zh-Hans, pt-BR."
+                        "Failed to update setting: invalid locale '{value}'. Expected: auto, en, ja, zh-Hans, pt-BR, es-419."
                     );
                 };
                 self.locale = locale.to_string();
             }
-            "theme" | "ui_theme" => {
-                let Some(theme) = normalize_theme_name(value) else {
+            "theme" => {
+                let Some(id) = crate::palette::ThemeId::from_name(value) else {
                     anyhow::bail!(
-                        "Failed to update setting: invalid theme '{value}'. Expected: system, dark, light, grayscale."
+                        "Failed to update setting: invalid theme '{value}'. Expected: system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark."
                     );
                 };
-                self.theme = theme.to_string();
+                self.theme = id.name().to_string();
+            }
+            "ui_theme" => {
+                let Some(id) = crate::palette::ThemeId::from_name(value) else {
+                    anyhow::bail!(
+                        "Failed to update setting: invalid theme '{value}'. Expected: system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark."
+                    );
+                };
+                self.theme = id.name().to_string();
             }
             "background_color" | "background" | "bg" => {
                 self.background_color = normalize_background_color_setting(value)?;
@@ -571,13 +585,17 @@ impl Settings {
                     "tasks" => "tasks",
                     "agents" | "subagents" | "sub-agents" => "agents",
                     "context" | "session" => "context",
+                    "hidden" | "hide" | "closed" | "off" | "none" => "hidden",
                     _ => {
                         anyhow::bail!(
-                            "Failed to update setting: invalid sidebar focus '{value}'. Expected: auto, work, tasks, agents, context."
+                            "Failed to update setting: invalid sidebar focus '{value}'. Expected: auto, work, tasks, agents, context, hidden."
                         )
                     }
                 };
                 self.sidebar_focus = normalized.to_string();
+            }
+            "context_panel" | "context" | "session_panel" => {
+                self.context_panel = parse_bool(value)?;
             }
             "cost_currency" | "currency" => {
                 let Some(currency) = crate::pricing::CostCurrency::from_setting(value) else {
@@ -643,7 +661,7 @@ impl Settings {
         lines.push(format!("  show_thinking:      {}", self.show_thinking));
         lines.push(format!("  show_tool_details:  {}", self.show_tool_details));
         lines.push(format!("  locale:            {}", self.locale));
-        lines.push(format!("  theme:             {}", self.theme));
+        lines.push(format!("  theme:              {}", self.theme));
         lines.push(format!(
             "  background_color:   {}",
             self.background_color.as_deref().unwrap_or("(default)")
@@ -667,6 +685,7 @@ impl Settings {
             self.sidebar_width_percent
         ));
         lines.push(format!("  sidebar_focus:      {}", self.sidebar_focus));
+        lines.push(format!("  context_panel:      {}", self.context_panel));
         lines.push(format!("  cost_currency:      {}", self.cost_currency));
         lines.push(format!("  max_history:        {}", self.max_input_history));
         lines.push(format!(
@@ -688,7 +707,7 @@ impl Settings {
         vec![
             (
                 "auto_compact",
-                "Auto-compact near context limit: on/off (default on)",
+                "Auto-compact near the hard context limit: on/off (default off)",
             ),
             ("calm_mode", "Calmer UI defaults: on/off"),
             (
@@ -711,9 +730,12 @@ impl Settings {
             ("show_tool_details", "Show detailed tool output: on/off"),
             (
                 "locale",
-                "UI locale and default model language: auto, en, ja, zh-Hans, pt-BR",
+                "UI locale and default model language: auto, en, ja, zh-Hans, pt-BR, es-419",
             ),
-            ("theme", "UI theme: system, dark, light, grayscale"),
+            (
+                "theme",
+                "UI theme: system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark",
+            ),
             (
                 "background_color",
                 "Main TUI background color: #RRGGBB or default",
@@ -726,6 +748,7 @@ impl Settings {
                 "composer_border",
                 "Show a border around the composer input area: on/off",
             ),
+            ("composer_vim_mode", "Composer editing mode: normal, vim"),
             (
                 "transcript_spacing",
                 "Transcript spacing: compact, comfortable, spacious",
@@ -746,7 +769,11 @@ impl Settings {
             ("sidebar_width", "Sidebar width percentage: 10-50"),
             (
                 "sidebar_focus",
-                "Sidebar focus: auto, work, tasks, agents, context",
+                "Sidebar focus: auto, work, tasks, agents, context, hidden",
+            ),
+            (
+                "context_panel",
+                "Show the session context sidebar panel: on/off",
             ),
             ("cost_currency", "Cost display currency: usd, cny"),
             ("max_history", "Max input history entries"),
@@ -908,6 +935,7 @@ fn normalize_sidebar_focus(value: &str) -> &str {
         "tasks" => "tasks",
         "agents" | "subagents" | "sub-agents" => "agents",
         "context" | "session" => "context",
+        "hidden" | "hide" | "closed" | "off" | "none" => "hidden",
         _ => "auto",
     }
 }
@@ -999,6 +1027,11 @@ mod tests {
         settings.set("theme", "whale").expect("set dark alias");
         assert_eq!(settings.theme, "dark");
 
+        settings
+            .set("theme", "tokyonight")
+            .expect("set community theme alias");
+        assert_eq!(settings.theme, "tokyo-night");
+
         let err = settings
             .set("theme", "solarized")
             .expect_err("unknown theme should fail");
@@ -1061,10 +1094,32 @@ mod tests {
         settings.set("focus", "context").expect("context focus");
         assert_eq!(settings.sidebar_focus, "context");
 
+        settings.set("focus", "hidden").expect("hidden focus");
+        assert_eq!(settings.sidebar_focus, "hidden");
+
+        settings.set("focus", "off").expect("off alias");
+        assert_eq!(settings.sidebar_focus, "hidden");
+
         let err = settings
             .set("sidebar_focus", "classic")
             .expect_err("classic is not a supported public focus");
         assert!(err.to_string().contains("invalid sidebar focus"));
+    }
+
+    #[test]
+    fn context_panel_is_configurable() {
+        let mut settings = Settings::default();
+        assert!(!settings.context_panel);
+
+        settings
+            .set("context_panel", "on")
+            .expect("enable context panel");
+        assert!(settings.context_panel);
+
+        settings
+            .set("session_panel", "off")
+            .expect("disable context panel via alias");
+        assert!(!settings.context_panel);
     }
 
     #[test]
@@ -1241,6 +1296,8 @@ mod tests {
         let prev = std::env::var_os("TERM_PROGRAM");
         let prev_ssh_client = std::env::var_os("SSH_CLIENT");
         let prev_ssh_tty = std::env::var_os("SSH_TTY");
+        let prev_tilix_id = std::env::var_os("TILIX_ID");
+        let prev_terminator_uuid = std::env::var_os("TERMINATOR_UUID");
         // SAFETY: serialised by the guard. Clear SSH_* so a real
         // SSH session running the test suite doesn't make this
         // assertion trivially fail — the SSH path is exercised
@@ -1248,6 +1305,8 @@ mod tests {
         unsafe {
             std::env::remove_var("SSH_CLIENT");
             std::env::remove_var("SSH_TTY");
+            std::env::remove_var("TILIX_ID");
+            std::env::remove_var("TERMINATOR_UUID");
         }
         for program in ["iTerm.app", "Apple_Terminal", "WezTerm", "xterm-256color"] {
             // SAFETY: serialised by the guard.
@@ -1272,6 +1331,60 @@ mod tests {
             }
             if let Some(v) = prev_ssh_tty {
                 std::env::set_var("SSH_TTY", v);
+            }
+            if let Some(v) = prev_tilix_id {
+                std::env::set_var("TILIX_ID", v);
+            }
+            if let Some(v) = prev_terminator_uuid {
+                std::env::set_var("TERMINATOR_UUID", v);
+            }
+        }
+    }
+
+    #[test]
+    fn tilix_and_terminator_env_force_low_motion_on() {
+        let _g = term_program_test_guard();
+        let prev_term_program = std::env::var_os("TERM_PROGRAM");
+        let prev_tilix_id = std::env::var_os("TILIX_ID");
+        let prev_terminator_uuid = std::env::var_os("TERMINATOR_UUID");
+
+        for (var, val) in [
+            ("TILIX_ID", "d5b5b5d6-tilix-session"),
+            ("TERMINATOR_UUID", "urn:uuid:terminator-session"),
+        ] {
+            // SAFETY: serialised by the guard.
+            unsafe {
+                std::env::remove_var("TERM_PROGRAM");
+                std::env::remove_var("TILIX_ID");
+                std::env::remove_var("TERMINATOR_UUID");
+                std::env::set_var(var, val);
+            }
+            let mut settings = Settings::default();
+            assert!(!settings.low_motion, "default is animated");
+            settings.apply_env_overrides();
+            assert!(
+                settings.low_motion,
+                "{var} must enable low_motion to prevent VTE flicker (#1470)"
+            );
+            assert!(
+                !settings.fancy_animations,
+                "{var} must disable fancy_animations"
+            );
+        }
+
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            match prev_term_program {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+            match prev_tilix_id {
+                Some(v) => std::env::set_var("TILIX_ID", v),
+                None => std::env::remove_var("TILIX_ID"),
+            }
+            match prev_terminator_uuid {
+                Some(v) => std::env::set_var("TERMINATOR_UUID", v),
+                None => std::env::remove_var("TERMINATOR_UUID"),
             }
         }
     }
@@ -1595,7 +1708,16 @@ mod tests {
 
     #[test]
     fn tui_prefs_validate_accepts_known_themes() {
-        for theme in ["dark", "light", "system", "grayscale"] {
+        for theme in [
+            "dark",
+            "light",
+            "system",
+            "grayscale",
+            "catppuccin-mocha",
+            "tokyo-night",
+            "dracula",
+            "gruvbox-dark",
+        ] {
             let mut prefs = TuiPrefs {
                 theme: theme.to_string(),
                 ..TuiPrefs::default()
@@ -1631,7 +1753,7 @@ mod tests {
         assert!(err.to_string().contains("Invalid tui.toml theme"));
         assert!(
             err.to_string()
-                .contains("expected system, dark, light, or grayscale")
+                .contains("expected system, dark, light, grayscale")
         );
     }
 

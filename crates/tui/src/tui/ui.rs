@@ -1,8 +1,7 @@
 //! TUI event loop and rendering logic for `DeepSeek` CLI.
 
-use std::collections::HashSet;
 use std::io::{self, Stdout, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -11,8 +10,8 @@ use anyhow::Result;
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+        KeyboardEnhancementFlags,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -27,11 +26,9 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect, Size},
     prelude::Widget,
     style::Style,
-    text::Span,
     widgets::Block,
 };
 use tracing;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::audit::log_sensitive_event;
 use crate::automation_manager::{AutomationManager, AutomationSchedulerConfig, spawn_scheduler};
@@ -39,11 +36,10 @@ use crate::client::{DeepSeekClient, build_cache_warmup_request};
 use crate::commands;
 use crate::config::{ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL};
 use crate::config_ui::{self, ConfigUiMode, WebConfigSession, WebConfigSessionEvent};
-use crate::core::coherence::CoherenceState;
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::Event as EngineEvent;
 use crate::core::ops::Op;
-use crate::hooks::HookEvent;
+use crate::hooks::{HookEvent, HookExecutor};
 use crate::llm_client::LlmClient;
 use crate::models::{
     ContentBlock, Message, MessageRequest, SystemPrompt, Usage, context_window_for_model,
@@ -59,43 +55,54 @@ use crate::task_manager::{
 };
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::SubAgentStatus;
+use crate::tui::auto_router;
 use crate::tui::color_compat::ColorCompatBackend;
 use crate::tui::command_palette::{
     CommandPaletteView, build_entries as build_command_palette_entries,
 };
+use crate::tui::composer_ui::*;
 use crate::tui::context_inspector::build_context_inspector_text;
-use crate::tui::context_menu::{ContextMenuEntry, ContextMenuView};
 use crate::tui::event_broker::EventBroker;
+use crate::tui::file_picker_relevance;
+use crate::tui::footer_ui::{
+    friendly_subagent_progress, is_noisy_subagent_progress, one_line_summary, render_footer,
+};
+use crate::tui::format_helpers;
+use crate::tui::key_shortcuts;
 use crate::tui::live_transcript::LiveTranscriptOverlay;
 use crate::tui::mcp_routing::{add_mcp_message, open_mcp_manager_pager};
+use crate::tui::mouse_ui::*;
+use crate::tui::notifications;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
 use crate::tui::persistence_actor::{self, PersistRequest};
 use crate::tui::plan_prompt::PlanPromptView;
-use crate::tui::scrolling::{ScrollDirection, TranscriptScroll};
-use crate::tui::selection::{SelectionAutoscroll, TranscriptSelectionPoint};
+use crate::tui::scrolling::TranscriptScroll;
+// SelectionAutoscroll unused
 use crate::tui::session_picker::SessionPickerView;
 use crate::tui::shell_job_routing::{
     add_shell_job_message, format_shell_job_list, format_shell_poll, open_shell_job_pager,
 };
+use crate::tui::streaming_thinking;
 use crate::tui::subagent_routing::{
-    active_fanout_counts, format_task_list, handle_subagent_mailbox, open_task_pager,
-    reconcile_subagent_activity_state, running_agent_count, sort_subagents_in_place,
-    task_mode_label, task_summary_to_panel_entry,
+    format_task_list, handle_subagent_mailbox, open_task_pager, reconcile_subagent_activity_state,
+    running_agent_count, sort_subagents_in_place, task_mode_label, task_summary_to_panel_entry,
 };
 #[cfg(test)]
 use crate::tui::tool_routing::exploring_label;
 use crate::tui::tool_routing::{
     handle_tool_call_complete, handle_tool_call_started, maybe_add_patch_preview,
 };
-use crate::tui::ui_text::{history_cell_to_text, line_to_plain, slice_text, text_display_width};
+use crate::tui::ui_text::{history_cell_to_text, line_to_plain, truncate_line_to_width};
 use crate::tui::user_input::UserInputView;
 use crate::tui::views::subagent_view_agents;
+use crate::tui::vim_mode;
+use crate::tui::workspace_context;
 
-use super::active_cell::ActiveCell;
 use super::app::{
     App, AppAction, AppMode, OnboardingState, QueuedMessage, ReasoningEffort, SidebarFocus,
-    StatusToastLevel, SubmitDisposition, TaskPanelEntry, ToolDetailRecord, TuiOptions,
+    StatusToastLevel, SubmitDisposition, TaskPanelEntry, TuiOptions,
+    looks_like_slash_command_input,
 };
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
@@ -107,14 +114,9 @@ use super::history::{
 use super::slash_menu::{
     apply_slash_menu_selection, try_autocomplete_slash_command, visible_slash_menu_entries,
 };
-use super::views::{
-    ConfigView, ContextMenuAction, HelpView, ModalKind, ShellControlView, ViewEvent,
-};
+use super::views::{ConfigView, HelpView, ModalKind, ShellControlView, ViewEvent};
 use super::widgets::pending_input_preview::{ContextPreviewItem, PendingInputPreview};
-use super::widgets::{
-    ChatWidget, ComposerWidget, FooterProps, FooterToast, FooterWidget, HeaderData, HeaderWidget,
-    Renderable,
-};
+use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Renderable};
 
 // === Constants ===
 
@@ -128,7 +130,6 @@ const SLASH_MENU_LIMIT: usize = 128;
 const MENTION_MENU_LIMIT: usize = 6;
 const MIN_CHAT_HEIGHT: u16 = 3;
 const MIN_COMPOSER_HEIGHT: u16 = 2;
-const COMPOSER_ARROW_SCROLL_LINES: usize = 3;
 const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
 const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
 const UI_IDLE_POLL_MS: u64 = 48;
@@ -140,10 +141,23 @@ const DISPATCH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
 // the per-tool spinner pulse — keep this fast enough that the spout reads as
 // motion (~12 fps) instead of teleport-frames.
 const UI_STATUS_ANIMATION_MS: u64 = 80;
-const WORKSPACE_CONTEXT_REFRESH_SECS: u64 = 15;
 const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 100;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 const PERIODIC_FULL_REPAINT_EVERY_N: u64 = 50;
+const TURN_META_PREFIX: &str = "<turn_meta>";
+const SESSION_TITLE_MAX_CHARS: usize = 32;
+
+fn sidebar_width_for_chat_area(app: &App, chat_width: u16) -> Option<u16> {
+    if app.sidebar_focus == SidebarFocus::Hidden || chat_width < SIDEBAR_VISIBLE_MIN_WIDTH {
+        return None;
+    }
+
+    let preferred_sidebar =
+        (u32::from(chat_width) * u32::from(app.sidebar_width_percent.clamp(10, 50)) / 100) as u16;
+    let sidebar_width = preferred_sidebar.max(24).min(chat_width.saturating_sub(40));
+
+    (sidebar_width >= 20).then_some(sidebar_width)
+}
 
 type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
 
@@ -342,7 +356,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
 
         match load_result {
             Ok(Some(saved)) => {
-                let recovered = apply_loaded_session(&mut app, &saved);
+                let recovered = apply_loaded_session(&mut app, config, &saved);
                 if !recovered {
                     app.status_message = Some(format!(
                         "Resumed session: {}",
@@ -744,6 +758,14 @@ async fn run_event_loop(
     let mut terminal_paused_at: Option<Instant> = None;
     let mut force_terminal_repaint = false;
     let mut draws_since_last_full_repaint: u64 = 0;
+    // FocusGained debounce: some terminal emulators (e.g. Tabby) re-trigger
+    // FocusGained when we re-arm focus-change reporting inside
+    // recover_terminal_modes, creating a tight repaint loop. Skip
+    // mode recovery (but still mark a repaint) within the debounce window.
+    const FOCUS_RECOVERY_DEBOUNCE: Duration = Duration::from_millis(200);
+    let mut last_focus_recovery = Instant::now()
+        .checked_sub(Duration::from_secs(60))
+        .unwrap_or_else(Instant::now);
 
     loop {
         if !drain_web_config_events(&mut web_config_session, app, config, &engine_handle).await {
@@ -826,7 +848,7 @@ async fn run_event_loop(
                                 .to_string()
                         }
                     };
-                    replace_pending_thinking_translation(app, &placeholder, text);
+                    streaming_thinking::replace_pending_translation(app, &placeholder, text);
                     if pending_translations == 0
                         && !matches!(app.runtime_turn_status.as_deref(), Some("in_progress"))
                     {
@@ -898,10 +920,10 @@ async fn run_event_loop(
                         // thinking entry here so this branch is order-
                         // independent.
                         if app.streaming_thinking_active_entry.is_some() {
-                            if finalize_current_streaming_thinking(app) {
+                            if streaming_thinking::finalize_current(app) {
                                 transcript_batch_updated = true;
                             }
-                            stash_reasoning_buffer_into_last_reasoning(app);
+                            streaming_thinking::stash_reasoning_buffer_into_last_reasoning(app);
                         }
                         let mut completed_message_index = None;
                         if let Some(index) = app.streaming_message_index.take() {
@@ -978,12 +1000,12 @@ async fn run_event_loop(
                         // P2.3: thinking lives in the active cell so it groups
                         // visually with the tool calls that follow until the
                         // next assistant prose chunk flushes the group.
-                        if start_streaming_thinking_block(app) {
+                        if streaming_thinking::start_block(app) {
                             transcript_batch_updated = true;
                         }
                         if app.translation_enabled {
-                            let entry_idx = ensure_streaming_thinking_active_entry(app);
-                            set_streaming_thinking_placeholder(app, entry_idx);
+                            let entry_idx = streaming_thinking::ensure_active_entry(app);
+                            streaming_thinking::set_placeholder(app, entry_idx);
                             transcript_batch_updated = true;
                         }
                     }
@@ -997,14 +1019,14 @@ async fn run_event_loop(
                             app.reasoning_header = extract_reasoning_header(&app.reasoning_buffer);
                         }
 
-                        let entry_idx = ensure_streaming_thinking_active_entry(app);
+                        let entry_idx = streaming_thinking::ensure_active_entry(app);
                         app.streaming_state.push_content(0, &sanitized);
                         let committed = app.streaming_state.commit_text(0);
                         if !committed.is_empty() {
                             if app.translation_enabled {
-                                set_streaming_thinking_placeholder(app, entry_idx);
+                                streaming_thinking::set_placeholder(app, entry_idx);
                             } else {
-                                append_streaming_thinking(app, entry_idx, &committed);
+                                streaming_thinking::append(app, entry_idx, &committed);
                             }
                             transcript_batch_updated = true;
                         }
@@ -1017,7 +1039,7 @@ async fn run_event_loop(
                                 .thinking_started_at
                                 .take()
                                 .map(|t| t.elapsed().as_secs_f32());
-                            if finalize_streaming_thinking_active_entry(app, duration, "") {
+                            if streaming_thinking::finalize_active_entry(app, duration, "") {
                                 transcript_batch_updated = true;
                             }
                             if !original_thinking.is_empty()
@@ -1064,16 +1086,16 @@ async fn run_event_loop(
                                     crate::localization::thinking_translation_placeholder(
                                         app.ui_locale,
                                     );
-                                replace_pending_thinking_translation(
+                                streaming_thinking::replace_pending_translation(
                                     app,
                                     placeholder,
                                     original_thinking,
                                 );
                             }
-                        } else if finalize_current_streaming_thinking(app) {
+                        } else if streaming_thinking::finalize_current(app) {
                             transcript_batch_updated = true;
                         }
-                        stash_reasoning_buffer_into_last_reasoning(app);
+                        streaming_thinking::stash_reasoning_buffer_into_last_reasoning(app);
                     }
                     EngineEvent::ToolCallStarted { id, name, input } => {
                         app.pending_tool_uses
@@ -1295,10 +1317,10 @@ async fn run_event_loop(
                         // Emit OSC 9 / BEL desktop notification for long turns.
                         if status == crate::core::events::TurnOutcomeStatus::Completed
                             && let Some((method, threshold, include_summary)) =
-                                notification_settings(config)
+                                notifications::settings(config)
                         {
                             let in_tmux = std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
-                            let msg = completed_turn_notification_message(
+                            let msg = notifications::completed_turn_message(
                                 app,
                                 &current_streaming_text,
                                 include_summary,
@@ -1396,7 +1418,24 @@ async fn run_event_loop(
                             && let Ok(manager) = SessionManager::default_location()
                         {
                             let session = build_session_snapshot(app, &manager);
+                            app.session_title = Some(session.metadata.title.clone());
                             persistence_actor::persist(PersistRequest::Checkpoint(session));
+                        } else if app.session_title.is_none() {
+                            // First turn on a brand-new session: persist hasn't fired yet so
+                            // read the title from the session file if it already exists,
+                            // otherwise fall back to deriving from messages.
+                            let persisted = app
+                                .current_session_id
+                                .as_deref()
+                                .and_then(|id| {
+                                    SessionManager::default_location()
+                                        .ok()?
+                                        .load_session(id)
+                                        .ok()
+                                })
+                                .map(|s| s.metadata.title);
+                            app.session_title =
+                                persisted.or_else(|| derive_session_title(&app.api_messages));
                         }
                     }
                     EngineEvent::CompactionStarted { message, .. } => {
@@ -1428,6 +1467,21 @@ async fn run_event_loop(
                     }
                     EngineEvent::CoherenceState { state, .. } => {
                         app.coherence_state = state;
+                    }
+                    EngineEvent::PrefixCacheChange {
+                        description,
+                        stability_pct,
+                        changed,
+                        ..
+                    } => {
+                        app.prefix_checks_total = app.prefix_checks_total.saturating_add(1);
+                        app.prefix_stability_pct = Some(stability_pct);
+                        if changed {
+                            app.prefix_change_count = app.prefix_change_count.saturating_add(1);
+                            if !description.is_empty() {
+                                app.last_prefix_change_desc = Some(description);
+                            }
+                        }
                     }
                     EngineEvent::CapacityDecision { .. } => {
                         // Telemetry-only event. Surface actual interventions and failures
@@ -1522,10 +1576,10 @@ async fn run_event_loop(
                             !has_other_running_subagents && app.use_alt_screen;
                         if !has_other_running_subagents
                             && let Some((method, threshold, include_summary)) =
-                                notification_settings(config)
+                                notifications::settings(config)
                         {
                             let in_tmux = std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
-                            let msg = subagent_completion_notification_message(
+                            let msg = notifications::subagent_completion_message(
                                 &id,
                                 &result,
                                 include_summary,
@@ -1729,9 +1783,9 @@ async fn run_event_loop(
             let committed = app.streaming_state.commit_text(0);
             if !committed.is_empty() {
                 if app.translation_enabled {
-                    set_streaming_thinking_placeholder(app, entry_idx);
+                    streaming_thinking::set_placeholder(app, entry_idx);
                 } else {
-                    append_streaming_thinking(app, entry_idx, &committed);
+                    streaming_thinking::append(app, entry_idx, &committed);
                 }
                 transcript_batch_updated = true;
             }
@@ -1791,7 +1845,10 @@ async fn run_event_loop(
             && last_status_frame.elapsed()
                 >= Duration::from_millis(status_animation_interval_ms(app))
         {
-            if animate_pending_thinking_translation(app, pending_thinking_translations > 0) {
+            if streaming_thinking::animate_pending_translation(
+                app,
+                pending_thinking_translations > 0,
+            ) {
                 app.mark_history_updated();
             }
             if !app.low_motion && history_has_live_motion(&app.history) {
@@ -1846,7 +1903,7 @@ async fn run_event_loop(
         tick_selection_autoscroll(app);
         let allow_workspace_context_refresh =
             !app.is_loading && !has_running_agents && !app.is_compacting;
-        refresh_workspace_context_if_needed(app, now, allow_workspace_context_refresh);
+        workspace_context::refresh_if_needed(app, now, allow_workspace_context_refresh);
 
         // Draw is gated by the frame-rate limiter (120 FPS cap). When a
         // redraw is needed but the limiter says we're inside the cooldown
@@ -1932,7 +1989,7 @@ async fn run_event_loop(
                 if app.onboarding == OnboardingState::ApiKey {
                     // Paste into API key input
                     app.insert_api_key_str(text);
-                    sync_api_key_validation_status(app, false);
+                    onboarding::sync_api_key_validation_status(app, false);
                 } else if app.is_history_search_active() {
                     app.history_search_insert_str(text);
                 } else if app.view_stack.handle_paste(text) {
@@ -1953,11 +2010,15 @@ async fn run_event_loop(
             // bracketed-paste modes — recover_terminal_modes() is the
             // canonical place those flags live.
             if terminal_event_needs_viewport_recapture(&evt) {
-                recover_terminal_modes(
-                    terminal.backend_mut(),
-                    app.use_mouse_capture,
-                    app.use_bracketed_paste,
-                );
+                let now = Instant::now();
+                if now.duration_since(last_focus_recovery) >= FOCUS_RECOVERY_DEBOUNCE {
+                    recover_terminal_modes(
+                        terminal.backend_mut(),
+                        app.use_mouse_capture,
+                        app.use_bracketed_paste,
+                    );
+                    last_focus_recovery = now;
+                }
                 force_terminal_repaint = true;
                 app.needs_redraw = true;
             }
@@ -2112,7 +2173,7 @@ async fn run_event_loop(
                                         StatusToastLevel::Info,
                                         Some(2_500),
                                     );
-                                    advance_onboarding_after_language(app);
+                                    onboarding::advance_onboarding_after_language(app);
                                 }
                                 Err(err) => {
                                     app.status_message =
@@ -2123,17 +2184,17 @@ async fn run_event_loop(
                     }
                     KeyCode::Enter => match app.onboarding {
                         OnboardingState::Welcome => {
-                            advance_onboarding_from_welcome(app);
+                            onboarding::advance_onboarding_from_welcome(app);
                         }
                         OnboardingState::Language => {
                             // Enter without a digit pick keeps the existing
                             // setting (which defaults to "auto").
-                            advance_onboarding_after_language(app);
+                            onboarding::advance_onboarding_after_language(app);
                         }
                         OnboardingState::ApiKey => {
                             let key = app.api_key_input.trim().to_string();
-                            if let ApiKeyValidation::Reject(message) =
-                                validate_api_key_for_onboarding(&key)
+                            if let onboarding::ApiKeyValidation::Reject(message) =
+                                onboarding::validate_api_key_for_onboarding(&key)
                             {
                                 app.status_message = Some(message);
                                 continue;
@@ -2182,7 +2243,7 @@ async fn run_event_loop(
                                             .await;
                                     }
 
-                                    advance_onboarding_after_language(app);
+                                    onboarding::advance_onboarding_after_language(app);
                                 }
                                 Err(e) => {
                                     app.status_message = Some(e.to_string());
@@ -2223,25 +2284,28 @@ async fn run_event_loop(
                     }
                     KeyCode::Backspace if app.onboarding == OnboardingState::ApiKey => {
                         app.delete_api_key_char();
-                        sync_api_key_validation_status(app, false);
+                        onboarding::sync_api_key_validation_status(app, false);
                     }
                     KeyCode::Char('h')
-                        if is_ctrl_h_backspace(&key)
+                        if key_shortcuts::is_ctrl_h_backspace(&key)
                             && app.onboarding == OnboardingState::ApiKey =>
                     {
                         app.delete_api_key_char();
-                        sync_api_key_validation_status(app, false);
+                        onboarding::sync_api_key_validation_status(app, false);
                     }
-                    _ if is_paste_shortcut(&key) && app.onboarding == OnboardingState::ApiKey => {
+                    _ if key_shortcuts::is_paste_shortcut(&key)
+                        && app.onboarding == OnboardingState::ApiKey =>
+                    {
                         // Cmd+V / Ctrl+V paste (bracketed paste handled above)
                         app.paste_api_key_from_clipboard();
-                        sync_api_key_validation_status(app, false);
+                        onboarding::sync_api_key_validation_status(app, false);
                     }
                     KeyCode::Char(c)
-                        if app.onboarding == OnboardingState::ApiKey && is_text_input_key(&key) =>
+                        if app.onboarding == OnboardingState::ApiKey
+                            && key_shortcuts::is_text_input_key(&key) =>
                     {
                         app.insert_api_key_char(c);
-                        sync_api_key_validation_status(app, false);
+                        onboarding::sync_api_key_validation_status(app, false);
                     }
                     _ => {}
                 }
@@ -2267,6 +2331,19 @@ async fn run_event_loop(
             }
 
             if key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                if app.view_stack.is_empty()
+                    && app.sidebar_focus == SidebarFocus::Tasks
+                    && app
+                        .task_panel
+                        .iter()
+                        .any(|task| task.id.starts_with("shell_") && task.status == "running")
+                {
+                    app.input = "/jobs cancel-all".to_string();
+                    app.cursor_position = app.input.len();
+                    app.status_message =
+                        Some("Press Enter to kill all running shell jobs".to_string());
+                    continue;
+                }
                 // When the composer is the active input target (no modal/pager
                 // intercepting keys), Ctrl+K performs an emacs-style kill to
                 // end-of-line. If the kill is a no-op (cursor at end of empty
@@ -2287,7 +2364,7 @@ async fn run_event_loop(
 
             // Shifted shortcuts toggle the file-tree pane. Keep plain Ctrl+E
             // reserved for the composer end-of-line binding used by shells.
-            if is_file_tree_toggle_shortcut(&key) {
+            if key_shortcuts::is_file_tree_toggle_shortcut(&key) {
                 if let Some(_state) = app.file_tree.as_mut() {
                     // File tree visible → hide it.
                     app.file_tree = None;
@@ -2313,7 +2390,7 @@ async fn run_event_loop(
                 && app.view_stack.is_empty()
                 && !app.is_loading
             {
-                open_file_picker(app);
+                file_picker_relevance::open_file_picker(app);
                 continue;
             }
 
@@ -2337,6 +2414,7 @@ async fn run_event_loop(
 
             if !app.view_stack.is_empty() {
                 let events = app.view_stack.handle_key(key);
+                app.needs_redraw = true;
                 if handle_view_events(
                     terminal,
                     app,
@@ -2422,7 +2500,7 @@ async fn run_event_loop(
             let is_plain_char = matches!(key.code, KeyCode::Char(_)) && !has_ctrl_alt_or_super;
             let is_enter = matches!(key.code, KeyCode::Enter);
 
-            if is_macos_option_v_legacy_key(&key) {
+            if key_shortcuts::is_macos_option_v_legacy_key(&key) {
                 open_tool_details_pager(app);
                 continue;
             }
@@ -2473,7 +2551,7 @@ async fn run_event_loop(
                     continue;
                 }
                 KeyCode::Char('l')
-                    if alt_nav_modifiers(key.modifiers)
+                    if key_shortcuts::alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && open_pager_for_last_message(app) =>
                 {
@@ -2556,8 +2634,7 @@ async fn run_event_loop(
                     continue;
                 }
                 KeyCode::Char('0') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    app.set_sidebar_focus(SidebarFocus::Auto);
-                    app.status_message = Some("Sidebar focus: auto".to_string());
+                    apply_alt_0_shortcut(app, key.modifiers);
                     continue;
                 }
                 KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -2568,7 +2645,9 @@ async fn run_event_loop(
                     app.view_stack.push(SessionPickerView::new(&app.workspace));
                     continue;
                 }
-                KeyCode::Char('c') | KeyCode::Char('C') if is_copy_shortcut(&key) => {
+                KeyCode::Char('c') | KeyCode::Char('C')
+                    if key_shortcuts::is_copy_shortcut(&key) =>
+                {
                     copy_active_selection(app);
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -2707,6 +2786,9 @@ async fn run_event_loop(
                 KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.scroll_up(3);
                 }
+                KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    app.scroll_up(3);
+                }
                 KeyCode::Up
                     if key.modifiers.is_empty()
                         && mention_menu_open
@@ -2751,6 +2833,9 @@ async fn run_event_loop(
                     app.scroll_down(app.viewport.last_transcript_visible.max(3));
                 }
                 KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.scroll_down(3);
+                }
+                KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     app.scroll_down(3);
                 }
                 KeyCode::Down if key.modifiers.is_empty() && mention_menu_open => {
@@ -2819,7 +2904,7 @@ async fn run_event_loop(
                 // bottom) work; Ctrl/Super are blocked so the bindings don't
                 // collide with platform clipboard / window shortcuts.
                 KeyCode::Char('g')
-                    if alt_nav_modifiers(key.modifiers)
+                    if key_shortcuts::alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && !slash_menu_open =>
                 {
@@ -2830,14 +2915,14 @@ async fn run_event_loop(
                     }
                 }
                 KeyCode::Char('G')
-                    if alt_nav_modifiers(key.modifiers)
+                    if key_shortcuts::alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && !slash_menu_open =>
                 {
                     app.scroll_to_bottom();
                 }
                 KeyCode::Char('[')
-                    if alt_nav_modifiers(key.modifiers)
+                    if key_shortcuts::alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && !slash_menu_open
                         && !jump_to_adjacent_tool_cell(app, SearchDirection::Backward) =>
@@ -2845,7 +2930,7 @@ async fn run_event_loop(
                     app.status_message = Some("No previous tool output".to_string());
                 }
                 KeyCode::Char(']')
-                    if alt_nav_modifiers(key.modifiers)
+                    if key_shortcuts::alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && !slash_menu_open
                         && !jump_to_adjacent_tool_cell(app, SearchDirection::Forward) =>
@@ -2857,7 +2942,7 @@ async fn run_event_loop(
                 // so users can start a message with "?" without losing the
                 // first character.
                 KeyCode::Char('?')
-                    if alt_nav_modifiers(key.modifiers)
+                    if key_shortcuts::alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && !slash_menu_open =>
                 {
@@ -2876,7 +2961,7 @@ async fn run_event_loop(
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
                     if let Some(input) = app.submit_input() {
-                        if input.starts_with('/') {
+                        if looks_like_slash_command_input(&input) {
                             if execute_command_input(
                                 terminal,
                                 app,
@@ -2925,7 +3010,7 @@ async fn run_event_loop(
                 // #382: Ctrl+Enter forces a steer into the current turn.
                 KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     if let Some(input) = app.submit_input() {
-                        if input.starts_with('/') {
+                        if looks_like_slash_command_input(&input) {
                             if execute_command_input(
                                 terminal,
                                 app,
@@ -2976,7 +3061,7 @@ async fn run_event_loop(
                     // to the legacy submit path.
                     if slash_menu_open
                         && !slash_menu_entries.is_empty()
-                        && app.input.starts_with('/')
+                        && looks_like_slash_command_input(&app.input)
                         && apply_slash_menu_selection(app, &slash_menu_entries, false)
                     {
                         app.close_slash_menu();
@@ -2996,7 +3081,7 @@ async fn run_event_loop(
                             handle_memory_quick_add(app, &input, config);
                             continue;
                         }
-                        if input.starts_with('/') {
+                        if looks_like_slash_command_input(&input) {
                             if execute_command_input(
                                 terminal,
                                 app,
@@ -3078,11 +3163,12 @@ async fn run_event_loop(
                 }
                 KeyCode::Backspace => {}
                 KeyCode::Char('h')
-                    if is_ctrl_h_backspace(&key) && !app.remove_selected_composer_attachment() =>
+                    if key_shortcuts::is_ctrl_h_backspace(&key)
+                        && !app.remove_selected_composer_attachment() =>
                 {
                     app.delete_char();
                 }
-                KeyCode::Char('h') if is_ctrl_h_backspace(&key) => {}
+                KeyCode::Char('h') if key_shortcuts::is_ctrl_h_backspace(&key) => {}
                 KeyCode::Delete if !app.remove_selected_composer_attachment() => {
                     app.delete_char_forward();
                 }
@@ -3223,7 +3309,7 @@ async fn run_event_loop(
                     };
                     app.set_mode(new_mode);
                 }
-                _ if is_paste_shortcut(&key) => {
+                _ if key_shortcuts::is_paste_shortcut(&key) => {
                     app.paste_from_clipboard();
                 }
                 KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -3266,7 +3352,7 @@ async fn run_event_loop(
                         && !mention_menu_open
                         && app.view_stack.is_empty() =>
                 {
-                    handle_vim_normal_key(app, c);
+                    vim_mode::handle_vim_normal_key(app, c);
                     continue;
                 }
                 // Vim composer: in Visual mode plain chars are ignored
@@ -3291,90 +3377,24 @@ async fn run_event_loop(
     }
 }
 
-/// Handle a plain character key press when the composer is in vim Normal mode.
-///
-/// Implements the core set of normal-mode bindings:
-/// - `h` / `l`  — left / right by character
-/// - `j` / `k`  — down / up by logical line (falls back to prev/next history)
-/// - `w` / `b`  — word forward / backward
-/// - `0` / `$`  — line start / end
-/// - `x`        — delete character under cursor
-/// - `d` (×2)   — delete current line (`dd`)
-/// - `i`        — enter Insert before cursor
-/// - `a`        — enter Insert after cursor
-/// - `o`        — open new line below and enter Insert
-/// - `v`        — enter Visual mode
-/// - `G`        — move to end of buffer
-fn handle_vim_normal_key(app: &mut App, c: char) {
-    use crate::tui::app::VimMode;
-
-    // Handle pending `d` (waiting for second `d` to complete `dd`).
-    if app.composer.vim_pending_d {
-        app.composer.vim_pending_d = false;
-        if c == 'd' {
-            app.vim_delete_line();
-        }
-        // Any other key cancels the pending operator.
-        return;
-    }
-
-    match c {
-        'h' => {
-            app.move_cursor_left();
-        }
-        'l' => {
-            app.move_cursor_right();
-        }
-        'j' => {
-            app.vim_move_down();
-        }
-        'k' => {
-            app.vim_move_up();
-        }
-        'w' => {
-            app.vim_move_word_forward();
-        }
-        'b' => {
-            app.vim_move_word_backward();
-        }
-        '0' => {
-            app.vim_move_line_start();
-        }
-        '$' => {
-            app.vim_move_line_end();
-        }
-        'x' => {
-            app.vim_delete_char_under_cursor();
-        }
-        'd' => {
-            // Start the `dd` operator sequence.
-            app.composer.vim_pending_d = true;
-        }
-        'i' => {
-            app.vim_enter_insert();
-        }
-        'a' => {
-            app.vim_enter_append();
-        }
-        'o' => {
-            app.vim_open_line_below();
-        }
-        'v' => {
-            app.composer.vim_mode = VimMode::Visual;
-            app.needs_redraw = true;
-        }
-        'G' => {
-            app.move_cursor_end();
-        }
-        _ => {
-            // Unknown normal-mode key — silently ignored in Normal mode.
-        }
-    }
-}
-
 fn apply_alt_4_shortcut(app: &mut App, _modifiers: KeyModifiers) {
     app.set_sidebar_focus(SidebarFocus::Agents);
     app.status_message = Some("Sidebar focus: agents".to_string());
+}
+
+fn apply_alt_0_shortcut(app: &mut App, modifiers: KeyModifiers) {
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        if app.sidebar_focus == SidebarFocus::Hidden {
+            app.set_sidebar_focus(SidebarFocus::Auto);
+            app.status_message = Some("Sidebar focus: auto".to_string());
+        } else {
+            app.set_sidebar_focus(SidebarFocus::Hidden);
+            app.status_message = Some("Sidebar hidden".to_string());
+        }
+    } else {
+        app.set_sidebar_focus(SidebarFocus::Auto);
+        app.status_message = Some("Sidebar focus: auto".to_string());
+    }
 }
 
 async fn fetch_available_models(config: &Config) -> Result<Vec<String>> {
@@ -3417,32 +3437,7 @@ async fn run_cache_warmup(app: &App, config: &Config) -> Result<Usage> {
     Ok(response.usage)
 }
 
-fn format_cache_warmup_result(usage: &Usage) -> String {
-    let cache = match (
-        usage.prompt_cache_hit_tokens,
-        usage.prompt_cache_miss_tokens,
-    ) {
-        (Some(hit), Some(miss)) => format!("Cache warmup complete: hit {hit} | miss {miss}"),
-        (Some(hit), None) => format!("Cache warmup complete: hit {hit} | miss unavailable"),
-        (None, Some(miss)) => format!("Cache warmup complete: hit unavailable | miss {miss}"),
-        (None, None) => "Cache warmup complete: cache telemetry unavailable".to_string(),
-    };
-    format!(
-        "{cache}\nNote: the first warmup is usually a miss. Later requests that reuse the same stable prefix may hit the provider cache; a hit is not guaranteed."
-    )
-}
-
-fn format_available_models_message(current_model: &str, models: &[String]) -> String {
-    let mut lines = vec![format!("Available models ({})", models.len())];
-    for model in models {
-        if model == current_model {
-            lines.push(format!("* {model} (current)"));
-        } else {
-            lines.push(format!("  {model}"));
-        }
-    }
-    lines.join("\n")
-}
+// `format_*` chip/message builders moved to `tui/format_helpers.rs`.
 
 fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
     if let Some(ref existing_id) = app.current_session_id
@@ -3455,6 +3450,7 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
             app.system_prompt.as_ref(),
         );
         updated.metadata.mode = Some(app.mode.as_setting().to_string());
+        app.sync_cost_to_metadata(&mut updated.metadata);
         updated.context_references = app.session_context_references.clone();
         updated.artifacts = app.session_artifacts.clone();
         updated
@@ -3479,6 +3475,7 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
                 Some(app.mode.as_setting()),
             )
         };
+        app.sync_cost_to_metadata(&mut session.metadata);
         session.context_references = app.session_context_references.clone();
         session.artifacts = app.session_artifacts.clone();
         session
@@ -3557,7 +3554,7 @@ pub(crate) fn apply_engine_error_to_app(
     let recoverable = envelope.recoverable;
     let message = envelope.message.clone();
     let severity = envelope.severity;
-    finalize_current_streaming_thinking(app);
+    streaming_thinking::finalize_current(app);
     app.streaming_state.reset();
     app.streaming_message_index = None;
     app.streaming_thinking_active_entry = None;
@@ -3622,7 +3619,10 @@ fn persist_offline_queue_state(app: &App) {
     }
 }
 
-fn sanitize_stream_chunk(chunk: &str) -> String {
+/// Strip ANSI control codes / non-printable bytes from a streaming
+/// text chunk. `pub(super)` because `tui::notifications` consumes it
+/// from `super::ui` for its per-turn message composition.
+pub(super) fn sanitize_stream_chunk(chunk: &str) -> String {
     // Keep printable characters and common whitespace; drop control bytes.
     chunk
         .chars()
@@ -3630,156 +3630,11 @@ fn sanitize_stream_chunk(chunk: &str) -> String {
         .collect()
 }
 
-/// Resolve the effective notification method/threshold/include-summary tuple
-/// for a completed turn, taking the high-level
-/// `[tui].notification_condition` override into account on top of the
-/// lower-level `[notifications]` block.
-///
-/// Returns `None` to mean "do not notify" (either because the user set
-/// `notification_condition = "never"` or because the resolved method is
-/// `Off`).
-fn notification_settings(
-    config: &Config,
-) -> Option<(crate::tui::notifications::Method, Duration, bool)> {
-    let notif = config.notifications_config();
-    let method = match notif.method {
-        crate::config::NotificationMethod::Auto => crate::tui::notifications::Method::Auto,
-        crate::config::NotificationMethod::Osc9 => crate::tui::notifications::Method::Osc9,
-        crate::config::NotificationMethod::Bel => crate::tui::notifications::Method::Bel,
-        crate::config::NotificationMethod::Off => crate::tui::notifications::Method::Off,
-    };
-
-    if let Some(condition) = config
-        .tui
-        .as_ref()
-        .and_then(|tui| tui.notification_condition)
-    {
-        match condition {
-            crate::config::NotificationCondition::Always => {
-                return Some((method, Duration::ZERO, notif.include_summary));
-            }
-            crate::config::NotificationCondition::Never => return None,
-        }
-    }
-
-    Some((
-        method,
-        Duration::from_secs(notif.threshold_secs),
-        notif.include_summary,
-    ))
-}
-
-/// Build the notification body for a completed turn. Prefers the live
-/// streaming text the user just saw; falls back to the latest assistant
-/// message in `api_messages` if streaming text is empty (for example, the
-/// turn finished entirely through tool output). When `include_summary` is
-/// true, an elapsed/cost line is appended.
-fn completed_turn_notification_message(
-    app: &App,
-    current_streaming_text: &str,
-    include_summary: bool,
-    turn_elapsed: Duration,
-    turn_cost: Option<crate::pricing::CostEstimate>,
-) -> String {
-    let mut msg = notification_text_summary(current_streaming_text)
-        .or_else(|| latest_assistant_notification_text(&app.api_messages))
-        .unwrap_or_else(|| "deepseek: turn complete".to_string());
-
-    if include_summary {
-        let human = crate::tui::notifications::humanize_duration(turn_elapsed);
-        let summary = match turn_cost {
-            Some(c) => {
-                let cost = crate::pricing::format_cost_estimate(c, app.cost_currency);
-                format!("deepseek: turn complete ({human}, {cost})")
-            }
-            None => format!("deepseek: turn complete ({human})"),
-        };
-        if msg == "deepseek: turn complete" {
-            msg = summary;
-        } else {
-            msg.push('\n');
-            msg.push_str(&summary);
-        }
-    }
-
-    msg
-}
-
-fn subagent_completion_notification_message(
-    id: &str,
-    result: &str,
-    include_summary: bool,
-    elapsed: Duration,
-) -> String {
-    let result_line = result
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty() && !line.starts_with("<deepseek:subagent.done>"));
-    let mut msg = result_line
-        .and_then(notification_text_summary)
-        .map(|summary| format!("sub-agent {id}: {summary}"))
-        .unwrap_or_else(|| format!("deepseek: sub-agent {id} complete"));
-
-    if include_summary {
-        let human = crate::tui::notifications::humanize_duration(elapsed);
-        msg.push('\n');
-        msg.push_str(&format!("deepseek: sub-agent complete ({human})"));
-    }
-
-    msg
-}
-
-fn latest_assistant_notification_text(messages: &[Message]) -> Option<String> {
-    messages
-        .iter()
-        .rev()
-        .find(|message| message.role == "assistant")
-        .and_then(|message| {
-            let text = message
-                .content
-                .iter()
-                .filter_map(|block| match block {
-                    ContentBlock::Text { text, .. } => Some(text.as_str()),
-                    ContentBlock::Thinking { .. }
-                    | ContentBlock::ToolUse { .. }
-                    | ContentBlock::ToolResult { .. }
-                    | ContentBlock::ServerToolUse { .. }
-                    | ContentBlock::ToolSearchToolResult { .. }
-                    | ContentBlock::CodeExecutionToolResult { .. } => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            notification_text_summary(&text)
-        })
-}
-
-fn notification_text_summary(text: &str) -> Option<String> {
-    const MAX_CHARS: usize = 360;
-
-    let sanitized = sanitize_stream_chunk(text);
-    let collapsed = sanitized
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let trimmed = collapsed.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    if let Some((idx, _)) = trimmed.char_indices().nth(MAX_CHARS) {
-        let mut s = String::with_capacity(idx + 3);
-        s.push_str(&trimmed[..idx]);
-        s.push_str("...");
-        Some(s)
-    } else {
-        Some(trimmed.to_string())
-    }
-}
+// Per-turn notification composition (settings, message body, summary)
+// moved to `tui/notifications.rs` alongside the dispatch primitives.
 
 /// Ensure an in-flight streaming Assistant cell exists in history and return
-/// its index. Thinking cells go through `ensure_streaming_thinking_active_entry`
+/// its index. Thinking cells go through `streaming_thinking::ensure_active_entry`
 /// (active cell) instead.
 fn ensure_streaming_assistant_history_cell(app: &mut App) -> usize {
     if let Some(index) = app.streaming_message_index {
@@ -3869,413 +3724,7 @@ fn replace_matching_assistant_text(
     false
 }
 
-/// Ensure an in-flight Thinking entry exists in `active_cell` and return its
-/// entry index. If no thinking entry is currently streaming, push a fresh one.
-/// P2.3: thinking shares the active cell with subsequent tool calls so the
-/// pair render as one logical "Working…" block.
-fn ensure_streaming_thinking_active_entry(app: &mut App) -> usize {
-    if let Some(idx) = app.streaming_thinking_active_entry {
-        return idx;
-    }
-    if app.active_cell.is_none() {
-        app.active_cell = Some(ActiveCell::new());
-    }
-    let active = app.active_cell.as_mut().expect("active_cell just ensured");
-    let entry_idx = active.push_thinking(HistoryCell::Thinking {
-        content: String::new(),
-        streaming: true,
-        duration_secs: None,
-    });
-    app.streaming_thinking_active_entry = Some(entry_idx);
-    app.bump_active_cell_revision();
-    entry_idx
-}
-
-/// Append text to a streaming Thinking entry inside `active_cell`. Bumps the
-/// active-cell revision so the renderer re-draws the live tail.
-fn append_streaming_thinking(app: &mut App, entry_idx: usize, text: &str) {
-    if text.is_empty() {
-        return;
-    }
-    let mutated = if let Some(active) = app.active_cell.as_mut()
-        && let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(entry_idx)
-    {
-        content.push_str(text);
-        true
-    } else {
-        false
-    };
-    if mutated {
-        app.bump_active_cell_revision();
-    }
-}
-
-fn thinking_translation_placeholder_frame(app: &App) -> String {
-    let base = crate::localization::thinking_translation_placeholder(app.ui_locale);
-    let elapsed = app
-        .thinking_started_at
-        .or(app.turn_started_at)
-        .map(|started| started.elapsed().as_secs_f32())
-        .unwrap_or_default();
-    let frame = match (elapsed.mul_add(2.0, 0.0) as usize) % 4 {
-        0 => "|",
-        1 => "/",
-        2 => "-",
-        _ => "\\",
-    };
-    format!("{base} ({elapsed:.1}s {frame})")
-}
-
-fn set_streaming_thinking_placeholder(app: &mut App, entry_idx: usize) {
-    let base = crate::localization::thinking_translation_placeholder(app.ui_locale);
-    let next = thinking_translation_placeholder_frame(app);
-    let mutated = if let Some(active) = app.active_cell.as_mut()
-        && let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(entry_idx)
-        && (content.is_empty() || content.starts_with(base))
-    {
-        if *content != next {
-            *content = next;
-            true
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-    if mutated {
-        app.bump_active_cell_revision();
-    }
-}
-
-fn animate_pending_thinking_translation(app: &mut App, translation_pending: bool) -> bool {
-    if !app.translation_enabled {
-        return false;
-    }
-    let thinking_streaming = app.streaming_thinking_active_entry.is_some();
-    if !translation_pending && !thinking_streaming {
-        return false;
-    }
-    let base = crate::localization::thinking_translation_placeholder(app.ui_locale);
-    let next = thinking_translation_placeholder_frame(app);
-
-    if let Some(active) = app.active_cell.as_mut() {
-        for idx in (0..active.entry_count()).rev() {
-            if let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(idx)
-                && content.starts_with(base)
-                && *content != next
-            {
-                *content = next.clone();
-                app.bump_active_cell_revision();
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn replace_pending_thinking_translation(app: &mut App, placeholder: &str, translated_text: String) {
-    if let Some(active) = app.active_cell.as_mut() {
-        for idx in (0..active.entry_count()).rev() {
-            if let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(idx)
-                && content.starts_with(placeholder)
-            {
-                *content = translated_text;
-                app.bump_active_cell_revision();
-                return;
-            }
-        }
-    }
-
-    for idx in (0..app.history.len()).rev() {
-        if let Some(HistoryCell::Thinking { content, .. }) = app.history.get_mut(idx)
-            && content.starts_with(placeholder)
-        {
-            *content = translated_text;
-            app.bump_history_cell(idx);
-            return;
-        }
-    }
-}
-
-/// Start a new streaming thinking block. If another thinking block is still
-/// active, first drain its pending UI tail so a late block boundary cannot
-/// discard content buffered inside `StreamingState`.
-fn start_streaming_thinking_block(app: &mut App) -> bool {
-    let finalized_previous = if app.streaming_thinking_active_entry.is_some() {
-        let finalized = finalize_current_streaming_thinking(app);
-        stash_reasoning_buffer_into_last_reasoning(app);
-        finalized
-    } else {
-        false
-    };
-
-    app.reasoning_buffer.clear();
-    app.reasoning_header = None;
-    app.thinking_started_at = Some(Instant::now());
-    app.streaming_state.reset();
-    app.streaming_state.start_thinking(0, None);
-    let _ = ensure_streaming_thinking_active_entry(app);
-    finalized_previous
-}
-
-fn finalize_current_streaming_thinking(app: &mut App) -> bool {
-    let duration = app
-        .thinking_started_at
-        .take()
-        .map(|t| t.elapsed().as_secs_f32());
-    let remaining = app.streaming_state.finalize_block_text(0);
-    finalize_streaming_thinking_active_entry(app, duration, &remaining)
-}
-
-fn stash_reasoning_buffer_into_last_reasoning(app: &mut App) {
-    if app.reasoning_buffer.is_empty() {
-        return;
-    }
-
-    if let Some(existing) = app.last_reasoning.as_mut()
-        && !existing.is_empty()
-    {
-        if !existing.ends_with('\n') {
-            existing.push('\n');
-        }
-        existing.push_str(&app.reasoning_buffer);
-    } else {
-        app.last_reasoning = Some(app.reasoning_buffer.clone());
-    }
-    app.reasoning_buffer.clear();
-}
-
-/// Finalize the in-flight thinking entry in `active_cell`: append the
-/// collector's remaining buffered text, stop the spinner, and stamp the
-/// duration. Returns `true` when a thinking entry was finalized (so the
-/// dispatch loop knows the transcript was touched). No-op if no thinking
-/// entry is currently streaming.
-fn finalize_streaming_thinking_active_entry(
-    app: &mut App,
-    duration: Option<f32>,
-    remaining: &str,
-) -> bool {
-    let Some(entry_idx) = app.streaming_thinking_active_entry.take() else {
-        return false;
-    };
-    if !remaining.is_empty() {
-        append_streaming_thinking(app, entry_idx, remaining);
-    }
-    if let Some(active) = app.active_cell.as_mut()
-        && let Some(HistoryCell::Thinking {
-            streaming,
-            duration_secs,
-            ..
-        }) = active.entry_mut(entry_idx)
-    {
-        *streaming = false;
-        *duration_secs = duration;
-    }
-    app.bump_active_cell_revision();
-    true
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EscapeAction {
-    CloseSlashMenu,
-    CancelRequest,
-    DiscardQueuedDraft,
-    ClearInput,
-    Noop,
-}
-
-fn next_escape_action(app: &App, slash_menu_open: bool) -> EscapeAction {
-    if slash_menu_open {
-        EscapeAction::CloseSlashMenu
-    } else if app.is_loading {
-        EscapeAction::CancelRequest
-    } else if app.queued_draft.is_some() && app.input.is_empty() {
-        EscapeAction::DiscardQueuedDraft
-    } else if !app.input.is_empty() {
-        EscapeAction::ClearInput
-    } else {
-        EscapeAction::Noop
-    }
-}
-
-fn select_previous_slash_menu_entry(app: &mut App, entry_count: usize) {
-    if entry_count == 0 {
-        return;
-    }
-    let selected = app.slash_menu_selected.min(entry_count.saturating_sub(1));
-    app.slash_menu_selected = (selected + entry_count - 1) % entry_count;
-}
-
-fn select_next_slash_menu_entry(app: &mut App, entry_count: usize) {
-    if entry_count == 0 {
-        return;
-    }
-    let selected = app.slash_menu_selected.min(entry_count.saturating_sub(1));
-    app.slash_menu_selected = (selected + 1) % entry_count;
-}
-
-fn handle_composer_history_arrow(
-    app: &mut App,
-    key: KeyEvent,
-    slash_menu_open: bool,
-    mention_menu_open: bool,
-) -> bool {
-    if slash_menu_open || mention_menu_open {
-        return false;
-    }
-    if key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SUPER) {
-        return false;
-    }
-
-    // When `composer_arrows_scroll` is enabled and the composer is empty,
-    // plain Up/Down scroll the transcript.  This helps terminals that map
-    // trackpad gestures to arrow keys.  Otherwise arrows always navigate
-    // input history regardless of composer state (#1117).
-    let scroll_on_empty = app.composer_arrows_scroll && app.input.trim().is_empty();
-
-    match key.code {
-        KeyCode::Up => {
-            if scroll_on_empty {
-                app.scroll_up(COMPOSER_ARROW_SCROLL_LINES);
-            } else {
-                app.history_up();
-            }
-            true
-        }
-        KeyCode::Down => {
-            if scroll_on_empty {
-                app.scroll_down(COMPOSER_ARROW_SCROLL_LINES);
-            } else {
-                app.history_down();
-            }
-            true
-        }
-        _ => false,
-    }
-}
-
-fn is_word_cursor_modifier(modifiers: KeyModifiers) -> bool {
-    modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::ALT)
-}
-
-fn is_composer_newline_key(key: KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Char('j') => key.modifiers.contains(KeyModifiers::CONTROL),
-        KeyCode::Enter => {
-            key.modifiers.contains(KeyModifiers::ALT)
-                || (key.modifiers.contains(KeyModifiers::SHIFT)
-                    && !key.modifiers.contains(KeyModifiers::CONTROL))
-        }
-        _ => false,
-    }
-}
-
-fn handle_history_search_key(app: &mut App, key: KeyEvent) {
-    match key.code {
-        KeyCode::Enter => {
-            let _ = app.accept_history_search();
-        }
-        KeyCode::Esc => {
-            app.cancel_history_search();
-        }
-        KeyCode::Char('c') | KeyCode::Char('C')
-            if key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
-            app.cancel_history_search();
-        }
-        KeyCode::Backspace => {
-            app.history_search_backspace();
-        }
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            while app
-                .history_search_query()
-                .is_some_and(|query| !query.is_empty())
-            {
-                app.history_search_backspace();
-            }
-        }
-        KeyCode::Up => {
-            app.history_search_select_previous();
-        }
-        KeyCode::Down => {
-            app.history_search_select_next();
-        }
-        KeyCode::Char(ch)
-            if key.modifiers.is_empty()
-                || key.modifiers == KeyModifiers::SHIFT
-                || key.modifiers == KeyModifiers::NONE =>
-        {
-            app.history_search_insert_char(ch);
-        }
-        _ => {}
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ApiKeyValidation {
-    Accept { warning: Option<String> },
-    Reject(String),
-}
-
-fn validate_api_key_for_onboarding(api_key: &str) -> ApiKeyValidation {
-    let trimmed = api_key.trim();
-    if trimmed.is_empty() {
-        return ApiKeyValidation::Reject("API key cannot be empty.".to_string());
-    }
-    if trimmed.contains(char::is_whitespace) {
-        return ApiKeyValidation::Reject(
-            "API key appears malformed (contains whitespace).".to_string(),
-        );
-    }
-    if trimmed.len() < 16 {
-        return ApiKeyValidation::Accept {
-            warning: Some(
-                "API key looks short. Double-check it, but unusual formats are allowed."
-                    .to_string(),
-            ),
-        };
-    }
-    if !trimmed.contains('-') {
-        return ApiKeyValidation::Accept {
-            warning: Some(
-                "API key format looks unusual. Check that the full key was copied.".to_string(),
-            ),
-        };
-    }
-    ApiKeyValidation::Accept { warning: None }
-}
-
-fn advance_onboarding_from_welcome(app: &mut App) {
-    app.status_message = None;
-    app.onboarding = OnboardingState::Language;
-}
-
-fn advance_onboarding_after_language(app: &mut App) {
-    app.status_message = None;
-    if app.onboarding_needs_api_key {
-        app.onboarding = OnboardingState::ApiKey;
-    } else if !app.trust_mode && onboarding::needs_trust(&app.workspace) {
-        app.onboarding = OnboardingState::TrustDirectory;
-    } else {
-        app.onboarding = OnboardingState::Tips;
-    }
-}
-
-fn sync_api_key_validation_status(app: &mut App, show_empty_error: bool) {
-    if app.api_key_input.trim().is_empty() && !show_empty_error {
-        app.status_message = None;
-        return;
-    }
-
-    match validate_api_key_for_onboarding(&app.api_key_input) {
-        ApiKeyValidation::Accept { warning } => {
-            app.status_message = warning;
-        }
-        ApiKeyValidation::Reject(message) => {
-            app.status_message = Some(message);
-        }
-    }
-}
+// Streaming-thinking lifecycle helpers moved to `tui/streaming_thinking.rs`.
 
 fn build_queued_message(app: &mut App, input: String) -> QueuedMessage {
     let skill_instruction = app.active_skill.take();
@@ -4400,8 +3849,8 @@ async fn dispatch_user_message(
         persistence_actor::persist(PersistRequest::Checkpoint(session));
     }
 
-    let auto_selection = if should_resolve_auto_model_selection(app) {
-        Some(resolve_auto_model_selection(app, config, &message, &content).await)
+    let auto_selection = if auto_router::should_resolve_auto_model_selection(app) {
+        Some(auto_router::resolve_auto_model_selection(app, config, &message, &content).await)
     } else {
         None
     };
@@ -4421,7 +3870,10 @@ async fn dispatch_user_message(
             .as_ref()
             .and_then(|selection| selection.reasoning_effort)
             .unwrap_or_else(|| {
-                normalize_auto_routed_effort(crate::auto_reasoning::select(false, &message.display))
+                auto_router::normalize_auto_routed_effort(crate::auto_reasoning::select(
+                    false,
+                    &message.display,
+                ))
             });
         app.last_effective_reasoning_effort = Some(effort);
         Some(effort.as_setting().to_string())
@@ -4470,99 +3922,6 @@ async fn dispatch_user_message(
     }
 
     Ok(())
-}
-
-fn should_resolve_auto_model_selection(app: &App) -> bool {
-    app.auto_model
-}
-
-async fn resolve_auto_model_selection(
-    app: &App,
-    config: &Config,
-    message: &QueuedMessage,
-    latest_content: &str,
-) -> commands::AutoRouteSelection {
-    let latest_request = if latest_content.trim().is_empty() {
-        message.display.as_str()
-    } else {
-        latest_content
-    };
-    commands::resolve_auto_route_with_flash(
-        config,
-        latest_request,
-        &recent_auto_router_context(&app.api_messages),
-        if app.auto_model { "auto" } else { "fixed" },
-        app.reasoning_effort.as_setting(),
-    )
-    .await
-}
-
-fn normalize_auto_routed_effort(effort: ReasoningEffort) -> ReasoningEffort {
-    commands::normalize_auto_route_effort(effort)
-}
-
-fn recent_auto_router_context(messages: &[Message]) -> String {
-    let mut rows = Vec::new();
-    for message in messages.iter().rev().skip(1) {
-        if rows.len() >= 6 {
-            break;
-        }
-        let text = content_blocks_text(&message.content);
-        let text = text.trim();
-        if text.is_empty() {
-            continue;
-        }
-        rows.push(format!(
-            "{}: {}",
-            message.role,
-            truncate_for_auto_router(text, 900)
-        ));
-    }
-    rows.reverse();
-    if rows.is_empty() {
-        "No prior context.".to_string()
-    } else {
-        rows.join("\n")
-    }
-}
-
-fn content_blocks_text(blocks: &[ContentBlock]) -> String {
-    let mut out = String::new();
-    for block in blocks {
-        match block {
-            ContentBlock::Text { text, .. } => {
-                append_router_text(&mut out, text);
-            }
-            ContentBlock::Thinking { thinking } => {
-                append_router_text(&mut out, thinking);
-            }
-            ContentBlock::ToolUse { name, .. } => {
-                append_router_text(&mut out, &format!("[tool call: {name}]"));
-            }
-            ContentBlock::ToolResult { content, .. } => {
-                append_router_text(&mut out, &format!("[tool result] {content}"));
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
-fn append_router_text(out: &mut String, text: &str) {
-    if !out.is_empty() {
-        out.push('\n');
-    }
-    out.push_str(text);
-}
-
-fn truncate_for_auto_router(text: &str, max_chars: usize) -> String {
-    let mut chars = text.chars();
-    let truncated: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{truncated}...")
-    } else {
-        truncated
-    }
 }
 
 async fn apply_model_and_compaction_update(
@@ -4864,7 +4223,7 @@ fn open_text_pager(app: &mut App, title: String, content: String) {
     ));
 }
 
-fn open_context_inspector(app: &mut App) {
+pub(crate) fn open_context_inspector(app: &mut App) {
     let width = app
         .viewport
         .last_transcript_area
@@ -4878,224 +4237,7 @@ fn open_context_inspector(app: &mut App) {
     ));
 }
 
-fn open_file_picker(app: &mut App) {
-    let relevance = build_file_picker_relevance(app);
-    app.view_stack
-        .push(crate::tui::file_picker::FilePickerView::new_with_relevance(
-            &app.workspace,
-            relevance,
-        ));
-}
-
-fn build_file_picker_relevance(app: &App) -> crate::tui::file_picker::FilePickerRelevance {
-    let mut relevance = crate::tui::file_picker::FilePickerRelevance::default();
-
-    for path in modified_workspace_paths(&app.workspace) {
-        relevance.mark_modified(path);
-    }
-
-    for record in app.session_context_references.iter().rev().take(64) {
-        let reference = &record.reference;
-        if reference.source != crate::tui::file_mention::ContextReferenceSource::AtMention {
-            continue;
-        }
-        if !matches!(
-            reference.kind,
-            crate::tui::file_mention::ContextReferenceKind::File
-        ) {
-            continue;
-        }
-        for raw in [&reference.target, &reference.label] {
-            if let Some(path) = workspace_file_candidate(raw, &app.workspace) {
-                relevance.mark_mentioned(path);
-            }
-        }
-    }
-
-    let mut seen_tool_paths = HashSet::new();
-    for detail in app.active_tool_details.values() {
-        mark_tool_detail_paths(detail, &app.workspace, &mut seen_tool_paths, &mut relevance);
-    }
-    let mut rows: Vec<_> = app.tool_details_by_cell.iter().collect();
-    rows.sort_by_key(|(idx, _)| std::cmp::Reverse(**idx));
-    for (_, detail) in rows.into_iter().take(48) {
-        mark_tool_detail_paths(detail, &app.workspace, &mut seen_tool_paths, &mut relevance);
-    }
-
-    relevance
-}
-
-fn modified_workspace_paths(workspace: &Path) -> Vec<String> {
-    let Ok(output) = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["status", "--short", "--untracked-files=normal"])
-        .output()
-    else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
-    }
-
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(parse_git_status_path)
-        .filter_map(|path| workspace_file_candidate(&path, workspace))
-        .collect()
-}
-
-fn parse_git_status_path(line: &str) -> Option<String> {
-    if line.len() < 4 {
-        return None;
-    }
-    let raw = line.get(3..)?.trim();
-    let raw = raw.rsplit(" -> ").next().unwrap_or(raw).trim();
-    let raw = raw.trim_matches('"');
-    if raw.is_empty() {
-        None
-    } else {
-        Some(raw.to_string())
-    }
-}
-
-fn mark_tool_detail_paths(
-    detail: &ToolDetailRecord,
-    workspace: &Path,
-    seen: &mut HashSet<String>,
-    relevance: &mut crate::tui::file_picker::FilePickerRelevance,
-) {
-    let mut budget = 256usize;
-    mark_tool_paths_from_value(&detail.input, workspace, seen, relevance, &mut budget);
-    if let Some(output) = detail
-        .output
-        .as_deref()
-        .filter(|output| output.len() <= 8_192)
-    {
-        mark_tool_paths_from_text(output, workspace, seen, relevance, &mut budget);
-    }
-}
-
-fn mark_tool_paths_from_value(
-    value: &serde_json::Value,
-    workspace: &Path,
-    seen: &mut HashSet<String>,
-    relevance: &mut crate::tui::file_picker::FilePickerRelevance,
-    budget: &mut usize,
-) {
-    if *budget == 0 {
-        return;
-    }
-    match value {
-        serde_json::Value::String(text) => {
-            mark_tool_paths_from_text(text, workspace, seen, relevance, budget);
-        }
-        serde_json::Value::Array(items) => {
-            for item in items {
-                mark_tool_paths_from_value(item, workspace, seen, relevance, budget);
-                if *budget == 0 {
-                    break;
-                }
-            }
-        }
-        serde_json::Value::Object(map) => {
-            for item in map.values() {
-                mark_tool_paths_from_value(item, workspace, seen, relevance, budget);
-                if *budget == 0 {
-                    break;
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn mark_tool_paths_from_text(
-    text: &str,
-    workspace: &Path,
-    seen: &mut HashSet<String>,
-    relevance: &mut crate::tui::file_picker::FilePickerRelevance,
-    budget: &mut usize,
-) {
-    if *budget == 0 || text.len() > 8_192 {
-        return;
-    }
-    if let Some(path) = workspace_file_candidate(text, workspace)
-        && seen.insert(path.clone())
-    {
-        relevance.mark_tool(path);
-        *budget = (*budget).saturating_sub(1);
-    }
-    for token in text.split_whitespace().take(128) {
-        if *budget == 0 {
-            break;
-        }
-        if let Some(path) = workspace_file_candidate(token, workspace)
-            && seen.insert(path.clone())
-        {
-            relevance.mark_tool(path);
-            *budget = (*budget).saturating_sub(1);
-        }
-    }
-}
-
-fn workspace_file_candidate(raw: &str, workspace: &Path) -> Option<String> {
-    let cleaned = clean_path_token(raw)?;
-    let path = Path::new(&cleaned);
-    let absolute = if path.is_absolute() {
-        PathBuf::from(path)
-    } else {
-        workspace.join(path)
-    };
-    if !absolute.is_file() {
-        return None;
-    }
-    let rel = absolute.strip_prefix(workspace).ok()?;
-    workspace_path_to_picker_string(rel)
-}
-
-fn clean_path_token(raw: &str) -> Option<String> {
-    let mut trimmed = raw.trim().trim_matches(|ch: char| {
-        ch.is_ascii_whitespace()
-            || matches!(
-                ch,
-                '"' | '\'' | '`' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
-            )
-    });
-    if let Some(stripped) = trimmed.strip_prefix("./") {
-        trimmed = stripped;
-    }
-    if let Some((before, after)) = trimmed.rsplit_once(':')
-        && !before.is_empty()
-        && after.chars().all(|ch| ch.is_ascii_digit())
-    {
-        trimmed = before;
-    }
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-fn workspace_path_to_picker_string(path: &Path) -> Option<String> {
-    let mut out = String::new();
-    for (idx, component) in path.components().enumerate() {
-        if matches!(
-            component,
-            std::path::Component::ParentDir
-                | std::path::Component::RootDir
-                | std::path::Component::Prefix(_)
-        ) {
-            return None;
-        }
-        if idx > 0 {
-            out.push('/');
-        }
-        out.push_str(&component.as_os_str().to_string_lossy());
-    }
-    if out.is_empty() { None } else { Some(out) }
-}
+// File-picker relevance scoring moved to `tui/file_picker_relevance.rs`.
 
 async fn apply_command_result(
     terminal: &mut AppTerminal,
@@ -5181,7 +4323,9 @@ async fn apply_command_result(
                     match fetch_available_models(config).await {
                         Ok(models) => {
                             app.add_message(HistoryCell::System {
-                                content: format_available_models_message(&app.model, &models),
+                                content: format_helpers::available_models_message(
+                                    &app.model, &models,
+                                ),
                             });
                             app.status_message = Some(format!("Found {} model(s)", models.len()));
                         }
@@ -5197,10 +4341,25 @@ async fn apply_command_result(
                 app.status_message = Some("Warming DeepSeek cache...".to_string());
                 match run_cache_warmup(app, config).await {
                     Ok(usage) => {
-                        let message = format_cache_warmup_result(&usage);
-                        app.add_message(HistoryCell::System {
-                            content: message.clone(),
-                        });
+                        let mut message = format_helpers::cache_warmup_result(&usage);
+                        // Append prefix-cache stability info.
+                        if app.prefix_checks_total > 0 {
+                            let changes = app.prefix_change_count;
+                            let total = app.prefix_checks_total;
+                            let stable = total.saturating_sub(changes);
+                            let pct = app
+                                .prefix_stability_pct
+                                .map(|p| format!("{p}%"))
+                                .unwrap_or_else(|| "--".to_string());
+                            message.push_str(&format!(
+                                "\n\nPrefix stability: {pct} ({stable}/{total} checks stable, {changes} change{})",
+                                if changes == 1 { "" } else { "s" }
+                            ));
+                            if let Some(ref desc) = app.last_prefix_change_desc {
+                                message.push_str(&format!("\nLast prefix change: {desc}"));
+                            }
+                        }
+                        app.add_message(HistoryCell::System { content: message });
                         app.status_message = Some("Cache warmup complete".to_string());
                     }
                     Err(error) => {
@@ -5324,6 +4483,17 @@ async fn apply_command_result(
                         .push(crate::tui::feedback_picker::FeedbackPickerView::new());
                 }
             }
+            AppAction::OpenThemePicker => {
+                if app.view_stack.top_kind() != Some(ModalKind::ThemePicker) {
+                    // Capture the active theme name straight from `app` so
+                    // Esc can revert through the same ConfigUpdated channel.
+                    // Avoids re-reading settings.toml from disk on every
+                    // `/theme` invocation.
+                    let original = app.theme_id.name().to_string();
+                    app.view_stack
+                        .push(crate::tui::theme_picker::ThemePickerView::new(original));
+                }
+            }
             AppAction::OpenExternalUrl { url, label } => match open_external_url(&url) {
                 Ok(()) => {
                     app.status_message = Some(format!("Opened {label} in your browser"));
@@ -5407,6 +4577,9 @@ async fn apply_command_result(
             }
             AppAction::Mcp(action) => {
                 handle_mcp_ui_action(app, config, action).await;
+            }
+            AppAction::SwitchWorkspace { workspace } => {
+                switch_workspace(app, engine_handle, task_manager, config, workspace).await;
             }
             AppAction::SwitchProfile { profile } => {
                 app.config_profile = Some(profile.clone());
@@ -5513,6 +4686,72 @@ fn open_external_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+fn apply_workspace_runtime_state(app: &mut App, config: &Config, workspace: PathBuf) {
+    app.workspace = workspace.clone();
+    app.hooks = HookExecutor::new(config.hooks_config(), workspace.clone());
+    app.skills_dir = crate::tui::app::resolve_skills_dir(&workspace, &config.skills_dir(), config);
+    app.refresh_skill_cache();
+    app.workspace_context = None;
+    if let Ok(mut cell) = app.workspace_context_cell.lock() {
+        *cell = None;
+    }
+    app.workspace_context_refreshed_at = None;
+    app.file_tree = None;
+
+    let shell_manager = crate::tools::shell::new_shared_shell_manager(workspace);
+    app.runtime_services.shell_manager = Some(shell_manager);
+    app.runtime_services.hook_executor = Some(std::sync::Arc::new(app.hooks.clone()));
+}
+
+async fn sync_runtime_workspace_state(task_manager: &SharedTaskManager, workspace: PathBuf) {
+    task_manager.set_default_workspace(workspace).await;
+}
+
+async fn switch_workspace(
+    app: &mut App,
+    engine_handle: &mut EngineHandle,
+    task_manager: &SharedTaskManager,
+    config: &Config,
+    workspace: PathBuf,
+) {
+    if app.is_loading {
+        app.status_message =
+            Some("Cannot switch workspace while a request is running.".to_string());
+        app.add_message(HistoryCell::System {
+            content: "Cannot switch workspace while a request is running.".to_string(),
+        });
+        return;
+    }
+
+    if app.workspace == workspace {
+        app.status_message = Some(format!("Workspace unchanged: {}", workspace.display()));
+        return;
+    }
+
+    apply_workspace_runtime_state(app, config, workspace.clone());
+    sync_runtime_workspace_state(task_manager, workspace.clone()).await;
+
+    let _ = engine_handle.send(Op::Shutdown).await;
+    let engine_config = build_engine_config(app, config);
+    *engine_handle = spawn_engine(engine_config, config);
+    if !app.api_messages.is_empty() {
+        let _ = engine_handle
+            .send(Op::SyncSession {
+                session_id: app.current_session_id.clone(),
+                messages: app.api_messages.clone(),
+                system_prompt: app.system_prompt.clone(),
+                model: app.model.clone(),
+                workspace: workspace.clone(),
+            })
+            .await;
+    }
+
+    app.add_message(HistoryCell::System {
+        content: format!("Switched workspace to {}", workspace.display()),
+    });
+    app.status_message = Some(format!("Workspace: {}", workspace.display()));
+}
+
 async fn handle_mcp_ui_action(
     app: &mut App,
     config: &Config,
@@ -5523,10 +4762,7 @@ async fn handle_mcp_ui_action(
     let path = app.mcp_config_path.clone();
     let mut changed = false;
     let mut message = None;
-    let discover = matches!(
-        action,
-        crate::tui::app::McpUiAction::Validate | crate::tui::app::McpUiAction::Reload
-    );
+    let discover = mcp_ui_action_refreshes_discovery(&action);
 
     let action_result = match action {
         crate::tui::app::McpUiAction::Show => Ok(()),
@@ -5624,6 +4860,15 @@ async fn handle_mcp_ui_action(
     }
 }
 
+fn mcp_ui_action_refreshes_discovery(action: &crate::tui::app::McpUiAction) -> bool {
+    matches!(
+        action,
+        crate::tui::app::McpUiAction::Show
+            | crate::tui::app::McpUiAction::Validate
+            | crate::tui::app::McpUiAction::Reload
+    )
+}
+
 fn handle_shell_job_action(app: &mut App, action: crate::tui::app::ShellJobAction) {
     let Some(shell_manager) = app.runtime_services.shell_manager.clone() else {
         add_shell_job_message(app, "Shell job center is not attached.".to_string());
@@ -5667,6 +4912,24 @@ fn handle_shell_job_action(app: &mut App, action: crate::tui::app::ShellJobActio
         crate::tui::app::ShellJobAction::Cancel { id } => match manager.kill(&id) {
             Ok(result) => add_shell_job_message(app, format_shell_poll(&result)),
             Err(err) => add_shell_job_message(app, format!("Shell job cancel failed: {err}")),
+        },
+        crate::tui::app::ShellJobAction::CancelAll => match manager.kill_running() {
+            Ok(results) => {
+                let count = results.len();
+                if count == 0 {
+                    add_shell_job_message(app, "No running shell jobs to cancel.".to_string());
+                } else {
+                    let tasks: Vec<String> = results
+                        .iter()
+                        .filter_map(|result| result.task_id.clone())
+                        .collect();
+                    add_shell_job_message(
+                        app,
+                        format!("Killed {count} shell job(s): {}", tasks.join(", ")),
+                    );
+                }
+            }
+            Err(err) => add_shell_job_message(app, format!("Shell job cancel-all failed: {err}")),
         },
     }
 }
@@ -6081,6 +5344,11 @@ fn render(f: &mut Frame, app: &mut App) {
             crate::config::ApiProvider::Vllm => Some("vLLM"),
             crate::config::ApiProvider::Ollama => Some("Ollama"),
         };
+        let status_indicator_started_at = if app.low_motion {
+            None
+        } else {
+            app.turn_started_at
+        };
         let header_data = HeaderData::new(
             app.mode,
             &model_label,
@@ -6097,7 +5365,7 @@ fn render(f: &mut Frame, app: &mut App) {
         .with_reasoning_effort(Some(&effort_label))
         .with_provider(provider_label)
         .with_status_indicator(crate::tui::widgets::header_status_indicator_frame(
-            app.turn_started_at,
+            status_indicator_started_at,
             &app.status_indicator,
         ));
         let header_widget = HeaderWidget::new(header_data);
@@ -6138,21 +5406,13 @@ fn render(f: &mut Frame, app: &mut App) {
                 chunks[1]
             };
 
-        if chat_area.width >= SIDEBAR_VISIBLE_MIN_WIDTH {
-            let preferred_sidebar = (u32::from(chat_area.width)
-                * u32::from(app.sidebar_width_percent.clamp(10, 50))
-                / 100) as u16;
-            let sidebar_width = preferred_sidebar
-                .max(24)
-                .min(chat_area.width.saturating_sub(40));
-            if sidebar_width >= 20 {
-                let split = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Min(1), Constraint::Length(sidebar_width)])
-                    .split(chat_area);
-                chat_area = split[0];
-                sidebar_area = Some(split[1]);
-            }
+        if let Some(sidebar_width) = sidebar_width_for_chat_area(app, chat_area.width) {
+            let split = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(1), Constraint::Length(sidebar_width)])
+                .split(chat_area);
+            chat_area = split[0];
+            sidebar_area = Some(split[1]);
         }
 
         let chat_widget = ChatWidget::new(app, chat_area);
@@ -6221,6 +5481,7 @@ fn draw_app_frame_inner(
     full_repaint: bool,
 ) -> Result<()> {
     terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
+    terminal.backend_mut().set_theme(app.theme_id, app.ui_theme);
     // DEC 2026 wrapping is on by default but can be turned off for
     // terminals that mishandle it (Ptyxis 50.x + VTE 0.84.x flashes the
     // whole viewport on every wrapped frame instead of deferring as the
@@ -6459,7 +5720,8 @@ async fn handle_view_events(
 
                 match manager.load_session(&session_id) {
                     Ok(session) => {
-                        let recovered = apply_loaded_session(app, &session);
+                        let recovered = apply_loaded_session(app, config, &session);
+                        sync_runtime_workspace_state(task_manager, app.workspace.clone()).await;
                         let _ = engine_handle
                             .send(Op::SyncSession {
                                 session_id: app.current_session_id.clone(),
@@ -6500,7 +5762,12 @@ async fn handle_view_events(
                 persist,
             } => {
                 let result = commands::set_config_value(app, &key, &value, persist);
-                if let Some(msg) = result.message {
+                // Only surface the "key = value" confirmation when the
+                // change is being persisted. Live-preview events
+                // (`persist: false`, e.g. arrow keys in the theme picker)
+                // fire on every navigation tick and would otherwise spam
+                // a `System` cell into the transcript per row visited.
+                if persist && let Some(msg) = result.message {
                     app.add_message(HistoryCell::System { content: msg });
                 }
 
@@ -6799,7 +6066,7 @@ async fn apply_provider_picker_api_key(
     switch_provider(app, engine_handle, config, provider, None).await;
 }
 
-fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
+fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSession) -> bool {
     let (messages, recovered_draft) = recover_interrupted_user_tail(&session.messages);
     app.set_api_messages(messages);
     app.clear_history();
@@ -6807,6 +6074,7 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     app.tool_details_by_cell.clear();
     app.active_cell = None;
     app.active_tool_details.clear();
+    app.active_tool_entry_completed_at.clear();
     app.active_cell_revision = app.active_cell_revision.wrapping_add(1);
     app.exploring_cell = None;
     app.exploring_entries.clear();
@@ -6845,13 +6113,13 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     app.viewport.transcript_selection.clear();
     app.model.clone_from(&session.metadata.model);
     app.update_model_compaction_budget();
-    app.workspace.clone_from(&session.metadata.workspace);
+    apply_workspace_runtime_state(app, config, session.metadata.workspace.clone());
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
-    app.session.session_cost = 0.0;
-    app.session.session_cost_cny = 0.0;
-    app.session.subagent_cost = 0.0;
-    app.session.subagent_cost_cny = 0.0;
+    app.session.session_cost = session.metadata.cost.session_cost_usd;
+    app.session.session_cost_cny = session.metadata.cost.session_cost_cny;
+    app.session.subagent_cost = session.metadata.cost.subagent_cost_usd;
+    app.session.subagent_cost_cny = session.metadata.cost.subagent_cost_cny;
     app.session.subagent_cost_event_seqs.clear();
     // Restore the high-water marks from persisted metadata so the
     // monotonic cost guarantee (#244) survives session restarts.
@@ -6878,6 +6146,7 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     app.session.turn_cache_history.clear();
     app.current_session_id = Some(session.metadata.id.clone());
     app.session_artifacts = session.artifacts.clone();
+    app.session_title = Some(session.metadata.title.clone());
     app.workspace_context = None;
     app.workspace_context_refreshed_at = None;
     if let Some(sp) = session.system_prompt.as_ref() {
@@ -6893,6 +6162,30 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     };
     app.scroll_to_bottom();
     recovered
+}
+
+/// Derive a short display title from the API message list.
+/// Skips the `<turn_meta>` block prepended by the engine and takes the first
+/// real user-text block, truncated to 32 characters.
+fn derive_session_title(messages: &[Message]) -> Option<String> {
+    messages.iter().find(|m| m.role == "user").and_then(|m| {
+        m.content.iter().find_map(|block| match block {
+            ContentBlock::Text { text, .. } if !text.starts_with(TURN_META_PREFIX) => {
+                let first_line = text.trim().lines().next().unwrap_or("").trim();
+                if first_line.is_empty() {
+                    return None;
+                }
+                let char_count = first_line.chars().count();
+                let chars: String = first_line.chars().take(SESSION_TITLE_MAX_CHARS).collect();
+                if char_count > SESSION_TITLE_MAX_CHARS {
+                    Some(format!("{chars}…"))
+                } else {
+                    Some(chars)
+                }
+            }
+            _ => None,
+        })
+    })
 }
 
 fn recover_interrupted_user_tail(messages: &[Message]) -> (Vec<Message>, Option<QueuedMessage>) {
@@ -6944,157 +6237,6 @@ fn compact_user_context_display(content: &str) -> String {
         .next()
         .unwrap_or(content)
         .to_string()
-}
-
-fn refresh_workspace_context_if_needed(app: &mut App, now: Instant, allow_refresh: bool) {
-    // Drain the async cell result into the live field first, so the render
-    // path always reads the latest value (#399 S1).
-    if let Ok(mut cell) = app.workspace_context_cell.lock()
-        && let Some(ctx) = cell.take()
-    {
-        app.workspace_context = Some(ctx);
-    }
-
-    if app
-        .workspace_context_refreshed_at
-        .is_some_and(|refreshed_at| {
-            now.duration_since(refreshed_at) < Duration::from_secs(WORKSPACE_CONTEXT_REFRESH_SECS)
-        })
-    {
-        return;
-    }
-
-    if !allow_refresh {
-        return;
-    }
-
-    // Offload git query to a background thread when a Tokio runtime is
-    // available. Fall back to synchronous execution for tests and other
-    // non-async contexts (#399 S1).
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        let ctx = app.workspace_context_cell.clone();
-        let workspace = app.workspace.clone();
-        handle.spawn_blocking(move || {
-            let result = collect_workspace_context(&workspace);
-            if let Ok(mut guard) = ctx.lock() {
-                *guard = result;
-            }
-        });
-    } else {
-        // No runtime — run synchronously so tests and one-shot callers
-        // still get a result immediately.
-        app.workspace_context = collect_workspace_context(&app.workspace);
-    }
-    app.workspace_context_refreshed_at = Some(now);
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-struct WorkspaceChangeSummary {
-    staged: usize,
-    modified: usize,
-    untracked: usize,
-    conflicts: usize,
-}
-
-impl WorkspaceChangeSummary {
-    fn is_clean(&self) -> bool {
-        self.staged == 0 && self.modified == 0 && self.untracked == 0 && self.conflicts == 0
-    }
-}
-
-fn collect_workspace_context(workspace: &Path) -> Option<String> {
-    let branch = workspace_git_branch(workspace)?;
-    let summary = workspace_git_change_summary(workspace)?;
-
-    let mut parts = Vec::new();
-    if summary.staged > 0 {
-        parts.push(format!("{} staged", summary.staged));
-    }
-    if summary.modified > 0 {
-        parts.push(format!("{} modified", summary.modified));
-    }
-    if summary.untracked > 0 {
-        parts.push(format!("{} untracked", summary.untracked));
-    }
-    if summary.conflicts > 0 {
-        parts.push(format!("{} conflicts", summary.conflicts));
-    }
-
-    let status = if summary.is_clean() {
-        "clean".to_string()
-    } else {
-        parts.join(", ")
-    };
-
-    Some(format!("{branch} | {status}"))
-}
-
-fn workspace_git_branch(workspace: &Path) -> Option<String> {
-    let branch = run_git_query(workspace, &["rev-parse", "--abbrev-ref", "HEAD"]).ok()?;
-    let branch = branch.trim().to_string();
-    if branch == "HEAD" || branch.is_empty() {
-        let short_hash = run_git_query(workspace, &["rev-parse", "--short", "HEAD"]).ok()?;
-        let short_hash = short_hash.trim();
-        if short_hash.is_empty() {
-            return None;
-        }
-        return Some(format!("detached:{short_hash}"));
-    }
-    Some(branch)
-}
-
-fn workspace_git_change_summary(workspace: &Path) -> Option<WorkspaceChangeSummary> {
-    let status = run_git_query(
-        workspace,
-        &["status", "--short", "--untracked-files=normal"],
-    )
-    .ok()?;
-
-    if status.trim().is_empty() {
-        return Some(WorkspaceChangeSummary::default());
-    }
-
-    let mut summary = WorkspaceChangeSummary::default();
-    for line in status.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        let mut chars = line.chars();
-        let staged = chars.next()?;
-        let modified = chars.next().unwrap_or(' ');
-
-        if staged == ' ' && modified == ' ' {
-            continue;
-        }
-        if staged == '?' && modified == '?' {
-            summary.untracked = summary.untracked.saturating_add(1);
-            continue;
-        }
-
-        if staged == 'U' || modified == 'U' {
-            summary.conflicts = summary.conflicts.saturating_add(1);
-        }
-        if staged != ' ' && staged != '?' {
-            summary.staged = summary.staged.saturating_add(1);
-        }
-        if modified != ' ' && modified != '?' {
-            summary.modified = summary.modified.saturating_add(1);
-        }
-    }
-
-    Some(summary)
-}
-
-fn run_git_query(workspace: &Path, args: &[&str]) -> std::io::Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(workspace)
-        .output()?;
-    if !output.status.success() {
-        return Err(std::io::Error::other("git command failed"));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn pause_terminal(
@@ -7272,7 +6414,7 @@ fn terminal_event_needs_viewport_recapture(evt: &Event) -> bool {
     matches!(evt, Event::FocusGained)
 }
 
-fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
+pub(crate) fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
     match level {
         StatusToastLevel::Info => palette::DEEPSEEK_SKY,
         StatusToastLevel::Success => palette::STATUS_SUCCESS,
@@ -7339,247 +6481,7 @@ fn render_toast_stack_overlay(
     }
 }
 
-fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-
-    // Pull in the toast first so we don't re-borrow `app` mutably mid-build,
-    // then build the FooterProps once. The widget itself is a pure render —
-    // it owns no `App` knowledge; all width-aware layout lives in the widget.
-    //
-    // The quit-confirmation prompt takes precedence over normal status toasts
-    // because it represents a transient instruction the user must respond to
-    // within ~2s. Mirrors codex-rs's `FooterMode::QuitShortcutReminder`.
-    let quit_prompt = if app.quit_is_armed() {
-        Some(FooterToast {
-            text: crate::localization::tr(
-                app.ui_locale,
-                crate::localization::MessageId::FooterPressCtrlCAgain,
-            )
-            .to_string(),
-            color: palette::STATUS_WARNING,
-        })
-    } else {
-        None
-    };
-    let toast = quit_prompt.or_else(|| {
-        app.active_status_toast().map(|toast| FooterToast {
-            text: toast.text,
-            color: status_color(toast.level),
-        })
-    });
-
-    // Drive every cluster from the user's configured `status_items`. Mode
-    // and Model are always rendered by `FooterProps` itself (their position
-    // is structural — cluster gating is handled by the widget), so we only
-    // gate the optional clusters here. If a variant is missing from
-    // `status_items`, its span vec stays empty and the footer hides it.
-    let mut props = render_footer_from(app, &app.status_items, toast);
-    // FooterProps is mut so the working-strip animation can layer on top.
-
-    // Animate the spacer between the left status line and the right-hand
-    // chips whenever a turn is live: model loading/streaming, compacting, or
-    // sub-agents in flight. The spout strip is gated on `fancy_animations`
-    // (the "do I want a whale at all" knob); `low_motion` now governs only
-    // streaming pacing (typewriter vs upstream), not the spout. Dot-pulse
-    // counter ticks every 400 ms so `working` → `working...` reads at a
-    // calm pace regardless of motion mode.
-    if footer_working_strip_active(app) {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let dot_frame = now_ms / 400;
-        // Surface one compact live status row in the footer whenever a turn
-        // is live. Tool turns get the current action plus active/done counts;
-        // non-tool work falls back to the existing dot-pulse label.
-        props.state_label = active_subagent_status_label(app)
-            .or_else(|| active_tool_status_label(app))
-            .unwrap_or_else(|| crate::tui::widgets::footer_working_label(dot_frame, app.ui_locale));
-        props.state_color = palette::DEEPSEEK_SKY;
-
-        // Water-spout frame source: wall-clock milliseconds. The sine-wave
-        // math in `footer_working_strip_glyph_at` was tuned for this cadence
-        // (`t = frame / 1000.0`, primary term × 8.0 ≈ 1.3 Hz at 1 ms ticks),
-        // so frame must advance at ~1000 units/sec to produce the intended
-        // animation feel. `fancy_animations = false` hides the strip
-        // entirely; the textual `working...` pulse still keeps a heartbeat
-        // regardless.
-        if app.fancy_animations {
-            props.working_strip_frame = Some(now_ms);
-        }
-    } else if props.state_label == "ready"
-        && let Some(label) = selected_detail_footer_label(app)
-    {
-        props.state_label = label;
-        props.state_color = palette::TEXT_MUTED;
-    }
-
-    let widget = FooterWidget::new(props);
-    let buf = f.buffer_mut();
-    widget.render(area, buf);
-}
-
-/// Whether the footer should animate the water-spout strip. Driven by the
-/// underlying live-work flags so the strip stays visible for the *entire*
-/// turn — not just the moments where bytes are streaming. `is_loading` can
-/// flicker off between LLM rounds within a single turn (tool execution,
-/// reasoning replay, capacity refresh, etc.), so we ALSO gate on the turn
-/// itself still being in flight via `runtime_turn_status == "in_progress"`.
-/// Without that, the user sees the strip vanish for seconds at a time even
-/// though the agent is still working.
-fn footer_working_strip_active(app: &App) -> bool {
-    let turn_in_progress = app.runtime_turn_status.as_deref() == Some("in_progress");
-    app.is_loading || app.is_compacting || running_agent_count(app) > 0 || turn_in_progress
-}
-
-fn is_noisy_subagent_progress(status: &str) -> bool {
-    let status = status.trim().to_ascii_lowercase();
-    status.contains("requesting model response")
-}
-
-fn subagent_objective_summary(app: &App, id: &str) -> Option<String> {
-    app.subagent_cache
-        .iter()
-        .find(|agent| agent.agent_id == id)
-        .map(|agent| summarize_tool_output(&agent.assignment.objective))
-        .filter(|summary| !summary.is_empty())
-}
-
-fn friendly_subagent_progress(app: &App, id: &str, status: &str) -> String {
-    if !is_noisy_subagent_progress(status) {
-        return summarize_tool_output(status);
-    }
-
-    if let Some(summary) = subagent_objective_summary(app, id) {
-        return format!("working on {summary}");
-    }
-    if let Some(existing) = app.agent_progress.get(id)
-        && !is_noisy_subagent_progress(existing)
-        && existing != "working"
-    {
-        return existing.clone();
-    }
-    "working".to_string()
-}
-
-fn active_subagent_status_label(app: &App) -> Option<String> {
-    let running = running_agent_count(app);
-    let fanout = active_fanout_counts(app);
-    let (display_running, total) = if let Some((fanout_running, fanout_total)) = fanout {
-        if fanout_running == 0 {
-            return None;
-        }
-        (fanout_running, fanout_total)
-    } else {
-        if running == 0 {
-            return None;
-        }
-        (running, running)
-    };
-    let detail = app
-        .subagent_cache
-        .iter()
-        .find(|agent| matches!(agent.status, SubAgentStatus::Running))
-        .map(|agent| summarize_tool_output(&agent.assignment.objective))
-        .filter(|summary| !summary.is_empty())
-        .or_else(|| {
-            app.agent_progress
-                .values()
-                .find(|value| !is_noisy_subagent_progress(value) && value.as_str() != "working")
-                .cloned()
-        })
-        .unwrap_or_else(|| "working".to_string());
-    let detail = truncate_line_to_width(&detail, 34);
-    let elapsed = app
-        .agent_activity_started_at
-        .or(app.turn_started_at)
-        .map(|started| format!("{}s", started.elapsed().as_secs()));
-
-    let mut parts = vec![format!("agents {display_running}/{total}"), detail];
-    if let Some(elapsed) = elapsed {
-        parts.push(elapsed);
-    }
-    parts.push("Alt+4".to_string());
-    Some(parts.join(" \u{00B7} "))
-}
-
-#[derive(Default)]
-struct ActiveToolStatusSnapshot {
-    primary_running: Option<String>,
-    primary_any: Option<String>,
-    running: usize,
-    completed: usize,
-    started_at: Option<Instant>,
-}
-
-impl ActiveToolStatusSnapshot {
-    fn record(&mut self, label: String, status: ToolStatus, started_at: Option<Instant>) {
-        if self.primary_any.is_none() {
-            self.primary_any = Some(label.clone());
-        }
-        if status == ToolStatus::Running {
-            self.running += 1;
-            if self.primary_running.is_none() {
-                self.primary_running = Some(label);
-            }
-        } else {
-            self.completed += 1;
-        }
-        if let Some(started) = started_at {
-            self.started_at = Some(match self.started_at {
-                Some(current) => current.min(started),
-                None => started,
-            });
-        }
-    }
-
-    fn total(&self) -> usize {
-        self.running + self.completed
-    }
-}
-
-fn active_tool_status_label(app: &App) -> Option<String> {
-    let active = app.active_cell.as_ref()?;
-    if active.is_empty() {
-        return None;
-    }
-
-    let mut snapshot = ActiveToolStatusSnapshot::default();
-    for cell in active.entries() {
-        collect_active_tool_status(cell, &mut snapshot);
-    }
-    if snapshot.total() == 0 {
-        return None;
-    }
-
-    let primary = snapshot
-        .primary_running
-        .or(snapshot.primary_any)
-        .unwrap_or_else(|| "tools".to_string());
-    let primary = truncate_line_to_width(&primary, 30);
-    let elapsed = snapshot
-        .started_at
-        .or(app.turn_started_at)
-        .map(|started| format!("{}s", started.elapsed().as_secs()));
-
-    let mut parts = vec![
-        primary,
-        format!("{} active", snapshot.running),
-        format!("{} done", snapshot.completed),
-    ];
-    if let Some(elapsed) = elapsed {
-        parts.push(elapsed);
-    }
-    if active_foreground_shell_running(app) {
-        parts.push("Ctrl+B shell".to_string());
-    }
-    parts.push(tool_details_shortcut_label().to_string());
-    Some(parts.join(" \u{00B7} "))
-}
-
-fn open_shell_control(app: &mut App) {
+pub(crate) fn open_shell_control(app: &mut App) {
     if !app.is_loading || !active_foreground_shell_running(app) {
         app.status_message = Some("No foreground shell command to control".to_string());
         return;
@@ -7589,7 +6491,7 @@ fn open_shell_control(app: &mut App) {
     app.status_message = Some("Shell control opened".to_string());
 }
 
-fn request_foreground_shell_background(app: &mut App) {
+pub(crate) fn request_foreground_shell_background(app: &mut App) {
     if !app.is_loading || !active_foreground_shell_running(app) {
         app.status_message = Some("No foreground shell command to background".to_string());
         return;
@@ -7611,7 +6513,7 @@ fn request_foreground_shell_background(app: &mut App) {
     }
 }
 
-fn active_foreground_shell_running(app: &App) -> bool {
+pub(crate) fn active_foreground_shell_running(app: &App) -> bool {
     app.active_cell.as_ref().is_some_and(|active| {
         active.entries().iter().any(|cell| {
             matches!(
@@ -7623,7 +6525,7 @@ fn active_foreground_shell_running(app: &App) -> bool {
     })
 }
 
-fn terminal_pause_has_live_owner(app: &App) -> bool {
+pub(crate) fn terminal_pause_has_live_owner(app: &App) -> bool {
     app.active_cell.as_ref().is_some_and(|active| {
         active.entries().iter().any(|cell| {
             matches!(
@@ -7632,489 +6534,6 @@ fn terminal_pause_has_live_owner(app: &App) -> bool {
             )
         })
     })
-}
-
-fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatusSnapshot) {
-    let HistoryCell::Tool(tool) = cell else {
-        return;
-    };
-    match tool {
-        ToolCell::Exec(exec) => snapshot.record(
-            format!("run {}", one_line_summary(&exec.command, 80)),
-            exec.status,
-            exec.started_at,
-        ),
-        ToolCell::Exploring(explore) => {
-            for entry in &explore.entries {
-                snapshot.record(
-                    format!("read {}", one_line_summary(&entry.label, 80)),
-                    entry.status,
-                    None,
-                );
-            }
-        }
-        ToolCell::PlanUpdate(plan) => {
-            snapshot.record("update plan".to_string(), plan.status, None);
-        }
-        ToolCell::PatchSummary(patch) => {
-            snapshot.record(format!("patch {}", patch.path), patch.status, None);
-        }
-        ToolCell::Review(review) => {
-            let target = one_line_summary(&review.target, 80);
-            let label = if target.is_empty() {
-                "review".to_string()
-            } else {
-                format!("review {target}")
-            };
-            snapshot.record(label, review.status, None);
-        }
-        ToolCell::DiffPreview(diff) => {
-            snapshot.record(format!("diff {}", diff.title), ToolStatus::Success, None);
-        }
-        ToolCell::Mcp(mcp) => snapshot.record(format!("tool {}", mcp.tool), mcp.status, None),
-        ToolCell::ViewImage(image) => snapshot.record(
-            format!("image {}", image.path.display()),
-            ToolStatus::Success,
-            None,
-        ),
-        ToolCell::WebSearch(search) => {
-            snapshot.record(format!("search {}", search.query), search.status, None);
-        }
-        ToolCell::Generic(generic) => {
-            // Sub-agent dispatch represents itself through the DelegateCard
-            // + Agents sidebar. Counting it again here would duplicate the
-            // status. RLM is different today: it is a foreground tool call,
-            // so keep it in the live tool footer until the async RLM
-            // workbench lands (#513).
-            if matches!(generic.name.as_str(), "agent_open" | "agent_spawn") {
-                return;
-            }
-            snapshot.record(format!("tool {}", generic.name), generic.status, None);
-        }
-    }
-}
-
-fn one_line_summary(text: &str, max_width: usize) -> String {
-    truncate_line_to_width(
-        &text.split_whitespace().collect::<Vec<_>>().join(" "),
-        max_width,
-    )
-}
-
-/// Build [`FooterProps`] from a user-configured `status_items` slice.
-///
-/// Variants are routed to their structural cluster: `Mode` and `Model` are
-/// always emitted (the widget needs them to lay out the line correctly even
-/// when the user toggled them off the picker — we honour the toggle by
-/// blanking their visible content rather than collapsing the layout).
-/// `Cost` and `Status` belong in the left cluster; the rest in the right.
-///
-/// A variant absent from `items` produces an empty span vec, which the
-/// footer widget already hides cleanly. This keeps the renderer fully
-/// data-driven without changing `FooterProps`'s public shape.
-fn render_footer_from(
-    app: &App,
-    items: &[crate::config::StatusItem],
-    toast: Option<FooterToast>,
-) -> FooterProps {
-    use crate::config::StatusItem as S;
-    let has = |item: S| items.contains(&item);
-
-    let (state_label, state_color) = if has(S::Status) {
-        footer_state_label(app)
-    } else {
-        // "ready" is the sentinel the widget uses to skip the status segment;
-        // pair it with theme text_muted for visual neutrality.
-        ("ready", app.ui_theme.text_muted)
-    };
-
-    let coherence = if has(S::Coherence) {
-        footer_coherence_spans(app)
-    } else {
-        Vec::new()
-    };
-    let agents = if has(S::Agents) {
-        crate::tui::widgets::footer_agents_chip(running_agent_count(app), app.ui_locale)
-    } else {
-        Vec::new()
-    };
-    let reasoning_replay = if has(S::ReasoningReplay) {
-        footer_reasoning_replay_spans(app)
-    } else {
-        Vec::new()
-    };
-    let cache = if has(S::Cache) {
-        footer_cache_spans(app)
-    } else {
-        Vec::new()
-    };
-    let cost = if has(S::Cost) {
-        footer_cost_spans(app)
-    } else {
-        Vec::new()
-    };
-
-    // Build the props; `Mode` and `Model` toggles modulate downstream by
-    // blanking the rendered text rather than restructuring the widget — the
-    // user is opting out of the chip, not destroying the bar.
-    let mut props = FooterProps::from_app(
-        app,
-        toast,
-        state_label,
-        state_color,
-        coherence,
-        agents,
-        reasoning_replay,
-        cache,
-        cost,
-    );
-    if !has(S::Mode) {
-        props.mode_label = "";
-    }
-    if !has(S::Model) {
-        props.model.clear();
-    }
-
-    // Right-cluster extension chips: append in `items` order so user
-    // ordering is preserved across the new variants.
-    let mut extra: Vec<Span<'static>> = Vec::new();
-    for item in items {
-        let chip = match *item {
-            S::ContextPercent => footer_context_percent_spans(app),
-            S::GitBranch => footer_git_branch_spans(app),
-            S::LastToolElapsed | S::RateLimit => Vec::new(),
-            _ => continue,
-        };
-        if chip.is_empty() {
-            continue;
-        }
-        if !extra.is_empty() {
-            extra.push(Span::raw("  "));
-        }
-        extra.extend(chip);
-    }
-    if !extra.is_empty() {
-        // Stack into the cache slot — last existing right-cluster pipe — so
-        // they appear adjacent without changing FooterProps's API. Keep
-        // existing cache spans first so cache hit rate stays before the
-        // user-added extras.
-        if !props.cache.is_empty() {
-            props.cache.push(Span::raw("  "));
-        }
-        props.cache.extend(extra);
-    }
-
-    props
-}
-
-fn footer_git_branch_spans(app: &App) -> Vec<Span<'static>> {
-    let Some(branch) = workspace_git_branch(&app.workspace) else {
-        return Vec::new();
-    };
-    vec![Span::styled(
-        branch,
-        Style::default().fg(app.ui_theme.text_muted),
-    )]
-}
-
-/// Spans for the "context %" footer chip. Mirrors the header colour ramp so
-/// the two surfaces stay visually consistent when both are enabled.
-fn footer_context_percent_spans(app: &App) -> Vec<Span<'static>> {
-    let Some((_, _, percent)) = context_usage_snapshot(app) else {
-        return Vec::new();
-    };
-    let color = if percent >= 95.0 {
-        palette::STATUS_ERROR
-    } else if percent >= 85.0 {
-        palette::STATUS_WARNING
-    } else {
-        palette::TEXT_MUTED
-    };
-    vec![Span::styled(
-        format!("active ctx {percent:.0}%"),
-        Style::default().fg(color),
-    )]
-}
-
-fn footer_cost_spans(app: &App) -> Vec<Span<'static>> {
-    let displayed_cost = app.displayed_session_cost_for_currency(app.cost_currency);
-    if !should_show_footer_cost(displayed_cost) {
-        return Vec::new();
-    }
-    vec![Span::styled(
-        app.format_cost_amount(displayed_cost),
-        Style::default().fg(palette::TEXT_MUTED),
-    )]
-}
-
-fn should_show_footer_cost(displayed_cost: f64) -> bool {
-    displayed_cost.is_finite() && displayed_cost > 0.0
-}
-
-/// Test-only helper retained as a parity reference for `FooterWidget`'s
-/// auxiliary-span composition. Production rendering is performed by the
-/// widget itself; the existing footer parity tests still exercise this
-/// function directly to guard against drift.
-#[allow(dead_code)]
-fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
-    // Context % is already shown in the header signal bar — don't
-    // duplicate it in the footer. The footer carries unique info only:
-    // coherence, in-flight sub-agents, reasoning replay tokens, cache hit
-    // rate, and session cost.
-    let coherence_spans = footer_coherence_spans(app);
-    let agents_spans =
-        crate::tui::widgets::footer_agents_chip(running_agent_count(app), app.ui_locale);
-    let replay_spans = footer_reasoning_replay_spans(app);
-    let cache_spans = footer_cache_spans(app);
-    let cost_spans = footer_cost_spans(app);
-
-    let parts: Vec<&Vec<Span<'static>>> = [
-        &coherence_spans,
-        &agents_spans,
-        &replay_spans,
-        &cache_spans,
-        &cost_spans,
-    ]
-    .iter()
-    .filter(|spans| !spans.is_empty())
-    .copied()
-    .collect();
-
-    // Try to fit as many parts as possible, dropping from the end.
-    for end in (0..=parts.len()).rev() {
-        let mut combined = Vec::new();
-        for (i, part) in parts[..end].iter().enumerate() {
-            if i > 0 {
-                combined.push(Span::raw("  "));
-            }
-            combined.extend(part.iter().cloned());
-        }
-        if spans_width(&combined) <= max_width {
-            return combined;
-        }
-    }
-    Vec::new()
-}
-
-fn footer_coherence_spans(app: &App) -> Vec<Span<'static>> {
-    // Only surface coherence when the engine is actively intervening — the
-    // user-facing signal is "we're doing something different now," not
-    // "your conversation is getting complex," which the context-percent
-    // header already covers. `GettingCrowded` is just a soft hint, so we
-    // suppress it; the active interventions get their own visible label.
-    let (label, color) = match app.coherence_state {
-        CoherenceState::Healthy | CoherenceState::GettingCrowded => return Vec::new(),
-        CoherenceState::RefreshingContext => ("refreshing context", palette::STATUS_WARNING),
-        CoherenceState::VerifyingRecentWork => ("verifying", palette::DEEPSEEK_SKY),
-        CoherenceState::ResettingPlan => ("resetting plan", palette::STATUS_ERROR),
-    };
-
-    vec![Span::styled(label.to_string(), Style::default().fg(color))]
-}
-
-fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
-    if app.session.last_prompt_tokens.is_none() && app.session.last_completion_tokens.is_none() {
-        return Vec::new();
-    };
-    let Some(hit_tokens) = app.session.last_prompt_cache_hit_tokens else {
-        return vec![Span::styled(
-            "Cache: unavailable",
-            Style::default().fg(palette::TEXT_MUTED),
-        )];
-    };
-    let miss_tokens = app
-        .session
-        .last_prompt_cache_miss_tokens
-        .unwrap_or_else(|| {
-            app.session
-                .last_prompt_tokens
-                .unwrap_or(0)
-                .saturating_sub(hit_tokens)
-        });
-    let total = hit_tokens.saturating_add(miss_tokens);
-    let percent = if total == 0 {
-        0.0
-    } else {
-        (f64::from(hit_tokens) / f64::from(total) * 100.0).clamp(0.0, 100.0)
-    };
-    // Threshold-based coloring for cache hit rate (#396):
-    //   >80%: green (good cache utilization)
-    //   40-80%: yellow/warning
-    //   <40%: red/dimmed (poor cache)
-    let color = if percent > 80.0 {
-        palette::STATUS_SUCCESS
-    } else if percent >= 40.0 {
-        palette::STATUS_WARNING
-    } else {
-        palette::STATUS_ERROR
-    };
-    vec![Span::styled(
-        format!(
-            "Cache: {:.1}% hit | hit {hit_tokens} | miss {miss_tokens}",
-            percent
-        ),
-        Style::default().fg(color),
-    )]
-}
-
-/// Render a footer chip showing the size of the `reasoning_content` block
-/// replayed on the most recent thinking-mode tool-calling turn (#30).
-///
-/// Stays hidden when the count is zero (non-thinking models, first turn, or
-/// turns with no tool calls). When replay tokens dominate the input budget
-/// (>50%), the chip turns warning-coloured so users notice that thinking
-/// replay is the main consumer of context.
-fn footer_reasoning_replay_spans(app: &App) -> Vec<Span<'static>> {
-    let Some(replay) = app.session.last_reasoning_replay_tokens else {
-        return Vec::new();
-    };
-    if replay == 0 {
-        return Vec::new();
-    }
-    let label = format!("rsn {}", format_token_count_compact(u64::from(replay)));
-    let color = match app.session.last_prompt_tokens {
-        Some(input) if input > 0 && f64::from(replay) / f64::from(input) > 0.5 => {
-            palette::STATUS_WARNING
-        }
-        _ => palette::TEXT_MUTED,
-    };
-    vec![Span::styled(label, Style::default().fg(color))]
-}
-
-#[allow(dead_code)]
-fn footer_toast_spans(
-    toast: &crate::tui::app::StatusToast,
-    max_width: usize,
-) -> Vec<Span<'static>> {
-    let truncated = truncate_line_to_width(&toast.text, max_width.max(1));
-    vec![Span::styled(
-        truncated,
-        Style::default().fg(status_color(toast.level)),
-    )]
-}
-
-#[allow(dead_code)]
-fn footer_status_line_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
-    if max_width == 0 {
-        return Vec::new();
-    }
-
-    let (mode_label, mode_color) = footer_mode_style(app);
-    let (status_label, status_color) = footer_state_label(app);
-    let sep = " \u{00B7} ";
-    let show_status = status_label != "ready";
-
-    let fixed_width = mode_label.width()
-        + sep.width()
-        + if show_status {
-            sep.width() + status_label.width()
-        } else {
-            0
-        };
-
-    if max_width <= mode_label.width() {
-        return vec![Span::styled(
-            truncate_line_to_width(mode_label, max_width),
-            Style::default().fg(mode_color),
-        )];
-    }
-
-    let model_budget = max_width.saturating_sub(fixed_width).max(1);
-    let model_label = truncate_line_to_width(&app.model, model_budget);
-
-    let mut spans = vec![
-        Span::styled(mode_label.to_string(), Style::default().fg(mode_color)),
-        Span::styled(sep.to_string(), Style::default().fg(app.ui_theme.text_dim)),
-        Span::styled(model_label, Style::default().fg(app.ui_theme.text_hint)),
-    ];
-
-    if show_status {
-        spans.push(Span::styled(
-            sep.to_string(),
-            Style::default().fg(app.ui_theme.text_dim),
-        ));
-        spans.push(Span::styled(
-            status_label.to_string(),
-            Style::default().fg(status_color),
-        ));
-    }
-
-    spans
-}
-
-fn footer_state_label(app: &App) -> (&'static str, ratatui::style::Color) {
-    if app.is_compacting {
-        return ("compacting \u{238B}", app.ui_theme.status_warning);
-    }
-    // Note: we deliberately do NOT show a "thinking" label for `is_loading`.
-    // The animated water-spout strip in the footer's spacer is the visual
-    // signal that the model is live; "thinking" was misleading because it
-    // fired for every kind of in-flight work (tool calls, streaming, etc.),
-    // not strictly reasoning. Sub-agents still surface "working" because
-    // that's a distinct lifecycle the user can act on (open `/agents`).
-    if running_agent_count(app) > 0 {
-        return ("working", app.ui_theme.status_working);
-    }
-    if app.queued_draft.is_some() {
-        return ("draft", app.ui_theme.text_muted);
-    }
-
-    if !app.view_stack.is_empty() {
-        return ("overlay", app.ui_theme.text_muted);
-    }
-
-    if !app.input.is_empty() {
-        return ("draft", app.ui_theme.text_muted);
-    }
-
-    ("ready", app.ui_theme.status_ready)
-}
-
-#[allow(dead_code)]
-fn footer_mode_style(app: &App) -> (&'static str, ratatui::style::Color) {
-    let label = app.mode.as_setting();
-    let color = match app.mode {
-        crate::tui::app::AppMode::Agent => app.ui_theme.mode_agent,
-        crate::tui::app::AppMode::Yolo => app.ui_theme.mode_yolo,
-        crate::tui::app::AppMode::Plan => app.ui_theme.mode_plan,
-    };
-    (label, color)
-}
-
-fn format_token_count_compact(tokens: u64) -> String {
-    if tokens >= 1_000_000 {
-        format!("{:.1}M", tokens as f64 / 1_000_000.0)
-    } else if tokens >= 1_000 {
-        format!("{:.1}k", tokens as f64 / 1_000.0)
-    } else {
-        tokens.to_string()
-    }
-}
-
-#[allow(dead_code)]
-fn format_context_budget(used: i64, max: u32) -> String {
-    let max_u64 = u64::from(max);
-    let max_i64 = i64::from(max);
-
-    if used > max_i64 {
-        return format!(
-            ">{}/{}",
-            format_token_count_compact(max_u64),
-            format_token_count_compact(max_u64)
-        );
-    }
-
-    let used_u64 = u64::try_from(used.max(0)).unwrap_or(0);
-    format!(
-        "{}/{}",
-        format_token_count_compact(used_u64),
-        format_token_count_compact(max_u64)
-    )
-}
-
-#[allow(dead_code)]
-fn spans_width(spans: &[Span<'_>]) -> usize {
-    spans.iter().map(|span| span.content.width()).sum()
 }
 
 #[allow(dead_code)]
@@ -8189,7 +6608,7 @@ fn estimated_context_tokens(app: &App) -> Option<i64> {
     i64::try_from(app.session.estimated_context_tokens).ok()
 }
 
-fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
+pub(crate) fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
     let max = context_window_for_model(app.effective_model_for_budget())?;
     let max_i64 = i64::from(max);
     let reported = app
@@ -8335,661 +6754,7 @@ fn history_has_live_motion(history: &[HistoryCell]) -> bool {
     })
 }
 
-pub(crate) fn truncate_line_to_width(text: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    if UnicodeWidthStr::width(text) <= max_width {
-        return text.to_string();
-    }
-    // For very small budgets, take chars until we exceed the *display* width.
-    // Counting characters instead of widths (the previous behavior) overran
-    // the budget for any double-width grapheme and contributed to mid-character
-    // sidebar artifacts on resize (issue #65).
-    if max_width <= 3 {
-        let mut out = String::new();
-        let mut width = 0usize;
-        for ch in text.chars() {
-            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if width + ch_width > max_width {
-                break;
-            }
-            out.push(ch);
-            width += ch_width;
-        }
-        return out;
-    }
-
-    let mut out = String::new();
-    let mut width = 0usize;
-    let limit = max_width.saturating_sub(3);
-    for ch in text.chars() {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if width + ch_width > limit {
-            break;
-        }
-        out.push(ch);
-        width += ch_width;
-    }
-    out.push_str("...");
-    out
-}
-
-fn should_drop_loading_mouse_motion(app: &App, mouse: MouseEvent) -> bool {
-    if !app.is_loading {
-        return false;
-    }
-
-    match mouse.kind {
-        MouseEventKind::Moved => true,
-        MouseEventKind::Drag(_) => {
-            !app.viewport.transcript_selection.dragging
-                && !app.viewport.transcript_scrollbar_dragging
-        }
-        _ => false,
-    }
-}
-
-fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
-    if app.view_stack.top_kind() == Some(ModalKind::ContextMenu) {
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
-            app.view_stack.pop();
-            open_context_menu(app, mouse);
-            return Vec::new();
-        }
-        return app.view_stack.handle_mouse(mouse);
-    }
-
-    if !app.view_stack.is_empty() {
-        app.needs_redraw = true;
-        return app.view_stack.handle_mouse(mouse);
-    }
-
-    match mouse.kind {
-        MouseEventKind::ScrollUp => {
-            let update = app.viewport.mouse_scroll.on_scroll(ScrollDirection::Up);
-            app.viewport.pending_scroll_delta = app
-                .viewport
-                .pending_scroll_delta
-                .saturating_add(update.delta_lines);
-            if update.delta_lines != 0 {
-                app.user_scrolled_during_stream = true;
-                app.needs_redraw = true;
-            }
-        }
-        MouseEventKind::ScrollDown => {
-            let update = app.viewport.mouse_scroll.on_scroll(ScrollDirection::Down);
-            app.viewport.pending_scroll_delta = app
-                .viewport
-                .pending_scroll_delta
-                .saturating_add(update.delta_lines);
-            if update.delta_lines != 0 {
-                app.user_scrolled_during_stream = true;
-                app.needs_redraw = true;
-            }
-        }
-        MouseEventKind::Down(MouseButton::Left) => {
-            app.viewport.transcript_scrollbar_dragging = false;
-            app.viewport.selection_autoscroll = None;
-
-            // Click on the transcript scrollbar gutter starts a scrollbar
-            // drag so the visible thumb remains interactive for users who
-            // prefer mouse-based navigation.
-            if mouse_hits_transcript_scrollbar(app, mouse) {
-                app.viewport.transcript_scrollbar_dragging = true;
-                return Vec::new();
-            }
-
-            if mouse_hits_rect(mouse, app.viewport.jump_to_latest_button_area) {
-                app.scroll_to_bottom();
-                return Vec::new();
-            }
-
-            if let Some(point) = selection_point_from_mouse(app, mouse) {
-                app.viewport.transcript_selection.anchor = Some(point);
-                app.viewport.transcript_selection.head = Some(point);
-                app.viewport.transcript_selection.dragging = true;
-
-                if app.is_loading
-                    && app.viewport.transcript_scroll.is_at_tail()
-                    && let Some(anchor) = TranscriptScroll::anchor_for(
-                        app.viewport.transcript_cache.line_meta(),
-                        app.viewport.last_transcript_top,
-                    )
-                {
-                    app.viewport.transcript_scroll = anchor;
-                }
-            } else if app.viewport.transcript_selection.is_active() {
-                app.viewport.transcript_selection.clear();
-            }
-        }
-        MouseEventKind::Drag(MouseButton::Left) => {
-            if app.viewport.transcript_scrollbar_dragging {
-                scroll_transcript_to_mouse_row(app, mouse.row);
-                return Vec::new();
-            }
-
-            if app.viewport.transcript_selection.dragging {
-                update_selection_drag(app, mouse);
-            }
-        }
-        MouseEventKind::Up(MouseButton::Left) if app.viewport.transcript_scrollbar_dragging => {
-            app.viewport.transcript_scrollbar_dragging = false;
-            app.viewport.selection_autoscroll = None;
-            app.needs_redraw = true;
-        }
-        MouseEventKind::Up(MouseButton::Left) if app.viewport.transcript_selection.dragging => {
-            app.viewport.transcript_selection.dragging = false;
-            app.viewport.selection_autoscroll = None;
-            if selection_has_content(app) {
-                copy_active_selection(app);
-            }
-        }
-        MouseEventKind::Down(MouseButton::Right) => {
-            open_context_menu(app, mouse);
-        }
-        _ => {}
-    }
-
-    Vec::new()
-}
-
-fn mouse_hits_transcript_scrollbar(app: &App, mouse: MouseEvent) -> bool {
-    let Some(area) = app.viewport.last_transcript_area else {
-        return false;
-    };
-    if area.width <= 1 || app.viewport.last_transcript_total <= app.viewport.last_transcript_visible
-    {
-        return false;
-    }
-
-    let scrollbar_col = area.x.saturating_add(area.width.saturating_sub(1));
-    mouse.column == scrollbar_col
-        && mouse.row >= area.y
-        && mouse.row < area.y.saturating_add(area.height)
-}
-
-fn scroll_transcript_to_mouse_row(app: &mut App, row: u16) -> bool {
-    let Some(area) = app.viewport.last_transcript_area else {
-        return false;
-    };
-    let total = app.viewport.last_transcript_total;
-    let visible = app.viewport.last_transcript_visible;
-    if area.height == 0 || total <= visible {
-        return false;
-    }
-
-    let max_start = total.saturating_sub(visible);
-    if max_start == 0 {
-        app.scroll_to_bottom();
-        return true;
-    }
-
-    let max_row = usize::from(area.height.saturating_sub(1));
-    let relative_row = usize::from(row.saturating_sub(area.y)).min(max_row);
-    let numerator = relative_row
-        .saturating_mul(max_start)
-        .saturating_add(max_row / 2);
-    // Round to the nearest transcript offset so short thumbs still feel
-    // responsive on compact terminals.
-    let top = numerator.checked_div(max_row).unwrap_or(0);
-
-    app.viewport.transcript_scroll = if top >= max_start {
-        TranscriptScroll::to_bottom()
-    } else {
-        TranscriptScroll::at_line(top)
-    };
-    app.viewport.pending_scroll_delta = 0;
-    app.user_scrolled_during_stream = !app.viewport.transcript_scroll.is_at_tail();
-    app.needs_redraw = true;
-    true
-}
-
-/// Cadence between auto-scroll ticks while drag-selecting past the
-/// transcript edge (#1163). 30 ms ≈ 33 lines/sec, comparable to the feel
-/// of a steady scroll-wheel drag.
-const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(30);
-
-/// Update the transcript selection while the left button is dragging.
-/// When the mouse leaves the transcript rect vertically, arm
-/// `selection_autoscroll` so the main loop can advance the viewport on a
-/// fixed cadence; when the mouse returns inside, disarm it.
-fn update_selection_drag(app: &mut App, mouse: MouseEvent) {
-    if let Some(point) = selection_point_from_mouse(app, mouse) {
-        app.viewport.transcript_selection.head = Some(point);
-        app.viewport.selection_autoscroll = None;
-        return;
-    }
-
-    let Some(area) = app.viewport.last_transcript_area else {
-        return;
-    };
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
-
-    let direction = if mouse.row < area.y {
-        -1
-    } else if mouse.row >= area.y.saturating_add(area.height) {
-        1
-    } else {
-        // Outside horizontally only — leave selection head where it is.
-        return;
-    };
-
-    let max_col = area.x.saturating_add(area.width.saturating_sub(1));
-    let column = mouse.column.clamp(area.x, max_col);
-
-    // Fire on the next tick immediately by setting `next_tick` to now.
-    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
-        direction,
-        column,
-        next_tick: Instant::now(),
-    });
-    app.needs_redraw = true;
-}
-
-/// Advance the drag-edge auto-scroll one step if its cadence has elapsed.
-/// Called once per main-loop iteration.
-fn tick_selection_autoscroll(app: &mut App) {
-    let Some(state) = app.viewport.selection_autoscroll else {
-        return;
-    };
-
-    if !app.viewport.transcript_selection.dragging {
-        app.viewport.selection_autoscroll = None;
-        return;
-    }
-
-    let Some(area) = app.viewport.last_transcript_area else {
-        return;
-    };
-    if area.height == 0 {
-        return;
-    }
-
-    let now = Instant::now();
-    if now < state.next_tick {
-        return;
-    }
-
-    app.viewport.pending_scroll_delta = app
-        .viewport
-        .pending_scroll_delta
-        .saturating_add(state.direction);
-    app.user_scrolled_during_stream = true;
-
-    let edge_row = if state.direction < 0 {
-        area.y
-    } else {
-        area.y.saturating_add(area.height.saturating_sub(1))
-    };
-    if let Some(point) = selection_point_from_position(
-        area,
-        state.column,
-        edge_row,
-        app.viewport.last_transcript_top,
-        app.viewport.last_transcript_total,
-        app.viewport.last_transcript_padding_top,
-    ) {
-        app.viewport.transcript_selection.head = Some(point);
-    }
-
-    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
-        next_tick: now + SELECTION_AUTOSCROLL_INTERVAL,
-        ..state
-    });
-    app.needs_redraw = true;
-}
-
-fn mouse_hits_rect(mouse: MouseEvent, area: Option<Rect>) -> bool {
-    let Some(area) = area else {
-        return false;
-    };
-
-    mouse.column >= area.x
-        && mouse.column < area.x.saturating_add(area.width)
-        && mouse.row >= area.y
-        && mouse.row < area.y.saturating_add(area.height)
-}
-
-fn open_context_menu(app: &mut App, mouse: MouseEvent) {
-    let entries = build_context_menu_entries(app, mouse);
-    if entries.is_empty() {
-        return;
-    }
-    app.view_stack
-        .push(ContextMenuView::new(entries, mouse.column, mouse.row));
-    app.needs_redraw = true;
-}
-
-fn build_context_menu_entries(app: &App, mouse: MouseEvent) -> Vec<ContextMenuEntry> {
-    let mut entries = Vec::new();
-
-    if selection_has_content(app) {
-        entries.push(ContextMenuEntry {
-            label: "Copy selection".to_string(),
-            description: "write selected transcript text".to_string(),
-            action: ContextMenuAction::CopySelection,
-        });
-        entries.push(ContextMenuEntry {
-            label: "Open selection".to_string(),
-            description: "show selected text in pager".to_string(),
-            action: ContextMenuAction::OpenSelection,
-        });
-        entries.push(ContextMenuEntry {
-            label: "Clear selection".to_string(),
-            description: String::new(),
-            action: ContextMenuAction::ClearSelection,
-        });
-    }
-
-    if let Some(filtered_cell_index) = transcript_cell_index_from_mouse(app, mouse) {
-        // Convert filtered index → original virtual index using the
-        // mapping built in ChatWidget::new. When no cells are collapsed
-        // this is an identity mapping.
-        let cell_index = app
-            .collapsed_cell_map
-            .get(filtered_cell_index)
-            .copied()
-            .unwrap_or(filtered_cell_index);
-
-        let target = detail_target_label(app, cell_index)
-            .map(|label| truncate_line_to_width(&label, 28))
-            .unwrap_or_else(|| "message".to_string());
-        entries.push(ContextMenuEntry {
-            label: "Open details".to_string(),
-            description: target,
-            action: ContextMenuAction::OpenDetails { cell_index },
-        });
-        entries.push(ContextMenuEntry {
-            label: "Copy message".to_string(),
-            description: "write clicked transcript cell".to_string(),
-            action: ContextMenuAction::CopyCell { cell_index },
-        });
-        entries.push(ContextMenuEntry {
-            label: "Open in editor".to_string(),
-            description: "open file:line in $EDITOR".to_string(),
-            action: ContextMenuAction::OpenFileAtLine { cell_index },
-        });
-        // Hide/show cell toggle.
-        if app.collapsed_cells.contains(&cell_index) {
-            entries.push(ContextMenuEntry {
-                label: "Show cell".to_string(),
-                description: "unhide this transcript cell".to_string(),
-                action: ContextMenuAction::ShowCell { cell_index },
-            });
-        } else {
-            entries.push(ContextMenuEntry {
-                label: "Hide cell".to_string(),
-                description: "collapse this transcript cell".to_string(),
-                action: ContextMenuAction::HideCell { cell_index },
-            });
-        }
-    }
-
-    // When cells are hidden, offer a way to show them all.
-    if !app.collapsed_cells.is_empty() {
-        let count = app.collapsed_cells.len();
-        entries.push(ContextMenuEntry {
-            label: format!("Show hidden ({count})"),
-            description: "unhide all collapsed cells".to_string(),
-            action: ContextMenuAction::ShowAllHidden,
-        });
-    }
-
-    entries.push(ContextMenuEntry {
-        label: "Paste".to_string(),
-        description: "insert clipboard into composer".to_string(),
-        action: ContextMenuAction::Paste,
-    });
-    entries.push(ContextMenuEntry {
-        label: "Command palette".to_string(),
-        description: "commands, skills, and tools".to_string(),
-        action: ContextMenuAction::OpenCommandPalette,
-    });
-    entries.push(ContextMenuEntry {
-        label: "Context inspector".to_string(),
-        description: "active context and cache hints".to_string(),
-        action: ContextMenuAction::OpenContextInspector,
-    });
-    entries.push(ContextMenuEntry {
-        label: "Help".to_string(),
-        description: "keybindings and commands".to_string(),
-        action: ContextMenuAction::OpenHelp,
-    });
-
-    entries
-}
-
-fn transcript_cell_index_from_mouse(app: &App, mouse: MouseEvent) -> Option<usize> {
-    let point = selection_point_from_mouse(app, mouse)?;
-    app.viewport
-        .transcript_cache
-        .line_meta()
-        .get(point.line_index)
-        .and_then(|meta| meta.cell_line())
-        .map(|(cell_index, _)| cell_index)
-}
-
-fn handle_context_menu_action(app: &mut App, action: ContextMenuAction) {
-    match action {
-        ContextMenuAction::CopySelection => {
-            copy_active_selection(app);
-        }
-        ContextMenuAction::OpenSelection => {
-            if !open_pager_for_selection(app) {
-                app.status_message = Some("No selection to open".to_string());
-            }
-        }
-        ContextMenuAction::ClearSelection => {
-            app.viewport.transcript_selection.clear();
-            app.status_message = Some("Selection cleared".to_string());
-        }
-        ContextMenuAction::CopyCell { cell_index } => {
-            copy_cell_to_clipboard(app, cell_index);
-        }
-        ContextMenuAction::OpenDetails { cell_index } => {
-            if !open_details_pager_for_cell(app, cell_index) {
-                app.status_message = Some("No details available for that line".to_string());
-            }
-        }
-        ContextMenuAction::Paste => {
-            app.paste_from_clipboard();
-        }
-        ContextMenuAction::OpenCommandPalette => {
-            app.view_stack
-                .push(CommandPaletteView::new(build_command_palette_entries(
-                    app.ui_locale,
-                    &app.skills_dir,
-                    &app.workspace,
-                    &app.mcp_config_path,
-                    app.mcp_snapshot.as_ref(),
-                )));
-        }
-        ContextMenuAction::OpenContextInspector => {
-            open_context_inspector(app);
-        }
-        ContextMenuAction::OpenHelp => {
-            app.view_stack.push(HelpView::new_for_locale(app.ui_locale));
-        }
-        ContextMenuAction::OpenFileAtLine { cell_index } => {
-            let width = app
-                .viewport
-                .last_transcript_area
-                .map(|area| area.width)
-                .unwrap_or(80);
-            let text = history_cell_to_text(
-                app.cell_at_virtual_index(cell_index)
-                    .unwrap_or(&HistoryCell::System {
-                        content: String::new(),
-                    }),
-                width,
-            );
-            if crate::tui::history::try_open_file_at_line(&text, &app.workspace) {
-                app.status_message = Some("Opened file in editor".to_string());
-            } else {
-                app.status_message = Some("No file:line pattern found in selection".to_string());
-            }
-        }
-        ContextMenuAction::HideCell { cell_index } => {
-            app.collapsed_cells.insert(cell_index);
-            app.status_message = Some("Cell hidden".to_string());
-        }
-        ContextMenuAction::ShowCell { cell_index } => {
-            app.collapsed_cells.remove(&cell_index);
-            app.status_message = Some("Cell shown".to_string());
-        }
-        ContextMenuAction::ShowAllHidden => {
-            let count = app.collapsed_cells.len();
-            app.collapsed_cells.clear();
-            app.status_message = Some(format!("{count} hidden cell(s) restored"));
-        }
-    }
-    app.needs_redraw = true;
-}
-
-fn selection_point_from_mouse(app: &App, mouse: MouseEvent) -> Option<TranscriptSelectionPoint> {
-    selection_point_from_position(
-        app.viewport.last_transcript_area?,
-        mouse.column,
-        mouse.row,
-        app.viewport.last_transcript_top,
-        app.viewport.last_transcript_total,
-        app.viewport.last_transcript_padding_top,
-    )
-}
-
-fn selection_point_from_position(
-    area: Rect,
-    column: u16,
-    row: u16,
-    transcript_top: usize,
-    transcript_total: usize,
-    padding_top: usize,
-) -> Option<TranscriptSelectionPoint> {
-    if column < area.x
-        || column >= area.x + area.width
-        || row < area.y
-        || row >= area.y + area.height
-    {
-        return None;
-    }
-
-    if transcript_total == 0 {
-        return None;
-    }
-
-    let row = row.saturating_sub(area.y) as usize;
-    if row < padding_top {
-        return None;
-    }
-    let row = row.saturating_sub(padding_top);
-
-    let col = column.saturating_sub(area.x) as usize;
-    let line_index = transcript_top
-        .saturating_add(row)
-        .min(transcript_total.saturating_sub(1));
-
-    Some(TranscriptSelectionPoint {
-        line_index,
-        column: col,
-    })
-}
-
-fn selection_has_content(app: &App) -> bool {
-    selection_to_text(app).is_some_and(|text| !text.is_empty())
-}
-
-/// Branches taken by the Ctrl+C key handler. The order encodes priority and is
-/// the unit-tested contract for #1337 / #1367: a transcript selection always
-/// wins (so users learn that Ctrl+C copies when there's something to copy);
-/// otherwise an active turn is interrupted; otherwise the quit-arm flow runs.
-#[derive(Debug, PartialEq, Eq)]
-enum CtrlCDisposition {
-    CopySelection,
-    CancelTurn,
-    ConfirmExit,
-    ArmExit,
-}
-
-fn ctrl_c_disposition(app: &App) -> CtrlCDisposition {
-    if selection_has_content(app) {
-        CtrlCDisposition::CopySelection
-    } else if app.is_loading {
-        CtrlCDisposition::CancelTurn
-    } else if app.quit_is_armed() {
-        CtrlCDisposition::ConfirmExit
-    } else {
-        CtrlCDisposition::ArmExit
-    }
-}
-
-fn copy_active_selection(app: &mut App) {
-    if !app.viewport.transcript_selection.is_active() {
-        return;
-    }
-    if let Some(text) = selection_to_text(app).filter(|text| !text.is_empty()) {
-        if app.clipboard.write_text(&text).is_ok() {
-            app.status_message = Some("Selection copied".to_string());
-        } else {
-            app.status_message = Some("Copy failed".to_string());
-        }
-    } else {
-        app.viewport.transcript_selection.clear();
-        app.status_message = Some("No selection to copy".to_string());
-    }
-}
-
-fn selection_to_text(app: &App) -> Option<String> {
-    let (start, end) = app.viewport.transcript_selection.ordered_endpoints()?;
-    let lines = app.viewport.transcript_cache.lines();
-    if lines.is_empty() {
-        return None;
-    }
-    let end_index = end.line_index.min(lines.len().saturating_sub(1));
-    let start_index = start.line_index.min(end_index);
-
-    let mut selected_lines = Vec::new();
-    #[allow(clippy::needless_range_loop)]
-    for line_index in start_index..=end_index {
-        // Rail-prefix decorations are stored as cache metadata rather than
-        // detected from glyphs, so new decoration types are covered without
-        // changes to the copy path (#1163).
-        let rail_width = app.viewport.transcript_cache.rail_prefix_width(line_index);
-        // Convert the rendered line to plain text (strips OSC-8), then
-        // slice off the rail prefix so subsequent column offsets operate
-        // on content-only text.
-        let full_text = line_to_plain(&lines[line_index]);
-        let line_text = if rail_width > 0 {
-            slice_text(&full_text, rail_width, text_display_width(&full_text))
-        } else {
-            full_text
-        };
-        let line_width = text_display_width(&line_text);
-        // Selection coordinates are recorded in rendered-column space, which
-        // includes the visual rail prefix. Add rail_width back so the column
-        // window maps correctly into the rail-stripped text.
-        let (raw_col_start, raw_col_end) = if start_index == end_index {
-            (start.column, end.column)
-        } else if line_index == start_index {
-            (start.column, line_width.saturating_add(rail_width))
-        } else if line_index == end_index {
-            (0, end.column)
-        } else {
-            (0, line_width.saturating_add(rail_width))
-        };
-
-        let col_start = raw_col_start.saturating_sub(rail_width).min(line_width);
-        let col_end = raw_col_end.saturating_sub(rail_width).min(line_width);
-
-        let slice = slice_text(&line_text, col_start, col_end);
-        selected_lines.push(slice);
-    }
-    Some(selected_lines.join("\n"))
-}
-
-fn open_pager_for_selection(app: &mut App) -> bool {
+pub(crate) fn open_pager_for_selection(app: &mut App) -> bool {
     let Some(text) = selection_to_text(app) else {
         return false;
     };
@@ -9437,7 +7202,7 @@ fn spillover_pager_section(app: &App, cell_index: usize) -> Option<String> {
     ))
 }
 
-fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> bool {
+pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> bool {
     if let Some(detail) = app.tool_detail_record_for_cell(cell_index) {
         let input = serde_json::to_string_pretty(&detail.input)
             .unwrap_or_else(|_| detail.input.to_string());
@@ -9518,7 +7283,7 @@ fn copy_focused_cell(app: &mut App) -> bool {
     copy_cell_to_clipboard(app, index)
 }
 
-fn copy_cell_to_clipboard(app: &mut App, cell_index: usize) -> bool {
+pub(crate) fn copy_cell_to_clipboard(app: &mut App, cell_index: usize) -> bool {
     let Some(cell) = app.cell_at_virtual_index(cell_index) else {
         app.status_message = Some("No message at that line".to_string());
         return false;
@@ -9561,7 +7326,7 @@ fn detail_target_cell_index(app: &App) -> Option<usize> {
     .or_else(|| app.history.len().checked_sub(1))
 }
 
-fn selected_detail_footer_label(app: &App) -> Option<String> {
+pub(crate) fn selected_detail_footer_label(app: &App) -> Option<String> {
     if app.viewport.transcript_selection.is_active() {
         return None;
     }
@@ -9569,13 +7334,13 @@ fn selected_detail_footer_label(app: &App) -> Option<String> {
     let cell = app.cell_at_virtual_index(cell_index)?;
     let label = truncate_line_to_width(&activity_cell_label(app, cell_index, cell), 30);
     let raw_hint = if app.cell_has_detail_target(cell_index) {
-        format!(" · {} raw", tool_details_shortcut_label())
+        format!(" · {} raw", key_shortcuts::tool_details_shortcut_label())
     } else {
         String::new()
     };
     Some(format!(
         "{} Activity: {label}{raw_hint}",
-        activity_shortcut_label()
+        key_shortcuts::activity_shortcut_label()
     ))
 }
 
@@ -9603,7 +7368,7 @@ fn activity_footer_target_cell_index(app: &App) -> Option<usize> {
     activity_target_cell_index(app)
 }
 
-fn detail_target_label(app: &App, cell_index: usize) -> Option<String> {
+pub(crate) fn detail_target_label(app: &App, cell_index: usize) -> Option<String> {
     if let Some(detail) = app.tool_detail_record_for_cell(cell_index) {
         return Some(detail.tool_name.clone());
     }
@@ -9639,110 +7404,7 @@ fn detail_target_label(app: &App, cell_index: usize) -> Option<String> {
     }
 }
 
-fn is_copy_shortcut(key: &KeyEvent) -> bool {
-    let is_c = matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'));
-    if !is_c {
-        return false;
-    }
-
-    if key.modifiers.contains(KeyModifiers::SUPER) {
-        return true;
-    }
-
-    key.modifiers.contains(KeyModifiers::CONTROL) && key.modifiers.contains(KeyModifiers::SHIFT)
-}
-
-fn is_file_tree_toggle_shortcut(key: &KeyEvent) -> bool {
-    let is_shifted_e = matches!(key.code, KeyCode::Char('E'))
-        || (matches!(key.code, KeyCode::Char('e')) && key.modifiers.contains(KeyModifiers::SHIFT));
-    if !is_shifted_e {
-        return false;
-    }
-
-    let has_forbidden_modifier =
-        key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SUPER);
-    let ctrl_shift_e = key.modifiers.contains(KeyModifiers::CONTROL) && !has_forbidden_modifier;
-
-    let cmd_shift_e = key.modifiers.contains(KeyModifiers::SUPER)
-        && key.modifiers.contains(KeyModifiers::SHIFT)
-        && !key.modifiers.contains(KeyModifiers::CONTROL)
-        && !key.modifiers.contains(KeyModifiers::ALT);
-
-    ctrl_shift_e || cmd_shift_e
-}
-
-fn tool_details_shortcut_label() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "\u{2325}+V"
-    } else {
-        "Alt+V"
-    }
-}
-
-fn activity_shortcut_label() -> &'static str {
-    "Ctrl+O"
-}
-
-/// Modifier predicate for the v0.8.30 family of `Alt+<letter>` transcript-
-/// nav shortcuts (`Alt+G` / `Alt+Shift+G` / `Alt+[` / `Alt+]` / `Alt+?` /
-/// `Alt+L` / `Alt+V`). Requires `Alt` and disallows `Ctrl` / `Super` so the
-/// bindings don't collide with platform clipboard / window-management
-/// shortcuts. `Shift` is permitted so the capital-letter forms work on
-/// any keyboard layout that produces them as `Alt+Shift+key`.
-///
-/// Plain `Char` events (no modifier, or modifier=`Shift` alone for the
-/// uppercase form) fall through to text insertion, which is the whole
-/// point — typing "good morning" no longer eats the first `g`.
-fn alt_nav_modifiers(modifiers: KeyModifiers) -> bool {
-    modifiers.contains(KeyModifiers::ALT)
-        && !modifiers.contains(KeyModifiers::CONTROL)
-        && !modifiers.contains(KeyModifiers::SUPER)
-}
-
-fn is_macos_option_v_legacy_key(key: &KeyEvent) -> bool {
-    is_macos_option_v_legacy_key_for_platform(key, cfg!(target_os = "macos"))
-}
-
-fn is_macos_option_v_legacy_key_for_platform(key: &KeyEvent, is_macos: bool) -> bool {
-    is_macos && key.modifiers.is_empty() && matches!(key.code, KeyCode::Char('\u{221A}'))
-}
-
-fn is_paste_shortcut(key: &KeyEvent) -> bool {
-    let is_v = matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V'));
-    let is_legacy_ctrl_v = matches!(key.code, KeyCode::Char('\u{16}'));
-    if !is_v && !is_legacy_ctrl_v {
-        return false;
-    }
-
-    if is_legacy_ctrl_v {
-        return true;
-    }
-
-    // Cmd+V on macOS
-    if key.modifiers.contains(KeyModifiers::SUPER) {
-        return true;
-    }
-
-    // Ctrl+V on Linux/Windows
-    key.modifiers.contains(KeyModifiers::CONTROL)
-}
-
-fn is_text_input_key(key: &KeyEvent) -> bool {
-    if matches!(key.code, KeyCode::Char(c) if c.is_control()) {
-        return false;
-    }
-
-    !key.modifiers.contains(KeyModifiers::CONTROL)
-        && !key.modifiers.contains(KeyModifiers::ALT)
-        && !key.modifiers.contains(KeyModifiers::SUPER)
-}
-
-fn is_ctrl_h_backspace(key: &KeyEvent) -> bool {
-    matches!(key.code, KeyCode::Char('h'))
-        && key.modifiers.contains(KeyModifiers::CONTROL)
-        && !key.modifiers.contains(KeyModifiers::ALT)
-        && !key.modifiers.contains(KeyModifiers::SUPER)
-}
+// Keyboard-shortcut predicates moved to `tui/key_shortcuts.rs`.
 
 fn extract_reasoning_header(text: &str) -> Option<String> {
     let start = text.find("**")?;

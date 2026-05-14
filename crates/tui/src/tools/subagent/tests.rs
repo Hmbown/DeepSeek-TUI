@@ -691,6 +691,26 @@ fn test_subagent_tool_registry_reports_unavailable_tools() {
     );
 }
 
+#[test]
+fn test_review_agent_tools_exclude_agent_spawn() {
+    let tmp = tempdir().expect("tempdir");
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    // None = full parent tool inheritance (the default for builtin types).
+    let registry = SubAgentToolRegistry::new(
+        runtime,
+        None,
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+    let tools = registry.tools_for_model(&SubAgentType::Review);
+    let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(
+        !names.contains(&"agent_spawn"),
+        "Review agent must not have agent_spawn; tools: {names:?}"
+    );
+}
+
 #[tokio::test]
 async fn test_wait_for_result_reports_timeout_when_still_running() {
     let manager = Arc::new(RwLock::new(SubAgentManager::new(PathBuf::from("."), 2)));
@@ -1056,6 +1076,11 @@ fn subagent_done_sentinel_format_is_well_formed() {
     assert_eq!(parsed["agent_id"], "agent_xyz");
     assert_eq!(parsed["status"], "completed");
     assert_eq!(parsed["agent_type"], "general");
+    assert_eq!(parsed["summary_location"], "previous_line");
+    assert_eq!(parsed["details"], "agent_eval");
+    assert!(parsed.get("summary").is_none());
+    assert!(parsed.get("duration_ms").is_none());
+    assert!(parsed.get("steps").is_none());
 }
 
 #[test]
@@ -1067,7 +1092,9 @@ fn subagent_failed_sentinel_format_is_well_formed() {
     let parsed: serde_json::Value = serde_json::from_str(inner).expect("inner JSON parses");
     assert_eq!(parsed["agent_id"], "agent_zzz");
     assert_eq!(parsed["status"], "failed");
-    assert_eq!(parsed["error"], "boom");
+    assert_eq!(parsed["error_location"], "previous_line");
+    assert_eq!(parsed["details"], "agent_eval");
+    assert!(parsed.get("error").is_none());
 }
 
 #[test]
@@ -1712,5 +1739,9 @@ fn subagent_completion_payload_carries_existing_sentinel_format() {
     assert!(
         second.contains("\"agent_id\":\"agent_test\""),
         "sentinel JSON includes agent_id"
+    );
+    assert!(
+        !second.contains("Found three errors."),
+        "sentinel should not duplicate the human summary line"
     );
 }

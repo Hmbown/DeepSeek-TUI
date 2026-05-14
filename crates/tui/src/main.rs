@@ -47,6 +47,7 @@ mod memory;
 mod models;
 mod network_policy;
 mod palette;
+mod prefix_cache;
 mod pricing;
 mod project_context;
 mod project_doc;
@@ -3060,13 +3061,14 @@ fn fork_session(session_id: Option<String>, last: bool, workspace: &Path) -> Res
         .system_prompt
         .as_ref()
         .map(|text| SystemPrompt::Text(text.clone()));
-    let forked = create_saved_session(
+    let mut forked = create_saved_session(
         &saved.messages,
         &saved.metadata.model,
         &saved.metadata.workspace,
         saved.metadata.total_tokens,
         system_prompt.as_ref(),
     );
+    forked.metadata.copy_cost_from(&saved.metadata);
     manager.save_session(&forked)?;
 
     let source_title = saved.metadata.title.trim();

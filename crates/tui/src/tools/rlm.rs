@@ -161,7 +161,9 @@ impl ToolSpec for RlmEvalTool {
         "Run one Python REPL block against a named RLM context. Returns a \
          bounded projection of stdout/stderr plus metadata. If the code calls \
          FINAL/finalize, the final value is stored as a var_handle retrievable \
-         with handle_read instead of copied unbounded into the parent context."
+         with handle_read instead of copied unbounded into the parent context. \
+         Batch child helpers require dependency_mode='independent'; use \
+         sub_query_sequence or a sequential loop for dependent work."
     }
 
     fn input_schema(&self) -> Value {
