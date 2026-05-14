@@ -65,6 +65,10 @@ pub struct HistorySummary {
     pub session_id: String,
     pub created_at: DateTime<Utc>,
     pub score: f64,
+    /// Summarisation phase: 0 = incremental mini-compaction, 1 = merged Phase 0 summaries.
+    /// Defaults to 0 for backward compatibility with pre-phase records.
+    #[serde(default)]
+    pub phase: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -352,6 +356,45 @@ impl InMemoryBackend {
         scored
     }
 
+    /// Count Phase 0 summaries for a given session.
+    fn count_phase0_summaries(&self, session_id: &str) -> usize {
+        self.summaries
+            .iter()
+            .filter(|s| s.session_id == session_id && s.phase == 0)
+            .count()
+    }
+
+    /// Collect the IDs and texts of the oldest Phase 0 summaries for a session.
+    fn oldest_phase0_summaries(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Vec<(String, String)> {
+        let mut candidates: Vec<&HistorySummary> = self
+            .summaries
+            .iter()
+            .filter(|s| s.session_id == session_id && s.phase == 0)
+            .collect();
+        candidates.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        candidates
+            .into_iter()
+            .take(limit)
+            .map(|s| (s.id.clone(), s.summary.clone()))
+            .collect()
+    }
+
+    /// Remove summaries by their IDs.
+    fn remove_summaries_by_ids(&mut self, ids: &[String]) -> usize {
+        let before = self.summaries.len();
+        self.summaries.retain(|s| !ids.contains(&s.id));
+        let removed = before - self.summaries.len();
+        if removed > 0 {
+            // save_to_disk is async but called from a non-async context...
+            // We'll save after the mutating call completes.
+        }
+        removed
+    }
+
     #[allow(dead_code)]
     async fn delete_expired(&mut self) -> usize {
         let now = Utc::now();
@@ -516,6 +559,7 @@ mod lance {
                 Field::new("key_files", DataType::Utf8, true),
                 Field::new("session_id", DataType::Utf8, true),
                 Field::new("created_at", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+                Field::new("phase", DataType::UInt8, true),
                 Field::new(
                     "embedding",
                     DataType::FixedSizeList(
@@ -939,6 +983,7 @@ mod lance {
                     session_id: session_ids.get(i).cloned().unwrap_or_default(),
                     created_at: Utc::now(),
                     score,
+                    phase: 0,
                 });
             }
         }
@@ -1119,6 +1164,29 @@ impl VectorDbService {
 
         let deleted = self.memory.lock().await.delete_expired().await;
         Ok(deleted)
+    }
+
+    /// Count Phase 0 summaries for a session (used for merge triggering).
+    pub async fn count_phase0_summaries(&self, session_id: &str) -> usize {
+        let guard = self.memory.lock().await;
+        guard.count_phase0_summaries(session_id)
+    }
+
+    /// Get the oldest Phase 0 summaries for merging.
+    pub async fn oldest_phase0_for_merge(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Vec<(String, String)> {
+        let guard = self.memory.lock().await;
+        guard.oldest_phase0_summaries(session_id, limit)
+    }
+
+    /// Remove summaries by their IDs (best-effort).
+    pub async fn remove_summaries(&self, ids: &[String]) {
+        let mut guard = self.memory.lock().await;
+        guard.remove_summaries_by_ids(ids);
+        guard.save_to_disk().await;
     }
 
     /// Count total memories.
@@ -1579,6 +1647,7 @@ mod tests {
             session_id: "s1".into(),
             created_at: Utc::now(),
             score: 0.0,
+            phase: 0,
         })
         .await
         .unwrap();

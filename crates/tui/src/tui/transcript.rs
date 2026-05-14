@@ -933,6 +933,7 @@ mod tests {
                         .to_string(),
                 streaming: false,
                 duration_secs: Some(3.5),
+                expanded: false,
             });
             cells.push(assistant_cell(
                 &format!("response {i} with multi-line\ntext content spanning\nseveral lines"),

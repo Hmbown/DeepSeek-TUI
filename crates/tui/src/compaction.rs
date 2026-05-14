@@ -68,7 +68,7 @@ impl Default for CompactionConfig {
             model: DEFAULT_TEXT_MODEL.to_string(),
             cache_summary: true,
             auto_floor_tokens: MINIMUM_AUTO_COMPACTION_TOKENS,
-            turns_interval: None,
+            turns_interval: Some(10),
         }
     }
 }
@@ -93,7 +93,7 @@ pub const MINIMUM_AUTO_COMPACTION_TOKENS: usize = 500_000;
 pub const KEEP_RECENT_MESSAGES: usize = 4;
 const RECENT_WORKING_SET_WINDOW: usize = 12;
 const MAX_WORKING_SET_PATHS: usize = 24;
-const MIN_SUMMARIZE_MESSAGES: usize = 6;
+pub const MIN_SUMMARIZE_MESSAGES: usize = 6;
 const SUMMARY_TEXT_SNIPPET_CHARS: usize = 800;
 const SUMMARY_TOOL_RESULT_SNIPPET_CHARS: usize = 240;
 const SUMMARY_INPUT_MAX_CHARS: usize = 24_000;
@@ -627,7 +627,7 @@ pub fn should_compact(
     workspace: Option<&Path>,
     external_pins: Option<&[usize]>,
     external_working_set_paths: Option<&[String]>,
-    has_vector_db: bool,
+    _has_vector_db: bool,
 ) -> bool {
     if !config.enabled {
         return false;
@@ -1126,6 +1126,23 @@ pub async fn compact_messages(
         Some(SystemPrompt::Blocks(vec![summary_block])),
         to_summarize,
     ))
+}
+
+/// Summarize a specific message range without the full compaction plan.
+///
+/// Unlike `compact_messages`, this does not run `plan_compaction` — the
+/// caller is responsible for providing the exact slice to summarize.
+/// Used by incremental mini-compaction (Tier 2 phase summarisation) where
+/// only the messages since the last compaction need summarising.
+pub async fn summarize_range(
+    client: &DeepSeekClient,
+    messages: &[Message],
+    model: &str,
+) -> Result<String> {
+    if messages.is_empty() {
+        return Ok(String::new());
+    }
+    create_summary(client, messages, model).await
 }
 
 async fn create_summary(
@@ -1922,7 +1939,7 @@ mod tests {
                 }],
             })
             .collect();
-        assert!(!should_compact(&messages, &config, None, None, None));
+        assert!(!should_compact(&messages, &config, None, None, None, false));
     }
 
     /// v0.8.11: message-count is no longer a compaction trigger. Long
@@ -1951,7 +1968,7 @@ mod tests {
             .collect();
         // Token total stays minuscule so the token threshold is not hit;
         // without the prior message-count trigger, no compaction.
-        assert!(!should_compact(&many_messages, &config, None, None, None));
+        assert!(!should_compact(&many_messages, &config, None, None, None, false));
     }
 
     #[test]
@@ -2056,7 +2073,7 @@ mod tests {
             .map(|_| msg("user", "Work on src/compaction.rs right now"))
             .collect();
 
-        assert!(!should_compact(&messages, &config, None, None, None));
+        assert!(!should_compact(&messages, &config, None, None, None, false));
     }
 
     // v0.8.11: removed `should_compact_counts_only_unpinned_messages` and
@@ -2331,7 +2348,7 @@ mod tests {
             .collect();
 
         // Total tokens: ~120, which exceeds 100
-        assert!(should_compact(&messages, &config, None, None, None));
+        assert!(should_compact(&messages, &config, None, None, None, false));
     }
 
     #[test]
@@ -2345,7 +2362,7 @@ mod tests {
         // Create short messages
         let messages: Vec<Message> = (0..5).map(|_| msg("user", "short")).collect();
 
-        assert!(!should_compact(&messages, &config, None, None, None));
+        assert!(!should_compact(&messages, &config, None, None, None, false));
     }
 
     /// v0.8.11: the 500K hard floor blocks auto-compaction even when the
@@ -2365,7 +2382,7 @@ mod tests {
 
         let messages: Vec<Message> = (0..10).map(|_| msg("user", &"x".repeat(50))).collect();
         // Total tokens way under 500K, so floor blocks compaction.
-        assert!(!should_compact(&messages, &config, None, None, None));
+        assert!(!should_compact(&messages, &config, None, None, None, false));
     }
 
     /// v0.8.11: when total tokens cross the 500K floor, the existing
@@ -2384,7 +2401,7 @@ mod tests {
         // token_threshold, so auto-compaction stays off — by threshold,
         // not floor.
         let messages: Vec<Message> = (0..1100).map(|_| msg("user", &"x".repeat(2000))).collect();
-        assert!(!should_compact(&messages, &config, None, None, None));
+        assert!(!should_compact(&messages, &config, None, None, None, false));
 
         // Crank threshold below total → compaction fires now that we're
         // past the floor.
@@ -2392,7 +2409,7 @@ mod tests {
             token_threshold: 100_000,
             ..config
         };
-        assert!(should_compact(&messages, &config_lower, None, None, None));
+        assert!(should_compact(&messages, &config_lower, None, None, None, false));
     }
 
     /// `CompactionConfig::default()` ships with the 500K floor on by

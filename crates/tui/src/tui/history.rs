@@ -102,6 +102,10 @@ pub enum HistoryCell {
         content: String,
         streaming: bool,
         duration_secs: Option<f32>,
+        /// When true, the cell renders its full reasoning body inline instead
+        /// of collapsing to a summary. Toggled by pressing Enter when the
+        /// transcript selection is on a thinking cell.
+        expanded: bool,
     },
     /// An `<archived_context>` seam block produced by the Flash seam manager
     /// (issue #159). Rendered dimmed/italic with a level + range label so
@@ -235,6 +239,7 @@ impl HistoryCell {
                 content,
                 streaming,
                 duration_secs,
+                ..
             } => render_thinking(content, width, *streaming, *duration_secs, false, false),
             HistoryCell::Tool(cell) => cell.lines_with_motion(width, false),
             HistoryCell::SubAgent(cell) => cell.lines(width),
@@ -253,12 +258,13 @@ impl HistoryCell {
                 content,
                 streaming,
                 duration_secs,
+                expanded,
             } => render_thinking(
                 content,
                 width,
                 *streaming,
                 *duration_secs,
-                !options.verbose,
+                !*expanded && !options.verbose,
                 options.low_motion,
             ),
             HistoryCell::Tool(cell) if !options.show_tool_details => {
@@ -337,6 +343,7 @@ impl HistoryCell {
                 content,
                 streaming,
                 duration_secs,
+                ..
             } => render_thinking(
                 content,
                 width,
@@ -587,6 +594,7 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
                         content: thinking.clone(),
                         streaming: false,
                         duration_secs: None,
+                        expanded: false,
                     });
                 }
             }
@@ -2101,7 +2109,10 @@ fn render_thinking(
     lines.push(Line::from(header_spans));
 
     let content_width = width.saturating_sub(3).max(1);
-    let mut collapsed_without_explicit_summary = false;
+    // Short reasoning — just show it all inline. For longer content we
+    // prefer an explicit "Summary:" block; when absent, the full text
+    // serves as a preview and the line cap below keeps it compact.
+    const SHORT_REASONING_CHAR_LIMIT: usize = 400;
     let body_text = if collapsed {
         if streaming {
             // #861 RC4 / #1324: during streaming we don't yet have a
@@ -2111,13 +2122,12 @@ fn render_thinking(
             // the user sees the model's most recent thinking instead of
             // staring at an empty placeholder.
             content.to_string()
+        } else if content.len() <= SHORT_REASONING_CHAR_LIMIT {
+            content.to_string()
         } else {
             match extract_explicit_reasoning_summary(content) {
                 Some(summary) => summary,
-                None => {
-                    collapsed_without_explicit_summary = true;
-                    String::new()
-                }
+                None => content.to_string(),
             }
         }
     } else {
@@ -2172,7 +2182,7 @@ fn render_thinking(
             // knows there's more above and how to reach it.
             truncated
         } else {
-            collapsed_without_explicit_summary || truncated || body_text.trim() != content.trim()
+            truncated || body_text.trim() != content.trim()
         };
     if needs_affordance {
         let label = if streaming {
@@ -4310,8 +4320,9 @@ mod tests {
     fn long_thinking_display_is_shorter_than_transcript() {
         // Build a multi-paragraph thinking body so the live view has
         // something to compress. Without an explicit Summary block, the
-        // live surface should show status + affordance only; Ctrl+O remains
-        // the path to the full body.
+        // Long reasoning without an explicit "Summary:" block shows a 4-line
+        // preview plus the Ctrl+O affordance. The tail is truncated; the user
+        // can expand inline (Enter) or open the full timeline (Ctrl+O).
         let body = "First paragraph lede.\n\
                     Second sentence of the first paragraph.\n\n\
                     Second paragraph: deeper analysis follows.\n\
@@ -4324,6 +4335,7 @@ mod tests {
             content: body.to_string(),
             streaming: false,
             duration_secs: Some(3.2),
+            expanded: false,
         };
 
         let live = cell.lines_with_options(
@@ -4349,9 +4361,11 @@ mod tests {
             transcript_text.contains("First paragraph lede"),
             "transcript thinking must keep the lede"
         );
+        // Long content without Summary: the first 4 lines are shown as an
+        // inline preview so the user sees *something*.
         assert!(
-            !live_text.contains("First paragraph lede"),
-            "live thinking must not show raw completed reasoning: {live_text}"
+            live_text.contains("First paragraph lede"),
+            "live thinking must preview the head: {live_text}"
         );
         assert!(
             transcript_text.contains("Fourth paragraph"),
@@ -4373,13 +4387,15 @@ mod tests {
 
     #[test]
     fn completed_thinking_without_summary_stays_out_of_live_view() {
-        // Even a short completed reasoning body can read like the user's
-        // prompt when rendered inline. Keep it in transcript/detail surfaces
-        // and show the Ctrl+O affordance in the main flow.
+        // Short reasoning (≤ 400 chars) is displayed inline in the live view
+        // so the user can see it at a glance. Longer reasoning without an
+        // explicit "Summary:" block shows a preview capped at 4 lines + the
+        // Ctrl+O affordance.
         let cell = HistoryCell::Thinking {
             content: "One brief reasoning step.".to_string(),
             streaming: false,
             duration_secs: Some(0.4),
+            expanded: false,
         };
 
         let live = cell.lines_with_options(
@@ -4395,16 +4411,17 @@ mod tests {
         let transcript_text = lines_text(&transcript);
 
         assert!(
-            !live_text.contains("One brief reasoning step."),
-            "live thinking must hide raw completed reasoning: {live_text}"
+            live_text.contains("One brief reasoning step."),
+            "short reasoning must be shown inline in live view: {live_text}"
         );
         assert!(
             transcript_text.contains("One brief reasoning step."),
             "transcript thinking must keep the full reasoning body"
         );
+        // Short reasoning fits in ≤4 lines — no Ctrl+O affordance needed.
         assert!(
-            live_text.contains("Full reasoning in Ctrl+O"),
-            "live thinking must offer the detail affordance"
+            !live_text.contains("Full reasoning in Ctrl+O"),
+            "short reasoning should not show the Ctrl+O affordance: {live_text}"
         );
     }
 

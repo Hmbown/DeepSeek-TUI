@@ -36,6 +36,7 @@ pub(super) fn ensure_active_entry(app: &mut App) -> usize {
         content: String::new(),
         streaming: true,
         duration_secs: None,
+        expanded: false,
     });
     app.streaming_thinking_active_entry = Some(entry_idx);
     app.bump_active_cell_revision();

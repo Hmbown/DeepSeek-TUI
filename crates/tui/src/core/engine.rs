@@ -24,6 +24,7 @@ use tokio_util::sync::CancellationToken;
 use crate::client::DeepSeekClient;
 use crate::compaction::{
     CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact,
+    summarize_range, KEEP_RECENT_MESSAGES, MIN_SUMMARIZE_MESSAGES,
 };
 use crate::config::{ApiProvider, Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL};
 use crate::cycle_manager::{
@@ -334,6 +335,9 @@ pub struct Engine {
     /// Counter for turn-based mini-compaction (Tier 2 phase summarisation).
     /// Resets after each mini-compaction or when disabled.
     compaction_turn_counter: u64,
+    /// Message index after the last mini-compaction. Incremental summaries
+    /// only process messages in `[last_compaction_message_index, current)`.
+    last_compaction_message_index: usize,
     /// Post-edit LSP diagnostics injection (#136). Populated unconditionally
     /// — when LSP is disabled in config, this is an inert manager that
     /// always returns `None` from `diagnostics_for`.
@@ -586,6 +590,7 @@ impl Engine {
             coherence_state: CoherenceState::default(),
             turn_counter: 0,
             compaction_turn_counter: 0,
+            last_compaction_message_index: 0,
             lsp_manager,
             pending_lsp_blocks: Vec::new(),
             workshop_vars,
@@ -611,6 +616,11 @@ impl Engine {
     /// Run the engine event loop
     #[allow(clippy::too_many_lines)]
     pub async fn run(mut self) {
+        // Initialize vector database on first engine run.
+        // Best-effort: if this fails the engine continues with
+        // vector_db = None and semantic retrieval is unavailable.
+        self.init_vector_db().await;
+
         while let Some(op) = self.rx_op.recv().await {
             match op {
                 Op::SendMessage {
@@ -1903,9 +1913,98 @@ impl Engine {
             session_id: self.session.id.clone(),
             created_at: chrono::Utc::now(),
             score: 0.0,
+            phase: 0,
         };
         if let Err(e) = vdb.store_summary(summary).await {
             tracing::warn!("failed to store compaction summary in vector db: {e}");
+        }
+    }
+
+    /// Compute the effective mini-compaction interval.
+    ///
+    /// Returns the configured `turns_interval`, preparing for future
+    /// token-density-based dynamic adjustment. When `None`, turn-based
+    /// mini-compaction is disabled.
+    fn dynamic_mini_compaction_interval(&self) -> Option<usize> {
+        self.config.compaction.turns_interval
+    }
+
+    /// Merge the oldest 5 Phase 0 summaries into a single Phase 1 summary.
+    ///
+    /// Best-effort: the merged summary replaces the consumed Phase 0 summaries
+    /// in the vector DB so retrieval sees progressively higher-level context.
+    /// Called after each incremental mini-compaction store.
+    async fn try_merge_phase0_summaries(
+        &self,
+        vdb: &crate::vector_db::VectorDbService,
+        client: &DeepSeekClient,
+    ) {
+        const MERGE_THRESHOLD: usize = 5;
+        let session_id = &self.session.id;
+
+        let count = vdb.count_phase0_summaries(session_id).await;
+        if count < MERGE_THRESHOLD {
+            return;
+        }
+
+        // Collect the oldest Phase 0 summaries
+        let candidates = vdb
+            .oldest_phase0_for_merge(session_id, MERGE_THRESHOLD)
+            .await;
+        if candidates.len() < MERGE_THRESHOLD {
+            return;
+        }
+
+        let removed_ids: Vec<String> = candidates.iter().map(|(id, _)| id.clone()).collect();
+        let combined_text: String = candidates
+            .iter()
+            .enumerate()
+            .map(|(i, (_, text))| format!("Summary {}:\n{}\n", i + 1, text))
+            .collect::<Vec<_>>()
+            .join("\n---\n");
+
+        // Build synthetic messages for the merge summary call
+        let merge_msg = crate::models::Message {
+            role: "user".to_string(),
+            content: vec![crate::models::ContentBlock::Text {
+                text: format!(
+                    "Combine these conversation summaries into one concise summary. \
+                     Retain key decisions, file changes, and open work items:\n\n{}",
+                    combined_text
+                ),
+                cache_control: None,
+            }],
+        };
+
+        match summarize_range(client, &[merge_msg], &self.config.compaction.model).await {
+            Ok(merged_text) if !merged_text.trim().is_empty() => {
+                let merged = crate::vector_db::HistorySummary {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    turn_range: "merged".to_string(),
+                    summary: merged_text,
+                    key_files: None,
+                    session_id: session_id.clone(),
+                    created_at: chrono::Utc::now(),
+                    score: 0.0,
+                    phase: 1,
+                };
+                if let Err(e) = vdb.store_summary(merged).await {
+                    tracing::warn!("phase merge: store failed: {e}");
+                } else {
+                    // Remove the consumed Phase 0 summaries.
+                    vdb.remove_summaries(&removed_ids).await;
+                    tracing::debug!(
+                        removed = removed_ids.len(),
+                        "phase merge: merged Phase 0 → Phase 1"
+                    );
+                }
+            }
+            Ok(_) => {
+                tracing::debug!("phase merge: empty merge result, skipping");
+            }
+            Err(e) => {
+                tracing::warn!("phase merge failed: {e}");
+            }
         }
     }
 
@@ -2164,39 +2263,6 @@ impl Engine {
             }
         };
         Some(augmented)
-    }
-
-    /// Build a simple retrieved-context block for sub-agent inheritance.
-    ///
-    /// Searches the vector DB using the user's latest message as query
-    /// and returns a `<retrieved_context>` text block. Best-effort:
-    /// returns `None` when vector DB is unavailable or search fails.
-    async fn build_retrieved_context_for_subagent(
-        &self,
-        user_message: &str,
-    ) -> Option<String> {
-        let vdb = self.vector_db.as_ref()?;
-        let memories = vdb.search_memories(user_message, 3, None).await.ok()?;
-        let summaries = vdb.search_summaries(user_message, 2).await.ok()?;
-
-        let mut parts: Vec<String> = Vec::new();
-        for m in &memories {
-            let tag = m.tags.as_deref().unwrap_or("memory");
-            parts.push(format!("- [{tag}] {}", m.content));
-        }
-        for s in &summaries {
-            parts.push(format!("- [history] {}", s.summary));
-        }
-
-        if parts.is_empty() {
-            return None;
-        }
-        Some(format!(
-            "<parent_retrieved_context>\n{}\n</parent_retrieved_context>\n\
-            The above context was retrieved by the parent agent. Use it as \
-            background knowledge for this task.",
-            parts.join("\n")
-        ))
     }
 
     /// Prepare the final message list and system prompt for the API request.

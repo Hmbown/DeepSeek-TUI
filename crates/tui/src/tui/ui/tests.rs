@@ -324,6 +324,7 @@ fn selection_to_text_copies_rendered_transcript_block() {
             content: "copy thinking".to_string(),
             streaming: false,
             duration_secs: Some(1.0),
+            expanded: false,
         },
         HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
             name: "exec_shell".to_string(),
@@ -2995,6 +2996,7 @@ fn activity_footer_hint_surfaces_visible_thinking_without_raw_tool_hint() {
         content: "visible reasoning".to_string(),
         streaming: false,
         duration_secs: Some(1.4),
+        expanded: false,
     }];
     app.resync_history_revisions();
     let revisions = app.history_revisions.clone();
@@ -4222,6 +4224,7 @@ fn activity_detail_opens_reasoning_timeline_for_selected_thinking() {
             content: "first chunk reasoning".to_string(),
             streaming: false,
             duration_secs: Some(0.8),
+            expanded: false,
         },
         HistoryCell::Assistant {
             content: "interlude".to_string(),
@@ -4231,6 +4234,7 @@ fn activity_detail_opens_reasoning_timeline_for_selected_thinking() {
             content: "second chunk reasoning".to_string(),
             streaming: false,
             duration_secs: Some(1.1),
+            expanded: false,
         },
     ];
     app.resync_history_revisions();

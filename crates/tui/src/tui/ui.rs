@@ -2547,6 +2547,15 @@ async fn run_event_loop(
 
             // Global keybindings
             match key.code {
+                // Enter on a thinking cell toggles expand/collapse inline
+                // rather than opening a standalone pager.
+                KeyCode::Enter
+                    if app.input.is_empty()
+                        && app.viewport.transcript_selection.is_active()
+                        && toggle_thinking_expand(app) =>
+                {
+                    continue;
+                }
                 KeyCode::Enter
                     if app.input.is_empty()
                         && app.viewport.transcript_selection.is_active()
@@ -7995,6 +8004,29 @@ fn build_context_menu_entries(app: &App, mouse: MouseEvent) -> Vec<ContextMenuEn
             description: "open file:line in $EDITOR".to_string(),
             action: ContextMenuAction::OpenFileAtLine { cell_index },
         });
+        // Expand/collapse reasoning inline.
+        if app
+            .cell_at_virtual_index(cell_index)
+            .is_some_and(|c| matches!(c, HistoryCell::Thinking { .. }))
+        {
+            let is_expanded = matches!(
+                app.cell_at_virtual_index(cell_index),
+                Some(HistoryCell::Thinking {
+                    expanded: true,
+                    ..
+                })
+            );
+            entries.push(ContextMenuEntry {
+                label: if is_expanded {
+                    "Collapse reasoning"
+                } else {
+                    "Expand reasoning"
+                }
+                .to_string(),
+                description: "toggle inline reasoning body".to_string(),
+                action: ContextMenuAction::ToggleExpandThinking { cell_index },
+            });
+        }
         // Hide/show cell toggle.
         if app.collapsed_cells.contains(&cell_index) {
             entries.push(ContextMenuEntry {
@@ -8127,6 +8159,20 @@ fn handle_context_menu_action(app: &mut App, action: ContextMenuAction) {
             let count = app.collapsed_cells.len();
             app.collapsed_cells.clear();
             app.status_message = Some(format!("{count} hidden cell(s) restored"));
+        }
+        ContextMenuAction::ToggleExpandThinking { cell_index } => {
+            let Some(HistoryCell::Thinking { expanded, .. }) =
+                app.cell_at_virtual_index_mut(cell_index)
+            else {
+                app.status_message = Some("Not a reasoning cell".to_string());
+                return;
+            };
+            *expanded = !*expanded;
+            app.status_message = Some(if *expanded {
+                "Reasoning expanded".to_string()
+            } else {
+                "Reasoning collapsed".to_string()
+            });
         }
     }
     app.needs_redraw = true;
@@ -8375,6 +8421,35 @@ fn selected_transcript_cell_index(app: &App) -> Option<usize> {
         })
 }
 
+/// Toggle the `expanded` flag on the thinking cell currently under the
+/// transcript selection. Returns `true` when a toggle happened, `false`
+/// when the selection was not on a thinking cell.
+fn toggle_thinking_expand(app: &mut App) -> bool {
+    let Some(cell_index) = selected_transcript_cell_index(app) else {
+        return false;
+    };
+    // Read-only check first — only bump revision when we know it's a
+    // thinking cell and the value actually changes.
+    let is_thinking = app
+        .cell_at_virtual_index(cell_index)
+        .is_some_and(|c| matches!(c, HistoryCell::Thinking { .. }));
+    if !is_thinking {
+        return false;
+    }
+    let Some(HistoryCell::Thinking { expanded, .. }) =
+        app.cell_at_virtual_index_mut(cell_index)
+    else {
+        return false;
+    };
+    *expanded = !*expanded;
+    app.status_message = Some(if *expanded {
+        "Reasoning expanded".to_string()
+    } else {
+        "Reasoning collapsed".to_string()
+    });
+    true
+}
+
 fn current_activity_cell_index(app: &App) -> Option<usize> {
     let active = app.active_cell.as_ref()?;
     let base = app.history.len();
@@ -8500,6 +8575,7 @@ fn reasoning_timeline_text(app: &App, selected_cell_index: usize) -> Option<Stri
             content,
             streaming,
             duration_secs,
+            ..
         }) = app.cell_at_virtual_index(cell_index)
         else {
             continue;
