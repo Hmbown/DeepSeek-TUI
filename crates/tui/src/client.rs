@@ -832,12 +832,12 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::DeepseekCN
             | ApiProvider::Openrouter
             | ApiProvider::Novita
-            | ApiProvider::Fireworks
             | ApiProvider::Sglang
             | ApiProvider::Vllm => {
                 body["thinking"] = json!({ "type": "disabled" });
             }
-            ApiProvider::Openai | ApiProvider::Ollama => {}
+            // Fireworks uses strict OpenAI schema; thinking field is non-standard.
+            ApiProvider::Fireworks | ApiProvider::Openai | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": false,
@@ -1813,6 +1813,17 @@ mod tests {
             Some("high")
         );
         assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_fireworks_off_omits_thinking_field() {
+        let mut body = json!({});
+        apply_reasoning_effort(&mut body, Some("off"), ApiProvider::Fireworks);
+
+        // Fireworks strict OpenAI schema rejects the DeepSeek `thinking` field
+        // even when used alone to disable reasoning.
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]
