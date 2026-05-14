@@ -7,14 +7,14 @@ pub const INK_RGB: (u8, u8, u8) = (7, 12, 18);
 pub const SLATE_RGB: (u8, u8, u8) = (11, 20, 28);
 pub const ELEVATED_RGB: (u8, u8, u8) = (16, 31, 42);
 pub const BORDER_RGB: (u8, u8, u8) = (54, 90, 112);
-pub const AMBER_RGB: (u8, u8, u8) = (91, 196, 255);
-pub const AMBER_DIM_RGB: (u8, u8, u8) = (54, 142, 188);
+pub const AMBER_RGB: (u8, u8, u8) = (245, 158, 11); // warm amber
+pub const AMBER_DIM_RGB: (u8, u8, u8) = (194, 115, 6);
 pub const GREEN_RGB: (u8, u8, u8) = (70, 208, 170);
 pub const RED_RGB: (u8, u8, u8) = (232, 93, 86);
 pub const BLUE_RGB: (u8, u8, u8) = (66, 153, 255);
 pub const SKY_RGB: (u8, u8, u8) = (91, 216, 255);
 #[allow(dead_code)]
-pub const PINK_RGB: (u8, u8, u8) = (134, 179, 255);
+pub const PINK_RGB: (u8, u8, u8) = (244, 114, 182); // actual pink/magenta
 
 // Legacy re-exports — keep for minimal diff
 pub const DEEPSEEK_BLUE_RGB: (u8, u8, u8) = BLUE_RGB;
@@ -204,7 +204,7 @@ pub const TEXT_REASONING: Color = Color::Rgb(154, 213, 235);
 pub const TEXT_PRIMARY: Color = TEXT_BODY;
 pub const TEXT_MUTED: Color = TEXT_SECONDARY;
 pub const TEXT_DIM: Color = TEXT_HINT;
-pub const USER_BODY: Color = TEXT_BODY;
+pub const USER_BODY: Color = GREEN;
 pub const LIGHT_USER_BODY: Color = Color::Rgb(21, 128, 61); // #15803D green
 
 // === Surfaces ===
@@ -353,10 +353,10 @@ pub const LIGHT_UI_THEME: UiTheme = UiTheme {
     footer_bg: LIGHT_SURFACE,
     mode_agent: BLUE,
     mode_yolo: RED,
-    mode_plan: BLUE,
+    mode_plan: AMBER,
     status_ready: LIGHT_TEXT_MUTED,
     status_working: BLUE,
-    status_warning: BLUE,
+    status_warning: AMBER,
     text_dim: LIGHT_TEXT_HINT,
     text_hint: LIGHT_TEXT_HINT,
     text_muted: LIGHT_TEXT_MUTED,
@@ -1174,69 +1174,39 @@ pub fn pulse_brightness(color: Color, now_ms: u64) -> Color {
 
 #[must_use]
 #[allow(dead_code)]
-#[allow(clippy::needless_return)]
 fn nearest_ansi16(r: u8, g: u8, b: u8) -> Color {
     let lum = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
     if lum < 24 {
-        return Color::Black;
-    }
-    if r > 220 && g > 220 && b > 220 {
-        return Color::White;
-    }
-    let bright = lum > 144;
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    if max.saturating_sub(min) < 16 {
-        return if bright { Color::Gray } else { Color::DarkGray };
-    }
-    if r >= g && r >= b {
-        if g > b + 24 {
-            return if bright {
-                Color::LightYellow
-            } else {
-                Color::Yellow
-            };
-        } else if b > r.saturating_sub(24) {
-            return if bright {
-                Color::LightMagenta
-            } else {
-                Color::Magenta
-            };
-        } else {
-            return if bright { Color::LightRed } else { Color::Red };
-        }
-    } else if g >= r && g >= b {
-        if b > r + 24 {
-            return if bright {
-                Color::LightCyan
-            } else {
-                Color::Cyan
-            };
-        } else {
-            return if bright {
-                Color::LightGreen
-            } else {
-                Color::Green
-            };
-        }
-    } else if r.saturating_add(48) >= b && r > g + 24 {
-        return if bright {
-            Color::LightMagenta
-        } else {
-            Color::Magenta
-        };
-    } else if g.saturating_add(48) >= b && g > r + 24 {
-        return if bright {
-            Color::LightCyan
-        } else {
-            Color::Cyan
-        };
+        Color::Black
+    } else if r > 220 && g > 220 && b > 220 {
+        Color::White
     } else {
-        return if bright {
-            Color::LightBlue
+        let bright = lum > 144;
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        if max.saturating_sub(min) < 16 {
+            if bright { Color::Gray } else { Color::DarkGray }
+        } else if r >= g && r >= b {
+            if g > b + 24 {
+                if bright { Color::LightYellow } else { Color::Yellow }
+            } else if b > r.saturating_sub(24) {
+                if bright { Color::LightMagenta } else { Color::Magenta }
+            } else {
+                if bright { Color::LightRed } else { Color::Red }
+            }
+        } else if g >= r && g >= b {
+            if b > r + 24 {
+                if bright { Color::LightCyan } else { Color::Cyan }
+            } else {
+                if bright { Color::LightGreen } else { Color::Green }
+            }
+        } else if r.saturating_add(48) >= b && r > g + 24 {
+            if bright { Color::LightMagenta } else { Color::Magenta }
+        } else if g.saturating_add(48) >= b && g > r + 24 {
+            if bright { Color::LightCyan } else { Color::Cyan }
         } else {
-            Color::Blue
-        };
+            if bright { Color::LightBlue } else { Color::Blue }
+        }
     }
 }
 
@@ -1345,9 +1315,9 @@ mod tests {
 
     #[test]
     fn dark_palette_uses_soft_body_text_and_warm_reasoning() {
-        assert_eq!(TEXT_BODY, Color::Rgb(226, 232, 240));
-        assert_eq!(TEXT_REASONING, Color::Rgb(211, 170, 112));
-        assert_eq!(ACCENT_REASONING_LIVE, Color::Rgb(224, 153, 72));
+        assert_eq!(TEXT_BODY, Color::Rgb(238, 247, 255));
+        assert_eq!(TEXT_REASONING, Color::Rgb(154, 213, 235));
+        assert_eq!(ACCENT_REASONING_LIVE, Color::Rgb(194, 115, 6));
         assert_ne!(TEXT_REASONING, TEXT_TOOL_OUTPUT);
         assert_ne!(TEXT_BODY, Color::White);
     }

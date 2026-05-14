@@ -139,8 +139,8 @@ fn verify_status_success_uses_sky() {
     let content = fs::read_to_string(&palette_path).expect("Failed to read palette.rs");
 
     assert!(
-        content.contains("pub const STATUS_SUCCESS: Color = DEEPSEEK_SKY;"),
-        "STATUS_SUCCESS should use DEEPSEEK_SKY, not DEEPSEEK_AQUA"
+        content.contains("pub const STATUS_SUCCESS: Color = GREEN;"),
+        "STATUS_SUCCESS should use GREEN"
     );
 }
 
@@ -151,16 +151,16 @@ fn verify_brand_colors_defined() {
     let content = fs::read_to_string(&palette_path).expect("Failed to read palette.rs");
 
     assert!(
-        content.contains("DEEPSEEK_BLUE_RGB: (u8, u8, u8) = (53, 120, 229);"),
-        "DEEPSEEK_BLUE should be #3578E5"
+        content.contains("pub const BLUE_RGB: (u8, u8, u8) = (66, 153, 255);"),
+        "BLUE should be #4299FF"
     );
     assert!(
-        content.contains("DEEPSEEK_SKY_RGB: (u8, u8, u8) = (106, 174, 242);"),
-        "DEEPSEEK_SKY should be #6AAEF2"
+        content.contains("pub const SKY_RGB: (u8, u8, u8) = (91, 216, 255);"),
+        "SKY should be #5BD8FF"
     );
     assert!(
-        content.contains("DEEPSEEK_RED_RGB: (u8, u8, u8) = (226, 80, 96);"),
-        "DEEPSEEK_RED should be #E25060"
+        content.contains("pub const RED_RGB: (u8, u8, u8) = (232, 93, 86);"),
+        "RED should be #E85D56"
     );
 }
 

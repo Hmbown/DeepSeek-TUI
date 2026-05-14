@@ -71,8 +71,8 @@ impl Theme {
             // for content (#63 follow-up: panels rendered as empty boxes even
             // when "No todos" / "No active plan" should have shown).
             section_padding: Padding::horizontal(1),
-            tool_title_color: Color::White,
-            tool_value_color: Color::White,
+            tool_title_color: palette::TEXT_SOFT,
+            tool_value_color: palette::TEXT_PRIMARY,
             tool_label_color: palette::TEXT_DIM,
             tool_running_accent: palette::ACCENT_TOOL_LIVE,
             tool_success_accent: palette::DEEPSEEK_BLUE,
