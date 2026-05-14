@@ -1193,6 +1193,7 @@ name = "deepseek-config"
 version = "0.8.35"
 dependencies = [
  "anyhow",
+ "deepseek-execpolicy",
  "deepseek-secrets",
  "dirs",
  "serde",
@@ -1224,6 +1225,7 @@ version = "0.8.35"
 dependencies = [
  "anyhow",
  "deepseek-protocol",
+ "globset",
  "serde",
 ]
 
@@ -1311,6 +1313,7 @@ dependencies = [
  "clap_complete",
  "colored",
  "crossterm 0.28.1",
+ "deepseek-execpolicy",
  "deepseek-secrets",
  "deepseek-tools",
  "dirs",
@@ -1345,6 +1348,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml 0.9.11+spec-1.1.0",
+ "toml_edit",
  "tower-http",
  "tracing",
  "tracing-appender",
@@ -5321,6 +5325,7 @@ dependencies = [
  "indexmap",
  "toml_datetime 0.7.5+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 0.7.14",
 ]
 

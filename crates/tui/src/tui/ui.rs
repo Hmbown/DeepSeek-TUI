@@ -651,6 +651,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .and_then(|s| s.provider)
             .unwrap_or_default(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
+        exec_policy_engine: config.exec_policy_engine(),
     }
 }
 
@@ -1680,12 +1681,13 @@ async fn run_event_loop(
                             }
 
                             // Create approval request and show overlay
-                            let request = ApprovalRequest::new(
+                            let request = ApprovalRequest::new_with_workspace(
                                 &id,
                                 &tool_name,
                                 &description,
                                 &tool_input,
                                 &approval_key,
+                                &app.workspace,
                             );
                             log_sensitive_event(
                                 "tool.approval.prompted",
@@ -5734,6 +5736,7 @@ async fn handle_view_events(
                 decision,
                 timed_out,
                 approval_key,
+                persistent_rules,
             } => {
                 if decision == ReviewDecision::ApprovedForSession {
                     // Store both the tool name (backward compat) and the
@@ -5742,9 +5745,45 @@ async fn handle_view_events(
                     app.approval_session_approved.insert(approval_key.clone());
                 }
 
+                let mut live_persistent_rules = Vec::new();
+                if matches!(
+                    decision,
+                    ReviewDecision::Approved | ReviewDecision::ApprovedForSession
+                ) && !persistent_rules.is_empty()
+                {
+                    match crate::commands::persist_permission_rules(&persistent_rules) {
+                        Ok(path) => {
+                            live_persistent_rules = persistent_rules;
+                            let noun = if live_persistent_rules.len() == 1 {
+                                "rule"
+                            } else {
+                                "rules"
+                            };
+                            app.push_status_toast(
+                                format!("Saved permission {noun} to {}", path.display()),
+                                StatusToastLevel::Success,
+                                Some(5_000),
+                            );
+                        }
+                        Err(err) => {
+                            app.push_status_toast(
+                                format!("Failed to save permission rule: {err}"),
+                                StatusToastLevel::Error,
+                                Some(10_000),
+                            );
+                        }
+                    }
+                }
+
                 match decision {
                     ReviewDecision::Approved | ReviewDecision::ApprovedForSession => {
-                        let _ = engine_handle.approve_tool_call(tool_id).await;
+                        if live_persistent_rules.is_empty() {
+                            let _ = engine_handle.approve_tool_call(tool_id).await;
+                        } else {
+                            let _ = engine_handle
+                                .approve_tool_call_with_rules(tool_id, live_persistent_rules)
+                                .await;
+                        }
                     }
                     ReviewDecision::Denied | ReviewDecision::Abort => {
                         // Cache the denial so the model retry-loop doesn't

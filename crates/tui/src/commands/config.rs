@@ -347,6 +347,155 @@ pub fn persist_root_string_key(key: &str, value: &str) -> anyhow::Result<PathBuf
     Ok(path)
 }
 
+pub fn persist_permission_rules(
+    rules: &[deepseek_execpolicy::ToolPermissionRule],
+) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+    use std::fs;
+    use toml_edit::{ArrayOfTables, DocumentMut, Item, Table};
+
+    let path = config_toml_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    let mut doc: DocumentMut = if path.exists() {
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read config at {}", path.display()))?;
+        raw.parse()
+            .with_context(|| format!("failed to parse config at {}", path.display()))?
+    } else {
+        DocumentMut::new()
+    };
+    let permissions_entry = doc
+        .entry("permissions")
+        .or_insert_with(|| Item::Table(Table::new()));
+    let permissions_table = permissions_entry
+        .as_table_mut()
+        .context("`permissions` section in config.toml must be a table")?;
+    let rules_entry = permissions_table
+        .entry("rules")
+        .or_insert_with(|| Item::ArrayOfTables(ArrayOfTables::new()));
+
+    append_permission_rules(rules_entry, rules)?;
+
+    let body = doc.to_string();
+    fs::write(&path, body)
+        .with_context(|| format!("failed to write config at {}", path.display()))?;
+    Ok(path)
+}
+
+fn append_permission_rules(
+    rules_item: &mut toml_edit::Item,
+    rules: &[deepseek_execpolicy::ToolPermissionRule],
+) -> anyhow::Result<()> {
+    match rules_item {
+        toml_edit::Item::ArrayOfTables(array) => {
+            for rule in rules {
+                if !array
+                    .iter()
+                    .any(|existing| permission_toml_table_matches_rule(existing, rule))
+                {
+                    array.push(permission_rule_to_toml_table(rule));
+                }
+            }
+        }
+        toml_edit::Item::Value(value) => {
+            let Some(array) = value.as_array_mut() else {
+                anyhow::bail!("`permissions.rules` in config.toml must be an array");
+            };
+            for rule in rules {
+                if !array
+                    .iter()
+                    .any(|existing| permission_toml_value_matches_rule(existing, rule))
+                {
+                    array.push(permission_rule_to_toml_inline_table(rule));
+                }
+            }
+        }
+        _ => anyhow::bail!("`permissions.rules` in config.toml must be an array"),
+    }
+    Ok(())
+}
+
+fn permission_rule_to_toml_table(
+    rule: &deepseek_execpolicy::ToolPermissionRule,
+) -> toml_edit::Table {
+    let mut table = toml_edit::Table::new();
+    table["tool"] = toml_edit::value(rule.tool.clone());
+    table["decision"] = toml_edit::value(permission_decision_label(rule.decision));
+    if let Some(command) = rule.command.as_deref() {
+        table["command"] = toml_edit::value(command);
+    }
+    if let Some(path) = rule.path.as_deref() {
+        table["path"] = toml_edit::value(path);
+    }
+    table
+}
+
+fn permission_rule_to_toml_inline_table(
+    rule: &deepseek_execpolicy::ToolPermissionRule,
+) -> toml_edit::Value {
+    let mut table = toml_edit::InlineTable::new();
+    table.insert("tool", toml_edit::Value::from(rule.tool.clone()));
+    table.insert(
+        "decision",
+        toml_edit::Value::from(permission_decision_label(rule.decision)),
+    );
+    if let Some(command) = rule.command.as_deref() {
+        table.insert("command", toml_edit::Value::from(command));
+    }
+    if let Some(path) = rule.path.as_deref() {
+        table.insert("path", toml_edit::Value::from(path));
+    }
+    toml_edit::Value::InlineTable(table)
+}
+
+fn permission_toml_table_matches_rule(
+    table: &toml_edit::Table,
+    rule: &deepseek_execpolicy::ToolPermissionRule,
+) -> bool {
+    table.get("tool").and_then(toml_edit::Item::as_str) == Some(rule.tool.as_str())
+        && table.get("decision").and_then(toml_edit::Item::as_str)
+            == Some(permission_decision_label(rule.decision))
+        && optional_toml_item_str_matches(table.get("command"), rule.command.as_deref())
+        && optional_toml_item_str_matches(table.get("path"), rule.path.as_deref())
+}
+
+fn permission_toml_value_matches_rule(
+    value: &toml_edit::Value,
+    rule: &deepseek_execpolicy::ToolPermissionRule,
+) -> bool {
+    let Some(table) = value.as_inline_table() else {
+        return false;
+    };
+    table.get("tool").and_then(toml_edit::Value::as_str) == Some(rule.tool.as_str())
+        && table.get("decision").and_then(toml_edit::Value::as_str)
+            == Some(permission_decision_label(rule.decision))
+        && optional_toml_value_str_matches(table.get("command"), rule.command.as_deref())
+        && optional_toml_value_str_matches(table.get("path"), rule.path.as_deref())
+}
+
+fn optional_toml_item_str_matches(item: Option<&toml_edit::Item>, expected: Option<&str>) -> bool {
+    item.and_then(toml_edit::Item::as_str) == expected
+}
+
+fn optional_toml_value_str_matches(
+    value: Option<&toml_edit::Value>,
+    expected: Option<&str>,
+) -> bool {
+    value.and_then(toml_edit::Value::as_str) == expected
+}
+
+fn permission_decision_label(decision: deepseek_execpolicy::PermissionDecision) -> &'static str {
+    match decision {
+        deepseek_execpolicy::PermissionDecision::Allow => "allow",
+        deepseek_execpolicy::PermissionDecision::Deny => "deny",
+        deepseek_execpolicy::PermissionDecision::Ask => "ask",
+    }
+}
+
 /// Resolve the path to `~/.deepseek/config.toml` (or
 /// `$DEEPSEEK_CONFIG_PATH`). Mirrors what `Config::load` accepts so we
 /// never write to a different file than the one we read.
@@ -1983,5 +2132,66 @@ mod tests {
             body.contains("status_items"),
             "expected status_items in {body}"
         );
+    }
+
+    #[test]
+    fn persist_permission_rules_writes_deduped_rules_and_preserves_config() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-permission-rules-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root).unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+
+        let path = temp_root.join(".deepseek").join("config.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "# user config header\napi_key = \"sentinel-key\" # keep inline\nmodel = \"deepseek-v4-pro\"\n\n[permissions]\n# user permission notes\n",
+        )
+        .unwrap();
+
+        let cargo_rule = deepseek_execpolicy::ToolPermissionRule::exec_shell(
+            deepseek_execpolicy::PermissionDecision::Allow,
+            "cargo test",
+        );
+        let docs_rule = deepseek_execpolicy::ToolPermissionRule::file_path(
+            "read_file",
+            deepseek_execpolicy::PermissionDecision::Allow,
+            "docs/README.md",
+        );
+        let written =
+            persist_permission_rules(&[cargo_rule.clone(), cargo_rule.clone(), docs_rule.clone()])
+                .expect("persist should succeed");
+
+        let body = fs::read_to_string(&written).expect("written file should be readable");
+        assert!(
+            body.contains("# user config header"),
+            "round-trip lost top-level comment: {body}"
+        );
+        assert!(
+            body.contains("# keep inline"),
+            "round-trip lost inline comment: {body}"
+        );
+        assert!(
+            body.contains("# user permission notes"),
+            "round-trip lost permissions comment: {body}"
+        );
+        assert!(
+            body.contains("api_key = \"sentinel-key\""),
+            "round-trip lost api_key: {body}"
+        );
+        assert!(
+            body.contains("model = \"deepseek-v4-pro\""),
+            "round-trip lost model: {body}"
+        );
+
+        let config = Config::load(Some(written), None).expect("written config should load");
+        assert_eq!(config.permissions.rules, vec![cargo_rule, docs_rule]);
     }
 }
