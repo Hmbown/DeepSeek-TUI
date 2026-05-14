@@ -1,0 +1,23 @@
+{
+  "name": "@deepseek-tui/feishu-helm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Streaming-card Feishu/Lark bridge for a local deepseek serve --http runtime. Sibling integration to feishu-bridge: same security model, richer in-chat output.",
+  "main": "src/index.mjs",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "check": "node --check src/index.mjs && node --check src/lib.mjs && node --check src/cardkit.mjs && node --check src/runtime.mjs && node --check scripts/validate-config.mjs",
+    "test": "node --test test/*.test.mjs",
+    "validate:config": "node scripts/validate-config.mjs"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.52.0"
+  },
+  "overrides": {
+    "axios": "^1.16.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
