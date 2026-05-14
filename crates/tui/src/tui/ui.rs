@@ -310,6 +310,17 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     // sequence is received. Terminals that do not understand it silently
     // ignore it.
     recover_terminal_modes(&mut stdout, use_mouse_capture, use_bracketed_paste);
+
+    // RAII guard: if anything below returns early via `?`, the terminal is
+    // restored automatically so the user's shell isn't left in alt-screen /
+    // raw mode (which manifests as "garbled output").
+    let mut _cleanup_guard = TerminalCleanupGuard {
+        use_alt_screen,
+        use_mouse_capture,
+        use_bracketed_paste,
+        defused: false,
+    };
+
     let color_depth = palette::ColorDepth::detect();
     let palette_mode = palette::PaletteMode::detect();
     tracing::debug!(
@@ -522,6 +533,10 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     persistence_actor::persist(PersistRequest::ClearCheckpoint);
     persistence_actor::persist(PersistRequest::Shutdown);
 
+    // Defuse the RAII guard — we're doing the cleanup manually here so we
+    // can use the terminal backend handle (better than raw stdout).
+    _cleanup_guard.defused = true;
+
     pop_keyboard_enhancement_flags(terminal.backend_mut());
     execute!(terminal.backend_mut(), DisableFocusChange)?;
     disable_raw_mode()?;
@@ -568,6 +583,42 @@ fn terminal_probe_timeout(config: &Config) -> Duration {
         .unwrap_or(DEFAULT_TERMINAL_PROBE_TIMEOUT_MS)
         .clamp(100, 5_000);
     Duration::from_millis(timeout_ms)
+}
+
+/// RAII guard that restores the terminal on drop — ensures we leave
+/// alternate screen, raw mode, mouse capture, etc. even when `run_tui`
+/// returns early via `?`.
+struct TerminalCleanupGuard {
+    use_alt_screen: bool,
+    use_mouse_capture: bool,
+    use_bracketed_paste: bool,
+    /// Set to `true` once the happy-path cleanup runs so we don't double-clean.
+    defused: bool,
+}
+
+impl Drop for TerminalCleanupGuard {
+    fn drop(&mut self) {
+        if self.defused {
+            return;
+        }
+        // Best-effort terminal restoration — same sequence as the panic hook.
+        let mut stdout = io::stdout();
+        pop_keyboard_enhancement_flags(&mut stdout);
+        let _ = execute!(stdout, DisableFocusChange);
+        let _ = disable_raw_mode();
+        if self.use_alt_screen {
+            let _ = execute!(stdout, LeaveAlternateScreen);
+        }
+        if self.use_mouse_capture {
+            let _ = execute!(stdout, DisableMouseCapture);
+        }
+        if self.use_bracketed_paste {
+            let _ = execute!(stdout, DisableBracketedPaste);
+        }
+        // Show cursor best-effort (write the escape directly since we may
+        // not have a Terminal handle here).
+        let _ = execute!(stdout, crossterm::cursor::Show);
+    }
 }
 
 /// Recognise composer input that is a `# foo` memory quick-add (#492).

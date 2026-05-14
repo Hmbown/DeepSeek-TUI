@@ -4326,6 +4326,12 @@ async fn run_interactive(
         ),
     }
 
+    // Pre-validate the API key *before* entering the TUI (which switches
+    // into alternate screen / raw mode). Failing after terminal init would
+    // leave escape-sequence garbage on the user's screen.  Self-hosted
+    // providers (sglang, vllm, ollama) are allowed to have an empty key.
+    config.deepseek_api_key()?;
+
     tui::run_tui(
         config,
         tui::TuiOptions {
