@@ -232,6 +232,7 @@ pub enum SidebarFocus {
     Tasks,
     Agents,
     Context,
+    Hidden,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,6 +279,7 @@ impl SidebarFocus {
             "tasks" => Self::Tasks,
             "agents" | "subagents" | "sub-agents" => Self::Agents,
             "context" | "session" => Self::Context,
+            "hidden" | "hide" | "closed" | "off" | "none" => Self::Hidden,
             _ => Self::Auto,
         }
     }
@@ -291,6 +293,7 @@ impl SidebarFocus {
             Self::Tasks => "tasks",
             Self::Agents => "agents",
             Self::Context => "context",
+            Self::Hidden => "hidden",
         }
     }
 }
@@ -4275,7 +4278,10 @@ mod tests {
         assert_eq!(SidebarFocus::from_setting("tasks"), SidebarFocus::Tasks);
         assert_eq!(SidebarFocus::from_setting("agents"), SidebarFocus::Agents);
         assert_eq!(SidebarFocus::from_setting("context"), SidebarFocus::Context);
+        assert_eq!(SidebarFocus::from_setting("hidden"), SidebarFocus::Hidden);
+        assert_eq!(SidebarFocus::from_setting("off"), SidebarFocus::Hidden);
         assert_eq!(SidebarFocus::Work.as_setting(), "work");
+        assert_eq!(SidebarFocus::Hidden.as_setting(), "hidden");
     }
 
     #[test]

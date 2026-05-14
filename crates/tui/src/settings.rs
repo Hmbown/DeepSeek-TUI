@@ -217,7 +217,7 @@ pub struct Settings {
     pub default_mode: String,
     /// Sidebar width as percentage of terminal width
     pub sidebar_width_percent: u16,
-    /// Sidebar focus mode: auto, work, tasks, agents, context
+    /// Sidebar focus mode: auto, work, tasks, agents, context, hidden
     pub sidebar_focus: String,
     /// Enable the session-context panel (#504). Shows working set, tokens,
     /// cost, MCP/LSP status, cycle count, and memory info.
@@ -585,9 +585,10 @@ impl Settings {
                     "tasks" => "tasks",
                     "agents" | "subagents" | "sub-agents" => "agents",
                     "context" | "session" => "context",
+                    "hidden" | "hide" | "closed" | "off" | "none" => "hidden",
                     _ => {
                         anyhow::bail!(
-                            "Failed to update setting: invalid sidebar focus '{value}'. Expected: auto, work, tasks, agents, context."
+                            "Failed to update setting: invalid sidebar focus '{value}'. Expected: auto, work, tasks, agents, context, hidden."
                         )
                     }
                 };
@@ -768,7 +769,7 @@ impl Settings {
             ("sidebar_width", "Sidebar width percentage: 10-50"),
             (
                 "sidebar_focus",
-                "Sidebar focus: auto, work, tasks, agents, context",
+                "Sidebar focus: auto, work, tasks, agents, context, hidden",
             ),
             (
                 "context_panel",
@@ -934,6 +935,7 @@ fn normalize_sidebar_focus(value: &str) -> &str {
         "tasks" => "tasks",
         "agents" | "subagents" | "sub-agents" => "agents",
         "context" | "session" => "context",
+        "hidden" | "hide" | "closed" | "off" | "none" => "hidden",
         _ => "auto",
     }
 }
@@ -1091,6 +1093,12 @@ mod tests {
 
         settings.set("focus", "context").expect("context focus");
         assert_eq!(settings.sidebar_focus, "context");
+
+        settings.set("focus", "hidden").expect("hidden focus");
+        assert_eq!(settings.sidebar_focus, "hidden");
+
+        settings.set("focus", "off").expect("off alias");
+        assert_eq!(settings.sidebar_focus, "hidden");
 
         let err = settings
             .set("sidebar_focus", "classic")

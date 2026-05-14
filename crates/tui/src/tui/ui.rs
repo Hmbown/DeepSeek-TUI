@@ -10,8 +10,8 @@ use anyhow::Result;
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+        KeyboardEnhancementFlags,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -26,11 +26,9 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect, Size},
     prelude::Widget,
     style::Style,
-    text::Span,
     widgets::Block,
 };
 use tracing;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::audit::log_sensitive_event;
 use crate::automation_manager::{AutomationManager, AutomationSchedulerConfig, spawn_scheduler};
@@ -39,7 +37,6 @@ use crate::commands;
 use crate::compaction::estimate_input_tokens_conservative;
 use crate::config::{ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL};
 use crate::config_ui::{self, ConfigUiMode, WebConfigSession, WebConfigSessionEvent};
-use crate::core::coherence::CoherenceState;
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::Event as EngineEvent;
 use crate::core::ops::Op;
@@ -64,37 +61,40 @@ use crate::tui::color_compat::ColorCompatBackend;
 use crate::tui::command_palette::{
     CommandPaletteView, build_entries as build_command_palette_entries,
 };
+use crate::tui::composer_ui::*;
 use crate::tui::context_inspector::build_context_inspector_text;
-use crate::tui::context_menu::{ContextMenuEntry, ContextMenuView};
 use crate::tui::event_broker::EventBroker;
 use crate::tui::file_picker_relevance;
+use crate::tui::footer_ui::{
+    friendly_subagent_progress, is_noisy_subagent_progress, one_line_summary, render_footer,
+};
 use crate::tui::format_helpers;
 use crate::tui::key_shortcuts;
 use crate::tui::live_transcript::LiveTranscriptOverlay;
 use crate::tui::mcp_routing::{add_mcp_message, open_mcp_manager_pager};
+use crate::tui::mouse_ui::*;
 use crate::tui::notifications;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
 use crate::tui::persistence_actor::{self, PersistRequest};
 use crate::tui::plan_prompt::PlanPromptView;
-use crate::tui::scrolling::{ScrollDirection, TranscriptScroll};
-use crate::tui::selection::{SelectionAutoscroll, TranscriptSelectionPoint};
+use crate::tui::scrolling::TranscriptScroll;
+// SelectionAutoscroll unused
 use crate::tui::session_picker::SessionPickerView;
 use crate::tui::shell_job_routing::{
     add_shell_job_message, format_shell_job_list, format_shell_poll, open_shell_job_pager,
 };
 use crate::tui::streaming_thinking;
 use crate::tui::subagent_routing::{
-    active_fanout_counts, format_task_list, handle_subagent_mailbox, open_task_pager,
-    reconcile_subagent_activity_state, running_agent_count, sort_subagents_in_place,
-    task_mode_label, task_summary_to_panel_entry,
+    format_task_list, handle_subagent_mailbox, open_task_pager, reconcile_subagent_activity_state,
+    running_agent_count, sort_subagents_in_place, task_mode_label, task_summary_to_panel_entry,
 };
 #[cfg(test)]
 use crate::tui::tool_routing::exploring_label;
 use crate::tui::tool_routing::{
     handle_tool_call_complete, handle_tool_call_started, maybe_add_patch_preview,
 };
-use crate::tui::ui_text::{history_cell_to_text, line_to_plain, slice_text, text_display_width};
+use crate::tui::ui_text::{history_cell_to_text, line_to_plain, truncate_line_to_width};
 use crate::tui::user_input::UserInputView;
 use crate::tui::views::subagent_view_agents;
 use crate::tui::vim_mode;
@@ -114,14 +114,9 @@ use super::history::{
 use super::slash_menu::{
     apply_slash_menu_selection, try_autocomplete_slash_command, visible_slash_menu_entries,
 };
-use super::views::{
-    ConfigView, ContextMenuAction, HelpView, ModalKind, ShellControlView, ViewEvent,
-};
+use super::views::{ConfigView, HelpView, ModalKind, ShellControlView, ViewEvent};
 use super::widgets::pending_input_preview::{ContextPreviewItem, PendingInputPreview};
-use super::widgets::{
-    ChatWidget, ComposerWidget, FooterProps, FooterToast, FooterWidget, HeaderData, HeaderWidget,
-    Renderable,
-};
+use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Renderable};
 
 // === Constants ===
 
@@ -135,7 +130,6 @@ const SLASH_MENU_LIMIT: usize = 128;
 const MENTION_MENU_LIMIT: usize = 6;
 const MIN_CHAT_HEIGHT: u16 = 3;
 const MIN_COMPOSER_HEIGHT: u16 = 2;
-const COMPOSER_ARROW_SCROLL_LINES: usize = 3;
 const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
 const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
 const UI_IDLE_POLL_MS: u64 = 48;
@@ -152,6 +146,18 @@ const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 const PERIODIC_FULL_REPAINT_EVERY_N: u64 = 50;
 const TURN_META_PREFIX: &str = "<turn_meta>";
 const SESSION_TITLE_MAX_CHARS: usize = 32;
+
+fn sidebar_width_for_chat_area(app: &App, chat_width: u16) -> Option<u16> {
+    if app.sidebar_focus == SidebarFocus::Hidden || chat_width < SIDEBAR_VISIBLE_MIN_WIDTH {
+        return None;
+    }
+
+    let preferred_sidebar =
+        (u32::from(chat_width) * u32::from(app.sidebar_width_percent.clamp(10, 50)) / 100) as u16;
+    let sidebar_width = preferred_sidebar.max(24).min(chat_width.saturating_sub(40));
+
+    (sidebar_width >= 20).then_some(sidebar_width)
+}
 
 type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
 
@@ -2628,8 +2634,7 @@ async fn run_event_loop(
                     continue;
                 }
                 KeyCode::Char('0') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    app.set_sidebar_focus(SidebarFocus::Auto);
-                    app.status_message = Some("Sidebar focus: auto".to_string());
+                    apply_alt_0_shortcut(app, key.modifiers);
                     continue;
                 }
                 KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -3377,6 +3382,16 @@ fn apply_alt_4_shortcut(app: &mut App, _modifiers: KeyModifiers) {
     app.status_message = Some("Sidebar focus: agents".to_string());
 }
 
+fn apply_alt_0_shortcut(app: &mut App, modifiers: KeyModifiers) {
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        app.set_sidebar_focus(SidebarFocus::Hidden);
+        app.status_message = Some("Sidebar hidden".to_string());
+    } else {
+        app.set_sidebar_focus(SidebarFocus::Auto);
+        app.status_message = Some("Sidebar focus: auto".to_string());
+    }
+}
+
 async fn fetch_available_models(config: &Config) -> Result<Vec<String>> {
     use crate::client::DeepSeekClient;
 
@@ -3705,142 +3720,6 @@ fn replace_matching_assistant_text(
 }
 
 // Streaming-thinking lifecycle helpers moved to `tui/streaming_thinking.rs`.
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EscapeAction {
-    CloseSlashMenu,
-    CancelRequest,
-    DiscardQueuedDraft,
-    ClearInput,
-    Noop,
-}
-
-fn next_escape_action(app: &App, slash_menu_open: bool) -> EscapeAction {
-    if slash_menu_open {
-        EscapeAction::CloseSlashMenu
-    } else if app.is_loading {
-        EscapeAction::CancelRequest
-    } else if app.queued_draft.is_some() && app.input.is_empty() {
-        EscapeAction::DiscardQueuedDraft
-    } else if !app.input.is_empty() {
-        EscapeAction::ClearInput
-    } else {
-        EscapeAction::Noop
-    }
-}
-
-fn select_previous_slash_menu_entry(app: &mut App, entry_count: usize) {
-    if entry_count == 0 {
-        return;
-    }
-    let selected = app.slash_menu_selected.min(entry_count.saturating_sub(1));
-    app.slash_menu_selected = (selected + entry_count - 1) % entry_count;
-}
-
-fn select_next_slash_menu_entry(app: &mut App, entry_count: usize) {
-    if entry_count == 0 {
-        return;
-    }
-    let selected = app.slash_menu_selected.min(entry_count.saturating_sub(1));
-    app.slash_menu_selected = (selected + 1) % entry_count;
-}
-
-fn handle_composer_history_arrow(
-    app: &mut App,
-    key: KeyEvent,
-    slash_menu_open: bool,
-    mention_menu_open: bool,
-) -> bool {
-    if slash_menu_open || mention_menu_open {
-        return false;
-    }
-    if key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SUPER) {
-        return false;
-    }
-
-    // When `composer_arrows_scroll` is enabled and the composer is empty,
-    // plain Up/Down scroll the transcript.  This helps terminals that map
-    // trackpad gestures to arrow keys.  Otherwise arrows always navigate
-    // input history regardless of composer state (#1117).
-    let scroll_on_empty = app.composer_arrows_scroll && app.input.trim().is_empty();
-
-    match key.code {
-        KeyCode::Up => {
-            if scroll_on_empty {
-                app.scroll_up(COMPOSER_ARROW_SCROLL_LINES);
-            } else {
-                app.history_up();
-            }
-            true
-        }
-        KeyCode::Down => {
-            if scroll_on_empty {
-                app.scroll_down(COMPOSER_ARROW_SCROLL_LINES);
-            } else {
-                app.history_down();
-            }
-            true
-        }
-        _ => false,
-    }
-}
-
-fn is_word_cursor_modifier(modifiers: KeyModifiers) -> bool {
-    modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::ALT)
-}
-
-fn is_composer_newline_key(key: KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Char('j') => key.modifiers.contains(KeyModifiers::CONTROL),
-        KeyCode::Enter => {
-            key.modifiers.contains(KeyModifiers::ALT)
-                || (key.modifiers.contains(KeyModifiers::SHIFT)
-                    && !key.modifiers.contains(KeyModifiers::CONTROL))
-        }
-        _ => false,
-    }
-}
-
-fn handle_history_search_key(app: &mut App, key: KeyEvent) {
-    match key.code {
-        KeyCode::Enter => {
-            let _ = app.accept_history_search();
-        }
-        KeyCode::Esc => {
-            app.cancel_history_search();
-        }
-        KeyCode::Char('c') | KeyCode::Char('C')
-            if key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
-            app.cancel_history_search();
-        }
-        KeyCode::Backspace => {
-            app.history_search_backspace();
-        }
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            while app
-                .history_search_query()
-                .is_some_and(|query| !query.is_empty())
-            {
-                app.history_search_backspace();
-            }
-        }
-        KeyCode::Up => {
-            app.history_search_select_previous();
-        }
-        KeyCode::Down => {
-            app.history_search_select_next();
-        }
-        KeyCode::Char(ch)
-            if key.modifiers.is_empty()
-                || key.modifiers == KeyModifiers::SHIFT
-                || key.modifiers == KeyModifiers::NONE =>
-        {
-            app.history_search_insert_char(ch);
-        }
-        _ => {}
-    }
-}
 
 fn build_queued_message(app: &mut App, input: String) -> QueuedMessage {
     let skill_instruction = app.active_skill.take();
@@ -4339,7 +4218,7 @@ fn open_text_pager(app: &mut App, title: String, content: String) {
     ));
 }
 
-fn open_context_inspector(app: &mut App) {
+pub(crate) fn open_context_inspector(app: &mut App) {
     let width = app
         .viewport
         .last_transcript_area
@@ -5516,21 +5395,13 @@ fn render(f: &mut Frame, app: &mut App) {
                 chunks[1]
             };
 
-        if chat_area.width >= SIDEBAR_VISIBLE_MIN_WIDTH {
-            let preferred_sidebar = (u32::from(chat_area.width)
-                * u32::from(app.sidebar_width_percent.clamp(10, 50))
-                / 100) as u16;
-            let sidebar_width = preferred_sidebar
-                .max(24)
-                .min(chat_area.width.saturating_sub(40));
-            if sidebar_width >= 20 {
-                let split = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Min(1), Constraint::Length(sidebar_width)])
-                    .split(chat_area);
-                chat_area = split[0];
-                sidebar_area = Some(split[1]);
-            }
+        if let Some(sidebar_width) = sidebar_width_for_chat_area(app, chat_area.width) {
+            let split = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(1), Constraint::Length(sidebar_width)])
+                .split(chat_area);
+            chat_area = split[0];
+            sidebar_area = Some(split[1]);
         }
 
         let chat_widget = ChatWidget::new(app, chat_area);
@@ -6532,7 +6403,7 @@ fn terminal_event_needs_viewport_recapture(evt: &Event) -> bool {
     matches!(evt, Event::FocusGained)
 }
 
-fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
+pub(crate) fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
     match level {
         StatusToastLevel::Info => palette::DEEPSEEK_SKY,
         StatusToastLevel::Success => palette::STATUS_SUCCESS,
@@ -6599,247 +6470,7 @@ fn render_toast_stack_overlay(
     }
 }
 
-fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-
-    // Pull in the toast first so we don't re-borrow `app` mutably mid-build,
-    // then build the FooterProps once. The widget itself is a pure render —
-    // it owns no `App` knowledge; all width-aware layout lives in the widget.
-    //
-    // The quit-confirmation prompt takes precedence over normal status toasts
-    // because it represents a transient instruction the user must respond to
-    // within ~2s. Mirrors codex-rs's `FooterMode::QuitShortcutReminder`.
-    let quit_prompt = if app.quit_is_armed() {
-        Some(FooterToast {
-            text: crate::localization::tr(
-                app.ui_locale,
-                crate::localization::MessageId::FooterPressCtrlCAgain,
-            )
-            .to_string(),
-            color: palette::STATUS_WARNING,
-        })
-    } else {
-        None
-    };
-    let toast = quit_prompt.or_else(|| {
-        app.active_status_toast().map(|toast| FooterToast {
-            text: toast.text,
-            color: status_color(toast.level),
-        })
-    });
-
-    // Drive every cluster from the user's configured `status_items`. Mode
-    // and Model are always rendered by `FooterProps` itself (their position
-    // is structural — cluster gating is handled by the widget), so we only
-    // gate the optional clusters here. If a variant is missing from
-    // `status_items`, its span vec stays empty and the footer hides it.
-    let mut props = render_footer_from(app, &app.status_items, toast);
-    // FooterProps is mut so the working-strip animation can layer on top.
-
-    // Animate the spacer between the left status line and the right-hand
-    // chips whenever a turn is live: model loading/streaming, compacting, or
-    // sub-agents in flight. The spout strip is gated on `fancy_animations`
-    // (the "do I want a whale at all" knob); `low_motion` now governs only
-    // streaming pacing (typewriter vs upstream), not the spout. Dot-pulse
-    // counter ticks every 400 ms so `working` → `working...` reads at a
-    // calm pace regardless of motion mode.
-    if footer_working_strip_active(app) {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let dot_frame = now_ms / 400;
-        // Surface one compact live status row in the footer whenever a turn
-        // is live. Tool turns get the current action plus active/done counts;
-        // non-tool work falls back to the existing dot-pulse label.
-        props.state_label = active_subagent_status_label(app)
-            .or_else(|| active_tool_status_label(app))
-            .unwrap_or_else(|| crate::tui::widgets::footer_working_label(dot_frame, app.ui_locale));
-        props.state_color = palette::DEEPSEEK_SKY;
-
-        // Water-spout frame source: wall-clock milliseconds. The sine-wave
-        // math in `footer_working_strip_glyph_at` was tuned for this cadence
-        // (`t = frame / 1000.0`, primary term × 8.0 ≈ 1.3 Hz at 1 ms ticks),
-        // so frame must advance at ~1000 units/sec to produce the intended
-        // animation feel. `fancy_animations = false` hides the strip
-        // entirely; the textual `working...` pulse still keeps a heartbeat
-        // regardless.
-        if app.fancy_animations {
-            props.working_strip_frame = Some(now_ms);
-        }
-    } else if props.state_label == "ready"
-        && let Some(label) = selected_detail_footer_label(app)
-    {
-        props.state_label = label;
-        props.state_color = palette::TEXT_MUTED;
-    }
-
-    let widget = FooterWidget::new(props);
-    let buf = f.buffer_mut();
-    widget.render(area, buf);
-}
-
-/// Whether the footer should animate the water-spout strip. Driven by the
-/// underlying live-work flags so the strip stays visible for the *entire*
-/// turn — not just the moments where bytes are streaming. `is_loading` can
-/// flicker off between LLM rounds within a single turn (tool execution,
-/// reasoning replay, capacity refresh, etc.), so we ALSO gate on the turn
-/// itself still being in flight via `runtime_turn_status == "in_progress"`.
-/// Without that, the user sees the strip vanish for seconds at a time even
-/// though the agent is still working.
-fn footer_working_strip_active(app: &App) -> bool {
-    let turn_in_progress = app.runtime_turn_status.as_deref() == Some("in_progress");
-    app.is_loading || app.is_compacting || running_agent_count(app) > 0 || turn_in_progress
-}
-
-fn is_noisy_subagent_progress(status: &str) -> bool {
-    let status = status.trim().to_ascii_lowercase();
-    status.contains("requesting model response")
-}
-
-fn subagent_objective_summary(app: &App, id: &str) -> Option<String> {
-    app.subagent_cache
-        .iter()
-        .find(|agent| agent.agent_id == id)
-        .map(|agent| summarize_tool_output(&agent.assignment.objective))
-        .filter(|summary| !summary.is_empty())
-}
-
-fn friendly_subagent_progress(app: &App, id: &str, status: &str) -> String {
-    if !is_noisy_subagent_progress(status) {
-        return summarize_tool_output(status);
-    }
-
-    if let Some(summary) = subagent_objective_summary(app, id) {
-        return format!("working on {summary}");
-    }
-    if let Some(existing) = app.agent_progress.get(id)
-        && !is_noisy_subagent_progress(existing)
-        && existing != "working"
-    {
-        return existing.clone();
-    }
-    "working".to_string()
-}
-
-fn active_subagent_status_label(app: &App) -> Option<String> {
-    let running = running_agent_count(app);
-    let fanout = active_fanout_counts(app);
-    let (display_running, total) = if let Some((fanout_running, fanout_total)) = fanout {
-        if fanout_running == 0 {
-            return None;
-        }
-        (fanout_running, fanout_total)
-    } else {
-        if running == 0 {
-            return None;
-        }
-        (running, running)
-    };
-    let detail = app
-        .subagent_cache
-        .iter()
-        .find(|agent| matches!(agent.status, SubAgentStatus::Running))
-        .map(|agent| summarize_tool_output(&agent.assignment.objective))
-        .filter(|summary| !summary.is_empty())
-        .or_else(|| {
-            app.agent_progress
-                .values()
-                .find(|value| !is_noisy_subagent_progress(value) && value.as_str() != "working")
-                .cloned()
-        })
-        .unwrap_or_else(|| "working".to_string());
-    let detail = truncate_line_to_width(&detail, 34);
-    let elapsed = app
-        .agent_activity_started_at
-        .or(app.turn_started_at)
-        .map(|started| format!("{}s", started.elapsed().as_secs()));
-
-    let mut parts = vec![format!("agents {display_running}/{total}"), detail];
-    if let Some(elapsed) = elapsed {
-        parts.push(elapsed);
-    }
-    parts.push("Alt+4".to_string());
-    Some(parts.join(" \u{00B7} "))
-}
-
-#[derive(Default)]
-struct ActiveToolStatusSnapshot {
-    primary_running: Option<String>,
-    primary_any: Option<String>,
-    running: usize,
-    completed: usize,
-    started_at: Option<Instant>,
-}
-
-impl ActiveToolStatusSnapshot {
-    fn record(&mut self, label: String, status: ToolStatus, started_at: Option<Instant>) {
-        if self.primary_any.is_none() {
-            self.primary_any = Some(label.clone());
-        }
-        if status == ToolStatus::Running {
-            self.running += 1;
-            if self.primary_running.is_none() {
-                self.primary_running = Some(label);
-            }
-        } else {
-            self.completed += 1;
-        }
-        if let Some(started) = started_at {
-            self.started_at = Some(match self.started_at {
-                Some(current) => current.min(started),
-                None => started,
-            });
-        }
-    }
-
-    fn total(&self) -> usize {
-        self.running + self.completed
-    }
-}
-
-fn active_tool_status_label(app: &App) -> Option<String> {
-    let active = app.active_cell.as_ref()?;
-    if active.is_empty() {
-        return None;
-    }
-
-    let mut snapshot = ActiveToolStatusSnapshot::default();
-    for cell in active.entries() {
-        collect_active_tool_status(cell, &mut snapshot);
-    }
-    if snapshot.total() == 0 {
-        return None;
-    }
-
-    let primary = snapshot
-        .primary_running
-        .or(snapshot.primary_any)
-        .unwrap_or_else(|| "tools".to_string());
-    let primary = truncate_line_to_width(&primary, 30);
-    let elapsed = snapshot
-        .started_at
-        .or(app.turn_started_at)
-        .map(|started| format!("{}s", started.elapsed().as_secs()));
-
-    let mut parts = vec![
-        primary,
-        format!("{} active", snapshot.running),
-        format!("{} done", snapshot.completed),
-    ];
-    if let Some(elapsed) = elapsed {
-        parts.push(elapsed);
-    }
-    if active_foreground_shell_running(app) {
-        parts.push("Ctrl+B shell".to_string());
-    }
-    parts.push(key_shortcuts::tool_details_shortcut_label().to_string());
-    Some(parts.join(" \u{00B7} "))
-}
-
-fn open_shell_control(app: &mut App) {
+pub(crate) fn open_shell_control(app: &mut App) {
     if !app.is_loading || !active_foreground_shell_running(app) {
         app.status_message = Some("No foreground shell command to control".to_string());
         return;
@@ -6849,7 +6480,7 @@ fn open_shell_control(app: &mut App) {
     app.status_message = Some("Shell control opened".to_string());
 }
 
-fn request_foreground_shell_background(app: &mut App) {
+pub(crate) fn request_foreground_shell_background(app: &mut App) {
     if !app.is_loading || !active_foreground_shell_running(app) {
         app.status_message = Some("No foreground shell command to background".to_string());
         return;
@@ -6871,7 +6502,7 @@ fn request_foreground_shell_background(app: &mut App) {
     }
 }
 
-fn active_foreground_shell_running(app: &App) -> bool {
+pub(crate) fn active_foreground_shell_running(app: &App) -> bool {
     app.active_cell.as_ref().is_some_and(|active| {
         active.entries().iter().any(|cell| {
             matches!(
@@ -6883,7 +6514,7 @@ fn active_foreground_shell_running(app: &App) -> bool {
     })
 }
 
-fn terminal_pause_has_live_owner(app: &App) -> bool {
+pub(crate) fn terminal_pause_has_live_owner(app: &App) -> bool {
     app.active_cell.as_ref().is_some_and(|active| {
         active.entries().iter().any(|cell| {
             matches!(
@@ -6892,498 +6523,6 @@ fn terminal_pause_has_live_owner(app: &App) -> bool {
             )
         })
     })
-}
-
-fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatusSnapshot) {
-    let HistoryCell::Tool(tool) = cell else {
-        return;
-    };
-    match tool {
-        ToolCell::Exec(exec) => snapshot.record(
-            format!("run {}", one_line_summary(&exec.command, 80)),
-            exec.status,
-            exec.started_at,
-        ),
-        ToolCell::Exploring(explore) => {
-            for entry in &explore.entries {
-                snapshot.record(
-                    format!("read {}", one_line_summary(&entry.label, 80)),
-                    entry.status,
-                    None,
-                );
-            }
-        }
-        ToolCell::PlanUpdate(plan) => {
-            snapshot.record("update plan".to_string(), plan.status, None);
-        }
-        ToolCell::PatchSummary(patch) => {
-            snapshot.record(format!("patch {}", patch.path), patch.status, None);
-        }
-        ToolCell::Review(review) => {
-            let target = one_line_summary(&review.target, 80);
-            let label = if target.is_empty() {
-                "review".to_string()
-            } else {
-                format!("review {target}")
-            };
-            snapshot.record(label, review.status, None);
-        }
-        ToolCell::DiffPreview(diff) => {
-            snapshot.record(format!("diff {}", diff.title), ToolStatus::Success, None);
-        }
-        ToolCell::Mcp(mcp) => snapshot.record(format!("tool {}", mcp.tool), mcp.status, None),
-        ToolCell::ViewImage(image) => snapshot.record(
-            format!("image {}", image.path.display()),
-            ToolStatus::Success,
-            None,
-        ),
-        ToolCell::WebSearch(search) => {
-            snapshot.record(format!("search {}", search.query), search.status, None);
-        }
-        ToolCell::Generic(generic) => {
-            // Sub-agent dispatch represents itself through the DelegateCard
-            // + Agents sidebar. Counting it again here would duplicate the
-            // status. RLM is different today: it is a foreground tool call,
-            // so keep it in the live tool footer until the async RLM
-            // workbench lands (#513).
-            if matches!(generic.name.as_str(), "agent_open" | "agent_spawn") {
-                return;
-            }
-            snapshot.record(format!("tool {}", generic.name), generic.status, None);
-        }
-    }
-}
-
-fn one_line_summary(text: &str, max_width: usize) -> String {
-    truncate_line_to_width(
-        &text.split_whitespace().collect::<Vec<_>>().join(" "),
-        max_width,
-    )
-}
-
-/// Build [`FooterProps`] from a user-configured `status_items` slice.
-///
-/// Variants are routed to their structural cluster: `Mode` and `Model` are
-/// always emitted (the widget needs them to lay out the line correctly even
-/// when the user toggled them off the picker — we honour the toggle by
-/// blanking their visible content rather than collapsing the layout).
-/// `Cost` and `Status` belong in the left cluster; the rest in the right.
-///
-/// A variant absent from `items` produces an empty span vec, which the
-/// footer widget already hides cleanly. This keeps the renderer fully
-/// data-driven without changing `FooterProps`'s public shape.
-fn render_footer_from(
-    app: &App,
-    items: &[crate::config::StatusItem],
-    toast: Option<FooterToast>,
-) -> FooterProps {
-    use crate::config::StatusItem as S;
-    let has = |item: S| items.contains(&item);
-
-    let (state_label, state_color) = if has(S::Status) {
-        footer_state_label(app)
-    } else {
-        // "ready" is the sentinel the widget uses to skip the status segment;
-        // pair it with theme text_muted for visual neutrality.
-        ("ready", app.ui_theme.text_muted)
-    };
-
-    let coherence = if has(S::Coherence) {
-        footer_coherence_spans(app)
-    } else {
-        Vec::new()
-    };
-    let agents = if has(S::Agents) {
-        crate::tui::widgets::footer_agents_chip(running_agent_count(app), app.ui_locale)
-    } else {
-        Vec::new()
-    };
-    let reasoning_replay = if has(S::ReasoningReplay) {
-        footer_reasoning_replay_spans(app)
-    } else {
-        Vec::new()
-    };
-    let cache = if has(S::Cache) {
-        footer_cache_spans(app)
-    } else {
-        Vec::new()
-    };
-    let cost = if has(S::Cost) {
-        footer_cost_spans(app)
-    } else {
-        Vec::new()
-    };
-
-    // Build the props; `Mode` and `Model` toggles modulate downstream by
-    // blanking the rendered text rather than restructuring the widget — the
-    // user is opting out of the chip, not destroying the bar.
-    let mut props = FooterProps::from_app(
-        app,
-        toast,
-        state_label,
-        state_color,
-        coherence,
-        agents,
-        reasoning_replay,
-        cache,
-        cost,
-    );
-    if !has(S::Mode) {
-        props.mode_label = "";
-    }
-    if !has(S::Model) {
-        props.model.clear();
-    }
-
-    // Right-cluster extension chips: append in `items` order so user
-    // ordering is preserved across the new variants.
-    let mut extra: Vec<Span<'static>> = Vec::new();
-    for item in items {
-        let chip = match *item {
-            S::ContextPercent => footer_context_percent_spans(app),
-            S::GitBranch => footer_git_branch_spans(app),
-            S::LastToolElapsed | S::RateLimit => Vec::new(),
-            _ => continue,
-        };
-        if chip.is_empty() {
-            continue;
-        }
-        if !extra.is_empty() {
-            extra.push(Span::raw("  "));
-        }
-        extra.extend(chip);
-    }
-    if !extra.is_empty() {
-        // Stack into the cache slot — last existing right-cluster pipe — so
-        // they appear adjacent without changing FooterProps's API. Keep
-        // existing cache spans first so cache hit rate stays before the
-        // user-added extras.
-        if !props.cache.is_empty() {
-            props.cache.push(Span::raw("  "));
-        }
-        props.cache.extend(extra);
-    }
-
-    props
-}
-
-fn footer_git_branch_spans(app: &App) -> Vec<Span<'static>> {
-    let Some(branch) = workspace_context::branch(&app.workspace) else {
-        return Vec::new();
-    };
-    vec![Span::styled(
-        branch,
-        Style::default().fg(app.ui_theme.text_muted),
-    )]
-}
-
-/// Spans for the "context %" footer chip. Mirrors the header colour ramp so
-/// the two surfaces stay visually consistent when both are enabled.
-fn footer_context_percent_spans(app: &App) -> Vec<Span<'static>> {
-    let Some((_, _, percent)) = context_usage_snapshot(app) else {
-        return Vec::new();
-    };
-    let color = if percent >= 95.0 {
-        palette::STATUS_ERROR
-    } else if percent >= 85.0 {
-        palette::STATUS_WARNING
-    } else {
-        palette::TEXT_MUTED
-    };
-    vec![Span::styled(
-        format!("active ctx {percent:.0}%"),
-        Style::default().fg(color),
-    )]
-}
-
-fn footer_cost_spans(app: &App) -> Vec<Span<'static>> {
-    let displayed_cost = app.displayed_session_cost_for_currency(app.cost_currency);
-    if !should_show_footer_cost(displayed_cost) {
-        return Vec::new();
-    }
-    vec![Span::styled(
-        app.format_cost_amount(displayed_cost),
-        Style::default().fg(palette::TEXT_MUTED),
-    )]
-}
-
-fn should_show_footer_cost(displayed_cost: f64) -> bool {
-    displayed_cost.is_finite() && displayed_cost > 0.0
-}
-
-/// Test-only helper retained as a parity reference for `FooterWidget`'s
-/// auxiliary-span composition. Production rendering is performed by the
-/// widget itself; the existing footer parity tests still exercise this
-/// function directly to guard against drift.
-#[allow(dead_code)]
-fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
-    // Context % is already shown in the header signal bar — don't
-    // duplicate it in the footer. The footer carries unique info only:
-    // prefix stability, coherence, in-flight sub-agents, reasoning
-    // replay tokens, cache hit rate, and session cost.
-    let coherence_spans = footer_coherence_spans(app);
-    let agents_spans =
-        crate::tui::widgets::footer_agents_chip(running_agent_count(app), app.ui_locale);
-    let replay_spans = footer_reasoning_replay_spans(app);
-    let cache_spans = footer_cache_spans(app);
-    let cost_spans = footer_cost_spans(app);
-    let prefix_spans = app
-        .prefix_stability_pct
-        .map(|_| {
-            let (label, color) = format_helpers::prefix_stability_chip(app)
-                .unwrap_or(("P --".to_string(), ratatui::style::Color::DarkGray));
-            vec![Span::styled(label, Style::default().fg(color))]
-        })
-        .unwrap_or_default();
-
-    let parts: Vec<&Vec<Span<'static>>> = [
-        &coherence_spans,
-        &agents_spans,
-        &replay_spans,
-        &cache_spans,
-        &prefix_spans,
-        &cost_spans,
-    ]
-    .iter()
-    .filter(|spans| !spans.is_empty())
-    .copied()
-    .collect();
-
-    // Try to fit as many parts as possible, dropping from the end.
-    for end in (0..=parts.len()).rev() {
-        let mut combined = Vec::new();
-        for (i, part) in parts[..end].iter().enumerate() {
-            if i > 0 {
-                combined.push(Span::raw("  "));
-            }
-            combined.extend(part.iter().cloned());
-        }
-        if spans_width(&combined) <= max_width {
-            return combined;
-        }
-    }
-    Vec::new()
-}
-
-fn footer_coherence_spans(app: &App) -> Vec<Span<'static>> {
-    // Only surface coherence when the engine is actively intervening — the
-    // user-facing signal is "we're doing something different now," not
-    // "your conversation is getting complex," which the context-percent
-    // header already covers. `GettingCrowded` is just a soft hint, so we
-    // suppress it; the active interventions get their own visible label.
-    let (label, color) = match app.coherence_state {
-        CoherenceState::Healthy | CoherenceState::GettingCrowded => return Vec::new(),
-        CoherenceState::RefreshingContext => ("refreshing context", palette::STATUS_WARNING),
-        CoherenceState::VerifyingRecentWork => ("verifying", palette::DEEPSEEK_SKY),
-        CoherenceState::ResettingPlan => ("resetting plan", palette::STATUS_ERROR),
-    };
-
-    vec![Span::styled(label.to_string(), Style::default().fg(color))]
-}
-
-fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
-    if app.session.last_prompt_tokens.is_none() && app.session.last_completion_tokens.is_none() {
-        return Vec::new();
-    };
-    let Some(hit_tokens) = app.session.last_prompt_cache_hit_tokens else {
-        return vec![Span::styled(
-            "Cache: unavailable",
-            Style::default().fg(palette::TEXT_MUTED),
-        )];
-    };
-    let miss_tokens = app
-        .session
-        .last_prompt_cache_miss_tokens
-        .unwrap_or_else(|| {
-            app.session
-                .last_prompt_tokens
-                .unwrap_or(0)
-                .saturating_sub(hit_tokens)
-        });
-    let total = hit_tokens.saturating_add(miss_tokens);
-    let percent = if total == 0 {
-        0.0
-    } else {
-        (f64::from(hit_tokens) / f64::from(total) * 100.0).clamp(0.0, 100.0)
-    };
-    // Threshold-based coloring for cache hit rate (#396):
-    //   >80%: green (good cache utilization)
-    //   40-80%: yellow/warning
-    //   <40%: red/dimmed (poor cache)
-    let color = if percent > 80.0 {
-        palette::STATUS_SUCCESS
-    } else if percent >= 40.0 {
-        palette::STATUS_WARNING
-    } else {
-        palette::STATUS_ERROR
-    };
-    vec![Span::styled(
-        format!(
-            "Cache: {:.1}% hit | hit {hit_tokens} | miss {miss_tokens}",
-            percent
-        ),
-        Style::default().fg(color),
-    )]
-}
-
-/// Render a footer chip showing the size of the `reasoning_content` block
-/// replayed on the most recent thinking-mode tool-calling turn (#30).
-///
-/// Stays hidden when the count is zero (non-thinking models, first turn, or
-/// turns with no tool calls). When replay tokens dominate the input budget
-/// (>50%), the chip turns warning-coloured so users notice that thinking
-/// replay is the main consumer of context.
-fn footer_reasoning_replay_spans(app: &App) -> Vec<Span<'static>> {
-    let Some(replay) = app.session.last_reasoning_replay_tokens else {
-        return Vec::new();
-    };
-    if replay == 0 {
-        return Vec::new();
-    }
-    let label = format!("rsn {}", format_token_count_compact(u64::from(replay)));
-    let color = match app.session.last_prompt_tokens {
-        Some(input) if input > 0 && f64::from(replay) / f64::from(input) > 0.5 => {
-            palette::STATUS_WARNING
-        }
-        _ => palette::TEXT_MUTED,
-    };
-    vec![Span::styled(label, Style::default().fg(color))]
-}
-
-#[allow(dead_code)]
-fn footer_toast_spans(
-    toast: &crate::tui::app::StatusToast,
-    max_width: usize,
-) -> Vec<Span<'static>> {
-    let truncated = truncate_line_to_width(&toast.text, max_width.max(1));
-    vec![Span::styled(
-        truncated,
-        Style::default().fg(status_color(toast.level)),
-    )]
-}
-
-#[allow(dead_code)]
-fn footer_status_line_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
-    if max_width == 0 {
-        return Vec::new();
-    }
-
-    let (mode_label, mode_color) = footer_mode_style(app);
-    let (status_label, status_color) = footer_state_label(app);
-    let sep = " \u{00B7} ";
-    let show_status = status_label != "ready";
-
-    let fixed_width = mode_label.width()
-        + sep.width()
-        + if show_status {
-            sep.width() + status_label.width()
-        } else {
-            0
-        };
-
-    if max_width <= mode_label.width() {
-        return vec![Span::styled(
-            truncate_line_to_width(mode_label, max_width),
-            Style::default().fg(mode_color),
-        )];
-    }
-
-    let model_budget = max_width.saturating_sub(fixed_width).max(1);
-    let model_label = truncate_line_to_width(&app.model, model_budget);
-
-    let mut spans = vec![
-        Span::styled(mode_label.to_string(), Style::default().fg(mode_color)),
-        Span::styled(sep.to_string(), Style::default().fg(app.ui_theme.text_dim)),
-        Span::styled(model_label, Style::default().fg(app.ui_theme.text_hint)),
-    ];
-
-    if show_status {
-        spans.push(Span::styled(
-            sep.to_string(),
-            Style::default().fg(app.ui_theme.text_dim),
-        ));
-        spans.push(Span::styled(
-            status_label.to_string(),
-            Style::default().fg(status_color),
-        ));
-    }
-
-    spans
-}
-
-fn footer_state_label(app: &App) -> (&'static str, ratatui::style::Color) {
-    if app.is_compacting {
-        return ("compacting \u{238B}", app.ui_theme.status_warning);
-    }
-    // Note: we deliberately do NOT show a "thinking" label for `is_loading`.
-    // The animated water-spout strip in the footer's spacer is the visual
-    // signal that the model is live; "thinking" was misleading because it
-    // fired for every kind of in-flight work (tool calls, streaming, etc.),
-    // not strictly reasoning. Sub-agents still surface "working" because
-    // that's a distinct lifecycle the user can act on (open `/agents`).
-    if running_agent_count(app) > 0 {
-        return ("working", app.ui_theme.status_working);
-    }
-    if app.queued_draft.is_some() {
-        return ("draft", app.ui_theme.text_muted);
-    }
-
-    if !app.view_stack.is_empty() {
-        return ("overlay", app.ui_theme.text_muted);
-    }
-
-    if !app.input.is_empty() {
-        return ("draft", app.ui_theme.text_muted);
-    }
-
-    ("ready", app.ui_theme.status_ready)
-}
-
-#[allow(dead_code)]
-fn footer_mode_style(app: &App) -> (&'static str, ratatui::style::Color) {
-    let label = app.mode.as_setting();
-    let color = match app.mode {
-        crate::tui::app::AppMode::Agent => app.ui_theme.mode_agent,
-        crate::tui::app::AppMode::Yolo => app.ui_theme.mode_yolo,
-        crate::tui::app::AppMode::Plan => app.ui_theme.mode_plan,
-    };
-    (label, color)
-}
-
-fn format_token_count_compact(tokens: u64) -> String {
-    if tokens >= 1_000_000 {
-        format!("{:.1}M", tokens as f64 / 1_000_000.0)
-    } else if tokens >= 1_000 {
-        format!("{:.1}k", tokens as f64 / 1_000.0)
-    } else {
-        tokens.to_string()
-    }
-}
-
-#[allow(dead_code)]
-fn format_context_budget(used: i64, max: u32) -> String {
-    let max_u64 = u64::from(max);
-    let max_i64 = i64::from(max);
-
-    if used > max_i64 {
-        return format!(
-            ">{}/{}",
-            format_token_count_compact(max_u64),
-            format_token_count_compact(max_u64)
-        );
-    }
-
-    let used_u64 = u64::try_from(used.max(0)).unwrap_or(0);
-    format!(
-        "{}/{}",
-        format_token_count_compact(used_u64),
-        format_token_count_compact(max_u64)
-    )
-}
-
-#[allow(dead_code)]
-fn spans_width(spans: &[Span<'_>]) -> usize {
-    spans.iter().map(|span| span.content.width()).sum()
 }
 
 #[allow(dead_code)]
@@ -7462,7 +6601,7 @@ fn estimated_context_tokens(app: &App) -> Option<i64> {
     .ok()
 }
 
-fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
+pub(crate) fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
     let max = context_window_for_model(app.effective_model_for_budget())?;
     let max_i64 = i64::from(max);
     let reported = app
@@ -7608,661 +6747,7 @@ fn history_has_live_motion(history: &[HistoryCell]) -> bool {
     })
 }
 
-pub(crate) fn truncate_line_to_width(text: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    if UnicodeWidthStr::width(text) <= max_width {
-        return text.to_string();
-    }
-    // For very small budgets, take chars until we exceed the *display* width.
-    // Counting characters instead of widths (the previous behavior) overran
-    // the budget for any double-width grapheme and contributed to mid-character
-    // sidebar artifacts on resize (issue #65).
-    if max_width <= 3 {
-        let mut out = String::new();
-        let mut width = 0usize;
-        for ch in text.chars() {
-            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if width + ch_width > max_width {
-                break;
-            }
-            out.push(ch);
-            width += ch_width;
-        }
-        return out;
-    }
-
-    let mut out = String::new();
-    let mut width = 0usize;
-    let limit = max_width.saturating_sub(3);
-    for ch in text.chars() {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if width + ch_width > limit {
-            break;
-        }
-        out.push(ch);
-        width += ch_width;
-    }
-    out.push_str("...");
-    out
-}
-
-fn should_drop_loading_mouse_motion(app: &App, mouse: MouseEvent) -> bool {
-    if !app.is_loading {
-        return false;
-    }
-
-    match mouse.kind {
-        MouseEventKind::Moved => true,
-        MouseEventKind::Drag(_) => {
-            !app.viewport.transcript_selection.dragging
-                && !app.viewport.transcript_scrollbar_dragging
-        }
-        _ => false,
-    }
-}
-
-fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
-    if app.view_stack.top_kind() == Some(ModalKind::ContextMenu) {
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
-            app.view_stack.pop();
-            open_context_menu(app, mouse);
-            return Vec::new();
-        }
-        return app.view_stack.handle_mouse(mouse);
-    }
-
-    if !app.view_stack.is_empty() {
-        app.needs_redraw = true;
-        return app.view_stack.handle_mouse(mouse);
-    }
-
-    match mouse.kind {
-        MouseEventKind::ScrollUp => {
-            let update = app.viewport.mouse_scroll.on_scroll(ScrollDirection::Up);
-            app.viewport.pending_scroll_delta = app
-                .viewport
-                .pending_scroll_delta
-                .saturating_add(update.delta_lines);
-            if update.delta_lines != 0 {
-                app.user_scrolled_during_stream = true;
-                app.needs_redraw = true;
-            }
-        }
-        MouseEventKind::ScrollDown => {
-            let update = app.viewport.mouse_scroll.on_scroll(ScrollDirection::Down);
-            app.viewport.pending_scroll_delta = app
-                .viewport
-                .pending_scroll_delta
-                .saturating_add(update.delta_lines);
-            if update.delta_lines != 0 {
-                app.user_scrolled_during_stream = true;
-                app.needs_redraw = true;
-            }
-        }
-        MouseEventKind::Down(MouseButton::Left) => {
-            app.viewport.transcript_scrollbar_dragging = false;
-            app.viewport.selection_autoscroll = None;
-
-            // Click on the transcript scrollbar gutter starts a scrollbar
-            // drag so the visible thumb remains interactive for users who
-            // prefer mouse-based navigation.
-            if mouse_hits_transcript_scrollbar(app, mouse) {
-                app.viewport.transcript_scrollbar_dragging = true;
-                return Vec::new();
-            }
-
-            if mouse_hits_rect(mouse, app.viewport.jump_to_latest_button_area) {
-                app.scroll_to_bottom();
-                return Vec::new();
-            }
-
-            if let Some(point) = selection_point_from_mouse(app, mouse) {
-                app.viewport.transcript_selection.anchor = Some(point);
-                app.viewport.transcript_selection.head = Some(point);
-                app.viewport.transcript_selection.dragging = true;
-
-                if app.is_loading
-                    && app.viewport.transcript_scroll.is_at_tail()
-                    && let Some(anchor) = TranscriptScroll::anchor_for(
-                        app.viewport.transcript_cache.line_meta(),
-                        app.viewport.last_transcript_top,
-                    )
-                {
-                    app.viewport.transcript_scroll = anchor;
-                }
-            } else if app.viewport.transcript_selection.is_active() {
-                app.viewport.transcript_selection.clear();
-            }
-        }
-        MouseEventKind::Drag(MouseButton::Left) => {
-            if app.viewport.transcript_scrollbar_dragging {
-                scroll_transcript_to_mouse_row(app, mouse.row);
-                return Vec::new();
-            }
-
-            if app.viewport.transcript_selection.dragging {
-                update_selection_drag(app, mouse);
-            }
-        }
-        MouseEventKind::Up(MouseButton::Left) if app.viewport.transcript_scrollbar_dragging => {
-            app.viewport.transcript_scrollbar_dragging = false;
-            app.viewport.selection_autoscroll = None;
-            app.needs_redraw = true;
-        }
-        MouseEventKind::Up(MouseButton::Left) if app.viewport.transcript_selection.dragging => {
-            app.viewport.transcript_selection.dragging = false;
-            app.viewport.selection_autoscroll = None;
-            if selection_has_content(app) {
-                copy_active_selection(app);
-            }
-        }
-        MouseEventKind::Down(MouseButton::Right) => {
-            open_context_menu(app, mouse);
-        }
-        _ => {}
-    }
-
-    Vec::new()
-}
-
-fn mouse_hits_transcript_scrollbar(app: &App, mouse: MouseEvent) -> bool {
-    let Some(area) = app.viewport.last_transcript_area else {
-        return false;
-    };
-    if area.width <= 1 || app.viewport.last_transcript_total <= app.viewport.last_transcript_visible
-    {
-        return false;
-    }
-
-    let scrollbar_col = area.x.saturating_add(area.width.saturating_sub(1));
-    mouse.column == scrollbar_col
-        && mouse.row >= area.y
-        && mouse.row < area.y.saturating_add(area.height)
-}
-
-fn scroll_transcript_to_mouse_row(app: &mut App, row: u16) -> bool {
-    let Some(area) = app.viewport.last_transcript_area else {
-        return false;
-    };
-    let total = app.viewport.last_transcript_total;
-    let visible = app.viewport.last_transcript_visible;
-    if area.height == 0 || total <= visible {
-        return false;
-    }
-
-    let max_start = total.saturating_sub(visible);
-    if max_start == 0 {
-        app.scroll_to_bottom();
-        return true;
-    }
-
-    let max_row = usize::from(area.height.saturating_sub(1));
-    let relative_row = usize::from(row.saturating_sub(area.y)).min(max_row);
-    let numerator = relative_row
-        .saturating_mul(max_start)
-        .saturating_add(max_row / 2);
-    // Round to the nearest transcript offset so short thumbs still feel
-    // responsive on compact terminals.
-    let top = numerator.checked_div(max_row).unwrap_or(0);
-
-    app.viewport.transcript_scroll = if top >= max_start {
-        TranscriptScroll::to_bottom()
-    } else {
-        TranscriptScroll::at_line(top)
-    };
-    app.viewport.pending_scroll_delta = 0;
-    app.user_scrolled_during_stream = !app.viewport.transcript_scroll.is_at_tail();
-    app.needs_redraw = true;
-    true
-}
-
-/// Cadence between auto-scroll ticks while drag-selecting past the
-/// transcript edge (#1163). 30 ms ≈ 33 lines/sec, comparable to the feel
-/// of a steady scroll-wheel drag.
-const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(30);
-
-/// Update the transcript selection while the left button is dragging.
-/// When the mouse leaves the transcript rect vertically, arm
-/// `selection_autoscroll` so the main loop can advance the viewport on a
-/// fixed cadence; when the mouse returns inside, disarm it.
-fn update_selection_drag(app: &mut App, mouse: MouseEvent) {
-    if let Some(point) = selection_point_from_mouse(app, mouse) {
-        app.viewport.transcript_selection.head = Some(point);
-        app.viewport.selection_autoscroll = None;
-        return;
-    }
-
-    let Some(area) = app.viewport.last_transcript_area else {
-        return;
-    };
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
-
-    let direction = if mouse.row < area.y {
-        -1
-    } else if mouse.row >= area.y.saturating_add(area.height) {
-        1
-    } else {
-        // Outside horizontally only — leave selection head where it is.
-        return;
-    };
-
-    let max_col = area.x.saturating_add(area.width.saturating_sub(1));
-    let column = mouse.column.clamp(area.x, max_col);
-
-    // Fire on the next tick immediately by setting `next_tick` to now.
-    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
-        direction,
-        column,
-        next_tick: Instant::now(),
-    });
-    app.needs_redraw = true;
-}
-
-/// Advance the drag-edge auto-scroll one step if its cadence has elapsed.
-/// Called once per main-loop iteration.
-fn tick_selection_autoscroll(app: &mut App) {
-    let Some(state) = app.viewport.selection_autoscroll else {
-        return;
-    };
-
-    if !app.viewport.transcript_selection.dragging {
-        app.viewport.selection_autoscroll = None;
-        return;
-    }
-
-    let Some(area) = app.viewport.last_transcript_area else {
-        return;
-    };
-    if area.height == 0 {
-        return;
-    }
-
-    let now = Instant::now();
-    if now < state.next_tick {
-        return;
-    }
-
-    app.viewport.pending_scroll_delta = app
-        .viewport
-        .pending_scroll_delta
-        .saturating_add(state.direction);
-    app.user_scrolled_during_stream = true;
-
-    let edge_row = if state.direction < 0 {
-        area.y
-    } else {
-        area.y.saturating_add(area.height.saturating_sub(1))
-    };
-    if let Some(point) = selection_point_from_position(
-        area,
-        state.column,
-        edge_row,
-        app.viewport.last_transcript_top,
-        app.viewport.last_transcript_total,
-        app.viewport.last_transcript_padding_top,
-    ) {
-        app.viewport.transcript_selection.head = Some(point);
-    }
-
-    app.viewport.selection_autoscroll = Some(SelectionAutoscroll {
-        next_tick: now + SELECTION_AUTOSCROLL_INTERVAL,
-        ..state
-    });
-    app.needs_redraw = true;
-}
-
-fn mouse_hits_rect(mouse: MouseEvent, area: Option<Rect>) -> bool {
-    let Some(area) = area else {
-        return false;
-    };
-
-    mouse.column >= area.x
-        && mouse.column < area.x.saturating_add(area.width)
-        && mouse.row >= area.y
-        && mouse.row < area.y.saturating_add(area.height)
-}
-
-fn open_context_menu(app: &mut App, mouse: MouseEvent) {
-    let entries = build_context_menu_entries(app, mouse);
-    if entries.is_empty() {
-        return;
-    }
-    app.view_stack
-        .push(ContextMenuView::new(entries, mouse.column, mouse.row));
-    app.needs_redraw = true;
-}
-
-fn build_context_menu_entries(app: &App, mouse: MouseEvent) -> Vec<ContextMenuEntry> {
-    let mut entries = Vec::new();
-
-    if selection_has_content(app) {
-        entries.push(ContextMenuEntry {
-            label: "Copy selection".to_string(),
-            description: "write selected transcript text".to_string(),
-            action: ContextMenuAction::CopySelection,
-        });
-        entries.push(ContextMenuEntry {
-            label: "Open selection".to_string(),
-            description: "show selected text in pager".to_string(),
-            action: ContextMenuAction::OpenSelection,
-        });
-        entries.push(ContextMenuEntry {
-            label: "Clear selection".to_string(),
-            description: String::new(),
-            action: ContextMenuAction::ClearSelection,
-        });
-    }
-
-    if let Some(filtered_cell_index) = transcript_cell_index_from_mouse(app, mouse) {
-        // Convert filtered index → original virtual index using the
-        // mapping built in ChatWidget::new. When no cells are collapsed
-        // this is an identity mapping.
-        let cell_index = app
-            .collapsed_cell_map
-            .get(filtered_cell_index)
-            .copied()
-            .unwrap_or(filtered_cell_index);
-
-        let target = detail_target_label(app, cell_index)
-            .map(|label| truncate_line_to_width(&label, 28))
-            .unwrap_or_else(|| "message".to_string());
-        entries.push(ContextMenuEntry {
-            label: "Open details".to_string(),
-            description: target,
-            action: ContextMenuAction::OpenDetails { cell_index },
-        });
-        entries.push(ContextMenuEntry {
-            label: "Copy message".to_string(),
-            description: "write clicked transcript cell".to_string(),
-            action: ContextMenuAction::CopyCell { cell_index },
-        });
-        entries.push(ContextMenuEntry {
-            label: "Open in editor".to_string(),
-            description: "open file:line in $EDITOR".to_string(),
-            action: ContextMenuAction::OpenFileAtLine { cell_index },
-        });
-        // Hide/show cell toggle.
-        if app.collapsed_cells.contains(&cell_index) {
-            entries.push(ContextMenuEntry {
-                label: "Show cell".to_string(),
-                description: "unhide this transcript cell".to_string(),
-                action: ContextMenuAction::ShowCell { cell_index },
-            });
-        } else {
-            entries.push(ContextMenuEntry {
-                label: "Hide cell".to_string(),
-                description: "collapse this transcript cell".to_string(),
-                action: ContextMenuAction::HideCell { cell_index },
-            });
-        }
-    }
-
-    // When cells are hidden, offer a way to show them all.
-    if !app.collapsed_cells.is_empty() {
-        let count = app.collapsed_cells.len();
-        entries.push(ContextMenuEntry {
-            label: format!("Show hidden ({count})"),
-            description: "unhide all collapsed cells".to_string(),
-            action: ContextMenuAction::ShowAllHidden,
-        });
-    }
-
-    entries.push(ContextMenuEntry {
-        label: "Paste".to_string(),
-        description: "insert clipboard into composer".to_string(),
-        action: ContextMenuAction::Paste,
-    });
-    entries.push(ContextMenuEntry {
-        label: "Command palette".to_string(),
-        description: "commands, skills, and tools".to_string(),
-        action: ContextMenuAction::OpenCommandPalette,
-    });
-    entries.push(ContextMenuEntry {
-        label: "Context inspector".to_string(),
-        description: "active context and cache hints".to_string(),
-        action: ContextMenuAction::OpenContextInspector,
-    });
-    entries.push(ContextMenuEntry {
-        label: "Help".to_string(),
-        description: "keybindings and commands".to_string(),
-        action: ContextMenuAction::OpenHelp,
-    });
-
-    entries
-}
-
-fn transcript_cell_index_from_mouse(app: &App, mouse: MouseEvent) -> Option<usize> {
-    let point = selection_point_from_mouse(app, mouse)?;
-    app.viewport
-        .transcript_cache
-        .line_meta()
-        .get(point.line_index)
-        .and_then(|meta| meta.cell_line())
-        .map(|(cell_index, _)| cell_index)
-}
-
-fn handle_context_menu_action(app: &mut App, action: ContextMenuAction) {
-    match action {
-        ContextMenuAction::CopySelection => {
-            copy_active_selection(app);
-        }
-        ContextMenuAction::OpenSelection => {
-            if !open_pager_for_selection(app) {
-                app.status_message = Some("No selection to open".to_string());
-            }
-        }
-        ContextMenuAction::ClearSelection => {
-            app.viewport.transcript_selection.clear();
-            app.status_message = Some("Selection cleared".to_string());
-        }
-        ContextMenuAction::CopyCell { cell_index } => {
-            copy_cell_to_clipboard(app, cell_index);
-        }
-        ContextMenuAction::OpenDetails { cell_index } => {
-            if !open_details_pager_for_cell(app, cell_index) {
-                app.status_message = Some("No details available for that line".to_string());
-            }
-        }
-        ContextMenuAction::Paste => {
-            app.paste_from_clipboard();
-        }
-        ContextMenuAction::OpenCommandPalette => {
-            app.view_stack
-                .push(CommandPaletteView::new(build_command_palette_entries(
-                    app.ui_locale,
-                    &app.skills_dir,
-                    &app.workspace,
-                    &app.mcp_config_path,
-                    app.mcp_snapshot.as_ref(),
-                )));
-        }
-        ContextMenuAction::OpenContextInspector => {
-            open_context_inspector(app);
-        }
-        ContextMenuAction::OpenHelp => {
-            app.view_stack.push(HelpView::new_for_locale(app.ui_locale));
-        }
-        ContextMenuAction::OpenFileAtLine { cell_index } => {
-            let width = app
-                .viewport
-                .last_transcript_area
-                .map(|area| area.width)
-                .unwrap_or(80);
-            let text = history_cell_to_text(
-                app.cell_at_virtual_index(cell_index)
-                    .unwrap_or(&HistoryCell::System {
-                        content: String::new(),
-                    }),
-                width,
-            );
-            if crate::tui::history::try_open_file_at_line(&text, &app.workspace) {
-                app.status_message = Some("Opened file in editor".to_string());
-            } else {
-                app.status_message = Some("No file:line pattern found in selection".to_string());
-            }
-        }
-        ContextMenuAction::HideCell { cell_index } => {
-            app.collapsed_cells.insert(cell_index);
-            app.status_message = Some("Cell hidden".to_string());
-        }
-        ContextMenuAction::ShowCell { cell_index } => {
-            app.collapsed_cells.remove(&cell_index);
-            app.status_message = Some("Cell shown".to_string());
-        }
-        ContextMenuAction::ShowAllHidden => {
-            let count = app.collapsed_cells.len();
-            app.collapsed_cells.clear();
-            app.status_message = Some(format!("{count} hidden cell(s) restored"));
-        }
-    }
-    app.needs_redraw = true;
-}
-
-fn selection_point_from_mouse(app: &App, mouse: MouseEvent) -> Option<TranscriptSelectionPoint> {
-    selection_point_from_position(
-        app.viewport.last_transcript_area?,
-        mouse.column,
-        mouse.row,
-        app.viewport.last_transcript_top,
-        app.viewport.last_transcript_total,
-        app.viewport.last_transcript_padding_top,
-    )
-}
-
-fn selection_point_from_position(
-    area: Rect,
-    column: u16,
-    row: u16,
-    transcript_top: usize,
-    transcript_total: usize,
-    padding_top: usize,
-) -> Option<TranscriptSelectionPoint> {
-    if column < area.x
-        || column >= area.x + area.width
-        || row < area.y
-        || row >= area.y + area.height
-    {
-        return None;
-    }
-
-    if transcript_total == 0 {
-        return None;
-    }
-
-    let row = row.saturating_sub(area.y) as usize;
-    if row < padding_top {
-        return None;
-    }
-    let row = row.saturating_sub(padding_top);
-
-    let col = column.saturating_sub(area.x) as usize;
-    let line_index = transcript_top
-        .saturating_add(row)
-        .min(transcript_total.saturating_sub(1));
-
-    Some(TranscriptSelectionPoint {
-        line_index,
-        column: col,
-    })
-}
-
-fn selection_has_content(app: &App) -> bool {
-    selection_to_text(app).is_some_and(|text| !text.is_empty())
-}
-
-/// Branches taken by the Ctrl+C key handler. The order encodes priority and is
-/// the unit-tested contract for #1337 / #1367: a transcript selection always
-/// wins (so users learn that Ctrl+C copies when there's something to copy);
-/// otherwise an active turn is interrupted; otherwise the quit-arm flow runs.
-#[derive(Debug, PartialEq, Eq)]
-enum CtrlCDisposition {
-    CopySelection,
-    CancelTurn,
-    ConfirmExit,
-    ArmExit,
-}
-
-fn ctrl_c_disposition(app: &App) -> CtrlCDisposition {
-    if selection_has_content(app) {
-        CtrlCDisposition::CopySelection
-    } else if app.is_loading {
-        CtrlCDisposition::CancelTurn
-    } else if app.quit_is_armed() {
-        CtrlCDisposition::ConfirmExit
-    } else {
-        CtrlCDisposition::ArmExit
-    }
-}
-
-fn copy_active_selection(app: &mut App) {
-    if !app.viewport.transcript_selection.is_active() {
-        return;
-    }
-    if let Some(text) = selection_to_text(app).filter(|text| !text.is_empty()) {
-        if app.clipboard.write_text(&text).is_ok() {
-            app.status_message = Some("Selection copied".to_string());
-        } else {
-            app.status_message = Some("Copy failed".to_string());
-        }
-    } else {
-        app.viewport.transcript_selection.clear();
-        app.status_message = Some("No selection to copy".to_string());
-    }
-}
-
-fn selection_to_text(app: &App) -> Option<String> {
-    let (start, end) = app.viewport.transcript_selection.ordered_endpoints()?;
-    let lines = app.viewport.transcript_cache.lines();
-    if lines.is_empty() {
-        return None;
-    }
-    let end_index = end.line_index.min(lines.len().saturating_sub(1));
-    let start_index = start.line_index.min(end_index);
-
-    let mut selected_lines = Vec::new();
-    #[allow(clippy::needless_range_loop)]
-    for line_index in start_index..=end_index {
-        // Rail-prefix decorations are stored as cache metadata rather than
-        // detected from glyphs, so new decoration types are covered without
-        // changes to the copy path (#1163).
-        let rail_width = app.viewport.transcript_cache.rail_prefix_width(line_index);
-        // Convert the rendered line to plain text (strips OSC-8), then
-        // slice off the rail prefix so subsequent column offsets operate
-        // on content-only text.
-        let full_text = line_to_plain(&lines[line_index]);
-        let line_text = if rail_width > 0 {
-            slice_text(&full_text, rail_width, text_display_width(&full_text))
-        } else {
-            full_text
-        };
-        let line_width = text_display_width(&line_text);
-        // Selection coordinates are recorded in rendered-column space, which
-        // includes the visual rail prefix. Add rail_width back so the column
-        // window maps correctly into the rail-stripped text.
-        let (raw_col_start, raw_col_end) = if start_index == end_index {
-            (start.column, end.column)
-        } else if line_index == start_index {
-            (start.column, line_width.saturating_add(rail_width))
-        } else if line_index == end_index {
-            (0, end.column)
-        } else {
-            (0, line_width.saturating_add(rail_width))
-        };
-
-        let col_start = raw_col_start.saturating_sub(rail_width).min(line_width);
-        let col_end = raw_col_end.saturating_sub(rail_width).min(line_width);
-
-        let slice = slice_text(&line_text, col_start, col_end);
-        selected_lines.push(slice);
-    }
-    Some(selected_lines.join("\n"))
-}
-
-fn open_pager_for_selection(app: &mut App) -> bool {
+pub(crate) fn open_pager_for_selection(app: &mut App) -> bool {
     let Some(text) = selection_to_text(app) else {
         return false;
     };
@@ -8710,7 +7195,7 @@ fn spillover_pager_section(app: &App, cell_index: usize) -> Option<String> {
     ))
 }
 
-fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> bool {
+pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> bool {
     if let Some(detail) = app.tool_detail_record_for_cell(cell_index) {
         let input = serde_json::to_string_pretty(&detail.input)
             .unwrap_or_else(|_| detail.input.to_string());
@@ -8791,7 +7276,7 @@ fn copy_focused_cell(app: &mut App) -> bool {
     copy_cell_to_clipboard(app, index)
 }
 
-fn copy_cell_to_clipboard(app: &mut App, cell_index: usize) -> bool {
+pub(crate) fn copy_cell_to_clipboard(app: &mut App, cell_index: usize) -> bool {
     let Some(cell) = app.cell_at_virtual_index(cell_index) else {
         app.status_message = Some("No message at that line".to_string());
         return false;
@@ -8834,7 +7319,7 @@ fn detail_target_cell_index(app: &App) -> Option<usize> {
     .or_else(|| app.history.len().checked_sub(1))
 }
 
-fn selected_detail_footer_label(app: &App) -> Option<String> {
+pub(crate) fn selected_detail_footer_label(app: &App) -> Option<String> {
     if app.viewport.transcript_selection.is_active() {
         return None;
     }
@@ -8876,7 +7361,7 @@ fn activity_footer_target_cell_index(app: &App) -> Option<usize> {
     activity_target_cell_index(app)
 }
 
-fn detail_target_label(app: &App, cell_index: usize) -> Option<String> {
+pub(crate) fn detail_target_label(app: &App, cell_index: usize) -> Option<String> {
     if let Some(detail) = app.tool_detail_record_for_cell(cell_index) {
         return Some(detail.tool_name.clone());
     }

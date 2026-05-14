@@ -8,17 +8,27 @@ use crate::tui::file_mention::{
     apply_mention_menu_selection, find_file_mention_completions, partial_file_mention_at_cursor,
     try_autocomplete_file_mention, user_request_with_file_mentions, visible_mention_menu_entries,
 };
+use crate::tui::footer_ui::{
+    active_tool_status_label, footer_auxiliary_spans, footer_cache_spans, footer_coherence_spans,
+    footer_state_label, footer_status_line_spans, format_context_budget,
+    format_token_count_compact, friendly_subagent_progress, render_footer_from,
+};
 use crate::tui::history::{
     ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolStatus,
 };
 use crate::tui::views::{ModalView, ViewAction};
 use crate::working_set::Workspace;
+use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::text::Span;
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::MutexGuard;
 use std::time::{Duration, Instant};
+use unicode_width::UnicodeWidthStr;
+
+use crate::tui::selection::{SelectionAutoscroll, TranscriptSelectionPoint};
 use tempfile::TempDir;
 
 struct ConfigPathEnvGuard {
@@ -1847,6 +1857,40 @@ fn ctrl_alt_4_focuses_agents_sidebar_without_switching_modes() {
     assert_eq!(app.status_message.as_deref(), Some("Sidebar focus: agents"));
 }
 
+#[test]
+fn alt_0_restores_auto_sidebar_focus() {
+    let mut app = create_test_app();
+    app.sidebar_focus = SidebarFocus::Hidden;
+
+    apply_alt_0_shortcut(&mut app, KeyModifiers::ALT);
+
+    assert_eq!(app.sidebar_focus, SidebarFocus::Auto);
+    assert_eq!(app.status_message.as_deref(), Some("Sidebar focus: auto"));
+}
+
+#[test]
+fn ctrl_alt_0_hides_sidebar() {
+    let mut app = create_test_app();
+    app.sidebar_focus = SidebarFocus::Tasks;
+
+    apply_alt_0_shortcut(&mut app, KeyModifiers::ALT | KeyModifiers::CONTROL);
+
+    assert_eq!(app.sidebar_focus, SidebarFocus::Hidden);
+    assert_eq!(app.status_message.as_deref(), Some("Sidebar hidden"));
+}
+
+#[test]
+fn hidden_sidebar_focus_suppresses_sidebar_split_even_when_wide() {
+    let mut app = create_test_app();
+    app.sidebar_width_percent = 28;
+
+    app.sidebar_focus = SidebarFocus::Auto;
+    assert_eq!(sidebar_width_for_chat_area(&app, 120), Some(33));
+
+    app.sidebar_focus = SidebarFocus::Hidden;
+    assert_eq!(sidebar_width_for_chat_area(&app, 120), None);
+}
+
 fn make_subagent(
     id: &str,
     status: crate::tools::subagent::SubAgentStatus,
@@ -2134,6 +2178,35 @@ fn footer_auxiliary_spans_show_cache_and_cost_when_roomy() {
         !roomy.contains("ctx"),
         "context % removed from footer — shown in header only"
     );
+}
+
+#[test]
+fn footer_cache_low_hit_with_stable_prefix_is_not_error_colored() {
+    let mut app = create_test_app();
+    app.session.last_prompt_tokens = Some(10_000);
+    app.session.last_prompt_cache_hit_tokens = Some(500);
+    app.session.last_prompt_cache_miss_tokens = Some(9_500);
+    app.prefix_stability_pct = Some(100);
+    app.prefix_change_count = 0;
+
+    let spans = footer_cache_spans(&app);
+
+    assert_eq!(spans_text(&spans), "Cache: 5.0% hit | hit 500 | miss 9500");
+    assert_eq!(spans[0].style.fg, Some(palette::TEXT_MUTED));
+}
+
+#[test]
+fn footer_cache_low_hit_with_prefix_churn_stays_error_colored() {
+    let mut app = create_test_app();
+    app.session.last_prompt_tokens = Some(10_000);
+    app.session.last_prompt_cache_hit_tokens = Some(500);
+    app.session.last_prompt_cache_miss_tokens = Some(9_500);
+    app.prefix_stability_pct = Some(80);
+    app.prefix_change_count = 2;
+
+    let spans = footer_cache_spans(&app);
+
+    assert_eq!(spans[0].style.fg, Some(palette::STATUS_ERROR));
 }
 
 #[test]
@@ -4853,6 +4926,53 @@ fn render_footer_from_with_default_items_renders_mode_and_model() {
     // Tiny but real costs should render instead of disappearing as "$0.00".
     assert!(!props.cost.is_empty());
     assert_eq!(spans_text(&props.cost), "<$0.0001");
+}
+
+#[test]
+fn default_footer_includes_prefix_stability_before_cache() {
+    let items = crate::config::StatusItem::default_footer();
+    let prefix = items
+        .iter()
+        .position(|item| *item == crate::config::StatusItem::PrefixStability)
+        .expect("default footer includes prefix stability");
+    let cache = items
+        .iter()
+        .position(|item| *item == crate::config::StatusItem::Cache)
+        .expect("default footer includes cache");
+
+    assert!(prefix < cache);
+}
+
+#[test]
+fn render_footer_from_prefix_stability_item_renders_cache_slot_chip() {
+    let mut app = create_test_app();
+    app.prefix_stability_pct = Some(100);
+    app.prefix_change_count = 0;
+
+    let props = render_footer_from(&app, &[crate::config::StatusItem::PrefixStability], None);
+
+    assert_eq!(spans_text(&props.cache), "P 100%");
+}
+
+#[test]
+fn render_footer_from_preserves_prefix_then_cache_order() {
+    let mut app = create_test_app();
+    app.prefix_stability_pct = Some(100);
+    app.prefix_change_count = 0;
+    app.session.last_prompt_tokens = Some(10_000);
+    app.session.last_prompt_cache_hit_tokens = Some(9_000);
+    app.session.last_prompt_cache_miss_tokens = Some(1_000);
+
+    let props = render_footer_from(
+        &app,
+        &[
+            crate::config::StatusItem::PrefixStability,
+            crate::config::StatusItem::Cache,
+        ],
+        None,
+    );
+
+    assert!(spans_text(&props.cache).starts_with("P 100%  Cache: 90.0% hit"));
 }
 
 #[test]
