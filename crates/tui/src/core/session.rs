@@ -5,6 +5,7 @@
 use crate::cycle_manager::CycleBriefing;
 use crate::models::{Message, SystemPrompt, Usage};
 use crate::project_context::{ProjectContext, load_project_context_with_parents};
+use crate::prompts::StaticPromptCache;
 use crate::tui::approval::ApprovalMode;
 use crate::working_set::WorkingSet;
 use chrono::{DateTime, Utc};
@@ -82,6 +83,21 @@ pub struct Session {
     /// Briefings produced at past cycle boundaries, in chronological order.
     /// Bounded growth: one entry per cycle, briefing capped at ~3,000 tokens.
     pub cycle_briefings: Vec<CycleBriefing>,
+
+    /// Snapshot of the user-memory block taken at session creation (and
+    /// re-snapshot on `Op::SyncSession`). The system-prompt rebuild path uses
+    /// this instead of re-reading `memory.md` from disk every turn — that
+    /// disk read invalidated the entire conversation's KV prefix cache
+    /// every time the `remember` tool or `# foo` quick-add appended a
+    /// timestamped bullet. New bullets still hit disk and are picked up by
+    /// the next session.
+    pub cached_user_memory_block: Option<String>,
+
+    /// Snapshot of all disk-backed system-prompt components (project context,
+    /// context pack, instructions files, skills catalogue). Built once at
+    /// session creation so `refresh_system_prompt` can skip per-turn disk
+    /// reads and guarantee byte-stable system-prompt bytes across turns.
+    pub cached_static_prefix: Option<StaticPromptCache>,
 }
 
 /// Cumulative usage statistics for a session.
@@ -151,6 +167,8 @@ impl Session {
             cycle_count: 0,
             current_cycle_started: Utc::now(),
             cycle_briefings: Vec::new(),
+            cached_user_memory_block: None,
+            cached_static_prefix: None,
         }
     }
 

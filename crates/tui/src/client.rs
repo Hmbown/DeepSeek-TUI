@@ -286,6 +286,38 @@ fn release_stream_buffer(mut buf: Vec<u8>) {
     }
 }
 
+/// RAII guard that returns the buffer to the pool on drop. Prevents
+/// leaks when a stream is cancelled, errors, or panics before the
+/// manual `release_stream_buffer` call. Derefs to `Vec<u8>` so
+/// existing code using `&mut Vec<u8>` works unchanged.
+pub(super) struct StreamBufferGuard(Vec<u8>);
+
+impl StreamBufferGuard {
+    pub(super) fn acquire() -> Self {
+        Self(acquire_stream_buffer())
+    }
+}
+
+impl std::ops::Deref for StreamBufferGuard {
+    type Target = Vec<u8>;
+    fn deref(&self) -> &Vec<u8> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for StreamBufferGuard {
+    fn deref_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.0
+    }
+}
+
+impl Drop for StreamBufferGuard {
+    fn drop(&mut self) {
+        let buf = std::mem::replace(&mut self.0, Vec::new());
+        release_stream_buffer(buf);
+    }
+}
+
 impl Clone for DeepSeekClient {
     fn clone(&self) -> Self {
         Self {

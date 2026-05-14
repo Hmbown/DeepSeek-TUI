@@ -24,6 +24,85 @@ pub struct PromptSessionContext<'a> {
     /// disk I/O happens inside the prompt builder, so the workspace-
     /// static portion of the system prompt stays cache-friendly.
     pub locale_tag: &'a str,
+    /// Pre-built static prefix blocks for the system prompt. When
+    /// `Some`, the builder skips all disk reads (project context,
+    /// context pack, instructions, skills) and reuses these cached
+    /// strings. Populated once at session creation so mid-session
+    /// filesystem changes don't drift the prompt and invalidate
+    /// DeepSeek's KV prefix cache.
+    pub static_prefix: Option<&'a StaticPromptCache>,
+}
+
+/// Snapshot of every disk-backed component of the system prompt that
+/// is assembled once at session creation and reused across turns.
+/// Avoids per-turn filesystem I/O and prevents mid-session disk
+/// mutations from silently changing the system-prompt bytes — which
+/// would kill the entire conversation's KV prefix cache.
+#[derive(Debug, Clone)]
+pub struct StaticPromptCache {
+    pub project_context_block: Option<String>,
+    pub context_pack_block: Option<String>,
+    pub instructions_block: Option<String>,
+    pub skills_block: Option<String>,
+    pub handoff_block: Option<String>,
+}
+
+impl StaticPromptCache {
+    /// Render the static prefix as a text block suitable for
+    /// prepending to sub-agent system prompts. The output is
+    /// byte-for-byte identical to the corresponding layers in the
+    /// parent's assembled system prompt, so DeepSeek's KV prefix
+    /// cache hits across parent and child requests.
+    pub fn to_prefix_string(&self) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        if let Some(ref b) = self.project_context_block {
+            parts.push(b.as_str());
+        }
+        if let Some(ref b) = self.context_pack_block {
+            parts.push(b.as_str());
+        }
+        // Environment block is session-stable and not cached here
+        // (it's built per-call). Sub-agents get their own.
+        if let Some(ref b) = self.instructions_block {
+            parts.push(b.as_str());
+        }
+        if let Some(ref b) = self.skills_block {
+            parts.push(b.as_str());
+        }
+        parts.join("\n\n")
+    }
+
+    /// Build a static-prefix snapshot from the current workspace and
+    /// config. All disk I/O happens here once; subsequent calls to
+    /// `system_prompt_for_mode_with_context_skills_session_and_approval`
+    /// with this snapshot will skip re-reading from disk.
+    pub fn build(
+        workspace: &Path,
+        context_pack_enabled: bool,
+        instructions: Option<&[PathBuf]>,
+        skills_dir: Option<&Path>,
+    ) -> Self {
+        let project_context_block = load_project_context_with_parents(workspace)
+            .as_system_block();
+        let context_pack_block = if context_pack_enabled {
+            crate::project_context::generate_project_context_pack(workspace)
+        } else {
+            None
+        };
+        let instructions_block = instructions.and_then(render_instructions_block);
+        let skills_block =
+            crate::skills::render_available_skills_context_for_workspace(workspace).or_else(
+                || skills_dir.and_then(crate::skills::render_available_skills_context),
+            );
+        let handoff_block = load_handoff_block(workspace);
+        Self {
+            project_context_block,
+            context_pack_block,
+            instructions_block,
+            skills_block,
+            handoff_block,
+        }
+    }
 }
 
 /// Conventional location for the structured session-handoff artifact (#32).
@@ -336,6 +415,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
             goal_objective: None,
             project_context_pack_enabled: true,
             locale_tag: "en",
+            ..Default::default()
         },
     )
 }
@@ -370,25 +450,47 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
 ) -> SystemPrompt {
     let mode_prompt = compose_mode_prompt_with_approval(mode, approval_mode);
 
-    // Load project context from workspace
-    let project_context = load_project_context_with_parents(workspace);
+    // Load project context from workspace — skip disk I/O when the
+    // caller supplies a pre-built static prefix (e.g. engine turn loop
+    // reusing the session-creation snapshot).
+    let project_context_block = session_context
+        .static_prefix
+        .and_then(|sp| sp.project_context_block.clone());
+    let context_pack_block = session_context
+        .static_prefix
+        .and_then(|sp| sp.context_pack_block.clone());
+    let instructions_block = session_context
+        .static_prefix
+        .and_then(|sp| sp.instructions_block.clone());
+    let skills_block = session_context
+        .static_prefix
+        .and_then(|sp| sp.skills_block.clone());
+    let handoff_block = session_context
+        .static_prefix
+        .and_then(|sp| sp.handoff_block.clone());
 
     // 1–2. Mode prompt + project context.
     // `load_project_context_with_parents` auto-generates .deepseek/instructions.md
     // when no context file exists, so the fallback should always be available.
-    let mut full_prompt = if let Some(project_block) = project_context.as_system_block() {
-        format!("{}\n\n{}", mode_prompt, project_block)
+    let mut full_prompt = if let Some(cached_block) = project_context_block {
+        format!("{}\n\n{}", mode_prompt, cached_block)
     } else {
-        // Extremely unlikely: context generation failed (e.g. filesystem error).
-        // Use mode prompt alone rather than panic.
-        tracing::warn!("No project context available and auto-generation failed");
-        mode_prompt
+        let project_context = load_project_context_with_parents(workspace);
+        if let Some(project_block) = project_context.as_system_block() {
+            format!("{}\n\n{}", mode_prompt, project_block)
+        } else {
+            tracing::warn!("No project context available and auto-generation failed");
+            mode_prompt
+        }
     };
 
-    if session_context.project_context_pack_enabled
-        && let Some(pack) = crate::project_context::generate_project_context_pack(workspace)
-    {
-        full_prompt = format!("{full_prompt}\n\n{pack}");
+    if session_context.project_context_pack_enabled {
+        if let Some(cached_pack) = context_pack_block {
+            full_prompt = format!("{full_prompt}\n\n{cached_pack}");
+        } else if let Some(pack) = crate::project_context::generate_project_context_pack(workspace)
+        {
+            full_prompt = format!("{full_prompt}\n\n{pack}");
+        }
     }
 
     // 2.25. Environment block — locale, platform, shell, pwd. All
@@ -407,7 +509,9 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
     // block so it's part of the workspace-static layer that the KV
     // prefix cache can hit, and so per-project overrides apply
     // consistently turn-over-turn.
-    if let Some(paths) = instructions
+    if let Some(cached_block) = instructions_block {
+        full_prompt = format!("{full_prompt}\n\n{cached_block}");
+    } else if let Some(paths) = instructions
         && let Some(block) = render_instructions_block(paths)
     {
         full_prompt = format!("{full_prompt}\n\n{block}");
@@ -440,10 +544,16 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
     // honoured as a fallback for callers that don't supply a
     // workspace-aware view; it falls through to the same merged
     // registry when available.
-    let skills_block = crate::skills::render_available_skills_context_for_workspace(workspace)
-        .or_else(|| skills_dir.and_then(crate::skills::render_available_skills_context));
-    if let Some(block) = skills_block {
-        full_prompt = format!("{full_prompt}\n\n{block}");
+    if let Some(cached_block) = skills_block {
+        full_prompt = format!("{full_prompt}\n\n{cached_block}");
+    } else {
+        let disk_block =
+            crate::skills::render_available_skills_context_for_workspace(workspace)
+                .or_else(|| skills_dir
+                    .and_then(crate::skills::render_available_skills_context));
+        if let Some(block) = disk_block {
+            full_prompt = format!("{full_prompt}\n\n{block}");
+        }
     }
 
     // 4. Context Management (Agent / Yolo only).
@@ -476,8 +586,12 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
     // bytes that follow. Keep new static blocks above this comment.
 
     // 6. Previous-session handoff (file-backed, rewritten by `/compact`).
-    if let Some(handoff_block) = load_handoff_block(workspace) {
-        full_prompt = format!("{full_prompt}\n\n{handoff_block}");
+    // Uses the snapshot from `StaticPromptCache` when available so the
+    // handoff bytes don't shift mid-session and bust the prefix cache.
+    if let Some(cached_handoff) = handoff_block {
+        full_prompt = format!("{full_prompt}\n\n{cached_handoff}");
+    } else if let Some(disk_handoff) = load_handoff_block(workspace) {
+        full_prompt = format!("{full_prompt}\n\n{disk_handoff}");
     }
 
     SystemPrompt::Text(full_prompt)
@@ -555,6 +669,7 @@ mod tests {
                 goal_objective: None,
                 project_context_pack_enabled: true,
                 locale_tag: "ja",
+                static_prefix: None,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -580,6 +695,7 @@ mod tests {
                 goal_objective: None,
                 project_context_pack_enabled: false,
                 locale_tag: "en",
+                static_prefix: None,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -606,6 +722,7 @@ mod tests {
                 goal_objective: None,
                 project_context_pack_enabled: true,
                 locale_tag: "en",
+                static_prefix: None,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -799,6 +916,7 @@ mod tests {
                 goal_objective: Some("Fix transcript corruption"),
                 project_context_pack_enabled: true,
                 locale_tag: "en",
+                static_prefix: None,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -827,6 +945,7 @@ mod tests {
                 goal_objective: Some("   "),
                 project_context_pack_enabled: true,
                 locale_tag: "en",
+                static_prefix: None,
             },
         ) {
             SystemPrompt::Text(text) => text,

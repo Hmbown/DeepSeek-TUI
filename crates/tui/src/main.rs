@@ -50,6 +50,7 @@ mod project_context;
 mod project_doc;
 mod prompts;
 pub mod repl;
+mod request_dump;
 mod retry_status;
 pub mod rlm;
 mod runtime_api;
@@ -261,6 +262,17 @@ enum Commands {
         #[arg(long = "last", default_value_t = false, conflicts_with = "session_id")]
         last: bool,
     },
+    /// Diff consecutive request dumps to find DeepSeek prefix-cache busters
+    /// (run `DEEPSEEK_DUMP_REQUESTS=1 deepseek …` first to capture dumps)
+    CacheDiff(CacheDiffArgs),
+}
+
+#[derive(Args, Debug, Clone, Default)]
+struct CacheDiffArgs {
+    /// Dump directory to inspect. Defaults to the most recent
+    /// `~/.deepseek/req-dumps/<stamp>-pid<N>/` subdirectory.
+    #[arg(long, value_name = "DIR")]
+    dir: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -776,6 +788,7 @@ async fn main() -> Result<()> {
                 let new_session_id = fork_session(session_id, last, &workspace)?;
                 run_interactive(&cli, &config, Some(new_session_id), None).await
             }
+            Commands::CacheDiff(args) => request_dump::run_cache_diff(args.dir.as_deref()),
         };
     }
 

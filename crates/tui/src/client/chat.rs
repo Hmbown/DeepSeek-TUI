@@ -65,9 +65,9 @@ use crate::models::{
 
 use super::{
     DeepSeekClient, ERROR_BODY_MAX_BYTES, SSE_BACKPRESSURE_HIGH_WATERMARK,
-    SSE_BACKPRESSURE_SLEEP_MS, SSE_MAX_LINES_PER_CHUNK, acquire_stream_buffer, api_url,
+    SSE_BACKPRESSURE_SLEEP_MS, SSE_MAX_LINES_PER_CHUNK, StreamBufferGuard, api_url,
     apply_reasoning_effort, bounded_error_text, from_api_tool_name, parse_usage,
-    release_stream_buffer, system_to_instructions, to_api_tool_name,
+    system_to_instructions, to_api_tool_name,
 };
 
 impl DeepSeekClient {
@@ -106,6 +106,8 @@ impl DeepSeekClient {
             request.reasoning_effort.as_deref(),
             self.api_provider,
         );
+
+        crate::request_dump::dump_chat_request(&body, "oneshot");
 
         let url = api_url(&self.base_url, "chat/completions");
         let open_timeout = stream_open_timeout();
@@ -195,6 +197,8 @@ impl DeepSeekClient {
             request.reasoning_effort.as_deref(),
         );
 
+        crate::request_dump::dump_chat_request(&body, "stream");
+
         let url = api_url(&self.base_url, "chat/completions");
         let response = self
             .send_with_retry(|| self.http_client.post(&url).json(&body))
@@ -244,7 +248,7 @@ impl DeepSeekClient {
             });
 
             let mut line_buf = String::new();
-            let mut byte_buf = acquire_stream_buffer();
+            let mut byte_buf = StreamBufferGuard::acquire();
             let mut content_index: u32 = 0;
             let mut text_started = false;
             let mut thinking_started = false;
@@ -384,7 +388,8 @@ impl DeepSeekClient {
                 yield Ok(StreamEvent::ContentBlockStop { index: content_index.saturating_sub(1) });
             }
 
-            release_stream_buffer(byte_buf);
+            // StreamBufferGuard returns byte_buf to the pool on drop.
+            drop(byte_buf);
             yield Ok(StreamEvent::MessageStop);
         };
 

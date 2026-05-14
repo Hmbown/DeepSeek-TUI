@@ -3797,6 +3797,7 @@ async fn dispatch_user_message(
                 goal_objective: app.goal.goal_objective.as_deref(),
                 project_context_pack_enabled: config.project_context_pack_enabled(),
                 locale_tag: app.ui_locale.tag(),
+                ..Default::default()
             },
         ),
     );

@@ -619,6 +619,12 @@ pub struct SubAgentRuntime {
     pub parent_completion_tx: Option<mpsc::UnboundedSender<SubAgentCompletion>>,
     /// Snapshot of the request prefix visible to an opt-in forked child.
     pub fork_context: Option<SubAgentForkContext>,
+    /// Parent engine's static system-prompt cache. When `Some`, sub-agent
+    /// system prompts are prepended with this prefix so the sub-agent's
+    /// first API request shares byte-for-byte identical bytes with the
+    /// parent — DeepSeek's KV prefix cache hits immediately instead of
+    /// cold-starting every sub-agent spawn.
+    pub static_prefix: Option<crate::prompts::StaticPromptCache>,
 }
 
 impl SubAgentRuntime {
@@ -652,6 +658,7 @@ impl SubAgentRuntime {
             mailbox: None,
             parent_completion_tx: None,
             fork_context: None,
+            static_prefix: None,
         }
     }
 
@@ -672,6 +679,18 @@ impl SubAgentRuntime {
     #[must_use]
     pub fn with_fork_context(mut self, context: SubAgentForkContext) -> Self {
         self.fork_context = Some(context);
+        self
+    }
+
+    /// Attach the parent engine's static system-prompt cache so sub-agents
+    /// prepend it to their own system prompt. The shared prefix hits
+    /// DeepSeek's KV cache on every sub-agent spawn.
+    #[must_use]
+    pub fn with_static_prefix(
+        mut self,
+        prefix: crate::prompts::StaticPromptCache,
+    ) -> Self {
+        self.static_prefix = Some(prefix);
         self
     }
 
@@ -775,6 +794,7 @@ impl SubAgentRuntime {
             mailbox: self.mailbox.clone(),
             parent_completion_tx: self.parent_completion_tx.clone(),
             fork_context: self.fork_context.clone(),
+            static_prefix: self.static_prefix.clone(),
         }
     }
 
@@ -2846,6 +2866,20 @@ async fn run_subagent(
     mut input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
 ) -> Result<SubAgentResult> {
     let system_prompt = build_subagent_system_prompt(&agent_type, &assignment);
+    // Prepend the parent engine's static system-prompt prefix so the
+    // sub-agent's first API request shares byte-for-byte identical
+    // bytes with the parent — DeepSeek's KV prefix cache hits
+    // immediately instead of cold-starting every spawn.
+    let system_prompt = if let Some(ref prefix) = runtime.static_prefix {
+        let prefix_str = prefix.to_prefix_string();
+        if prefix_str.is_empty() {
+            system_prompt
+        } else {
+            format!("{prefix_str}\n\n{system_prompt}")
+        }
+    } else {
+        system_prompt
+    };
     let fork_context = fork_context
         .then_some(runtime.fork_context.as_ref())
         .flatten();
