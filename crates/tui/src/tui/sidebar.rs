@@ -25,7 +25,7 @@ use crate::tools::todo::TodoStatus;
 use super::app::{App, SidebarFocus, TaskPanelEntry};
 use super::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus, summarize_tool_output};
 use super::subagent_routing::active_fanout_counts;
-use super::ui::truncate_line_to_width;
+use super::ui_text::truncate_line_to_width;
 
 /// Tolerance for floating-point cost comparison in the sidebar breakdown.
 /// Must be large enough that accumulated f64 error across hundreds of turns
@@ -51,6 +51,9 @@ pub fn render_sidebar(f: &mut Frame, area: Rect, app: &App) {
         SidebarFocus::Tasks => render_sidebar_tasks(f, area, app),
         SidebarFocus::Agents => render_sidebar_subagents(f, area, app),
         SidebarFocus::Context => render_context_panel(f, area, app),
+        SidebarFocus::Hidden => Block::default()
+            .style(Style::default().bg(app.ui_theme.surface_bg))
+            .render(area, f.buffer_mut()),
     }
 }
 

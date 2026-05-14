@@ -1,10 +1,47 @@
 //! Shared text helpers for TUI selection and clipboard workflows.
 
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::tui::history::HistoryCell;
 use crate::tui::osc8;
+
+pub(crate) fn truncate_line_to_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_string();
+    }
+    // For very small budgets, take chars until we exceed the *display* width.
+    if max_width <= 3 {
+        let mut out = String::new();
+        let mut width = 0usize;
+        for ch in text.chars() {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if width + ch_width > max_width {
+                break;
+            }
+            out.push(ch);
+            width += ch_width;
+        }
+        return out;
+    }
+
+    let mut out = String::new();
+    let mut width = 0usize;
+    let limit = max_width.saturating_sub(3);
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + ch_width > limit {
+            break;
+        }
+        out.push(ch);
+        width += ch_width;
+    }
+    out.push_str("...");
+    out
+}
 
 pub(super) fn history_cell_to_text(cell: &HistoryCell, width: u16) -> String {
     cell.transcript_lines(width)

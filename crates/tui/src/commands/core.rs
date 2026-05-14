@@ -629,6 +629,9 @@ mod tests {
     #[test]
     fn model_switch_clears_turn_cache_history() {
         let mut app = create_test_app();
+        // Keep the assertion independent of the developer's saved default model.
+        app.auto_model = false;
+        app.model = "deepseek-v4-pro".to_string();
         app.push_turn_cache_record(TurnCacheRecord {
             input_tokens: 100,
             output_tokens: 25,

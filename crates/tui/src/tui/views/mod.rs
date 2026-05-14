@@ -1109,7 +1109,7 @@ fn config_hint_for_key(key: &str) -> &'static str {
         "background_color" => "#RRGGBB | default",
         "default_mode" => "agent | plan | yolo",
         "sidebar_width" => "10..=50",
-        "sidebar_focus" => "auto | work | tasks | agents | context",
+        "sidebar_focus" => "auto | work | tasks | agents | context | hidden",
         "max_history" => "integer (0 allowed)",
         "default_model" => "deepseek-v4-pro | deepseek-v4-flash | deepseek-* | none/default",
         "mcp_config_path" => "path to mcp.json",

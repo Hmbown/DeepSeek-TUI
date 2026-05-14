@@ -5,7 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.36] - 2026-05-14
+
+### Added
+
+- **The right sidebar can be hidden for copy-friendly terminals.**
+  `sidebar_focus = "hidden"` (or `Ctrl+Alt+0` for the current session) removes
+  the Work/Tasks/Agents/Context rail so raw terminal selection cannot copy
+  sidebar borders alongside transcript text.
+
+### Changed
+
+- **Sub-agent completion handoffs are leaner and more cache-friendly.**
+  Internal `<deepseek:subagent.done>` sentinels now point to the preceding
+  human summary line instead of duplicating the summary, elapsed time, and
+  step count inside JSON sent to the parent model.
+- **Prefix stability is visible beside cache telemetry by default.** The
+  footer now includes the prefix-stability chip in the default status layout,
+  and low last-request cache hit rates are no longer colored as hard errors
+  when the system/tool prefix itself is stable.
+- **RLM batch helpers now require an explicit independence assertion.**
+  `sub_query_batch`, `sub_query_map`, and low-level `*_batched` helpers refuse
+  dependency-unsafe parallel fanout unless callers pass
+  `dependency_mode="independent"`, and RLM now exposes `sub_query_sequence`
+  for A-to-B dependent work.
 
 ## [0.8.35] - 2026-05-13
 
@@ -4106,6 +4129,7 @@ Welcome — and thank you.
 - Example skills and launch assets
 
 [Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.35...HEAD
+[0.8.36]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.35...v0.8.36
 [0.8.35]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.34...v0.8.35
 [0.8.34]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.33...v0.8.34
 [0.8.33]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.32...v0.8.33

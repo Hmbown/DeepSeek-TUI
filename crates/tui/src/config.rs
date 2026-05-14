@@ -561,12 +561,13 @@ pub struct SearchConfig {
 ///
 /// Order in the user's `Vec<StatusItem>` is preserved: items in the left
 /// cluster (`Mode`, `Model`, `Cost`, `Status`) render in the order given;
-/// right-cluster chips (`Coherence`, `Agents`, `ReasoningReplay`, `Cache`,
-/// `ContextPercent`, `GitBranch`, `LastToolElapsed`, `RateLimit`) likewise
-/// honour ordering inside their cluster. The split between left and right is
-/// deliberate — left holds steady identity (mode/model/cost), right holds
-/// transient signals — so we route each variant to the correct side rather
-/// than letting users reorder across the spacer.
+/// right-cluster chips (`Coherence`, `Agents`, `ReasoningReplay`,
+/// `PrefixStability`, `Cache`, `ContextPercent`, `GitBranch`,
+/// `LastToolElapsed`, `RateLimit`) likewise honour ordering inside their
+/// cluster. The split between left and right is deliberate — left holds steady
+/// identity (mode/model/cost), right holds transient signals — so we route
+/// each variant to the correct side rather than letting users reorder across
+/// the spacer.
 ///
 /// Variants without a current data source (`RateLimit`, `LastToolElapsed`)
 /// are intentionally exposed today so the picker is forward-compatible; they
@@ -589,6 +590,8 @@ pub enum StatusItem {
     Agents,
     /// Reasoning-replay token count ("rsn 12.3k").
     ReasoningReplay,
+    /// Prefix stability ("P 100%").
+    PrefixStability,
     /// Cache hit rate ("cache 73%").
     Cache,
     /// Context-window utilisation percent ("48%").
@@ -615,6 +618,7 @@ impl StatusItem {
             StatusItem::Coherence,
             StatusItem::Agents,
             StatusItem::ReasoningReplay,
+            StatusItem::PrefixStability,
             StatusItem::Cache,
         ]
     }
@@ -630,6 +634,7 @@ impl StatusItem {
             StatusItem::Coherence => "coherence",
             StatusItem::Agents => "agents",
             StatusItem::ReasoningReplay => "reasoning_replay",
+            StatusItem::PrefixStability => "prefix_stability",
             StatusItem::Cache => "cache",
             StatusItem::ContextPercent => "context_percent",
             StatusItem::GitBranch => "git_branch",
@@ -649,6 +654,7 @@ impl StatusItem {
             StatusItem::Coherence => "Coherence interventions",
             StatusItem::Agents => "Sub-agents in flight",
             StatusItem::ReasoningReplay => "Reasoning replay tokens",
+            StatusItem::PrefixStability => "Prefix stability",
             StatusItem::Cache => "Prompt cache hit rate",
             StatusItem::ContextPercent => "Context window %",
             StatusItem::GitBranch => "Git branch",
@@ -669,6 +675,7 @@ impl StatusItem {
             StatusItem::Coherence => "shown only when the engine intervenes",
             StatusItem::Agents => "agents or RLM work in progress",
             StatusItem::ReasoningReplay => "thinking tokens replayed each turn",
+            StatusItem::PrefixStability => "whether system/tools stayed cacheable",
             StatusItem::Cache => "% of prompt served from cache",
             StatusItem::ContextPercent => "tokens used / model context window",
             StatusItem::GitBranch => "current workspace branch",
@@ -688,6 +695,7 @@ impl StatusItem {
             StatusItem::Coherence,
             StatusItem::Agents,
             StatusItem::ReasoningReplay,
+            StatusItem::PrefixStability,
             StatusItem::Cache,
             StatusItem::ContextPercent,
             StatusItem::GitBranch,
