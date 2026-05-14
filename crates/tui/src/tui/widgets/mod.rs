@@ -2034,7 +2034,7 @@ pub(crate) fn slash_completion_hints(
     locale: crate::localization::Locale,
     workspace: Option<&std::path::Path>,
 ) -> Vec<SlashMenuEntry> {
-    if !input.starts_with('/') {
+    if !super::app::looks_like_slash_command_input(input) {
         return Vec::new();
     }
 

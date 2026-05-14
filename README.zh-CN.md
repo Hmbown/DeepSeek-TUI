@@ -119,6 +119,16 @@ deepseek doctor                          # 验证安装
 
 > 轮换或移除密钥：`deepseek auth clear --provider deepseek`。
 
+### 腾讯云 / CNB 远程优先路径
+
+如果你想要一个长期在线、可从手机控制的工作区，推荐使用腾讯云原生路径：
+CNB 镜像/源码，腾讯云 Lighthouse 香港实例，飞书/Lark 长连接桥接，
+以及可选的 EdgeOne 公网 HTTPS 边缘。运行时 API 必须绑定在 localhost；
+不要通过 EdgeOne 暴露 `/v1/*`。
+
+先看 [docs/TENCENT_CLOUD_REMOTE_FIRST.md](docs/TENCENT_CLOUD_REMOTE_FIRST.md)，
+再按 [docs/TENCENT_LIGHTHOUSE_HK.md](docs/TENCENT_LIGHTHOUSE_HK.md) 配置服务器。
+
 ### Auto 模式
 
 使用 `deepseek --model auto` 或 `/model auto` 让 DeepSeek TUI 自行决定每轮需要多少模型和推理能力。

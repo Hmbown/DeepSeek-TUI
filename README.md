@@ -40,6 +40,11 @@ docker run --rm -it \
 > In mainland China, speed up the npm path with
 > `--registry=https://registry.npmmirror.com`, or use the
 > [Cargo mirror](#china--mirror-friendly-installation) below.
+>
+> Download safety: official release binaries live under
+> `https://github.com/Hmbown/DeepSeek-TUI/releases`. For manual downloads,
+> verify the SHA-256 manifest and avoid look-alike repositories or search-result
+> mirrors. See [download safety and checksums](docs/INSTALL.md#2-download-safety-and-checksums).
 
 [![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/deepseek-tui)](https://www.npmjs.com/package/deepseek-tui)
@@ -132,6 +137,17 @@ config, keyring, and env-var source state without printing the key. Saved config
 keys take precedence over the keyring and environment and are easier to rotate.
 
 > To rotate or remove a saved key: `deepseek auth clear --provider deepseek`.
+
+### Tencent Cloud / CNB Remote-First Path
+
+For an always-on workspace you can control from a phone, use the Tencent-native
+path: CNB mirror/source, Tencent Lighthouse HK, a Feishu/Lark long-connection
+bridge, and optional EdgeOne for a deliberate public HTTPS edge. The runtime API
+stays bound to localhost; EdgeOne is not used to expose `/v1/*`.
+
+Start with [docs/TENCENT_CLOUD_REMOTE_FIRST.md](docs/TENCENT_CLOUD_REMOTE_FIRST.md),
+then use [docs/TENCENT_LIGHTHOUSE_HK.md](docs/TENCENT_LIGHTHOUSE_HK.md) for the
+server runbook.
 
 ### Auto Mode
 

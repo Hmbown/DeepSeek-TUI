@@ -82,6 +82,17 @@ pub(crate) fn resolve_skills_dir(
     global_skills_dir.to_path_buf()
 }
 
+pub(crate) fn looks_like_slash_command_input(input: &str) -> bool {
+    let Some(rest) = input.trim_start().strip_prefix('/') else {
+        return false;
+    };
+    let Some(command) = rest.split_whitespace().next() else {
+        return rest.is_empty();
+    };
+
+    !command.contains('/')
+}
+
 fn initial_onboarding_state(
     skip_onboarding: bool,
     was_onboarded: bool,
@@ -3653,7 +3664,7 @@ impl App {
         // sees the @mention in the composer before submission.
         self.consolidate_large_input_if_oversized();
         let input = self.input.clone();
-        if !input.starts_with('/') {
+        if !looks_like_slash_command_input(&input) {
             self.input_history.push(input.clone());
             if self.max_input_history == 0 {
                 self.input_history.clear();
@@ -4282,6 +4293,29 @@ mod tests {
         assert_eq!(SidebarFocus::from_setting("off"), SidebarFocus::Hidden);
         assert_eq!(SidebarFocus::Work.as_setting(), "work");
         assert_eq!(SidebarFocus::Hidden.as_setting(), "hidden");
+    }
+
+    #[test]
+    fn slash_command_classifier_treats_absolute_path_as_message() {
+        assert!(looks_like_slash_command_input("/"));
+        assert!(looks_like_slash_command_input("/help"));
+        assert!(looks_like_slash_command_input("/model deepseek-v4-pro"));
+        assert!(!looks_like_slash_command_input(
+            "/usr/lib/x86_64-linux-gnu/ 是标准路径吗？"
+        ));
+    }
+
+    #[test]
+    fn submit_input_records_absolute_slash_path_as_message_history() {
+        let mut app = App::new(test_options(false), &Config::default());
+        let input = "/usr/lib/x86_64-linux-gnu/ 是标准路径吗？";
+        app.input = input.to_string();
+        app.cursor_position = input.chars().count();
+
+        let submitted = app.submit_input().expect("expected submitted input");
+
+        assert_eq!(submitted, input);
+        assert_eq!(app.input_history.last().map(String::as_str), Some(input));
     }
 
     #[test]

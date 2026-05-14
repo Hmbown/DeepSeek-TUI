@@ -104,6 +104,7 @@ use crate::tui::workspace_context;
 use super::app::{
     App, AppAction, AppMode, OnboardingState, QueuedMessage, ReasoningEffort, SidebarFocus,
     StatusToastLevel, SubmitDisposition, TaskPanelEntry, TuiOptions,
+    looks_like_slash_command_input,
 };
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
@@ -2962,7 +2963,7 @@ async fn run_event_loop(
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
                     if let Some(input) = app.submit_input() {
-                        if input.starts_with('/') {
+                        if looks_like_slash_command_input(&input) {
                             if execute_command_input(
                                 terminal,
                                 app,
@@ -3011,7 +3012,7 @@ async fn run_event_loop(
                 // #382: Ctrl+Enter forces a steer into the current turn.
                 KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     if let Some(input) = app.submit_input() {
-                        if input.starts_with('/') {
+                        if looks_like_slash_command_input(&input) {
                             if execute_command_input(
                                 terminal,
                                 app,
@@ -3062,7 +3063,7 @@ async fn run_event_loop(
                     // to the legacy submit path.
                     if slash_menu_open
                         && !slash_menu_entries.is_empty()
-                        && app.input.starts_with('/')
+                        && looks_like_slash_command_input(&app.input)
                         && apply_slash_menu_selection(app, &slash_menu_entries, false)
                     {
                         app.close_slash_menu();
@@ -3082,7 +3083,7 @@ async fn run_event_loop(
                             handle_memory_quick_add(app, &input, config);
                             continue;
                         }
-                        if input.starts_with('/') {
+                        if looks_like_slash_command_input(&input) {
                             if execute_command_input(
                                 terminal,
                                 app,
@@ -3385,8 +3386,13 @@ fn apply_alt_4_shortcut(app: &mut App, _modifiers: KeyModifiers) {
 
 fn apply_alt_0_shortcut(app: &mut App, modifiers: KeyModifiers) {
     if modifiers.contains(KeyModifiers::CONTROL) {
-        app.set_sidebar_focus(SidebarFocus::Hidden);
-        app.status_message = Some("Sidebar hidden".to_string());
+        if app.sidebar_focus == SidebarFocus::Hidden {
+            app.set_sidebar_focus(SidebarFocus::Auto);
+            app.status_message = Some("Sidebar focus: auto".to_string());
+        } else {
+            app.set_sidebar_focus(SidebarFocus::Hidden);
+            app.status_message = Some("Sidebar hidden".to_string());
+        }
     } else {
         app.set_sidebar_focus(SidebarFocus::Auto);
         app.status_message = Some("Sidebar focus: auto".to_string());
@@ -4758,10 +4764,7 @@ async fn handle_mcp_ui_action(
     let path = app.mcp_config_path.clone();
     let mut changed = false;
     let mut message = None;
-    let discover = matches!(
-        action,
-        crate::tui::app::McpUiAction::Validate | crate::tui::app::McpUiAction::Reload
-    );
+    let discover = mcp_ui_action_refreshes_discovery(&action);
 
     let action_result = match action {
         crate::tui::app::McpUiAction::Show => Ok(()),
@@ -4857,6 +4860,15 @@ async fn handle_mcp_ui_action(
         }
         Err(err) => add_mcp_message(app, format!("MCP snapshot failed: {err}")),
     }
+}
+
+fn mcp_ui_action_refreshes_discovery(action: &crate::tui::app::McpUiAction) -> bool {
+    matches!(
+        action,
+        crate::tui::app::McpUiAction::Show
+            | crate::tui::app::McpUiAction::Validate
+            | crate::tui::app::McpUiAction::Reload
+    )
 }
 
 fn handle_shell_job_action(app: &mut App, action: crate::tui::app::ShellJobAction) {
@@ -5489,7 +5501,6 @@ fn draw_app_frame_inner(
     let result = (|| -> Result<()> {
         if full_repaint {
             terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
-            terminal.backend_mut().flush()?;
             terminal.clear()?;
         }
         terminal.draw(|f| render(f, app))?;
@@ -6297,7 +6308,6 @@ fn reset_terminal_viewport(terminal: &mut AppTerminal, sync_output_enabled: bool
 
     let result = (|| -> Result<()> {
         terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
-        terminal.backend_mut().flush()?;
         terminal.clear()?;
         Ok(())
     })();
@@ -6363,6 +6373,23 @@ pub(crate) fn pop_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
     }
     #[cfg(not(windows))]
     let _ = execute!(writer, PopKeyboardEnhancementFlags);
+}
+
+/// Best-effort terminal restoration for emergency exit paths
+/// (panic hook, signal handlers). Mirrors the normal teardown in
+/// `run_event_loop` but tolerates any subset of modes not actually being
+/// active — every step is discarded on failure so a half-initialized TUI
+/// (e.g. SIGINT during startup before `EnterAlternateScreen`) still gets
+/// raw mode + kitty keyboard flags cleared, which is what causes the
+/// `^[[>5u` shell pollution reported in #1583.
+pub fn emergency_restore_terminal() {
+    let mut stdout = std::io::stdout();
+    pop_keyboard_enhancement_flags(&mut stdout);
+    let _ = execute!(stdout, DisableFocusChange);
+    let _ = execute!(stdout, DisableBracketedPaste);
+    let _ = execute!(stdout, DisableMouseCapture);
+    let _ = disable_raw_mode();
+    let _ = execute!(stdout, LeaveAlternateScreen);
 }
 
 /// Re-establish terminal mode flags. Idempotent and best-effort: each
