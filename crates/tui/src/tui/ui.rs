@@ -444,14 +444,18 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
 
     // Spawn the Engine - it will handle all API communication
     let engine_handle = spawn_engine(engine_config, config);
-    // The translation client is optional: when an API key is missing and the
-    // user is in onboarding (Welcome / Language / ApiKey screens), we skip
-    // creating it so the TUI survives long enough to render the API-key prompt.
-    // Translations are silently skipped until a key is saved.
+    // The translation client is optional: it never crashes the TUI on
+    // startup, even when the API key is missing, the base URL is malformed,
+    // or the network is unavailable.
+    // Translations are skipped with a logged warning until a key is saved.
     let translation_client = match DeepSeekClient::new(config) {
         Ok(client) => Some(Arc::new(client)),
-        Err(_) if app.onboarding != OnboardingState::None => None,
-        Err(err) => return Err(err),
+        Err(err) => {
+            if app.onboarding == OnboardingState::None {
+                tracing::warn!("Translation client initialization failed: {err}");
+            }
+            None
+        }
     };
 
     if !app.api_messages.is_empty() {
