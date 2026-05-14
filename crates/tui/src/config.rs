@@ -3259,11 +3259,6 @@ pub fn active_provider_uses_env_only_api_key(config: &Config) -> bool {
     active_provider_has_env_api_key(config) && !active_provider_has_config_api_key(config)
 }
 
-#[must_use]
-pub fn provider_uses_env_only_api_key(config: &Config, provider: ApiProvider) -> bool {
-    provider_has_env_api_key(provider) && !provider_has_config_api_key(config, provider)
-}
-
 /// Check whether the given provider has any usable API key — via env var,
 /// provider/root config. Used by the `/provider` picker to decide whether to
 /// prompt for a key inline.

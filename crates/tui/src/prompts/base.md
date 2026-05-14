@@ -251,6 +251,19 @@ Use `agent_eval` to send follow-up input, block for completion, or retrieve the 
 ### `rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`
 Use persistent RLM sessions for long-context semantic work, bulk classification/extraction, and decomposition where a Python REPL plus child LLM helpers is useful. Use deterministic Python inside RLM for exact counts and structured aggregation; use `grep_files` or `exec_shell` directly when that is the clearest deterministic check. Batch RLM child calls only after asserting independence with `dependency_mode="independent"`; use `sub_query_sequence` for dependent chains. Close sessions when their context is no longer needed.
 
+### Tool Degradation
+
+When a file-editing tool returns an error or partial result, do NOT tell the user to finish the edit manually. Instead, try the next tool in the degradation chain:
+
+1. `edit_file` fails (search string not found, diff marker leak, partial application) → retry with `apply_patch`
+2. `apply_patch` fails (hunk rejection, fuzz exhaustion) → retry with `exec_shell` + `sed` (line-number-based)
+3. `exec_shell` + `sed` fails → retry with `write_file` (full-file rewrite with the complete target content)
+4. All four fail → only then report the specific error and ask the user how to proceed
+
+This chain applies to any file modification: prefer structured tools first, fall back to line-oriented shell commands, then full-file overwrite. Never skip to "do this manually in your editor" without exhausting every automated path.
+
+The same principle applies to other tool failures: vary the query, vary the strategy, vary the tool — keep trying until something works or until you've genuinely hit a wall.
+
 ## Internal Sub-agent Completion Events
 
 When you open a sub-agent via `agent_open`, the child runs independently. The runtime may send you an internal `<deepseek:subagent.done>` completion event when it finishes. This event is not user input. It carries:

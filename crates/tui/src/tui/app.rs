@@ -13,8 +13,7 @@ use crate::artifacts::ArtifactRecord;
 use crate::client::PromptInspection;
 use crate::compaction::CompactionConfig;
 use crate::config::{
-    ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, has_api_key_for,
-    provider_uses_env_only_api_key, save_api_key,
+    ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, save_api_key,
 };
 use crate::config_ui::ConfigUiMode;
 use crate::core::coherence::CoherenceState;

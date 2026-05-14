@@ -547,7 +547,7 @@ impl Renderable for ComposerWidget<'_> {
             .max(1);
         let (visible_lines, _cursor_row, _cursor_col) =
             layout_input(input_text, input_cursor, content_width, input_rows_budget);
-        let is_draft_mode = input_text.contains('\n') || visible_lines.len() > 1;
+        let _is_draft_mode = input_text.contains('\n') || visible_lines.len() > 1;
         if has_panel {
             let border_color = if input_text.trim().is_empty() {
                 palette::BORDER_COLOR

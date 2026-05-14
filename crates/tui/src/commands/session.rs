@@ -3,23 +3,12 @@
 use std::fmt::Write;
 use std::path::PathBuf;
 
-use crate::session_manager::{SessionCostSnapshot, create_saved_session_with_mode};
+use crate::session_manager::create_saved_session_with_mode;
 use crate::tui::app::{App, AppAction};
 use crate::tui::history::{HistoryCell, history_cells_from_message};
 use crate::tui::session_picker::SessionPickerView;
 
 use super::CommandResult;
-
-fn session_cost_snapshot(app: &App) -> SessionCostSnapshot {
-    SessionCostSnapshot {
-        session_cost_usd: app.session.session_cost,
-        session_cost_cny: app.session.session_cost_cny,
-        subagent_cost_usd: app.session.subagent_cost,
-        subagent_cost_cny: app.session.subagent_cost_cny,
-        displayed_cost_high_water_usd: app.session.displayed_cost_high_water,
-        displayed_cost_high_water_cny: app.session.displayed_cost_high_water_cny,
-    }
-}
 
 /// Save session to file
 pub fn save(app: &mut App, path: Option<&str>) -> CommandResult {

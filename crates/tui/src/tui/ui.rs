@@ -47,7 +47,7 @@ use crate::models::{
 use crate::palette;
 use crate::prompts;
 use crate::session_manager::{
-    OfflineQueueState, QueuedSessionMessage, SavedSession, SessionCostSnapshot, SessionManager,
+    OfflineQueueState, QueuedSessionMessage, SavedSession, SessionManager,
     create_saved_session_with_id_and_mode, create_saved_session_with_mode, update_session,
 };
 use crate::task_manager::{
@@ -102,7 +102,7 @@ use crate::tui::workspace_context;
 use super::app::{
     App, AppAction, AppMode, IDLE_TURN_THRESHOLD, MAX_AUTO_CONTINUE_TURNS, OnboardingState,
     QueuedMessage, ReasoningEffort, STUCK_THRESHOLD, SidebarFocus, StatusToastLevel,
-    SubmitDisposition, TaskPanelEntry, ToolDetailRecord, TuiOptions,
+    SubmitDisposition, TaskPanelEntry, TuiOptions,
 };
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
@@ -141,7 +141,6 @@ const DISPATCH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
 // the per-tool spinner pulse — keep this fast enough that the whale reads as
 // motion (~12 fps) instead of teleport-frames.
 const UI_STATUS_ANIMATION_MS: u64 = 80;
-const WORKSPACE_CONTEXT_REFRESH_SECS: u64 = 15;
 const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 240;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 const PERIODIC_FULL_REPAINT_EVERY_N: u64 = 50;
@@ -3640,19 +3639,6 @@ async fn run_cache_warmup(app: &App, config: &Config) -> Result<Usage> {
     let response =
         tokio::time::timeout(Duration::from_secs(45), client.create_message(warmup)).await??;
     Ok(response.usage)
-}
-
-// `format_*` chip/message builders moved to `tui/format_helpers.rs`.
-
-fn current_session_cost_snapshot(app: &App) -> SessionCostSnapshot {
-    SessionCostSnapshot {
-        session_cost_usd: app.session.session_cost,
-        session_cost_cny: app.session.session_cost_cny,
-        subagent_cost_usd: app.session.subagent_cost,
-        subagent_cost_cny: app.session.subagent_cost_cny,
-        displayed_cost_high_water_usd: app.session.displayed_cost_high_water,
-        displayed_cost_high_water_cny: app.session.displayed_cost_high_water_cny,
-    }
 }
 
 fn current_goal_json(app: &App) -> Option<String> {

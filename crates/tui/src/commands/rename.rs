@@ -1,6 +1,6 @@
 //! `/rename` command — set a custom title for the current session.
 
-use crate::session_manager::{SessionCostSnapshot, SessionManager, update_session};
+use crate::session_manager::{SessionManager, update_session};
 use crate::tui::app::App;
 
 use super::CommandResult;
