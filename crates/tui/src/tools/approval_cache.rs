@@ -10,10 +10,10 @@
 //!
 //! | Tool           | Key                                      |
 //! |---------------|------------------------------------------|
-//! | `apply_patch`  | `patch:<hash of file paths>`             |
-//! | `exec_shell`   | `shell:<command prefix (first 3 tokens)>` |
+//! | file writes    | `file:<tool_name>:<hash of args>`        |
+//! | shell tools    | `shell:<tool_name>:<hash of args>`       |
 //! | `fetch_url`    | `net:<hostname>`                         |
-//! | everything else| `tool:<tool_name>:<hash of input>`       |
+//! | everything else| `tool:<tool_name>:<hash of args>`        |
 //!
 //! The cache is **session‑keyed**: entries carry an
 //! `ApprovedForSession` flag. When true, the approval is reused for the
@@ -21,9 +21,11 @@
 //! calls with the same fingerprint still prompt).
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::time::Instant;
 
-use crate::command_safety::classify_command;
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 /// The fingerprint of a tool call — stable enough to match repeated
 /// calls but specific enough to avoid privilege confusion.
@@ -113,95 +115,30 @@ impl ApprovalCache {
 
 /// Build the approval‑cache key for a tool call.
 ///
-/// The key incorporates the tool name and a lossy digest of the
-/// arguments so that the cache can distinguish `exec_shell "ls"`
-/// from `exec_shell "rm -rf /"` while still recognising repeated
-/// invocations of the same harmless command.
+/// The key incorporates the tool name and a canonical digest of the
+/// arguments so that denying one call only suppresses exact retries, not
+/// later invocations of the same tool with different parameters.
 #[must_use]
 pub fn build_approval_key(tool_name: &str, input: &serde_json::Value) -> ApprovalKey {
     let fingerprint = match tool_name {
-        "apply_patch" => {
-            let paths_hash = hash_patch_paths(input);
-            format!("patch:{paths_hash}")
+        "apply_patch" | "write_file" | "edit_file" | "fim_edit" => {
+            format!("file:{tool_name}:{}", hash_json_value(input))
         }
         "exec_shell"
+        | "task_shell_start"
         | "exec_shell_wait"
         | "exec_shell_interact"
         | "exec_wait"
         | "exec_interact" => {
-            let prefix = command_prefix(input);
-            format!("shell:{prefix}")
+            format!("shell:{tool_name}:{}", hash_json_value(input))
         }
         "fetch_url" | "web.fetch" | "web_fetch" => {
             let host = parse_host(input);
             format!("net:{host}")
         }
-        _ => {
-            let input_hash = hash_json_input(input);
-            format!("tool:{tool_name}:{input_hash}")
-        }
+        _ => format!("tool:{tool_name}:{}", hash_json_value(input)),
     };
     ApprovalKey(fingerprint)
-}
-
-/// Return the canonical command prefix for the shell command in `input`.
-///
-/// Uses [`classify_command`] from the arity dictionary so that
-/// `auto_allow = ["git status"]` correctly matches `git status -s` and
-/// `git status --porcelain` without also matching `git push`.
-fn command_prefix(input: &serde_json::Value) -> String {
-    let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-    let tokens: Vec<&str> = cmd.split_whitespace().collect();
-    if tokens.is_empty() {
-        return "<empty>".to_string();
-    }
-    classify_command(&tokens)
-}
-
-/// Hash the sorted set of file paths referenced by a patch input.
-fn hash_patch_paths(input: &serde_json::Value) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut paths: Vec<&str> = Vec::new();
-
-    if let Some(changes) = input.get("changes").and_then(|v| v.as_array()) {
-        for change in changes {
-            if let Some(path) = change.get("path").and_then(|v| v.as_str()) {
-                paths.push(path);
-            }
-        }
-    } else if let Some(patch_text) = input.get("patch").and_then(|v| v.as_str()) {
-        for line in patch_text.lines() {
-            if let Some(rest) = line.strip_prefix("+++ b/") {
-                paths.push(rest.trim());
-            }
-        }
-    }
-
-    paths.sort();
-    paths.dedup();
-
-    if paths.is_empty() {
-        return "no_files".to_string();
-    }
-
-    let mut hasher = DefaultHasher::new();
-    for path in &paths {
-        path.hash(&mut hasher);
-    }
-    format!("{:x}", hasher.finish())
-}
-
-fn hash_json_input(input: &serde_json::Value) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-    serde_json::to_string(input)
-        .unwrap_or_default()
-        .hash(&mut hasher);
-    format!("{:x}", hasher.finish())
 }
 
 /// Parse the host portion from a URL input.
@@ -212,6 +149,60 @@ fn parse_host(input: &serde_json::Value) -> String {
         parsed.host_str().unwrap_or(url).to_string()
     } else {
         url.to_string()
+    }
+}
+
+fn hash_json_value(value: &Value) -> String {
+    let mut canonical = String::new();
+    push_canonical_json(value, &mut canonical);
+
+    let digest = Sha256::digest(canonical.as_bytes());
+    let mut short = String::with_capacity(16);
+    for byte in &digest[..8] {
+        write!(&mut short, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    short
+}
+
+fn push_canonical_json(value: &Value, out: &mut String) {
+    match value {
+        Value::Null => out.push_str("null"),
+        Value::Bool(value) => {
+            out.push_str("bool:");
+            out.push_str(if *value { "true" } else { "false" });
+        }
+        Value::Number(value) => {
+            out.push_str("number:");
+            out.push_str(&value.to_string());
+        }
+        Value::String(value) => {
+            out.push_str("string:");
+            let encoded = serde_json::to_string(value).expect("serializing a string cannot fail");
+            out.push_str(&encoded);
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for item in items {
+                push_canonical_json(item, out);
+                out.push(',');
+            }
+            out.push(']');
+        }
+        Value::Object(map) => {
+            let mut entries = map.iter().collect::<Vec<_>>();
+            entries.sort_by_key(|(key, _)| *key);
+
+            out.push('{');
+            for (key, value) in entries {
+                let encoded_key =
+                    serde_json::to_string(key).expect("serializing an object key cannot fail");
+                out.push_str(&encoded_key);
+                out.push(':');
+                push_canonical_json(value, out);
+                out.push(',');
+            }
+            out.push('}');
+        }
     }
 }
 
@@ -258,10 +249,10 @@ mod tests {
     }
 
     #[test]
-    fn command_prefix_drops_flags() {
+    fn shell_keys_include_full_command_arguments() {
         let key_a = build_approval_key("exec_shell", &json!({"command": "cargo build"}));
         let key_b = build_approval_key("exec_shell", &json!({"command": "cargo build --release"}));
-        assert_eq!(key_a, key_b);
+        assert_ne!(key_a, key_b);
     }
 
     #[test]
@@ -278,6 +269,48 @@ mod tests {
     }
 
     #[test]
+    fn patch_keys_differ_by_body_for_same_path() {
+        let key_a = build_approval_key(
+            "apply_patch",
+            &json!({"changes": [{"path": "a.rs", "content": "x"}]}),
+        );
+        let key_b = build_approval_key(
+            "apply_patch",
+            &json!({"changes": [{"path": "a.rs", "content": "y"}]}),
+        );
+        assert_ne!(key_a, key_b);
+    }
+
+    #[test]
+    fn file_write_keys_differ_by_path_and_content() {
+        let key_a = build_approval_key("write_file", &json!({"path": "a.txt", "content": "x"}));
+        let key_b = build_approval_key("write_file", &json!({"path": "b.txt", "content": "x"}));
+        let key_c = build_approval_key("write_file", &json!({"path": "a.txt", "content": "y"}));
+        assert_ne!(key_a, key_b);
+        assert_ne!(key_a, key_c);
+    }
+
+    #[test]
+    fn edit_file_keys_differ_by_replacement() {
+        let key_a = build_approval_key(
+            "edit_file",
+            &json!({"path": "a.txt", "search": "old", "replace": "new"}),
+        );
+        let key_b = build_approval_key(
+            "edit_file",
+            &json!({"path": "a.txt", "search": "old", "replace": "newer"}),
+        );
+        assert_ne!(key_a, key_b);
+    }
+
+    #[test]
+    fn task_shell_keys_differ_by_command() {
+        let key_a = build_approval_key("task_shell_start", &json!({"command": "cargo build"}));
+        let key_b = build_approval_key("task_shell_start", &json!({"command": "cargo test"}));
+        assert_ne!(key_a, key_b);
+    }
+
+    #[test]
     fn net_keys_differ_by_host() {
         let key_a = build_approval_key("fetch_url", &json!({"url": "https://example.com"}));
         let key_b = build_approval_key("fetch_url", &json!({"url": "https://other.org"}));
@@ -285,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn generic_tool_keys_include_arguments() {
+    fn generic_tool_uses_tool_name_and_input_hash() {
         let key_a = build_approval_key("read_file", &json!({"path": "a.txt"}));
         let key_b = build_approval_key("read_file", &json!({"path": "b.txt"}));
         assert_ne!(key_a, key_b);
@@ -293,10 +326,9 @@ mod tests {
     }
 
     #[test]
-    fn generic_tool_same_arguments_reuse_key() {
-        let input = json!({"path": "a.txt"});
-        let key_a = build_approval_key("edit_file", &input);
-        let key_b = build_approval_key("edit_file", &input);
+    fn input_hash_is_stable_across_object_key_order() {
+        let key_a = build_approval_key("write_file", &json!({"path": "a.txt", "content": "x"}));
+        let key_b = build_approval_key("write_file", &json!({"content": "x", "path": "a.txt"}));
         assert_eq!(key_a, key_b);
     }
 }
