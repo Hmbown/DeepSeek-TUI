@@ -3650,7 +3650,7 @@ impl App {
         // sees the @mention in the composer before submission.
         self.consolidate_large_input_if_oversized();
         let input = self.input.clone();
-        if !input.starts_with('/') {
+        if !crate::commands::is_command_shaped_input(&input) {
             self.input_history.push(input.clone());
             if self.max_input_history == 0 {
                 self.input_history.clear();
@@ -4783,6 +4783,33 @@ mod tests {
 
         // Navigate down
         app.history_down();
+    }
+
+    #[test]
+    fn submit_input_records_absolute_path_prompt_in_history() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.clear();
+        let input = "/usr/lib/x86_64-linux-gnu/ is this a standard path?".to_string();
+        app.input = input.clone();
+        app.cursor_position = app.input.chars().count();
+
+        let submitted = app.submit_input().expect("submitted input");
+
+        assert_eq!(submitted, input);
+        assert_eq!(app.input_history, vec![input]);
+    }
+
+    #[test]
+    fn submit_input_keeps_command_shaped_input_out_of_history() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.clear();
+        app.input = "/help".to_string();
+        app.cursor_position = app.input.chars().count();
+
+        let submitted = app.submit_input().expect("submitted input");
+
+        assert_eq!(submitted, "/help");
+        assert!(app.input_history.is_empty());
     }
 
     #[test]

@@ -528,6 +528,18 @@ pub const COMMANDS: &[CommandInfo] = &[
     },
 ];
 
+/// Return true when composer input should be routed through slash-command
+/// dispatch. This is intentionally syntactic: unknown command-shaped inputs
+/// such as `/modle` still reach dispatch so the user gets suggestions, while
+/// absolute paths like `/usr/lib/...` remain normal prompt text (#1568).
+pub fn is_command_shaped_input(input: &str) -> bool {
+    let Some(stripped) = input.strip_prefix('/') else {
+        return false;
+    };
+    let command = stripped.split_whitespace().next().unwrap_or("");
+    !command.is_empty() && !command.contains('/') && !command.contains('\\')
+}
+
 /// Execute a slash command
 pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
     let parts: Vec<&str> = cmd.trim().splitn(2, ' ').collect();
@@ -1501,5 +1513,22 @@ mod tests {
             .expect("unknown command should return an error message");
         assert!(msg.contains("Unknown command: /zzzzzz"));
         assert!(msg.contains("Type /help for available commands."));
+    }
+
+    #[test]
+    fn command_shape_keeps_unknown_command_typos_dispatchable() {
+        assert!(is_command_shaped_input("/modle"));
+        assert!(is_command_shaped_input("/help config"));
+        assert!(is_command_shaped_input("/?"));
+        assert!(!is_command_shaped_input(" /help"));
+    }
+
+    #[test]
+    fn command_shape_treats_absolute_paths_as_prompt_text() {
+        assert!(!is_command_shaped_input(
+            "/usr/lib/x86_64-linux-gnu/ is this a standard path?"
+        ));
+        assert!(!is_command_shaped_input("/mnt/c/Users/PC"));
+        assert!(!is_command_shaped_input(r"/mnt\c\Users\PC"));
     }
 }
