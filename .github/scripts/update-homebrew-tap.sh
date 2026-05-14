@@ -114,6 +114,7 @@ TAP_URL="https://x-access-token:${ENCODED_TOKEN}@github.com/${TAP_REPO}.git"
 
 git clone --depth 1 "${TAP_URL}" "${TAP_DIR}"
 
+mkdir -p "${TAP_DIR}/Formula"
 cp "${FORMULA_FILE}" "${TAP_DIR}/Formula/deepseek-tui.rb"
 
 cd "${TAP_DIR}"
