@@ -744,6 +744,10 @@ async fn run_event_loop(
     let mut web_config_session: Option<WebConfigSession> = None;
     let mut terminal_paused_at: Option<Instant> = None;
     let mut force_terminal_repaint = false;
+    const FOCUS_RECOVERY_DEBOUNCE: Duration = Duration::from_millis(200);
+    let mut last_focus_recovery = Instant::now()
+        .checked_sub(FOCUS_RECOVERY_DEBOUNCE)
+        .unwrap_or_else(Instant::now);
     let mut draws_since_last_full_repaint: u64 = 0;
 
     loop {
@@ -1954,13 +1958,18 @@ async fn run_event_loop(
             // bracketed-paste modes — recover_terminal_modes() is the
             // canonical place those flags live.
             if terminal_event_needs_viewport_recapture(&evt) {
-                recover_terminal_modes(
-                    terminal.backend_mut(),
-                    app.use_mouse_capture,
-                    app.use_bracketed_paste,
-                );
+                let now = Instant::now();
+
+                if now.duration_since(last_focus_recovery) >= FOCUS_RECOVERY_DEBOUNCE {
+                    recover_terminal_modes(
+                        terminal.backend_mut(),
+                        app.use_mouse_capture,
+                        app.use_bracketed_paste,
+                    );
+                    last_focus_recovery = now;
+                }
+
                 force_terminal_repaint = true;
-                app.needs_redraw = true;
             }
             if let Event::Resize(width, height) = evt {
                 tracing::debug!(
