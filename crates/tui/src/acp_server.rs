@@ -601,7 +601,7 @@ async fn execute_tool(
 
 async fn tool_read_file(input: &Value, cwd: &PathBuf) -> Result<String> {
     let path_str = input.get("path").and_then(Value::as_str).unwrap_or("");
-    let start = input.get("start_line").and_then(Value::as_u64).unwrap_or(1) as usize;
+    let start = (input.get("start_line").and_then(Value::as_u64).unwrap_or(1) as usize).max(1);
     let max = input.get("max_lines").and_then(Value::as_u64).unwrap_or(200) as usize;
     let path = resolve_path(cwd, path_str)?;
     let content = tokio::fs::read_to_string(&path).await
@@ -641,7 +641,7 @@ async fn tool_edit_file(input: &Value, cwd: &PathBuf) -> Result<String> {
     let path = resolve_path(cwd, path_str)?;
     let content = tokio::fs::read_to_string(&path).await
         .with_context(|| format!("read {}", path.display()))?;
-    let new_content = content.replace(search, replace);
+    let new_content = content.replacen(search, replace, 1);
     if new_content != content {
         tokio::fs::write(&path, &new_content).await?;
         return Ok(format!("Applied edit to {}", path_str));
@@ -651,7 +651,7 @@ async fn tool_edit_file(input: &Value, cwd: &PathBuf) -> Result<String> {
     let lines: Vec<&str> = content.lines().collect();
     for line in &lines {
         if line.trim_start() == search_trimmed {
-            let trimmed_new = content.replace(line, replace);
+            let trimmed_new = content.replacen(line, replace, 1);
             tokio::fs::write(&path, &trimmed_new).await?;
             return Ok(format!("Applied edit to {} (fuzzy match)", path_str));
         }
@@ -873,12 +873,31 @@ async fn tool_diagnostics(cwd: &PathBuf) -> Result<String> {
 }
 
 fn resolve_path(cwd: &PathBuf, path_str: &str) -> Result<PathBuf> {
-    let path = PathBuf::from(path_str);
-    if path.is_absolute() {
-        Ok(path)
+    let candidate = if PathBuf::from(path_str).is_absolute() {
+        cwd.join(path_str.trim_start_matches('/'))
     } else {
-        Ok(cwd.join(path))
+        cwd.join(path_str)
+    };
+    // Normalise away `..` and `.` components without requiring the path
+    // to already exist (canonicalize would fail for new files).
+    let mut normalised = PathBuf::new();
+    for component in candidate.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                if !normalised.pop() {
+                    return Err(anyhow!("path escapes workspace: {path_str}"));
+                }
+            }
+            std::path::Component::CurDir => {}
+            c => { normalised.push(c.as_os_str()); }
+        }
     }
+    let cwd_canonical = cwd.canonicalize()
+        .with_context(|| format!("resolve cwd: {}", cwd.display()))?;
+    if !normalised.starts_with(&cwd_canonical) {
+        return Err(anyhow!("path escapes workspace: {path_str}"));
+    }
+    Ok(normalised)
 }
 
 // ── ACP error helpers ───────────────────────────────────────────────
