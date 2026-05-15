@@ -1343,10 +1343,15 @@ async fn run_event_loop(
                             .session
                             .total_cache_hit_tokens
                             .saturating_add(usage.prompt_cache_hit_tokens.unwrap_or(0));
+                        let cache_miss = usage.prompt_cache_miss_tokens.unwrap_or_else(|| {
+                            usage
+                                .input_tokens
+                                .saturating_sub(usage.prompt_cache_hit_tokens.unwrap_or(0))
+                        });
                         app.session.total_cache_miss_tokens = app
                             .session
                             .total_cache_miss_tokens
-                            .saturating_add(usage.prompt_cache_miss_tokens.unwrap_or(0));
+                            .saturating_add(cache_miss);
                         app.session.last_prompt_tokens = Some(usage.input_tokens);
                         app.session.last_completion_tokens = Some(usage.output_tokens);
                         app.session.last_prompt_cache_hit_tokens = usage.prompt_cache_hit_tokens;
