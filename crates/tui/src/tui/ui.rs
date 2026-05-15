@@ -5370,12 +5370,12 @@ fn render(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(header_height),   // Header
-            Constraint::Min(1),                  // Chat area
-            Constraint::Length(preview_height),  // Pending input preview (0 if empty)
+            Constraint::Length(header_height),      // Header
+            Constraint::Min(1),                     // Chat area
+            Constraint::Length(preview_height),     // Pending input preview (0 if empty)
             Constraint::Length(todos_panel_height), // Todos panel (0 when empty)
-            Constraint::Length(composer_height), // Composer
-            Constraint::Length(footer_height),   // Footer
+            Constraint::Length(composer_height),    // Composer
+            Constraint::Length(footer_height),      // Footer
         ])
         .split(size);
 
