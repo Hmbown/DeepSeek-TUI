@@ -640,6 +640,7 @@ pub struct SubAgentRuntime {
     pub parent_completion_tx: Option<mpsc::UnboundedSender<SubAgentCompletion>>,
     /// Snapshot of the request prefix visible to an opt-in forked child.
     pub fork_context: Option<SubAgentForkContext>,
+    pub api_timeout_secs: u64,
 }
 
 impl SubAgentRuntime {
@@ -673,6 +674,7 @@ impl SubAgentRuntime {
             mailbox: None,
             parent_completion_tx: None,
             fork_context: None,
+            api_timeout_secs: STEP_API_TIMEOUT.as_secs(),
         }
     }
 
@@ -796,6 +798,7 @@ impl SubAgentRuntime {
             mailbox: self.mailbox.clone(),
             parent_completion_tx: self.parent_completion_tx.clone(),
             fork_context: self.fork_context.clone(),
+            api_timeout_secs: self.api_timeout_secs,
         }
     }
 
@@ -3460,8 +3463,8 @@ async fn run_subagent(
                     from_prior_session: false,
                 });
             }
-            api = tokio::time::timeout(STEP_API_TIMEOUT, runtime.client.create_message(request)) => {
-                api.map_err(|_| anyhow!("API call timed out after {}s", STEP_API_TIMEOUT.as_secs()))??
+            api = tokio::time::timeout(Duration::from_secs(runtime.api_timeout_secs), runtime.client.create_message(request)) => {
+                api.map_err(|_| anyhow!("API call timed out after {}s", runtime.api_timeout_secs))??
             }
         };
 

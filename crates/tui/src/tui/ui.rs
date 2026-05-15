@@ -710,6 +710,11 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .and_then(|s| s.provider)
             .unwrap_or_default(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
+        subagent_api_timeout_secs: config
+            .subagents
+            .as_ref()
+            .and_then(|s| s.api_timeout_secs)
+            .unwrap_or(120),
     }
 }
 
