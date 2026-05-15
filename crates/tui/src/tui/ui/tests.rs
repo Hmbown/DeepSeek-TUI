@@ -1203,6 +1203,33 @@ fn create_test_app() -> App {
     app
 }
 
+#[test]
+fn session_denied_cache_matches_only_approval_key() {
+    let mut app = create_test_app();
+    app.approval_session_denied.insert("edit_file".to_string());
+
+    assert!(
+        !is_session_denied_for_key(&app, "file:edit_file:fresh"),
+        "a legacy tool-name entry must not deny a later fresh call"
+    );
+
+    app.approval_session_denied
+        .insert("file:edit_file:retry".to_string());
+    assert!(is_session_denied_for_key(&app, "file:edit_file:retry"));
+}
+
+#[test]
+fn session_approved_cache_keeps_tool_name_session_grants() {
+    let mut app = create_test_app();
+    app.approval_session_approved
+        .insert("edit_file".to_string());
+
+    assert!(
+        is_session_approved_for_tool(&app, "edit_file", "file:edit_file:fresh"),
+        "approve-for-session should still cover future calls of the same tool"
+    );
+}
+
 fn create_test_options() -> TuiOptions {
     TuiOptions {
         model: "deepseek-v4-pro".to_string(),

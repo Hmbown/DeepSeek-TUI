@@ -150,6 +150,15 @@ const PERIODIC_FULL_REPAINT_EVERY_N: u64 = 50;
 const TURN_META_PREFIX: &str = "<turn_meta>";
 const SESSION_TITLE_MAX_CHARS: usize = 32;
 
+fn is_session_approved_for_tool(app: &App, tool_name: &str, approval_key: &str) -> bool {
+    app.approval_session_approved.contains(approval_key)
+        || app.approval_session_approved.contains(tool_name)
+}
+
+fn is_session_denied_for_key(app: &App, approval_key: &str) -> bool {
+    app.approval_session_denied.contains(approval_key)
+}
+
 fn sidebar_width_for_chat_area(app: &App, chat_width: u16) -> Option<u16> {
     if app.sidebar_focus == SidebarFocus::Hidden || chat_width < SIDEBAR_VISIBLE_MIN_WIDTH {
         return None;
@@ -1687,10 +1696,8 @@ async fn run_event_loop(
                         approval_key,
                     } => {
                         let session_approved =
-                            app.approval_session_approved.contains(&approval_key)
-                                || app.approval_session_approved.contains(&tool_name);
-                        let session_denied = app.approval_session_denied.contains(&approval_key)
-                            || app.approval_session_denied.contains(&tool_name);
+                            is_session_approved_for_tool(app, &tool_name, &approval_key);
+                        let session_denied = is_session_denied_for_key(app, &approval_key);
                         if session_denied {
                             // The user already said no to this exact tool /
                             // approval key in this session; auto-deny so the

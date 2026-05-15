@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.38] - 2026-05-15
+
 ### Changed
 
 - **Update guidance is clearer on the website.** The homepage and install page
@@ -39,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default providers sync into the runtime config before the first request, and
   reselecting the active provider from the picker keeps the current model
   instead of falling back to the provider default (#1632).
+- **OpenAI-compatible batch tool calls keep all start events.** Streaming
+  responses with multiple `tool_calls` in one assistant message now preserve
+  every tool-use block instead of pairing many tool results with only the last
+  tool start event (#1686).
+- **Diagnostics tool schemas include an empty `required` list.** The built-in
+  `diagnostics` tool now sends `required: []` with its empty object schema so
+  DeepSeek no longer rejects it as a null required array (#1685).
 - **Windows wheel-as-arrow scrolling works with mouse capture enabled.**
   `composer_arrows_scroll` now defaults on for Windows terminals even when
   mouse capture is enabled, so wheel events that arrive as arrow keys scroll the
@@ -51,6 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blocks now return a failed tool result instead of a success, so repeated
   blocked checklist/tool retries can trip the existing failure warning and halt
   path instead of spinning indefinitely (#1574).
+- **Denied tool approvals are scoped to the exact call.** Denying one
+  write/shell approval now caches the canonical argument fingerprint instead of
+  a lossy tool/prefix key, so later calls to the same tool with different
+  arguments can still be reviewed and approved (#1617).
 
 ### Thanks
 
@@ -59,13 +72,21 @@ terminal cleanup-guard idea harvested from #1630, and **imkingjh999
 ([@imkingjh999](https://github.com/imkingjh999))** for the provider/model
 switching fixes harvested from #1642. Thanks to **Photo
 ([@eng2007](https://github.com/eng2007))** for the provider-aware `/model`
-picker catalog work harvested from #1201. Thanks to
+picker catalog work harvested from #1201. Thanks to **hexin
+([@h3c-hexin](https://github.com/h3c-hexin))** for the OpenAI batch tool-call
+streaming fix in #1686. Thanks to **chennest
+([@chennest](https://github.com/chennest))** for the diagnostics schema report
+in #1685. Thanks to
 **[@kunpeng-ai-lab](https://github.com/kunpeng-ai-lab)** for the Windows
 composer scroll fix harvested from #1578, and **WuMing
 ([@asdfg314284230](https://github.com/asdfg314284230))** for the Windows
 PowerShell flicker fix harvested from #1591. Thanks to
 **[@maker316](https://github.com/maker316)** for the LoopGuard/checklist loop
-report in #1574.
+report in #1574. Thanks to **lalala
+([@lalala-233](https://github.com/lalala-233))** for the approval denial
+regression report in #1617, and **Nightt
+([@nightt5879](https://github.com/nightt5879))** for the exact-call approval
+key work harvested from #1624.
 
 ## [0.8.37] - 2026-05-14
 
@@ -4264,7 +4285,8 @@ Welcome — and thank you.
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.37...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.38...HEAD
+[0.8.38]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.37...v0.8.38
 [0.8.37]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.36...v0.8.37
 [0.8.36]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.35...v0.8.36
 [0.8.35]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.34...v0.8.35
