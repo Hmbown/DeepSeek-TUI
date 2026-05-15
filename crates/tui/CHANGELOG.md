@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Feishu/Lark bridge startup order is guarded.** The bridge now keeps
+  `ThreadStore` initialized before startup opens persisted thread state, with a
+  regression test to prevent moving it below its first use.
+
 ## [0.8.38] - 2026-05-15
 
 ### Changed
