@@ -660,6 +660,8 @@ pub enum StatusItem {
     LastToolElapsed,
     /// Remaining rate-limit budget (placeholder until wired).
     RateLimit,
+    /// Session token usage: input / cache-hit / output.
+    Tokens,
 }
 
 impl StatusItem {
@@ -678,6 +680,7 @@ impl StatusItem {
             StatusItem::Agents,
             StatusItem::ReasoningReplay,
             StatusItem::Cache,
+            StatusItem::Tokens,
         ]
     }
 
@@ -698,6 +701,7 @@ impl StatusItem {
             StatusItem::GitBranch => "git_branch",
             StatusItem::LastToolElapsed => "last_tool_elapsed",
             StatusItem::RateLimit => "rate_limit",
+            StatusItem::Tokens => "tokens",
         }
     }
 
@@ -718,6 +722,7 @@ impl StatusItem {
             StatusItem::GitBranch => "Git branch",
             StatusItem::LastToolElapsed => "Last tool elapsed",
             StatusItem::RateLimit => "Rate-limit remaining",
+            StatusItem::Tokens => "Session tokens",
         }
     }
 
@@ -739,6 +744,7 @@ impl StatusItem {
             StatusItem::GitBranch => "current workspace branch",
             StatusItem::LastToolElapsed => "ms of the most recent tool call (placeholder)",
             StatusItem::RateLimit => "remaining requests in the budget (placeholder)",
+            StatusItem::Tokens => "input / cache-hit / output token totals",
         }
     }
 
@@ -759,6 +765,7 @@ impl StatusItem {
             StatusItem::GitBranch,
             StatusItem::LastToolElapsed,
             StatusItem::RateLimit,
+            StatusItem::Tokens,
         ]
     }
 
