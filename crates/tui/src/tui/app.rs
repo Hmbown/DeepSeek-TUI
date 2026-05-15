@@ -1442,8 +1442,10 @@ impl App {
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
         let mut provider = config.api_provider();
 
-        // Let settings override the config provider so runtime switches survive restarts.
-        if let Some(ref provider_str) = settings.default_provider
+        // Let settings remember picker changes only when config does not
+        // explicitly select a provider.
+        if config.provider.is_none()
+            && let Some(ref provider_str) = settings.default_provider
             && let Some(parsed) = ApiProvider::parse(provider_str)
         {
             provider = parsed;
@@ -4783,7 +4785,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_provider_override_skips_api_key_onboarding_when_key_exists() {
+    fn explicit_config_provider_wins_over_settings_default_provider() {
         let _lock = lock_test_env();
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let config_path = tmp.path().join("config.toml");
@@ -4797,7 +4799,13 @@ mod tests {
 
         let config = Config {
             provider: Some("openai".to_string()),
-            api_key: Some("existing-deepseek-key".to_string()),
+            providers: Some(ProvidersConfig {
+                openai: ProviderConfig {
+                    api_key: Some("openai-config-key".to_string()),
+                    ..ProviderConfig::default()
+                },
+                ..ProvidersConfig::default()
+            }),
             ..Config::default()
         };
         let mut options = test_options(false);
@@ -4806,7 +4814,7 @@ mod tests {
 
         let app = App::new(options, &config);
 
-        assert_eq!(app.api_provider, ApiProvider::Deepseek);
+        assert_eq!(app.api_provider, ApiProvider::Openai);
         assert!(!app.onboarding_needs_api_key);
         assert_ne!(app.onboarding, OnboardingState::ApiKey);
     }

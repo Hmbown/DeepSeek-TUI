@@ -101,7 +101,7 @@ impl ProviderPickerView {
 
     fn provider_hint(provider: ApiProvider, has_key: bool) -> String {
         match provider {
-            ApiProvider::Ollama => "self-hosted; defaults to http://localhost:11434".to_string(),
+            ApiProvider::Ollama => "self-hosted; defaults to http://127.0.0.1:11434".to_string(),
             ApiProvider::Sglang | ApiProvider::Vllm if has_key => {
                 "(configured; optional key)".to_string()
             }

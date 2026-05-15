@@ -908,7 +908,7 @@ fn run_auth_command_with_secrets(
                 store.config.provider = provider;
                 let provider_cfg = store.config.providers.for_provider_mut(provider);
                 if provider_cfg.base_url.is_none() {
-                    provider_cfg.base_url = Some("http://localhost:11434/v1".to_string());
+                    provider_cfg.base_url = Some("http://127.0.0.1:11434/v1".to_string());
                 }
                 store.save()?;
                 println!(
@@ -2183,7 +2183,7 @@ mod tests {
         assert_eq!(store.config.provider, ProviderKind::Ollama);
         assert_eq!(
             store.config.providers.ollama.base_url.as_deref(),
-            Some("http://localhost:11434/v1")
+            Some("http://127.0.0.1:11434/v1")
         );
         assert_eq!(store.config.providers.ollama.api_key, None);
 
