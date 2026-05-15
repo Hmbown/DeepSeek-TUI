@@ -1188,24 +1188,52 @@ fn nearest_ansi16(r: u8, g: u8, b: u8) -> Color {
             if bright { Color::Gray } else { Color::DarkGray }
         } else if r >= g && r >= b {
             if g > b + 24 {
-                if bright { Color::LightYellow } else { Color::Yellow }
+                if bright {
+                    Color::LightYellow
+                } else {
+                    Color::Yellow
+                }
             } else if b > r.saturating_sub(24) {
-                if bright { Color::LightMagenta } else { Color::Magenta }
+                if bright {
+                    Color::LightMagenta
+                } else {
+                    Color::Magenta
+                }
             } else {
                 if bright { Color::LightRed } else { Color::Red }
             }
         } else if g >= r && g >= b {
             if b > r + 24 {
-                if bright { Color::LightCyan } else { Color::Cyan }
+                if bright {
+                    Color::LightCyan
+                } else {
+                    Color::Cyan
+                }
             } else {
-                if bright { Color::LightGreen } else { Color::Green }
+                if bright {
+                    Color::LightGreen
+                } else {
+                    Color::Green
+                }
             }
         } else if r.saturating_add(48) >= b && r > g + 24 {
-            if bright { Color::LightMagenta } else { Color::Magenta }
+            if bright {
+                Color::LightMagenta
+            } else {
+                Color::Magenta
+            }
         } else if g.saturating_add(48) >= b && g > r + 24 {
-            if bright { Color::LightCyan } else { Color::Cyan }
+            if bright {
+                Color::LightCyan
+            } else {
+                Color::Cyan
+            }
         } else {
-            if bright { Color::LightBlue } else { Color::Blue }
+            if bright {
+                Color::LightBlue
+            } else {
+                Color::Blue
+            }
         }
     }
 }
@@ -1256,14 +1284,13 @@ mod tests {
         ACCENT_REASONING_LIVE, BLUE, ColorDepth, DEEPSEEK_BLUE, DEEPSEEK_INK, DEEPSEEK_RED,
         DEEPSEEK_SKY, DEEPSEEK_SLATE, GRAYSCALE_BORDER, GRAYSCALE_ELEVATED, GRAYSCALE_PANEL,
         GRAYSCALE_REASONING, GRAYSCALE_SURFACE, GRAYSCALE_TEXT_BODY, GRAYSCALE_TEXT_HINT,
-        GRAYSCALE_TEXT_SOFT, GRAYSCALE_UI_THEME, INK, LIGHT_BORDER, LIGHT_ELEVATED,
-        LIGHT_PANEL, LIGHT_REASONING, LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT,
-        LIGHT_UI_THEME, PaletteMode, RED, SKY, SURFACE_REASONING, SURFACE_REASONING_TINT,
-        TEXT_BODY, TEXT_HINT, TEXT_REASONING, TEXT_TOOL_OUTPUT, UI_THEME, UiTheme, adapt_bg,
-        adapt_bg_for_palette_mode, adapt_color, adapt_fg_for_palette_mode, blend,
-        nearest_ansi16, normalize_hex_rgb_color, normalize_theme_name, parse_hex_rgb_color,
-        pulse_brightness, reasoning_surface_tint, rgb_to_ansi256, theme_label_for_mode,
-        ui_theme_from_settings,
+        GRAYSCALE_TEXT_SOFT, GRAYSCALE_UI_THEME, INK, LIGHT_BORDER, LIGHT_ELEVATED, LIGHT_PANEL,
+        LIGHT_REASONING, LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT, LIGHT_UI_THEME,
+        PaletteMode, RED, SKY, SURFACE_REASONING, SURFACE_REASONING_TINT, TEXT_BODY, TEXT_HINT,
+        TEXT_REASONING, TEXT_TOOL_OUTPUT, UI_THEME, UiTheme, adapt_bg, adapt_bg_for_palette_mode,
+        adapt_color, adapt_fg_for_palette_mode, blend, nearest_ansi16, normalize_hex_rgb_color,
+        normalize_theme_name, parse_hex_rgb_color, pulse_brightness, reasoning_surface_tint,
+        rgb_to_ansi256, theme_label_for_mode, ui_theme_from_settings,
     };
     use ratatui::style::Color;
 

@@ -195,7 +195,6 @@ mod tests {
     use super::{Theme, Variant, active_theme};
     use crate::palette;
     use crate::tui::history::ToolStatus;
-    use ratatui::style::Color;
 
     #[test]
     fn active_theme_returns_dark() {
@@ -209,8 +208,8 @@ mod tests {
         assert_eq!(theme.section_border_color, palette::BORDER_COLOR);
         assert_eq!(theme.section_bg, palette::DEEPSEEK_INK);
         assert_eq!(theme.section_title_color, palette::DEEPSEEK_BLUE);
-        assert_eq!(theme.tool_title_color, Color::White);
-        assert_eq!(theme.tool_value_color, Color::White);
+        assert_eq!(theme.tool_title_color, palette::TEXT_SOFT);
+        assert_eq!(theme.tool_value_color, palette::TEXT_PRIMARY);
         assert_eq!(theme.tool_label_color, palette::TEXT_DIM);
         assert_eq!(theme.tool_running_accent, palette::ACCENT_TOOL_LIVE);
         assert_eq!(theme.tool_success_accent, palette::DEEPSEEK_BLUE);
