@@ -168,11 +168,15 @@ export function commandAction(command) {
 
 export function splitMessage(text, maxChars = 3500) {
   const value = String(text || "");
-  if (value.length <= maxChars) return value ? [value] : [];
+  // Slice by code points, not UTF-16 code units, so emoji / supplementary-plane
+  // CJK never split in the middle of a surrogate pair. Uses the helpers from
+  // the helm extension half of this module.
+  const len = codePointLen(value);
+  if (len <= maxChars) return value ? [value] : [];
   const chunks = [];
   let cursor = 0;
-  while (cursor < value.length) {
-    chunks.push(value.slice(cursor, cursor + maxChars));
+  while (cursor < len) {
+    chunks.push(safeSliceByCodePoint(value, cursor, cursor + maxChars));
     cursor += maxChars;
   }
   return chunks;

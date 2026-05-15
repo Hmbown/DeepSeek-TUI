@@ -152,6 +152,28 @@ test("splitMessage chunks long text", () => {
   assert.deepEqual(splitMessage("abcdef", 2), ["ab", "cd", "ef"]);
 });
 
+test("splitMessage splits by code points, not UTF-16 units (no torn emoji)", () => {
+  // Without code-point-safe splitting, "a🌟b" splits as ["a\uD83C", "\uDF1Fb"]
+  // — two malformed strings with half a surrogate pair each. With the
+  // helpers, the emoji stays intact: ["a🌟", "b"].
+  const chunks = splitMessage("a🌟b", 2);
+  assert.deepEqual(chunks, ["a🌟", "b"]);
+  for (const chunk of chunks) {
+    // Every chunk must round-trip through JSON.stringify (a torn surrogate
+    // pair would be visible here as a replacement character).
+    assert.equal(JSON.parse(JSON.stringify(chunk)), chunk);
+  }
+});
+
+test("splitMessage handles CJK supplementary plane characters", () => {
+  // 𠮷 is a supplementary-plane CJK ideograph (code point U+20BB7, two
+  // UTF-16 code units). With UTF-16 slicing at 1, it splits in half.
+  const chunks = splitMessage("a𠮷b", 2);
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0], "a𠮷");
+  assert.equal(chunks[1], "b");
+});
+
 test("validateBridgeConfig accepts locked-down DM config", () => {
   const result = validateBridgeConfig(
     {

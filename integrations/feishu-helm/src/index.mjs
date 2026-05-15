@@ -14,7 +14,6 @@ import {
   activeTurnBlock,
   cardOperatorAllowed,
   commandAction,
-  compactRuntimeError,
   helpText,
   incomingIdentity,
   isAllowed,
@@ -99,34 +98,96 @@ const cardkit = config.useCards
 const sse = new SseEventHandler(runtime, (m) => console.log(m));
 
 // Per-thread streaming state. One agent_message at a time per thread; the
-// daemon naturally serializes turns by awaiting each `runPrompt`.
-/** @type {Map<string, {chatId: string, text: string, cardId: string | null, elementId: string, sequence: number, closed: boolean}>} */
+// daemon naturally serializes turns by awaiting each `runPrompt`. The
+// `resolveTurn` callback is the bridge between the global SseEventHandler's
+// callbacks (which fire by threadId) and the per-turn promise streamTurn awaits.
+/**
+ * @type {Map<string, {
+ *   chatId: string,
+ *   turnId: string | null,
+ *   text: string,
+ *   cardId: string | null,
+ *   elementId: string,
+ *   sequence: number,
+ *   closed: boolean,
+ *   sentProgressAt: number,
+ *   resolveTurn: (result: {status?: string, error?: string, kind?: string}) => void
+ * }>}
+ */
 const streamingByThread = new Map();
 
 // ── SSE callbacks ───────────────────────────────────────────────────────────
+//
+// One SseEventHandler instance fans out to every active turn via streamingByThread
+// lookup. SseEventHandler owns the auto-reconnect + since_seq replay logic
+// (see runtime.mjs); this module only renders the events into Feishu.
+//
+// All callbacks early-return when the event's turn_id doesn't match the
+// streaming state's turnId, so older-turn events still flowing through a
+// thread's stream don't bleed into the active turn's reply.
 
 sse.onDelta = (threadId, delta) => {
   if (delta.kind !== "agent_message") return;
   const st = streamingByThread.get(threadId);
   if (!st) return;
+  if (delta.turn_id && st.turnId && delta.turn_id !== st.turnId) return;
+
   st.text += delta.delta;
-  if (config.useCards && st.cardId && !st.closed) {
-    flushStreamingCard(st).catch((err) => {
-      console.error(`[helm] flush streaming card failed: ${err?.message ?? err}`);
+  if (config.useCards) {
+    if (!st.cardId && cardkit) {
+      void initStreamingCard(st).catch((err) => {
+        console.error(`[helm] init streaming card failed: ${err?.message ?? err}`);
+      });
+    }
+    if (st.cardId && !st.closed) {
+      flushStreamingCard(st).catch((err) => {
+        console.error(`[helm] flush streaming card failed: ${err?.message ?? err}`);
+      });
+    }
+    return;
+  }
+  // Plaintext mode: chunked progress sends, mirroring feishu-bridge semantics.
+  if (st.text.length > config.maxReplyChars && Date.now() - st.sentProgressAt > 15000) {
+    const chunk = st.text.slice(0, config.maxReplyChars);
+    st.text = st.text.slice(config.maxReplyChars);
+    st.sentProgressAt = Date.now();
+    sendText(st.chatId, chunk).catch((err) => {
+      console.error(`[helm] progress send failed: ${err?.message ?? err}`);
     });
   }
 };
 
-sse.onItemStarted = (threadId, item) => {
-  if (item.kind !== "agent_message") return;
+sse.onApprovalRequired = (threadId, approval, turnId) => {
   const st = streamingByThread.get(threadId);
-  if (!st || !config.useCards) return;
-  // Lazy-create the streaming card on the first agent_message item.
-  if (!st.cardId && cardkit) {
-    void initStreamingCard(st).catch((err) => {
-      console.error(`[helm] init streaming card failed: ${err?.message ?? err}`);
-    });
+  if (!st) return;
+  if (turnId && st.turnId && turnId !== st.turnId) return;
+  void deliverApproval(st.chatId, approval).catch((err) => {
+    console.error(`[helm] deliver approval failed: ${err?.message ?? err}`);
+  });
+};
+
+sse.onTurnLifecycle = (threadId, status, turn, turnId) => {
+  const st = streamingByThread.get(threadId);
+  if (!st) return;
+  if (turnId && st.turnId && turnId !== st.turnId) return;
+  if (["failed", "canceled", "interrupted"].includes(status)) {
+    st.resolveTurn({ status, error: turn?.error });
   }
+};
+
+sse.onTurnCompleted = (threadId, turn) => {
+  const st = streamingByThread.get(threadId);
+  if (!st) return;
+  if (turn?.id && st.turnId && turn.id !== st.turnId) return;
+  st.resolveTurn({ status: turn?.status || "completed", error: turn?.error });
+};
+
+sse.onSeqProgress = (threadId, seq) => {
+  const st = streamingByThread.get(threadId);
+  if (!st) return;
+  threadStore.patchChat(st.chatId, { lastSeq: seq }).catch(() => {
+    // ThreadStore.save() already serialises; failures here are best-effort.
+  });
 };
 
 // ── Lark event dispatcher ───────────────────────────────────────────────────
@@ -323,104 +384,60 @@ async function runPrompt(chatId, prompt) {
 }
 
 async function streamTurn(chatId, threadId, turnId, sinceSeq) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.turnTimeoutMs);
+  // Drive the turn entirely through SseEventHandler so the auto-reconnect +
+  // since_seq replay path on runtime.mjs covers `deepseek serve` restarts and
+  // transient network errors. Module-level callbacks (see top of file) push
+  // results back here via `resolveTurn`.
+
+  /** @type {(result: {status?: string, error?: string, kind?: string}) => void} */
+  let resolveTurn;
+  const turnDone = new Promise((res) => {
+    resolveTurn = res;
+  });
 
   streamingByThread.set(threadId, {
     chatId,
+    turnId: turnId ?? null,
     text: "",
     cardId: null,
     elementId: "agent_msg",
     sequence: 0,
-    closed: false
+    closed: false,
+    sentProgressAt: Date.now(),
+    resolveTurn
   });
 
-  let latestSeq = sinceSeq;
-  let sentProgressAt = Date.now();
+  const timeoutTimer = setTimeout(() => {
+    resolveTurn({ kind: "timeout" });
+  }, config.turnTimeoutMs);
 
   try {
-    const response = await fetch(
-      `${config.runtimeUrl}/v1/threads/${encodeURIComponent(threadId)}/events?since_seq=${sinceSeq}`,
-      {
-        headers: { authorization: `Bearer ${config.runtimeToken}` },
-        signal: controller.signal
-      }
-    );
-    if (!response.ok) {
-      const body = await readJsonSafe(response);
-      throw new Error(compactRuntimeError(response.status, body));
-    }
-
-    for await (const record of readSse(response)) {
-      latestSeq = Math.max(latestSeq, Number(record.seq || 0));
-      await threadStore.patchChat(chatId, { lastSeq: latestSeq });
-
-      if (turnId && record.turn_id && record.turn_id !== turnId) continue;
-
-      if (record.event === "item.delta" && record.payload?.kind === "agent_message") {
-        const st = streamingByThread.get(threadId);
-        if (!st) continue;
-        st.text += record.payload.delta || "";
-        if (config.useCards) {
-          // Lazy-create the streaming card on first delta.
-          if (!st.cardId && cardkit) {
-            await initStreamingCard(st);
-          }
-          if (st.cardId && !st.closed) {
-            await flushStreamingCard(st);
-          }
-        } else if (st.text.length > config.maxReplyChars && Date.now() - sentProgressAt > 15000) {
-          // Plaintext mode: chunked progress sends, matching feishu-bridge semantics.
-          await sendText(chatId, st.text.slice(0, config.maxReplyChars));
-          st.text = st.text.slice(config.maxReplyChars);
-          sentProgressAt = Date.now();
-        }
-      }
-
-      if (record.event === "approval.required") {
-        await deliverApproval(chatId, record.payload || {});
-      }
-
-      if (record.event === "turn.lifecycle") {
-        const status = record.payload?.turn?.status || record.payload?.status;
-        if (["failed", "canceled", "interrupted"].includes(status)) {
-          await closeStreamingCard(threadId);
-          await sendText(chatId, `Turn ${status}.`);
-          return;
-        }
-      }
-
-      if (record.event === "turn.completed") {
-        const turn = record.payload?.turn || {};
-        const status = turn.status || "completed";
-        const error = turn.error ? `\n${turn.error}` : "";
-        await closeStreamingCard(threadId);
-        const st = streamingByThread.get(threadId);
-        const finalText = st?.text?.trim() || "Turn completed.";
-        if (status !== "completed") {
-          await sendText(chatId, `Turn ${status}.${error}`.trim());
-        } else if (config.useCards) {
-          // If we never created a streaming card (e.g. zero deltas), still
-          // surface the final text as a non-streaming card.
-          if (st && !st.cardId) {
-            await sendCard(chatId, markdownToCard(finalText));
-          }
-        } else {
-          await sendText(chatId, finalText);
-        }
-        return;
-      }
-    }
-  } catch (err) {
-    if (err?.name === "AbortError") {
-      await sendText(chatId, `Turn timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`);
-      return;
-    }
-    throw err;
-  } finally {
+    await sse.connect(threadId, sinceSeq);
+    const result = await turnDone;
     await closeStreamingCard(threadId);
+    const st = streamingByThread.get(threadId);
+    const finalText = st?.text?.trim() || "Turn completed.";
+
+    if (result.kind === "timeout") {
+      await sendText(chatId, `Turn timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`);
+    } else if (!result.status || result.status === "completed") {
+      if (config.useCards) {
+        // If we never created a streaming card (zero deltas), still surface
+        // the final text as a non-streaming card.
+        if (st && !st.cardId) {
+          await sendCard(chatId, markdownToCard(finalText));
+        }
+      } else {
+        await sendText(chatId, finalText);
+      }
+    } else {
+      const error = result.error ? `\n${result.error}` : "";
+      await sendText(chatId, `Turn ${result.status}.${error}`.trim());
+    }
+  } finally {
+    clearTimeout(timeoutTimer);
+    sse.disconnect(threadId);
     streamingByThread.delete(threadId);
-    clearTimeout(timeout);
   }
 }
 
@@ -654,59 +671,42 @@ async function sendCard(chatId, cardJson) {
   });
 }
 
+// Used by CardKitClient — mint tenant_access_token, cached until ~1 minute
+// before expiry. Without the cache we'd hit /auth on every streaming PUT,
+// which fires several times per second during an agent_message.
+let cachedTenantToken = null;
+let tenantTokenExpiresAt = 0;
+let tenantTokenInflight = null;
+
 async function tenantAccessToken() {
-  // Used by CardKitClient — fetch fresh tenant_access_token per call.
-  // Lark's official SDK does cache internally for im.message but the cardkit
-  // endpoints are not in the SDK, so we mint our own bearer here.
-  const res = await fetch(`${config.cardkitBaseUrl}/auth/v3/tenant_access_token/internal`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ app_id: config.appId, app_secret: config.appSecret })
-  });
-  const body = await res.json();
-  if (!res.ok || body?.code !== 0) {
-    throw new Error(`tenant_access_token failed: HTTP ${res.status} code=${body?.code} ${body?.msg}`);
+  if (cachedTenantToken && Date.now() < tenantTokenExpiresAt) {
+    return cachedTenantToken;
   }
-  return body.tenant_access_token;
-}
+  if (tenantTokenInflight) return tenantTokenInflight;
 
-// ── SSE line reader (request-scoped; the long-running SseEventHandler is
-// reserved for callers that want auto-reconnect, e.g. background SSE.) ──────
-
-async function* readSse(response) {
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for await (const chunk of response.body) {
-    buffer += decoder.decode(chunk, { stream: true });
-    let boundary;
-    while ((boundary = buffer.indexOf("\n\n")) >= 0) {
-      const raw = buffer.slice(0, boundary).replace(/\r/g, "");
-      buffer = buffer.slice(boundary + 2);
-      let event = { event: "", data: "" };
-      for (const line of raw.split("\n")) {
-        if (line.startsWith("event:")) event.event = line.slice(6).trim();
-        if (line.startsWith("data:")) event.data += line.slice(5).trim();
-      }
-      if (!event.data) continue;
-      let parsed;
-      try {
-        parsed = JSON.parse(event.data);
-      } catch {
-        continue;
-      }
-      yield parsed;
+  tenantTokenInflight = (async () => {
+    const res = await fetch(`${config.cardkitBaseUrl}/auth/v3/tenant_access_token/internal`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ app_id: config.appId, app_secret: config.appSecret })
+    });
+    const body = await res.json();
+    if (!res.ok || body?.code !== 0) {
+      throw new Error(
+        `tenant_access_token failed: HTTP ${res.status} code=${body?.code} ${body?.msg}`
+      );
     }
-  }
-}
+    cachedTenantToken = body.tenant_access_token;
+    // Lark advertises ~2h expiry; refresh 60 s early to defeat clock skew. If
+    // `expire` is missing, conservatively assume 7100 s (just under 2 h).
+    const expireSec = typeof body.expire === "number" ? body.expire : 7100;
+    tenantTokenExpiresAt = Date.now() + Math.max(60, expireSec - 60) * 1000;
+    return cachedTenantToken;
+  })().finally(() => {
+    tenantTokenInflight = null;
+  });
 
-async function readJsonSafe(response) {
-  const text = await response.text();
-  if (!text) return {};
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
+  return tenantTokenInflight;
 }
 
 function requiredEnv(name) {

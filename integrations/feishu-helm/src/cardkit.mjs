@@ -16,7 +16,7 @@
 //   https://open.feishu.cn/document/cardkit-v1/card-element/content
 //   https://open.feishu.cn/document/cardkit-v1/card/settings
 
-import { buildStreamCardJson } from "./lib.mjs";
+import { buildStreamCardJson, codePointLen, safeSliceByCodePoint } from "./lib.mjs";
 
 /**
  * @typedef {Object} CardKitConfig
@@ -104,12 +104,17 @@ export class CardKitClient {
     const token = await this.getToken();
     const url = `${this.baseUrl}/cardkit/v1/cards/${encodeURIComponent(cardId)}/elements/${encodeURIComponent(elementId)}/content`;
 
-    // CardKit caps content at 100k chars. Always keep PREFIX intact: if the
-    // new text isn't a prefix-superset of the previous, Feishu drops the
+    // CardKit caps content at 100k code points. Always keep PREFIX intact: if
+    // the new text isn't a prefix-superset of the previous, Feishu drops the
     // typewriter animation and renders a full replacement.
-    const safeContent = content.length > 100000 ? content.slice(0, 100000) : content;
-    if (content.length > 100000) {
-      this.log(`[cardkit] content truncated from ${content.length} to 100000 chars`);
+    //
+    // JS `.length` and `.slice()` operate on UTF-16 code units, which corrupts
+    // emoji and supplementary-plane CJK at the cap boundary. Use code-point
+    // helpers so 100000 means 100000 user-visible characters.
+    const cpLen = codePointLen(content);
+    const safeContent = cpLen > 100000 ? safeSliceByCodePoint(content, 0, 100000) : content;
+    if (cpLen > 100000) {
+      this.log(`[cardkit] content truncated from ${cpLen} to 100000 code points`);
     }
 
     const body = { content: safeContent, sequence };

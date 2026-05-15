@@ -88,6 +88,13 @@ export class ThreadStore {
   constructor(filePath) {
     this.filePath = filePath;
     this.data = { chats: {}, messages: [] };
+    // Serialize concurrent save() calls via a promise chain. Without this,
+    // two awaited writers race on the shared `${filePath}.tmp` and one
+    // rename(2) can clobber the other's tmp file before it lands, producing
+    // partial writes. Chaining means each save() awaits the previous one's
+    // rename before starting its own write.
+    /** @type {Promise<void>} */
+    this._saveChain = Promise.resolve();
   }
 
   async load() {
@@ -135,12 +142,23 @@ export class ThreadStore {
     return this.data.chats[chatId];
   }
 
-  async save() {
-    const dir = path.dirname(this.filePath);
-    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-    const tmp = `${this.filePath}.tmp`;
-    await fs.writeFile(tmp, `${JSON.stringify(this.data, null, 2)}\n`, { mode: 0o600 });
-    await fs.rename(tmp, this.filePath);
+  save() {
+    // Snapshot serialised data NOW so the on-disk image reflects this caller's
+    // observed state, even if a later mutation runs before its turn at the
+    // head of _saveChain.
+    const snapshot = `${JSON.stringify(this.data, null, 2)}\n`;
+    const next = this._saveChain.then(async () => {
+      const dir = path.dirname(this.filePath);
+      await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+      const tmp = `${this.filePath}.tmp`;
+      await fs.writeFile(tmp, snapshot, { mode: 0o600 });
+      await fs.rename(tmp, this.filePath);
+    });
+    // Swallow rejections in the chain itself so one failed write doesn't
+    // poison every subsequent save(); callers still see the original
+    // rejection via their own awaited promise.
+    this._saveChain = next.catch(() => {});
+    return next;
   }
 }
 
@@ -166,13 +184,13 @@ export class SseEventHandler {
     /** @type {Map<string, AbortController>} */
     this.connections = new Map();
 
-    /** @type {((threadId: string, delta: {kind: string, delta: string, item_id?: string}) => void) | null} */
+    /** @type {((threadId: string, delta: {turn_id: string|null, kind: string, delta: string, item_id?: string}) => void) | null} */
     this.onDelta = null;
     /** @type {((threadId: string, turn: any) => void) | null} */
     this.onTurnCompleted = null;
-    /** @type {((threadId: string, status: string, turn: any) => void) | null} */
+    /** @type {((threadId: string, status: string, turn: any, turnId: string|null) => void) | null} */
     this.onTurnLifecycle = null;
-    /** @type {((threadId: string, approval: any) => void) | null} */
+    /** @type {((threadId: string, approval: any, turnId: string|null) => void) | null} */
     this.onApprovalRequired = null;
     /** @type {((threadId: string, item: any) => void) | null} */
     this.onItemStarted = null;
@@ -180,6 +198,8 @@ export class SseEventHandler {
     this.onItemCompleted = null;
     /** @type {((threadId: string, item: any) => void) | null} */
     this.onItemFailed = null;
+    /** @type {((threadId: string, seq: number) => void) | null} */
+    this.onSeqProgress = null;
   }
 
   /**
@@ -281,15 +301,24 @@ export class SseEventHandler {
     }
     if (typeof event.seq === "number" && event.seq > lastSeqRef.value) {
       lastSeqRef.value = event.seq;
+      if (this.onSeqProgress) {
+        try {
+          this.onSeqProgress(threadId, event.seq);
+        } catch (err) {
+          this.log(`[sse] onSeqProgress threw: ${err?.message ?? err}`);
+        }
+      }
     }
     this.dispatch(threadId, event);
   }
 
   dispatch(threadId, event) {
+    const turnId = event.turn_id ?? null;
     switch (event.event) {
       case "item.delta":
         if (this.onDelta && event.payload) {
           this.onDelta(threadId, {
+            turn_id: turnId,
             kind: event.payload.kind,
             delta: event.payload.delta ?? "",
             item_id: event.item_id ?? undefined
@@ -320,13 +349,13 @@ export class SseEventHandler {
         return;
       case "approval.required":
         if (this.onApprovalRequired) {
-          this.onApprovalRequired(threadId, event.payload);
+          this.onApprovalRequired(threadId, event.payload, turnId);
         }
         return;
       case "turn.lifecycle": {
         const status = event.payload?.turn?.status || event.payload?.status;
         if (this.onTurnLifecycle && status) {
-          this.onTurnLifecycle(threadId, status, event.payload?.turn);
+          this.onTurnLifecycle(threadId, status, event.payload?.turn, turnId);
         }
         return;
       }
