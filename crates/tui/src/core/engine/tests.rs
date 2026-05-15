@@ -1297,6 +1297,55 @@ fn refresh_system_prompt_is_noop_when_unchanged() {
     assert_eq!(engine.session.system_prompt, first_prompt);
 }
 
+fn sync_system_prompt_override(engine: &mut Engine, system_prompt: SystemPrompt) {
+    engine.session.compaction_summary_prompt =
+        extract_compaction_summary_prompt(Some(system_prompt.clone()));
+    engine.session.system_prompt = Some(system_prompt);
+    engine.sync_session_system_prompt_hash();
+}
+
+#[test]
+fn text_system_prompt_override_via_sync_session_survives_refresh() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    let prompt = SystemPrompt::Text("TANGERINE-7".to_string());
+    let expected = Some(prompt.clone());
+
+    sync_system_prompt_override(&mut engine, prompt);
+    let first_hash = engine.session.last_system_prompt_hash;
+    engine.refresh_system_prompt(AppMode::Agent);
+
+    assert_eq!(engine.session.last_system_prompt_hash, first_hash);
+    assert_eq!(engine.session.system_prompt, expected);
+}
+
+#[test]
+fn blocks_system_prompt_override_via_sync_session_survives_refresh() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    let prompt = SystemPrompt::Blocks(vec![SystemBlock {
+        block_type: "text".to_string(),
+        text: "TANGERINE-7".to_string(),
+        cache_control: None,
+    }]);
+    let expected = Some(prompt.clone());
+
+    sync_system_prompt_override(&mut engine, prompt);
+    let first_hash = engine.session.last_system_prompt_hash;
+    engine.refresh_system_prompt(AppMode::Agent);
+
+    assert_eq!(engine.session.last_system_prompt_hash, first_hash);
+    assert_eq!(engine.session.system_prompt, expected);
+}
+
 #[test]
 fn compaction_summary_stays_in_stable_system_prompt() {
     let tmp = tempdir().expect("tempdir");

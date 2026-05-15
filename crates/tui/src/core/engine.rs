@@ -756,6 +756,7 @@ impl Engine {
                     } else {
                         None
                     };
+                    self.sync_session_system_prompt_hash();
                     self.session.rebuild_working_set();
                     self.rehydrate_latest_canonical_state();
                     self.emit_session_updated().await;
@@ -1773,8 +1774,8 @@ impl Engine {
             .await;
     }
 
-    /// Refresh the system prompt based on current mode and context.
-    fn refresh_system_prompt(&mut self, mode: AppMode) {
+    /// Build the stable system prompt baseline for the current mode and context.
+    fn stable_system_prompt_for_mode(&self, mode: AppMode) -> Option<SystemPrompt> {
         let user_memory_block =
             crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path);
         let base = prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
@@ -1792,8 +1793,21 @@ impl Engine {
             },
             self.session.approval_mode,
         );
-        let stable_prompt =
-            merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());
+        merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone())
+    }
+
+    fn sync_session_system_prompt_hash(&mut self) {
+        self.session.last_system_prompt_hash = if self.session.system_prompt.is_some() {
+            let stable_prompt = self.stable_system_prompt_for_mode(AppMode::Agent);
+            Some(system_prompt_hash(stable_prompt.as_ref()))
+        } else {
+            Some(system_prompt_hash(None))
+        };
+    }
+
+    /// Refresh the system prompt based on current mode and context.
+    fn refresh_system_prompt(&mut self, mode: AppMode) {
+        let stable_prompt = self.stable_system_prompt_for_mode(mode);
         let stable_hash = system_prompt_hash(stable_prompt.as_ref());
         if self.session.last_system_prompt_hash != Some(stable_hash) {
             self.session.system_prompt = stable_prompt;
