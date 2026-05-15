@@ -93,6 +93,19 @@ pub(crate) fn looks_like_slash_command_input(input: &str) -> bool {
     !command.contains('/')
 }
 
+pub(crate) fn shell_command_from_bang_input(input: &str) -> Result<Option<&str>, &'static str> {
+    let Some(rest) = input.trim_start().strip_prefix('!') else {
+        return Ok(None);
+    };
+    let command = rest
+        .strip_prefix(|c: char| c.is_whitespace())
+        .unwrap_or(rest);
+    if command.trim().is_empty() {
+        return Err("Usage: ! <shell command>");
+    }
+    Ok(Some(command))
+}
+
 fn initial_onboarding_state(
     skip_onboarding: bool,
     was_onboarded: bool,
@@ -4326,6 +4339,29 @@ mod tests {
         assert!(!looks_like_slash_command_input(
             "/usr/lib/x86_64-linux-gnu/ 是标准路径吗？"
         ));
+    }
+
+    #[test]
+    fn bang_shell_prefix_parses_compact_and_spaced_forms() {
+        assert_eq!(shell_command_from_bang_input("!pwd"), Ok(Some("pwd")));
+        assert_eq!(shell_command_from_bang_input("! pwd"), Ok(Some("pwd")));
+        assert_eq!(
+            shell_command_from_bang_input("  ! cargo test -p deepseek-tui sidebar"),
+            Ok(Some("cargo test -p deepseek-tui sidebar"))
+        );
+        assert_eq!(shell_command_from_bang_input("normal message"), Ok(None));
+    }
+
+    #[test]
+    fn bang_shell_prefix_rejects_empty_command() {
+        assert_eq!(
+            shell_command_from_bang_input("!"),
+            Err("Usage: ! <shell command>")
+        );
+        assert_eq!(
+            shell_command_from_bang_input("!   "),
+            Err("Usage: ! <shell command>")
+        );
     }
 
     #[test]

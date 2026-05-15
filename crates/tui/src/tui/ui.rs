@@ -41,7 +41,7 @@ use crate::config::{ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL};
 use crate::config_ui::{self, ConfigUiMode, WebConfigSession, WebConfigSessionEvent};
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::Event as EngineEvent;
-use crate::core::ops::Op;
+use crate::core::ops::{Op, USER_SHELL_TOOL_ID_PREFIX};
 use crate::hooks::{HookEvent, HookExecutor};
 use crate::llm_client::LlmClient;
 use crate::models::{
@@ -105,7 +105,7 @@ use crate::tui::workspace_context;
 use super::app::{
     App, AppAction, AppMode, OnboardingState, QueuedMessage, ReasoningEffort, SidebarFocus,
     StatusToastLevel, SubmitDisposition, TaskPanelEntry, TuiOptions,
-    looks_like_slash_command_input,
+    looks_like_slash_command_input, shell_command_from_bang_input,
 };
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
@@ -1181,23 +1181,28 @@ async fn run_event_loop(
                         if name == "update_plan" {
                             app.plan_tool_used_in_turn = true;
                         }
-                        let tool_content = match &result {
-                            Ok(output) => sanitize_stream_chunk(
-                                &crate::core::engine::compact_tool_result_for_context(
-                                    &app.model, &name, output,
+                        if is_model_visible_tool_call(&id) {
+                            let tool_content = match &result {
+                                Ok(output) => sanitize_stream_chunk(
+                                    &crate::core::engine::compact_tool_result_for_context(
+                                        &app.model, &name, output,
+                                    ),
                                 ),
-                            ),
-                            Err(err) => sanitize_stream_chunk(&format!("Error: {err}")),
-                        };
-                        app.api_messages.push(Message {
-                            role: "user".to_string(),
-                            content: vec![ContentBlock::ToolResult {
-                                tool_use_id: id.clone(),
-                                content: tool_content,
-                                is_error: None,
-                                content_blocks: None,
-                            }],
-                        });
+                                Err(err) => sanitize_stream_chunk(&format!("Error: {err}")),
+                            };
+                            app.api_messages.push(Message {
+                                role: "user".to_string(),
+                                content: vec![ContentBlock::ToolResult {
+                                    tool_use_id: id.clone(),
+                                    content: tool_content,
+                                    is_error: None,
+                                    content_blocks: None,
+                                }],
+                            });
+                        } else {
+                            app.pending_tool_uses
+                                .retain(|(tool_id, _, _)| tool_id != &id);
+                        }
                         handle_tool_call_complete(app, &id, &name, &result);
 
                         // Immediately refresh the task panel sidebar when a
@@ -3134,6 +3139,9 @@ async fn run_event_loop(
                         // behaviour falls through to normal turn submit.
                         if config.memory_enabled() && is_memory_quick_add(&input) {
                             handle_memory_quick_add(app, &input, config);
+                            continue;
+                        }
+                        if handle_bang_shell_input(app, &engine_handle, &input).await? {
                             continue;
                         }
                         if looks_like_slash_command_input(&input) {
@@ -5161,6 +5169,38 @@ async fn submit_or_steer_message(
         }
         SubmitDisposition::QueueFollowUp => queue_follow_up(app, message).await,
     }
+}
+
+async fn handle_bang_shell_input(
+    app: &mut App,
+    engine_handle: &EngineHandle,
+    input: &str,
+) -> Result<bool> {
+    let command = match shell_command_from_bang_input(input) {
+        Ok(Some(command)) => command,
+        Ok(None) => return Ok(false),
+        Err(message) => {
+            app.status_message = Some(format!("Error: {message}"));
+            return Ok(true);
+        }
+    };
+
+    engine_handle
+        .send(Op::RunShellCommand {
+            command: command.to_string(),
+            mode: app.mode,
+            allow_shell: app.allow_shell,
+            trust_mode: app.trust_mode,
+            auto_approve: app.mode == AppMode::Yolo,
+            approval_mode: app.approval_mode,
+        })
+        .await?;
+    app.status_message = Some(format!("Shell command submitted: {command}"));
+    Ok(true)
+}
+
+fn is_model_visible_tool_call(id: &str) -> bool {
+    !id.starts_with(USER_SHELL_TOOL_ID_PREFIX)
 }
 
 /// Drain `app.pending_steers` into a single `QueuedMessage` ready for
