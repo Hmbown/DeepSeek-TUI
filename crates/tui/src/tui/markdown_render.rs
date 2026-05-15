@@ -191,13 +191,13 @@ fn highlight_code_line(
     let mut spans = Vec::new();
     let mut rest = line;
     while !rest.is_empty() {
-        if rest.starts_with('"') {
-            if let Some(end) = rest[1..].find('"') {
-                let end = end + 2;
-                spans.push(Span::styled(rest[..end].to_string(), string_style));
-                rest = &rest[end..];
-                continue;
-            }
+        if rest.starts_with('"')
+            && let Some(end) = rest[1..].find('"')
+        {
+            let end = end + 2;
+            spans.push(Span::styled(rest[..end].to_string(), string_style));
+            rest = &rest[end..];
+            continue;
         }
         if rest.starts_with('\'') && rest.len() > 2 {
             let end = if rest.as_bytes().get(1) == Some(&b'\\') {
@@ -209,23 +209,23 @@ fn highlight_code_line(
             rest = &rest[end..];
             continue;
         }
-        if rest.starts_with("/*") {
-            if let Some(end) = rest.find("*/") {
-                let end = end + 2;
-                spans.push(Span::styled(rest[..end].to_string(), comment_style));
-                rest = &rest[end..];
-                continue;
-            }
+        if rest.starts_with("/*")
+            && let Some(end) = rest.find("*/")
+        {
+            let end = end + 2;
+            spans.push(Span::styled(rest[..end].to_string(), comment_style));
+            rest = &rest[end..];
+            continue;
         }
-        if let Some(ch) = rest.chars().next() {
-            if ch.is_ascii_digit() {
-                let end = rest
-                    .find(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '_')
-                    .unwrap_or(rest.len());
-                spans.push(Span::styled(rest[..end].to_string(), string_style));
-                rest = &rest[end..];
-                continue;
-            }
+        if let Some(ch) = rest.chars().next()
+            && ch.is_ascii_digit()
+        {
+            let end = rest
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '_')
+                .unwrap_or(rest.len());
+            spans.push(Span::styled(rest[..end].to_string(), string_style));
+            rest = &rest[end..];
+            continue;
         }
         if rest.starts_with("//") || rest.starts_with('#') {
             spans.push(Span::styled(rest.to_string(), comment_style));
@@ -237,7 +237,7 @@ fn highlight_code_line(
                 if rest.starts_with(*kw) {
                     let kw_end = kw.len();
                     let next = rest[kw_end..].chars().next();
-                    if next.map_or(true, |c| !c.is_alphanumeric() && c != '_') {
+                    if next.is_none_or(|c| !c.is_alphanumeric() && c != '_') {
                         spans.push(Span::styled(rest[..kw_end].to_string(), keyword_style));
                         rest = &rest[kw_end..];
                         matched = true;
@@ -291,13 +291,13 @@ pub fn parse(content: &str) -> ParsedMarkdown {
 
     for raw_line in content.lines() {
         let trimmed = raw_line.trim_start();
-        if trimmed.starts_with("```") {
+        if let Some(stripped) = trimmed.strip_prefix("```") {
             if in_code_block {
                 in_code_block = false;
                 code_lang = None;
             } else {
                 in_code_block = true;
-                let lang = trimmed[3..].trim();
+                let lang = stripped.trim();
                 code_lang = if lang.is_empty() {
                     None
                 } else {
