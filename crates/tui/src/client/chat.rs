@@ -215,6 +215,11 @@ impl DeepSeekClient {
         }
 
         let model = request.model.clone();
+        // The provider determines whether we interpret `reasoning_content` in
+        // streaming deltas as real thinking tokens (DeepSeek, OpenRouter, etc.)
+        // or as a non-standard host that puts the response text there
+        // (third-party OpenAI-compatible proxies).
+        let api_provider = self.api_provider;
 
         // Capture transport-shape headers before we consume `response` into
         // `bytes_stream()`. They are surfaced in the decode-error log path so
@@ -251,7 +256,8 @@ impl DeepSeekClient {
             let mut text_started = false;
             let mut thinking_started = false;
             let mut tool_indices: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-            let is_reasoning_model = requires_reasoning_content(&model);
+            let is_reasoning_model = requires_reasoning_content(&model)
+                && provider_accepts_reasoning_content(api_provider);
 
             let mut byte_stream = std::pin::pin!(byte_stream);
             let idle = stream_idle_timeout();
@@ -1637,6 +1643,7 @@ fn provider_accepts_reasoning_content(provider: ApiProvider) -> bool {
         provider,
         ApiProvider::Deepseek
             | ApiProvider::DeepseekCN
+            | ApiProvider::NvidiaNim
             | ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks
@@ -1899,10 +1906,15 @@ pub(super) fn parse_sse_chunk(
             .map(str::to_string);
 
         if let Some(delta) = delta {
+            // Sniff reasoning and content fields once so we can decide whether
+            // this chunk is a real thinking delta or a third-party proxy that
+            // puts the response text in `reasoning_content`.
+            let reasoning_text = reasoning_field(delta).filter(|s| !s.is_empty());
+            let content_text = delta.get("content").and_then(Value::as_str).filter(|s| !s.is_empty());
+
             // Handle reasoning_content / reasoning thinking deltas.
             if is_reasoning_model
-                && let Some(reasoning) = reasoning_field(delta)
-                && !reasoning.is_empty()
+                && let Some(reasoning) = reasoning_text
             {
                 if !*thinking_started {
                     events.push(StreamEvent::ContentBlockStart {
@@ -1921,9 +1933,19 @@ pub(super) fn parse_sse_chunk(
                 });
             }
 
+            // Fallback: when the provider does not support reasoning-content
+            // semantics but the upstream still sends `reasoning_content`
+            // (common with third-party OpenAI-compatible proxies that serve
+            // DeepSeek models), treat `reasoning_content` as the real text
+            // output when the `content` field is absent.
+            let effective_content: Option<&str> = match content_text {
+                Some(c) => Some(c),
+                None if !is_reasoning_model => reasoning_text,
+                None => None,
+            };
+
             // Handle regular content
-            if let Some(content) = delta.get("content").and_then(Value::as_str)
-                && !content.is_empty()
+            if let Some(content) = effective_content
             {
                 // Close thinking block if transitioning to text
                 if *thinking_started {
