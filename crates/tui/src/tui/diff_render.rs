@@ -2,9 +2,10 @@
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::palette;
+use crate::tui::ui_text::push_word_breaking_chars;
 
 const LINE_NUMBER_WIDTH: usize = 4;
 
@@ -392,25 +393,6 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
     lines
 }
-
-fn push_word_breaking_chars(
-    word: &str,
-    width: usize,
-    current: &mut String,
-    current_width: &mut usize,
-    lines: &mut Vec<String>,
-) {
-    for ch in word.chars() {
-        let char_width = ch.width().unwrap_or(1);
-        if *current_width + char_width > width && *current_width > 0 {
-            lines.push(std::mem::take(current));
-            *current_width = 0;
-        }
-        current.push(ch);
-        *current_width += char_width;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

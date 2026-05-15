@@ -163,6 +163,29 @@ pub(super) fn text_display_width(text: &str) -> usize {
     text.chars().map(char_display_width).sum()
 }
 
+/// Push characters from `word` into `current`, flushing to `lines` when the
+/// running display width would exceed `width`. Width is computed at the
+/// `unicode-width` char level, matching the rest of the rendering pipeline.
+/// Used by multiple TUI renderers so a word longer than the allotted width
+/// never silently overflows the right edge.
+pub(crate) fn push_word_breaking_chars(
+    word: &str,
+    width: usize,
+    current: &mut String,
+    current_width: &mut usize,
+    lines: &mut Vec<String>,
+) {
+    for ch in word.chars() {
+        let char_width = UnicodeWidthChar::width(ch).unwrap_or(1);
+        if *current_width + char_width > width && *current_width > 0 {
+            lines.push(std::mem::take(current));
+            *current_width = 0;
+        }
+        current.push(ch);
+        *current_width += char_width;
+    }
+}
+
 pub(super) fn slice_text(text: &str, start: usize, end: usize) -> String {
     if end <= start {
         return String::new();
