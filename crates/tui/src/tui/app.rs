@@ -2441,16 +2441,16 @@ impl App {
     pub fn handle_resize(&mut self, _width: u16, _height: u16) {
         self.viewport.transcript_cache = TranscriptViewCache::new();
 
-        if !self.viewport.transcript_scroll.is_at_tail() {
-            self.viewport.transcript_scroll = TranscriptScroll::to_bottom();
-        }
-
         self.viewport.pending_scroll_delta = 0;
         self.viewport.transcript_selection.clear();
 
         self.viewport.last_transcript_area = None;
         self.viewport.last_transcript_top = 0;
-        self.viewport.last_transcript_visible = 0;
+        // Seed visible height from resize event so paging keys (PageUp/Down)
+        // use a sensible page size immediately, before the next render updates
+        // it.  Subtract 2 to roughly account for borders/status bar so the
+        // fallback is conservative rather than over-shooting.
+        self.viewport.last_transcript_visible = (_height as usize).saturating_sub(2).max(1);
         self.viewport.last_transcript_total = 0;
         self.viewport.last_transcript_padding_top = 0;
 
