@@ -668,10 +668,15 @@ mod tests {
             initial_input: None,
         };
         let mut app = App::new(options, &Config::default());
-        // App::new may pick up `default_model` from a local user Settings
-        // file, which overrides the option above. Pin the model explicitly
-        // so these tests are independent of any host-side configuration.
+        // App::new may pick up local Settings, which override the option
+        // above. Pin model state explicitly so these tests are host-neutral.
         app.model = "deepseek-v4-flash".to_string();
+        app.auto_model = false;
+        app.api_provider = crate::config::ApiProvider::Deepseek;
+        // Same for theme: tests below assert against the default dark palette,
+        // but App::new honors saved settings.toml values on the host machine.
+        app.theme_id = crate::palette::ThemeId::Whale;
+        app.ui_theme = crate::palette::UI_THEME;
         app
     }
 

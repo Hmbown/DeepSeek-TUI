@@ -12,7 +12,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -427,7 +427,6 @@ impl BackgroundShell {
     }
 
     /// Kill the process
-    #[allow(dead_code)]
     fn kill(&mut self) -> Result<()> {
         if let Some(ref mut child) = self.child {
             child.kill().context("Failed to kill process")?;
@@ -469,7 +468,17 @@ impl BackgroundShell {
     }
 
     fn job_snapshot(&self) -> ShellJobSnapshot {
-        let (stdout_full, stderr_full, stdout_len, stderr_len) = self.full_output();
+        // Use tail_from_buffer instead of full_output so we never clone the
+        // entire accumulated stdout/stderr for display purposes.  full_output
+        // is O(total_bytes_written), which caused the ShellManager mutex to be
+        // held for an arbitrarily long time during list_jobs() calls from the
+        // TUI event loop — freezing input handling on long automation runs.
+        let (stdout_len, stdout_tail) = tail_from_buffer(&self.stdout_buffer, 1200);
+        let (stderr_len, stderr_tail) = self
+            .stderr_buffer
+            .as_ref()
+            .map(|buf| tail_from_buffer(buf, 1200))
+            .unwrap_or((0, String::new()));
         ShellJobSnapshot {
             id: self.id.clone(),
             job_id: self.id.clone(),
@@ -478,8 +487,8 @@ impl BackgroundShell {
             status: self.status.clone(),
             exit_code: self.exit_code,
             elapsed_ms: u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
-            stdout_tail: tail_text(&stdout_full, 1200),
-            stderr_tail: tail_text(&stderr_full, 1200),
+            stdout_tail,
+            stderr_tail,
             stdout_len,
             stderr_len,
             stdin_available: self.stdin.is_some() && self.status == ShellStatus::Running,
@@ -592,6 +601,11 @@ impl ShellManager {
     #[allow(dead_code)]
     pub fn is_sandbox_available(&mut self) -> bool {
         self.sandbox_manager.is_available()
+    }
+
+    #[allow(dead_code)]
+    pub fn default_workspace(&self) -> &Path {
+        &self.default_workspace
     }
 
     /// Execute a shell command with the configured sandbox policy.
@@ -1240,7 +1254,6 @@ impl ShellManager {
     }
 
     /// Kill a running background process
-    #[allow(dead_code)]
     pub fn kill(&mut self, task_id: &str) -> Result<ShellResult> {
         let shell = self
             .processes
@@ -1370,11 +1383,36 @@ impl ShellManager {
 }
 
 fn take_delta_from_buffer(buffer: &Arc<Mutex<Vec<u8>>>, cursor: &mut usize) -> (Vec<u8>, usize) {
-    let data = buffer.lock().map(|d| d.clone()).unwrap_or_default();
-    let start = (*cursor).min(data.len());
-    let delta = data[start..].to_vec();
-    *cursor = data.len();
-    (delta, data.len())
+    let guard = buffer.lock().unwrap_or_else(|e| e.into_inner());
+    let total = guard.len();
+    let start = (*cursor).min(total);
+    // Clone only the unread portion (the delta), not the entire accumulated buffer.
+    // Long-running processes can produce megabytes of output; cloning the full
+    // buffer on every poll held the ShellManager mutex for O(total_bytes) time.
+    let delta = guard[start..].to_vec();
+    *cursor = total;
+    (delta, total)
+}
+
+/// Read only the tail of a byte buffer and return (total_len, tail_string).
+///
+/// Avoids cloning the full buffer when only a trailing excerpt is needed
+/// (e.g. for the job-panel display).  `max_tail_chars` is in Unicode scalar
+/// values; we read at most `max_tail_chars * 4` bytes from the end to account
+/// for multi-byte UTF-8 sequences.
+fn tail_from_buffer(buffer: &Arc<Mutex<Vec<u8>>>, max_tail_chars: usize) -> (usize, String) {
+    let guard = buffer.lock().unwrap_or_else(|e| e.into_inner());
+    let total = guard.len();
+    // Over-estimate byte count (4 bytes per char worst case for UTF-8).
+    let mut tail_start = total.saturating_sub(max_tail_chars.saturating_mul(4));
+    // Snap forward to the next valid UTF-8 codepoint boundary so we don't
+    // pass a slice beginning with continuation bytes (0x80–0xBF) to
+    // from_utf8_lossy, which would emit a leading U+FFFD replacement char.
+    while tail_start < total && (guard[tail_start] & 0xC0) == 0x80 {
+        tail_start += 1;
+    }
+    let tail_str = String::from_utf8_lossy(&guard[tail_start..]).into_owned();
+    (total, tail_text(&tail_str, max_tail_chars))
 }
 
 fn tail_text(text: &str, max_chars: usize) -> String {
@@ -1551,6 +1589,7 @@ async fn execute_foreground_via_background(
     command: &str,
     timeout_ms: u64,
     stdin_data: Option<&str>,
+    tty: bool,
     policy_override: Option<ExecutionSandboxPolicy>,
     extra_env: HashMap<String, String>,
 ) -> Result<ShellResult> {
@@ -1567,7 +1606,7 @@ async fn execute_foreground_via_background(
             timeout_ms,
             true,
             stdin_data,
-            false,
+            tty,
             policy_override,
             extra_env,
         )?
@@ -1671,6 +1710,10 @@ impl ToolSpec for ExecShellTool {
                 "tty": {
                     "type": "boolean",
                     "description": "Allocate a pseudo-terminal for interactive programs (implies background)"
+                },
+                "combined_output": {
+                    "type": "boolean",
+                    "description": "Capture stdout and stderr as one chronological PTY stream (default false). In foreground mode, waits for completion; in background mode, implies tty."
                 }
             },
             "required": ["command"]
@@ -1698,7 +1741,8 @@ impl ToolSpec for ExecShellTool {
         let timeout_ms = optional_u64(&input, "timeout_ms", 120_000).min(600_000);
         let background = optional_bool(&input, "background", false);
         let interactive = optional_bool(&input, "interactive", false);
-        let tty = optional_bool(&input, "tty", false);
+        let combined_output = optional_bool(&input, "combined_output", false);
+        let tty = optional_bool(&input, "tty", false) || (combined_output && background);
         let stdin_data = input
             .get("stdin")
             .or_else(|| input.get("input"))
@@ -1711,9 +1755,9 @@ impl ToolSpec for ExecShellTool {
                 "Interactive commands cannot run in background mode.",
             ));
         }
-        if interactive && tty {
+        if interactive && (tty || combined_output) {
             return Ok(ToolResult::error(
-                "Interactive mode cannot be combined with TTY sessions.",
+                "Interactive mode cannot be combined with TTY or combined_output sessions.",
             ));
         }
         if interactive && stdin_data.is_some() {
@@ -1934,6 +1978,7 @@ impl ToolSpec for ExecShellTool {
                 command,
                 timeout_ms,
                 stdin_data.as_deref(),
+                combined_output,
                 policy_override,
                 extra_env,
             )
@@ -2032,6 +2077,7 @@ impl ToolSpec for ExecShellTool {
                     "stderr_summary": stderr_summary,
                     "safety_level": format!("{:?}", safety.level),
                     "interactive": interactive,
+                    "combined_output": combined_output,
                     "canceled": was_cancelled,
                     "execpolicy": execpolicy_decision.as_ref().map(|decision| match decision {
                         ExecPolicyDecision::Allow => json!({
@@ -2425,7 +2471,7 @@ impl ToolSpec for ShellWaitTool {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "Timeout in milliseconds (default: 5000)"
+                    "description": "Timeout in milliseconds (default: 30000, max: 600000). Use a higher value for long-running builds, CI watchers, and interactive commands that are expected to keep producing output."
                 },
                 "wait": {
                     "type": "boolean",
@@ -2451,7 +2497,7 @@ impl ToolSpec for ShellWaitTool {
     ) -> Result<ToolResult, ToolError> {
         let task_id = required_task_id(&input)?;
         let wait = optional_bool(&input, "wait", true);
-        let timeout_ms = optional_u64(&input, "timeout_ms", 5_000);
+        let timeout_ms = optional_u64(&input, "timeout_ms", 30_000);
 
         let (delta, wait_canceled) = if wait {
             wait_for_shell_delta_cancellable(context, task_id, timeout_ms).await?

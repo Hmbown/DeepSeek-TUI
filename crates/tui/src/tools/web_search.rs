@@ -1,11 +1,17 @@
-//! Web search tool backed by DuckDuckGo HTML results (with Bing fallback).
+//! Web search tool backed by multiple providers: Bing HTML scrape, DuckDuckGo
+//! (HTML scrape with Bing fallback), Tavily API, and Bocha (博查) API.
 //!
 //! This is the primary web search surface for agents. For browsing workflows
 //! (page open, click, screenshot) use a direct URL approach instead.
+//!
+//! Set `[search]` in config.toml to switch providers:
+//!   provider = "duckduckgo"  # or tavily/bocha
+//!   api_key = "tvly-..."
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
 };
+use crate::config::SearchProvider;
 use crate::network_policy::{Decision, NetworkPolicyDecider};
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose};
@@ -17,6 +23,9 @@ use std::time::Duration;
 
 const DUCKDUCKGO_HOST: &str = "html.duckduckgo.com";
 const BING_HOST: &str = "www.bing.com";
+const TAVILY_ENDPOINT: &str = "https://api.tavily.com/search";
+const BOCHA_ENDPOINT: &str = "https://api.bochaai.com/v1/ai/search";
+const ERROR_BODY_PREVIEW_BYTES: usize = 512;
 
 /// Returns `Ok(())` if the policy allows the call, or a `ToolError` otherwise.
 /// Falls through silently when no policy is attached (back-compat).
@@ -115,7 +124,7 @@ impl ToolSpec for WebSearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search the web (DuckDuckGo or Bing) and return ranked results with URLs and snippets. Use this instead of scraping search engines with `curl` in `exec_shell`. For a known canonical URL, prefer `fetch_url` directly."
+        "Search the web and return ranked results with URLs and snippets. Default backend is Bing; set `[search] provider = \"duckduckgo\" | \"tavily\" | \"bocha\"` in config.toml to switch backends. Use this instead of scraping search engines with `curl` in `exec_shell`. For a known canonical URL, prefer `fetch_url` directly."
     }
 
     fn input_schema(&self) -> Value {
@@ -172,13 +181,27 @@ impl ToolSpec for WebSearchTool {
         let max_results = max_results.clamp(1, MAX_RESULTS);
         let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_TIMEOUT_MS).min(60_000);
 
-        // Per-domain network policy gate (#135). The "host" for web search is
-        // the upstream search engine domain — DuckDuckGo first, Bing on
-        // fallback. We gate DuckDuckGo here; Bing is gated separately inside
-        // `run_bing_search` so a deny on one engine doesn't block the other.
-        let decider = context.network_policy.as_ref();
-        check_policy(decider, DUCKDUCKGO_HOST)?;
+        // Dispatch to the configured API-backed search providers before
+        // building the HTML-scraping client used by Bing/DuckDuckGo.
+        match context.search_provider {
+            SearchProvider::Tavily => {
+                let decider = context.network_policy.as_ref();
+                check_policy(decider, "api.tavily.com")?;
+                return self
+                    .run_tavily_search(&query, max_results, timeout_ms, context)
+                    .await;
+            }
+            SearchProvider::Bocha => {
+                let decider = context.network_policy.as_ref();
+                check_policy(decider, "api.bochaai.com")?;
+                return self
+                    .run_bocha_search(&query, max_results, timeout_ms, context)
+                    .await;
+            }
+            SearchProvider::Bing | SearchProvider::DuckDuckGo => {}
+        }
 
+        let decider = context.network_policy.as_ref();
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(timeout_ms))
             .user_agent(USER_AGENT)
@@ -186,6 +209,18 @@ impl ToolSpec for WebSearchTool {
             .map_err(|e| {
                 ToolError::execution_failed(format!("Failed to build HTTP client: {e}"))
             })?;
+
+        if matches!(context.search_provider, SearchProvider::Bing) {
+            check_policy(decider, BING_HOST)?;
+            let results = run_bing_search(&client, &query, max_results).await?;
+            return search_tool_result(query, "bing", results, None);
+        }
+
+        // Per-domain network policy gate (#135). The "host" for web search is
+        // the upstream search engine domain — DuckDuckGo first, Bing on
+        // fallback. We gate DuckDuckGo here; Bing is gated separately inside
+        // the fallback path so a deny on one engine doesn't block the other.
+        check_policy(decider, DUCKDUCKGO_HOST)?;
 
         let encoded = url_encode(&query);
         let url = format!("https://html.duckduckgo.com/html/?q={encoded}");
@@ -214,7 +249,7 @@ impl ToolSpec for WebSearchTool {
         }
 
         let mut results = parse_duckduckgo_results(&body, max_results);
-        let mut source = "duckduckgo".to_string();
+        let mut source = "duckduckgo";
         let mut message_suffix = None;
         if results.is_empty() {
             let duckduckgo_blocked = is_duckduckgo_challenge(&body);
@@ -224,7 +259,7 @@ impl ToolSpec for WebSearchTool {
             match run_bing_search(&client, &query, max_results).await {
                 Ok(fallback_results) if !fallback_results.is_empty() => {
                     results = fallback_results;
-                    source = "bing".to_string();
+                    source = "bing";
                     message_suffix = Some(if duckduckgo_blocked {
                         "DuckDuckGo returned a bot challenge; used Bing fallback"
                     } else {
@@ -244,17 +279,126 @@ impl ToolSpec for WebSearchTool {
                 Ok(_) | Err(_) => {}
             }
         }
+
+        search_tool_result(query, source, results, message_suffix)
+    }
+}
+
+fn search_tool_result(
+    query: String,
+    source: &'static str,
+    results: Vec<WebSearchEntry>,
+    message_suffix: Option<&str>,
+) -> Result<ToolResult, ToolError> {
+    let message = if results.is_empty() {
+        "No results found".to_string()
+    } else if let Some(suffix) = message_suffix {
+        format!("Found {} result(s). {suffix}", results.len())
+    } else {
+        format!("Found {} result(s)", results.len())
+    };
+
+    let response = WebSearchResponse {
+        query,
+        source: source.to_string(),
+        count: results.len(),
+        message,
+        results,
+    };
+
+    ToolResult::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
+}
+
+impl WebSearchTool {
+    /// Search via Tavily AI Search API (<https://tavily.com>).
+    async fn run_tavily_search(
+        &self,
+        query: &str,
+        max_results: usize,
+        timeout_ms: u64,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let api_key = context
+            .search_api_key
+            .as_deref()
+            .ok_or_else(|| {
+                ToolError::execution_failed(
+                    "Tavily search requires an API key. Set `[search] api_key = \"tvly-...\"` in config.toml.",
+                )
+            })?;
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(timeout_ms))
+            .build()
+            .map_err(|e| {
+                ToolError::execution_failed(format!("Failed to build HTTP client: {e}"))
+            })?;
+
+        let payload = json!({
+            "api_key": api_key, // noqa: api-key-in-body
+            "query": query,
+            "search_depth": "basic",
+            "max_results": max_results,
+        });
+
+        let resp = client
+            .post(TAVILY_ENDPOINT)
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| {
+                ToolError::execution_failed(format!("Tavily search request failed: {e}"))
+            })?;
+
+        let status = resp.status();
+        let body = resp.text().await.map_err(|e| {
+            ToolError::execution_failed(format!("Failed to read Tavily response: {e}"))
+        })?;
+
+        if !status.is_success() {
+            let truncated = truncate_error_body(&body);
+            return Err(ToolError::execution_failed(format!(
+                "Tavily search failed: HTTP {} — {truncated}",
+                status.as_u16()
+            )));
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+            ToolError::execution_failed(format!("Failed to parse Tavily response: {e}"))
+        })?;
+
+        let results: Vec<WebSearchEntry> = parsed
+            .get("results")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flat_map(|arr| arr.iter())
+            .filter_map(|item| {
+                let title = item.get("title")?.as_str()?.to_string();
+                let url = item.get("url")?.as_str()?.to_string();
+                let snippet = item
+                    .get("content")
+                    .or_else(|| item.get("snippet"))
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string());
+                Some(WebSearchEntry {
+                    title,
+                    url,
+                    snippet,
+                })
+            })
+            .take(max_results)
+            .collect();
+
         let message = if results.is_empty() {
             "No results found".to_string()
-        } else if let Some(suffix) = message_suffix {
-            format!("Found {} result(s). {suffix}", results.len())
         } else {
             format!("Found {} result(s)", results.len())
         };
 
         let response = WebSearchResponse {
-            query,
-            source,
+            query: query.to_string(),
+            source: "tavily".to_string(),
             count: results.len(),
             message,
             results,
@@ -262,6 +406,136 @@ impl ToolSpec for WebSearchTool {
 
         ToolResult::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
+
+    /// Search via Bocha AI Search API (<https://bochaai.com>).
+    async fn run_bocha_search(
+        &self,
+        query: &str,
+        max_results: usize,
+        timeout_ms: u64,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let api_key = context
+            .search_api_key
+            .as_deref()
+            .ok_or_else(|| {
+                ToolError::execution_failed(
+                    "Bocha search requires an API key. Set `[search] api_key = \"sk-...\"` in config.toml.",
+                )
+            })?;
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(timeout_ms))
+            .build()
+            .map_err(|e| {
+                ToolError::execution_failed(format!("Failed to build HTTP client: {e}"))
+            })?;
+
+        let payload = json!({
+            "query": query,
+            "freshness": "noLimit",
+            "count": max_results,
+        });
+
+        let resp = client
+            .post(BOCHA_ENDPOINT)
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {api_key}"))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| {
+                ToolError::execution_failed(format!("Bocha search request failed: {e}"))
+            })?;
+
+        let status = resp.status();
+        let body = resp.text().await.map_err(|e| {
+            ToolError::execution_failed(format!("Failed to read Bocha response: {e}"))
+        })?;
+
+        if !status.is_success() {
+            let truncated = truncate_error_body(&body);
+            return Err(ToolError::execution_failed(format!(
+                "Bocha search failed: HTTP {} — {truncated}",
+                status.as_u16()
+            )));
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+            ToolError::execution_failed(format!("Failed to parse Bocha response: {e}"))
+        })?;
+
+        // Bocha returns `{"code": 200, "data": {"pages": [...]}}`
+        let results: Vec<WebSearchEntry> = parsed
+            .get("data")
+            .and_then(|d| d.get("pages"))
+            .or_else(|| parsed.get("pages"))
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flat_map(|arr| arr.iter())
+            .filter_map(|item| {
+                let title = item
+                    .get("name")
+                    .or_else(|| item.get("title"))
+                    .and_then(|s| s.as_str())?
+                    .to_string();
+                let url = item
+                    .get("url")
+                    .or_else(|| item.get("link"))
+                    .and_then(|s| s.as_str())?
+                    .to_string();
+                let snippet = item
+                    .get("summary")
+                    .or_else(|| item.get("snippet"))
+                    .or_else(|| item.get("description"))
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string());
+                Some(WebSearchEntry {
+                    title,
+                    url,
+                    snippet,
+                })
+            })
+            .take(max_results)
+            .collect();
+
+        let message = if results.is_empty() {
+            "No results found".to_string()
+        } else {
+            format!("Found {} result(s)", results.len())
+        };
+
+        let response = WebSearchResponse {
+            query: query.to_string(),
+            source: "bocha".to_string(),
+            count: results.len(),
+            message,
+            results,
+        };
+
+        ToolResult::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
+    }
+}
+
+fn truncate_error_body(body: &str) -> String {
+    let stripped = sanitize_error_body(body);
+    if stripped.len() <= ERROR_BODY_PREVIEW_BYTES {
+        stripped
+    } else {
+        let mut end = ERROR_BODY_PREVIEW_BYTES;
+        while !stripped.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &stripped[..end])
+    }
+}
+
+fn sanitize_error_body(body: &str) -> String {
+    let stripped = strip_html_tags(body);
+    stripped
+        .chars()
+        .filter(|c| !c.is_control() || c.is_ascii_whitespace())
+        .collect()
 }
 
 fn extract_search_query(input: &Value) -> Result<String, ToolError> {
@@ -332,16 +606,16 @@ async fn run_bing_search(
         .header("Accept-Language", "en-US,en;q=0.9")
         .send()
         .await
-        .map_err(|e| ToolError::execution_failed(format!("Bing fallback request failed: {e}")))?;
+        .map_err(|e| ToolError::execution_failed(format!("Bing search request failed: {e}")))?;
 
     let status = resp.status();
     let body = resp.text().await.map_err(|e| {
-        ToolError::execution_failed(format!("Failed to read Bing fallback response: {e}"))
+        ToolError::execution_failed(format!("Failed to read Bing search response: {e}"))
     })?;
 
     if !status.is_success() {
         return Err(ToolError::execution_failed(format!(
-            "Bing fallback failed: HTTP {}",
+            "Bing search failed: HTTP {}",
             status.as_u16()
         )));
     }
@@ -622,8 +896,9 @@ fn extract_query_param(url: &str, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        WebSearchEntry, decode_html_entities, extract_search_query, is_likely_spam_results,
-        optional_search_max_results, root_domain,
+        ERROR_BODY_PREVIEW_BYTES, WebSearchEntry, WebSearchTool, decode_html_entities,
+        extract_search_query, is_likely_spam_results, optional_search_max_results, root_domain,
+        sanitize_error_body, truncate_error_body,
     };
     use serde_json::json;
 
@@ -867,5 +1142,72 @@ mod tests {
                 "expected query-missing error, got `{msg}`"
             );
         }
+    }
+
+    #[test]
+    fn truncate_error_body_truncates_long_body() {
+        let body = "a".repeat(ERROR_BODY_PREVIEW_BYTES + 100);
+        let truncated = truncate_error_body(&body);
+        assert!(truncated.len() <= ERROR_BODY_PREVIEW_BYTES + 3);
+        assert!(truncated.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_error_body_keeps_short_body_intact() {
+        let body = "short error";
+        assert_eq!(truncate_error_body(body), body);
+    }
+
+    #[test]
+    fn sanitize_error_body_strips_html_and_control_chars() {
+        let body = "<p>error</p>\x00\x01\x02";
+        let sanitized = sanitize_error_body(body);
+        assert_eq!(sanitized, "error");
+    }
+
+    #[tokio::test]
+    async fn tavily_provider_without_api_key_surfaces_clear_error_not_silent_fallback() {
+        // Trust-boundary pin: if a user has opted into Tavily but
+        // forgot the api_key, the tool must NOT silently fall through
+        // to DuckDuckGo (which would expose the query to a different
+        // provider than the user authorised). Instead it returns a
+        // ToolError that names the missing key explicitly.
+        use crate::config::SearchProvider;
+        use crate::tools::spec::{ToolContext, ToolSpec};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ToolContext::new(tmp.path().to_path_buf());
+        ctx.search_provider = SearchProvider::Tavily;
+        ctx.search_api_key = None;
+        let err = WebSearchTool
+            .execute(json!({"query": "anything"}), &ctx)
+            .await
+            .expect_err("missing api_key must surface as ToolError");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Tavily") && msg.contains("API key"),
+            "error must name the provider and missing key; got `{msg}`"
+        );
+    }
+
+    #[tokio::test]
+    async fn bocha_provider_without_api_key_surfaces_clear_error_not_silent_fallback() {
+        // Same trust-boundary pin for Bocha.
+        use crate::config::SearchProvider;
+        use crate::tools::spec::{ToolContext, ToolSpec};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ToolContext::new(tmp.path().to_path_buf());
+        ctx.search_provider = SearchProvider::Bocha;
+        ctx.search_api_key = None;
+        let err = WebSearchTool
+            .execute(json!({"query": "anything"}), &ctx)
+            .await
+            .expect_err("missing api_key must surface as ToolError");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Bocha") && msg.contains("API key"),
+            "error must name the provider and missing key; got `{msg}`"
+        );
     }
 }

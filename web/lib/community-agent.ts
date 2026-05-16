@@ -41,13 +41,19 @@ export interface UsageLog {
   outputTokens: number;
 }
 
+export interface DeepSeekEnv {
+  baseUrl?: string;
+  model?: string;
+}
+
 export async function agentChat(
   messages: ChatMessage[],
   apiKey: string,
-  jsonMode = false
+  jsonMode = false,
+  dsEnv?: DeepSeekEnv
 ): Promise<{ content: string; usage: { input: number; output: number } }> {
-  const base = process.env.DEEPSEEK_BASE_URL ?? FALLBACK_BASE;
-  const model = process.env.DEEPSEEK_MODEL ?? FALLBACK_MODEL;
+  const base = dsEnv?.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? FALLBACK_BASE;
+  const model = dsEnv?.model ?? process.env.DEEPSEEK_MODEL ?? FALLBACK_MODEL;
   const res = await fetch(`${base}/v1/chat/completions`, {
     method: "POST",
     headers: {
@@ -185,6 +191,8 @@ interface KVNamespace {
 export interface CommunityAgentEnv {
   CURATED_KV?: KVNamespace;
   DEEPSEEK_API_KEY?: string;
+  DEEPSEEK_BASE_URL?: string;
+  DEEPSEEK_MODEL?: string;
   GITHUB_TOKEN?: string;
   CRON_SECRET?: string;
   GITHUB_REPO?: string;
@@ -200,6 +208,8 @@ export async function getAgentEnv(): Promise<CommunityAgentEnv> {
   } catch {
     return {
       DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
+      DEEPSEEK_BASE_URL: process.env.DEEPSEEK_BASE_URL,
+      DEEPSEEK_MODEL: process.env.DEEPSEEK_MODEL,
       GITHUB_TOKEN: process.env.GITHUB_TOKEN,
       CRON_SECRET: process.env.CRON_SECRET,
       GITHUB_REPO: process.env.GITHUB_REPO,

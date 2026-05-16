@@ -1615,6 +1615,7 @@ impl RuntimeThreadManager {
                 allow_shell,
                 trust_mode,
                 auto_approve,
+                translation_enabled: false,
                 approval_mode: if auto_approve {
                     crate::tui::approval::ApprovalMode::Auto
                 } else {
@@ -1931,6 +1932,7 @@ impl RuntimeThreadManager {
             skills_dir: self.config.skills_dir(),
             instructions: self.config.instructions_paths(),
             project_context_pack_enabled: self.config.project_context_pack_enabled(),
+            translation_enabled: false,
             max_steps: 100,
             max_subagents: self.config.max_subagents().clamp(1, MAX_SUBAGENTS),
             features: self.config.features(),
@@ -1944,6 +1946,11 @@ impl RuntimeThreadManager {
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy,
             snapshots_enabled: self.config.snapshots_config().enabled,
+            snapshots_max_workspace_bytes: self
+                .config
+                .snapshots_config()
+                .max_workspace_gb
+                .saturating_mul(1024 * 1024 * 1024),
             lsp_config,
             runtime_services: crate::tools::spec::RuntimeToolServices {
                 task_manager: self.task_manager.lock().ok().and_then(|slot| slot.clone()),
@@ -1953,10 +1960,13 @@ impl RuntimeThreadManager {
                 active_thread_id: Some(thread.id.clone()),
                 shell_manager: None,
                 hook_executor: None,
+                handle_store: crate::tools::handle::new_shared_handle_store(),
+                rlm_sessions: crate::rlm::session::new_shared_rlm_session_store(),
             },
             subagent_model_overrides: self.config.subagent_model_overrides(),
             memory_enabled: self.config.memory_enabled(),
             memory_path: self.config.memory_path(),
+            vision_config: self.config.vision_model_config(),
             strict_tool_mode: self.config.strict_tool_mode.unwrap_or(false),
             goal_objective: None,
             locale_tag: crate::localization::resolve_locale(
@@ -1965,6 +1975,13 @@ impl RuntimeThreadManager {
             .tag()
             .to_string(),
             workshop: self.config.workshop.clone(),
+            search_provider: self
+                .config
+                .search
+                .as_ref()
+                .and_then(|s| s.provider)
+                .unwrap_or_default(),
+            search_api_key: self.config.search.as_ref().and_then(|s| s.api_key.clone()),
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);

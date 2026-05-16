@@ -103,6 +103,53 @@ pub fn spillover_path(id: &str) -> Option<PathBuf> {
     Some(spillover_root()?.join(format!("{sanitised}.txt")))
 }
 
+/// Resolve the spillover-file path for a SHA256 content hash. Separate
+/// namespace (`sha_<hex>.txt`) from the tool-call-id files so the two
+/// reference systems (engine-side spillover + wire-side dedup) can
+/// co-exist in one directory without collisions. `sha` must be the
+/// raw 64-char lowercase hex digest — case-insensitive matching is
+/// done by the caller.
+#[must_use]
+pub fn sha_spillover_path(sha: &str) -> Option<PathBuf> {
+    let sha = sha.trim().to_ascii_lowercase();
+    if !is_valid_sha256(&sha) {
+        return None;
+    }
+    Some(spillover_root()?.join(format!("sha_{sha}.txt")))
+}
+
+/// True when `s` is a 64-character lowercase ASCII hex string. Used
+/// to detect bare SHA refs the model might pass to retrieval and to
+/// validate input to [`sha_spillover_path`].
+#[must_use]
+pub fn is_valid_sha256(s: &str) -> bool {
+    s.len() == 64
+        && s.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
+/// Write content to the SHA-addressed spillover file. Idempotent —
+/// the same hash always maps to the same path, and the file's bytes
+/// are a function of the hash. Skips the write if the file already
+/// exists (which is the common case for the wire dedup, since the
+/// second sighting writes the same content that the first did).
+pub fn write_sha_spillover(sha: &str, content: &str) -> io::Result<PathBuf> {
+    let path = sha_spillover_path(sha).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "sha must be a 64-char lowercase hex digest",
+        )
+    })?;
+    if path.exists() {
+        return Ok(path);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    crate::utils::write_atomic(&path, content.as_bytes())?;
+    Ok(path)
+}
+
 /// Write `content` to the spillover file for `id`. Creates the
 /// parent directory if needed. Returns the resolved path on success.
 ///

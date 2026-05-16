@@ -57,6 +57,42 @@ pub enum OnboardingState {
     None,
 }
 
+pub(crate) fn resolve_skills_dir(
+    workspace: &Path,
+    global_skills_dir: &Path,
+    config: &Config,
+) -> PathBuf {
+    let agents_skills_dir = workspace.join(".agents").join("skills");
+    if agents_skills_dir.exists() {
+        return agents_skills_dir;
+    }
+
+    let local_skills_dir = workspace.join("skills");
+    if local_skills_dir.exists() {
+        return local_skills_dir;
+    }
+
+    if config.skills_dir.is_none()
+        && let Some(global_agents) = crate::skills::agents_global_skills_dir()
+        && global_agents.exists()
+    {
+        return global_agents;
+    }
+
+    global_skills_dir.to_path_buf()
+}
+
+pub(crate) fn looks_like_slash_command_input(input: &str) -> bool {
+    let Some(rest) = input.trim_start().strip_prefix('/') else {
+        return false;
+    };
+    let Some(command) = rest.split_whitespace().next() else {
+        return rest.is_empty();
+    };
+
+    !command.contains('/')
+}
+
 fn initial_onboarding_state(
     skip_onboarding: bool,
     was_onboarded: bool,
@@ -203,11 +239,11 @@ impl ReasoningEffort {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarFocus {
     Auto,
-    Plan,
-    Todos,
+    Work,
     Tasks,
     Agents,
     Context,
+    Hidden,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,11 +286,11 @@ impl SidebarFocus {
     #[must_use]
     pub fn from_setting(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
-            "plan" => Self::Plan,
-            "todos" => Self::Todos,
+            "work" | "plan" | "todos" => Self::Work,
             "tasks" => Self::Tasks,
             "agents" | "subagents" | "sub-agents" => Self::Agents,
             "context" | "session" => Self::Context,
+            "hidden" | "hide" | "closed" | "off" | "none" => Self::Hidden,
             _ => Self::Auto,
         }
     }
@@ -264,11 +300,11 @@ impl SidebarFocus {
     pub fn as_setting(self) -> &'static str {
         match self {
             Self::Auto => "auto",
-            Self::Plan => "plan",
-            Self::Todos => "todos",
+            Self::Work => "work",
             Self::Tasks => "tasks",
             Self::Agents => "agents",
             Self::Context => "context",
+            Self::Hidden => "hidden",
         }
     }
 }
@@ -810,6 +846,14 @@ pub struct App {
     /// until the footer widget consumes it.
     #[allow(dead_code)]
     pub fancy_animations: bool,
+    /// Whether the renderer should wrap each frame in DEC mode 2026
+    /// synchronized output. Resolved from `Settings::synchronized_output`
+    /// at construction; `auto`/`on` → `true`, `off` → `false`. The Ptyxis
+    /// auto-detect path in `Settings::apply_env_overrides` flips `auto`
+    /// to `off` before App is built, so by the time we read this flag in
+    /// the draw loop the decision is already made. See the
+    /// `Settings::synchronized_output` doc for the user-facing knob.
+    pub synchronized_output_enabled: bool,
     /// Header status-indicator chip mode. One of `"whale"` (default, cycles
     /// 🐳→🐋 frames keyed off `turn_started_at`), `"dots"` (geometric ◌
     /// frames), or `"off"` (chip hidden entirely). Loaded from settings;
@@ -854,6 +898,11 @@ pub struct App {
     /// Animation anchor for status-strip active sub-agent spinner.
     pub agent_activity_started_at: Option<Instant>,
     pub ui_theme: UiTheme,
+    /// Active named theme. Drives the cell-level color remap in
+    /// `tui::color_compat::ColorCompatBackend` so community presets
+    /// (Catppuccin, Tokyo Night, Dracula, Gruvbox) propagate to every
+    /// render site, not just the handful that read `app.ui_theme`.
+    pub theme_id: palette::ThemeId,
     // Onboarding
     pub onboarding: OnboardingState,
     pub onboarding_needs_api_key: bool,
@@ -889,6 +938,10 @@ pub struct App {
     pub session_artifacts: Vec<ArtifactRecord>,
     /// Trust mode - allow access outside workspace
     pub trust_mode: bool,
+    /// Translation mode — when enabled, the model is instructed to respond in
+    /// the current locale and a post-hoc translation layer replaces any
+    /// remaining English output before it reaches the user.
+    pub translation_enabled: bool,
     /// Ordered list of footer items the user wants visible. Sourced from
     /// `tui.status_items` in `~/.deepseek/config.toml` at startup; mutated
     /// live by `/statusline`. The renderer iterates this slice; no item is
@@ -948,6 +1001,10 @@ pub struct App {
     /// virtual index can shift (orphan completions push real cells in
     /// between). Migrated into `tool_details_by_cell` on flush.
     pub active_tool_details: HashMap<String, ToolDetailRecord>,
+    /// Completion timestamps for entries still living inside `active_cell`.
+    /// The transcript keeps completed entries until turn flush, but the
+    /// sidebar can use these timestamps to let settled live rows expire.
+    pub active_tool_entry_completed_at: HashMap<usize, Instant>,
     /// Active exploring cell entry index (within `active_cell.entries`).
     /// `None` once the active cell flushes or no exploring entry exists.
     pub exploring_cell: Option<usize>,
@@ -1045,6 +1102,16 @@ pub struct App {
     /// Used by `/cycles` and `/cycle <n>` slash commands.
     pub cycle_briefings: Vec<CycleBriefing>,
 
+    // === Prefix-Cache Stability Tracking ===
+    /// Number of times the prefix (system prompt + tool specs) has changed.
+    pub prefix_change_count: u64,
+    /// Total number of prefix stability checks performed.
+    pub prefix_checks_total: u64,
+    /// Current prefix stability percentage, if known.
+    pub prefix_stability_pct: Option<u32>,
+    /// Description of the last prefix change, if any.
+    pub last_prefix_change_desc: Option<String>,
+
     /// Active cycle configuration (token threshold, briefing cap, per-model
     /// overrides). Loaded from config and forwarded to the engine.
     pub cycle: CycleConfig,
@@ -1066,6 +1133,9 @@ pub struct App {
     /// Whether LSP diagnostics are currently enabled. Mirrors the config file
     /// `[lsp].enabled` setting. Toggled at runtime via `/lsp on|off`.
     pub lsp_enabled: bool,
+    /// Derived title for the current session shown in the composer border.
+    /// Updated when `EngineEvent::SessionUpdated` fires or a saved session is loaded.
+    pub session_title: Option<String>,
 }
 
 /// Message queued while the engine is busy.
@@ -1163,6 +1233,14 @@ impl std::ops::DerefMut for App {
 
 // === App State ===
 
+fn default_composer_arrows_scroll(use_mouse_capture: bool) -> bool {
+    default_composer_arrows_scroll_for_platform(use_mouse_capture, cfg!(windows))
+}
+
+fn default_composer_arrows_scroll_for_platform(use_mouse_capture: bool, is_windows: bool) -> bool {
+    is_windows || !use_mouse_capture
+}
+
 impl App {
     /// Cap on the session turn-cache history. Holds enough turns to debug a long
     /// session without being so large the on-screen `/cache` table wraps.
@@ -1214,13 +1292,8 @@ impl App {
             initial_input,
         } = options;
 
-        let mut provider = config.api_provider();
-
-        // Check if API key exists
-        let needs_api_key = !has_api_key(config);
-        let api_key_env_only = crate::config::active_provider_uses_env_only_api_key(config);
-        let was_onboarded = crate::tui::onboarding::is_onboarded();
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
+        let mut provider = config.api_provider();
 
         // Let settings override the config provider so runtime switches survive restarts.
         if let Some(ref provider_str) = settings.default_provider
@@ -1228,16 +1301,29 @@ impl App {
         {
             provider = parsed;
         }
+        let mut effective_auth_config = config.clone();
+        effective_auth_config.provider = Some(provider.as_str().to_string());
+
+        // Check if the effective provider has an API key. This must happen
+        // after settings.default_provider is applied; otherwise a saved
+        // third-party provider can be pushed back into DeepSeek onboarding.
+        let needs_api_key = !has_api_key(&effective_auth_config);
+        let api_key_env_only =
+            crate::config::active_provider_uses_env_only_api_key(&effective_auth_config);
+        let was_onboarded = crate::tui::onboarding::is_onboarded();
         let auto_compact = settings.auto_compact;
         let calm_mode = settings.calm_mode;
         let low_motion = settings.low_motion;
         let fancy_animations = settings.fancy_animations;
+        let synchronized_output_enabled = settings.synchronized_output_enabled();
         let status_indicator = settings.status_indicator.clone();
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
         let ui_locale = resolve_locale(&settings.locale);
-        let cost_currency =
-            CostCurrency::from_setting(&settings.cost_currency).unwrap_or(CostCurrency::Usd);
+        let cost_currency = match (settings.cost_currency.as_str(), ui_locale.tag()) {
+            ("usd", "zh-Hans") => CostCurrency::Cny,
+            _ => CostCurrency::from_setting(&settings.cost_currency).unwrap_or(CostCurrency::Usd),
+        };
         let composer_density = ComposerDensity::from_setting(&settings.composer_density);
         let composer_border = settings.composer_border;
         let composer_vim_enabled = settings
@@ -1249,7 +1335,12 @@ impl App {
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
         let max_input_history = settings.max_input_history;
         let use_paste_burst_detection = settings.paste_burst_detection;
-        let mut ui_theme = palette::UiTheme::detect();
+        // Resolve the named theme from settings; unknown values were already
+        // normalised to "system" in Settings::load. The background_color
+        // setting still overlays on top.
+        let theme_id =
+            palette::ThemeId::from_name(&settings.theme).unwrap_or(palette::ThemeId::System);
+        let mut ui_theme = theme_id.ui_theme();
         if let Some(background) = settings
             .background_color
             .as_deref()
@@ -1336,21 +1427,7 @@ impl App {
         // Initialize plan state
         let plan_state = new_shared_plan_state();
 
-        let agents_skills_dir = workspace.join(".agents").join("skills");
-        let local_skills_dir = workspace.join("skills");
-        let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
-        let skills_dir = if agents_skills_dir.exists() {
-            agents_skills_dir
-        } else if local_skills_dir.exists() {
-            local_skills_dir
-        } else if config.skills_dir.is_none()
-            && let Some(global_agents) = agents_global_skills_dir
-            && global_agents.exists()
-        {
-            global_agents
-        } else {
-            global_skills_dir
-        };
+        let skills_dir = resolve_skills_dir(&workspace, &global_skills_dir, config);
         let cached_skills = Self::discover_cached_skills(&workspace);
 
         let input_history = crate::composer_history::load_history();
@@ -1425,6 +1502,7 @@ impl App {
             calm_mode,
             low_motion,
             fancy_animations,
+            synchronized_output_enabled,
             status_indicator,
             show_thinking,
             verbose_transcript: false,
@@ -1449,6 +1527,7 @@ impl App {
             pending_subagent_dispatch: None,
             agent_activity_started_at: None,
             ui_theme,
+            theme_id,
             onboarding,
             onboarding_needs_api_key: needs_api_key,
             onboarding_workspace_trust_gate,
@@ -1475,6 +1554,7 @@ impl App {
             current_session_id: None,
             session_artifacts: Vec::new(),
             trust_mode: initial_mode == AppMode::Yolo,
+            translation_enabled: false,
             status_items: config
                 .tui
                 .as_ref()
@@ -1509,6 +1589,7 @@ impl App {
             active_cell: None,
             active_cell_revision: 0,
             active_tool_details: HashMap::new(),
+            active_tool_entry_completed_at: HashMap::new(),
             exploring_cell: None,
             exploring_entries: HashMap::new(),
             ignored_tool_calls: HashSet::new(),
@@ -1543,6 +1624,10 @@ impl App {
             quit_armed_until: None,
             cycle_count: 0,
             cycle_briefings: Vec::new(),
+            prefix_change_count: 0,
+            prefix_checks_total: 0,
+            prefix_stability_pct: None,
+            last_prefix_change_desc: None,
             cycle: CycleConfig::default(),
             collapsed_cells: HashSet::new(),
             collapsed_cell_map: Vec::new(),
@@ -1552,7 +1637,8 @@ impl App {
                 .tui
                 .as_ref()
                 .and_then(|tui| tui.composer_arrows_scroll)
-                .unwrap_or(!use_mouse_capture),
+                .unwrap_or_else(|| default_composer_arrows_scroll(use_mouse_capture)),
+            session_title: None,
         }
     }
 
@@ -1770,6 +1856,17 @@ impl App {
         self.session.subagent_cost += estimate.usd;
         self.session.subagent_cost_cny += estimate.cny;
         self.refresh_displayed_cost_high_water();
+    }
+
+    /// Copy current session/subagent cost accumulators into session metadata
+    /// for persistence.
+    pub fn sync_cost_to_metadata(&self, metadata: &mut crate::session_manager::SessionMetadata) {
+        metadata.cost.session_cost_usd = self.session.session_cost;
+        metadata.cost.session_cost_cny = self.session.session_cost_cny;
+        metadata.cost.subagent_cost_usd = self.session.subagent_cost;
+        metadata.cost.subagent_cost_cny = self.session.subagent_cost_cny;
+        metadata.cost.displayed_cost_high_water_usd = self.session.displayed_cost_high_water;
+        metadata.cost.displayed_cost_high_water_cny = self.session.displayed_cost_high_water_cny;
     }
 
     /// Recompute the displayed cost high-water mark. Called any time a cost
@@ -2290,6 +2387,7 @@ impl App {
             self.exploring_cell = None;
             self.exploring_entries.clear();
             self.active_tool_details.clear();
+            self.active_tool_entry_completed_at.clear();
             self.streaming_thinking_active_entry = None;
             self.bump_active_cell_revision();
             return;
@@ -2305,6 +2403,7 @@ impl App {
         let base_index = self.history.len();
 
         let mut details = std::mem::take(&mut self.active_tool_details);
+        self.active_tool_entry_completed_at.clear();
         for (tool_id, detail) in details.drain() {
             self.tool_details_by_cell
                 .entry(self.tool_cells.get(&tool_id).copied().unwrap_or(base_index))
@@ -2575,10 +2674,12 @@ impl App {
 
     /// Handle terminal resize event.
     pub fn handle_resize(&mut self, _width: u16, _height: u16) {
+        let preserved_scroll = (!self.viewport.transcript_scroll.is_at_tail())
+            .then_some(self.viewport.last_transcript_top);
         self.viewport.transcript_cache = TranscriptViewCache::new();
 
-        if !self.viewport.transcript_scroll.is_at_tail() {
-            self.viewport.transcript_scroll = TranscriptScroll::to_bottom();
+        if let Some(top) = preserved_scroll {
+            self.viewport.transcript_scroll = TranscriptScroll::at_line(top);
         }
 
         self.viewport.pending_scroll_delta = 0;
@@ -3571,7 +3672,7 @@ impl App {
         // sees the @mention in the composer before submission.
         self.consolidate_large_input_if_oversized();
         let input = self.input.clone();
-        if !input.starts_with('/') {
+        if !looks_like_slash_command_input(&input) {
             self.input_history.push(input.clone());
             if self.max_input_history == 0 {
                 self.input_history.clear();
@@ -3980,6 +4081,8 @@ pub enum AppAction {
     OpenStatusPicker,
     /// Open the `/feedback` picker for GitHub issue/security destinations.
     OpenFeedbackPicker,
+    /// Open the `/theme` picker modal with live preview of every preset.
+    OpenThemePicker,
     /// Open an external URL in the system browser.
     OpenExternalUrl {
         url: String,
@@ -3987,19 +4090,6 @@ pub enum AppAction {
     },
     /// Send a message to the AI (normal chat mode).
     SendMessage(String),
-    /// Run a Recursive Language Model (RLM) turn — Algorithm 1 from
-    /// Zhang et al. (arXiv:2512.24601). The prompt is stored in the REPL;
-    /// the root LLM only sees metadata.
-    Rlm {
-        /// The user's prompt — stored in REPL, NOT in LLM context.
-        prompt: String,
-        /// Model for the root LLM.
-        model: String,
-        /// Model for sub-LLM (llm_query) calls.
-        child_model: String,
-        /// Recursion budget for `sub_rlm()` calls.
-        max_depth: u32,
-    },
     ListSubAgents,
     FetchModels,
     CacheWarmup,
@@ -4031,6 +4121,10 @@ pub enum AppAction {
         /// Profile name to load.
         profile: String,
     },
+    /// Switch the workspace used by tools, hooks, tasks, and session metadata.
+    SwitchWorkspace {
+        workspace: PathBuf,
+    },
     /// Export and share the current session as a web URL.
     ShareSession {
         history_len: usize,
@@ -4057,6 +4151,7 @@ pub enum ShellJobAction {
     Cancel {
         id: String,
     },
+    CancelAll,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4090,10 +4185,12 @@ pub enum McpUiAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::config::{ApiProvider, Config, ProviderConfig, ProvidersConfig};
+    use crate::test_support::lock_test_env;
     use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
     use crate::tools::todo::TodoStatus;
     use crate::tui::clipboard::PastedImage;
+    use std::ffi::OsString;
 
     fn test_options(yolo: bool) -> TuiOptions {
         TuiOptions {
@@ -4111,7 +4208,9 @@ mod tests {
             notes_path: PathBuf::from("notes.txt"),
             mcp_config_path: PathBuf::from("mcp.json"),
             use_memory: false,
-            start_in_agent_mode: yolo,
+            // Keep unit tests independent from the developer's saved
+            // `default_mode` setting.
+            start_in_agent_mode: true,
             skip_onboarding: false,
             yolo,
             resume_session_id: None,
@@ -4120,9 +4219,126 @@ mod tests {
     }
 
     #[test]
+    fn composer_arrows_scroll_default_is_true_without_mouse_capture() {
+        assert!(default_composer_arrows_scroll_for_platform(false, false));
+    }
+
+    #[test]
+    fn composer_arrows_scroll_default_is_false_with_mouse_capture_on_non_windows() {
+        assert!(!default_composer_arrows_scroll_for_platform(true, false));
+    }
+
+    #[test]
+    fn composer_arrows_scroll_default_is_true_on_windows_even_with_mouse_capture() {
+        assert!(default_composer_arrows_scroll_for_platform(true, true));
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe { std::env::remove_var(key) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.as_ref() {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    #[test]
     fn test_trust_mode_follows_yolo_on_startup() {
         let app = App::new(test_options(true), &Config::default());
         assert!(app.trust_mode);
+    }
+
+    #[test]
+    fn settings_default_provider_auth_check_uses_provider_scoped_key() {
+        let _lock = lock_test_env();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            tmp.path().join("settings.toml"),
+            "default_provider = \"openai\"\n",
+        )
+        .expect("settings");
+        let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+        let _deepseek_key = EnvVarGuard::remove("DEEPSEEK_API_KEY");
+        let _openai_key = EnvVarGuard::remove("OPENAI_API_KEY");
+
+        let config = Config {
+            providers: Some(ProvidersConfig {
+                openai: ProviderConfig {
+                    api_key: Some("openai-config-key".to_string()),
+                    ..ProviderConfig::default()
+                },
+                ..ProvidersConfig::default()
+            }),
+            ..Config::default()
+        };
+
+        let app = App::new(test_options(false), &config);
+
+        assert_eq!(app.api_provider, ApiProvider::Openai);
+        assert!(
+            !app.onboarding_needs_api_key,
+            "OpenAI provider config key should satisfy startup auth without a DeepSeek key"
+        );
+        assert_ne!(app.onboarding, OnboardingState::ApiKey);
+        assert!(!app.api_key_env_only);
+    }
+
+    #[test]
+    fn sidebar_focus_accepts_work_and_maps_legacy_trackers_to_work() {
+        assert_eq!(SidebarFocus::from_setting("auto"), SidebarFocus::Auto);
+        assert_eq!(SidebarFocus::from_setting("work"), SidebarFocus::Work);
+        assert_eq!(SidebarFocus::from_setting("plan"), SidebarFocus::Work);
+        assert_eq!(SidebarFocus::from_setting("todos"), SidebarFocus::Work);
+        assert_eq!(SidebarFocus::from_setting("tasks"), SidebarFocus::Tasks);
+        assert_eq!(SidebarFocus::from_setting("agents"), SidebarFocus::Agents);
+        assert_eq!(SidebarFocus::from_setting("context"), SidebarFocus::Context);
+        assert_eq!(SidebarFocus::from_setting("hidden"), SidebarFocus::Hidden);
+        assert_eq!(SidebarFocus::from_setting("off"), SidebarFocus::Hidden);
+        assert_eq!(SidebarFocus::Work.as_setting(), "work");
+        assert_eq!(SidebarFocus::Hidden.as_setting(), "hidden");
+    }
+
+    #[test]
+    fn slash_command_classifier_treats_absolute_path_as_message() {
+        assert!(looks_like_slash_command_input("/"));
+        assert!(looks_like_slash_command_input("/help"));
+        assert!(looks_like_slash_command_input("/model deepseek-v4-pro"));
+        assert!(!looks_like_slash_command_input(
+            "/usr/lib/x86_64-linux-gnu/ 是标准路径吗？"
+        ));
+    }
+
+    #[test]
+    fn submit_input_records_absolute_slash_path_as_message_history() {
+        let mut app = App::new(test_options(false), &Config::default());
+        let input = "/usr/lib/x86_64-linux-gnu/ 是标准路径吗？";
+        app.input = input.to_string();
+        app.cursor_position = input.chars().count();
+
+        let submitted = app.submit_input().expect("expected submitted input");
+
+        assert_eq!(submitted, input);
+        assert_eq!(app.input_history.last().map(String::as_str), Some(input));
     }
 
     #[test]
@@ -4178,11 +4394,103 @@ mod tests {
         assert_eq!(app.input, "Size 12;34M");
     }
 
+    // initial_onboarding_state tests
+    // These pin the logic that decides whether the TUI shows the
+    // onboarding flow (Welcome → Language → ApiKey → …) or goes
+    // straight to the chat view.  Getting this wrong either locks
+    // first-run users out of the API-key prompt or nags returning
+    // users whose key is already configured.
+
+    #[test]
+    fn skip_onboarding_suppresses_all_onboarding_states() {
+        assert_eq!(
+            initial_onboarding_state(true, false, true, true),
+            OnboardingState::None
+        );
+        assert_eq!(
+            initial_onboarding_state(true, true, true, true),
+            OnboardingState::None
+        );
+    }
+
+    #[test]
+    fn fully_configured_returning_user_skips_onboarding() {
+        assert_eq!(
+            initial_onboarding_state(false, true, false, false),
+            OnboardingState::None
+        );
+    }
+
+    #[test]
+    fn returning_user_missing_api_key_goes_to_api_key_screen() {
+        assert_eq!(
+            initial_onboarding_state(false, true, true, false),
+            OnboardingState::ApiKey
+        );
+        // workspace trust doesn't affect the api-key gate
+        assert_eq!(
+            initial_onboarding_state(false, true, true, true),
+            OnboardingState::ApiKey
+        );
+    }
+
+    #[test]
+    fn first_run_user_always_starts_at_welcome() {
+        assert_eq!(
+            initial_onboarding_state(false, false, false, false),
+            OnboardingState::Welcome
+        );
+        assert_eq!(
+            initial_onboarding_state(false, false, true, false),
+            OnboardingState::Welcome
+        );
+        assert_eq!(
+            initial_onboarding_state(false, false, false, true),
+            OnboardingState::Welcome
+        );
+    }
+
+    #[test]
+    fn onboarding_workspace_trust_gate_only_fires_for_onboarded_user() {
+        assert!(onboarding_is_workspace_trust_gate(false, true, false, true));
+        assert!(!onboarding_is_workspace_trust_gate(true, true, false, true));
+        assert!(!onboarding_is_workspace_trust_gate(false, true, true, true));
+        assert!(!onboarding_is_workspace_trust_gate(
+            false, false, false, true
+        ));
+    }
+
     #[test]
     fn onboarded_user_still_gets_workspace_trust_prompt_when_needed() {
         assert_eq!(
             initial_onboarding_state(false, true, false, true),
             OnboardingState::TrustDirectory
+        );
+    }
+
+    // App::new tests: missing key is detected
+
+    #[test]
+    fn app_new_detects_missing_api_key_with_default_config() {
+        // Config::default() carries no api_key and the test runner
+        // should not have DEEPSEEK_API_KEY in its environment.
+        let app = App::new(test_options(false), &Config::default());
+        assert!(
+            app.onboarding_needs_api_key,
+            "default config (no key) must set onboarding_needs_api_key"
+        );
+    }
+
+    #[test]
+    fn app_new_with_explicit_api_key_does_not_trigger_onboarding() {
+        let config = Config {
+            api_key: Some("sk-test-onboarding-key".to_string()),
+            ..Config::default()
+        };
+        let app = App::new(test_options(false), &config);
+        assert!(
+            !app.onboarding_needs_api_key,
+            "explicit config.api_key must satisfy the onboarding check"
         );
     }
 
@@ -4405,7 +4713,6 @@ mod tests {
     #[test]
     fn test_cycle_mode_transitions() {
         let mut app = App::new(test_options(false), &Config::default());
-        // Default mode should be Agent based on settings
         let initial_mode = app.mode;
         app.cycle_mode();
         // Mode should have changed
@@ -4560,6 +4867,32 @@ mod tests {
         // Just verify scroll methods can be called without panic
         app.scroll_up(5);
         app.scroll_down(3);
+    }
+
+    #[test]
+    fn resize_preserves_scrolled_transcript_position() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.viewport.transcript_scroll = TranscriptScroll::at_line(42);
+        app.viewport.last_transcript_top = 42;
+        app.viewport.pending_scroll_delta = 5;
+
+        app.handle_resize(120, 40);
+
+        let meta = vec![TranscriptLineMeta::Spacer; 240];
+        let (_, top) = app.viewport.transcript_scroll.resolve_top(&meta, 200);
+        assert_eq!(top, 42);
+        assert_eq!(app.viewport.pending_scroll_delta, 0);
+    }
+
+    #[test]
+    fn resize_keeps_tail_state_when_user_was_at_tail() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.viewport.transcript_scroll = TranscriptScroll::to_bottom();
+        app.viewport.last_transcript_top = 42;
+
+        app.handle_resize(120, 40);
+
+        assert!(app.viewport.transcript_scroll.is_at_tail());
     }
 
     #[test]

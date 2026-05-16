@@ -438,17 +438,21 @@ fn render_line_with_links(
 
     // Flatten inline tokens into (word, style) pairs preserving inter-token spaces.
     let tokens = parse_inline_spans(line, base_style, link_style);
-    let mut words: Vec<(String, Style)> = Vec::new();
-    for (text, style) in tokens {
+    let mut words: Vec<InlineToken> = Vec::new();
+    for token in tokens {
         let mut first = true;
-        for part in text.split(' ') {
+        for part in token.text.split(' ') {
             if !first {
                 // The space consumed by split — attach as a plain space word
                 // so the wrap loop can decide whether to keep or break it.
-                words.push((" ".to_string(), style));
+                words.push(InlineToken::new(" ".to_string(), token.style, None));
             }
             if !part.is_empty() {
-                words.push((part.to_string(), style));
+                words.push(InlineToken::new(
+                    part.to_string(),
+                    token.style,
+                    token.link_url.clone(),
+                ));
             }
             first = false;
         }
@@ -458,9 +462,9 @@ fn render_line_with_links(
     let mut current_spans: Vec<Span> = Vec::new();
     let mut current_width = 0usize;
 
-    for (word, style) in words {
-        let ww = word.width();
-        if word == " " {
+    for word in words {
+        let ww = word.text.width();
+        if word.text == " " {
             // Space: emit only if we're mid-line and it fits; otherwise drop
             // (it's a potential wrap point, not content).
             if !current_spans.is_empty() && current_width < width {
@@ -490,20 +494,17 @@ fn render_line_with_links(
             // current line so the next word can pack onto it.
             let mut chunk = String::new();
             let mut chunk_w = 0usize;
-            for ch in word.chars() {
+            for ch in word.text.chars() {
                 let cw = ch.width().unwrap_or(1);
                 if chunk_w + cw > width && chunk_w > 0 {
-                    lines.push(Line::from(vec![Span::styled(
-                        std::mem::take(&mut chunk),
-                        style,
-                    )]));
+                    lines.push(Line::from(vec![word.span_for(std::mem::take(&mut chunk))]));
                     chunk_w = 0;
                 }
                 chunk.push(ch);
                 chunk_w += cw;
             }
             if !chunk.is_empty() {
-                current_spans.push(Span::styled(chunk, style));
+                current_spans.push(word.span_for(chunk));
                 current_width = chunk_w;
             }
             continue;
@@ -520,7 +521,7 @@ fn render_line_with_links(
             current_spans = Vec::new();
             current_width = 0;
         }
-        current_spans.push(Span::styled(word, style));
+        current_spans.push(word.into_span());
         current_width += ww;
     }
 
@@ -533,9 +534,47 @@ fn render_line_with_links(
     lines
 }
 
+#[derive(Clone)]
+struct InlineToken {
+    text: String,
+    style: Style,
+    link_url: Option<String>,
+}
+
+impl InlineToken {
+    fn new(text: String, style: Style, link_url: Option<String>) -> Self {
+        Self {
+            text,
+            style,
+            link_url,
+        }
+    }
+
+    fn span_for(&self, text: String) -> Span<'static> {
+        let content = match &self.link_url {
+            Some(url) if osc8::enabled() => osc8::wrap_link(url, &text),
+            _ => text,
+        };
+        Span::styled(content, self.style)
+    }
+
+    fn into_span(self) -> Span<'static> {
+        let Self {
+            text,
+            style,
+            link_url,
+        } = self;
+        let content = match link_url {
+            Some(url) if osc8::enabled() => osc8::wrap_link(&url, &text),
+            _ => text,
+        };
+        Span::styled(content, style)
+    }
+}
+
 /// Parse an entire line into (text, style) segments, handling **bold**,
 /// *italic*, `code`, ~~strikethrough~~, `[text](url)` links, and bare URLs.
-fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<(String, Style)> {
+fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<InlineToken> {
     let bold_style = base_style.add_modifier(Modifier::BOLD);
     let italic_style = base_style.add_modifier(Modifier::ITALIC);
     let code_style = base_style
@@ -549,14 +588,14 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<(
         // **bold**
         if let Some(end) = rest.strip_prefix("**").and_then(|s| s.find("**")) {
             let inner = &rest[2..2 + end];
-            out.push((inner.to_string(), bold_style));
+            out.push(InlineToken::new(inner.to_string(), bold_style, None));
             rest = &rest[2 + end + 2..];
             continue;
         }
         // __bold__
         if let Some(end) = rest.strip_prefix("__").and_then(|s| s.find("__")) {
             let inner = &rest[2..2 + end];
-            out.push((inner.to_string(), bold_style));
+            out.push(InlineToken::new(inner.to_string(), bold_style, None));
             rest = &rest[2 + end + 2..];
             continue;
         }
@@ -566,9 +605,15 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<(
             && let Some(end) = rest[1..].find('*')
         {
             let inner = &rest[1..1 + end];
-            out.push((inner.to_string(), italic_style));
-            rest = &rest[1 + end + 1..];
-            continue;
+            let after = &rest[1 + end + 1..];
+            // Closing delimiter must not be immediately followed by a
+            // letter, digit, or underscore (otherwise it's part of an
+            // identifier like `deepseek_tui`, not italic markup).
+            if !after.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+                out.push(InlineToken::new(inner.to_string(), italic_style, None));
+                rest = after;
+                continue;
+            }
         }
         // _italic_
         if rest.starts_with('_')
@@ -576,21 +621,26 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<(
             && let Some(end) = rest[1..].find('_')
         {
             let inner = &rest[1..1 + end];
-            out.push((inner.to_string(), italic_style));
-            rest = &rest[1 + end + 1..];
-            continue;
+            let after = &rest[1 + end + 1..];
+            // Closing delimiter must not be immediately followed by a
+            // letter, digit, or underscore.
+            if !after.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+                out.push(InlineToken::new(inner.to_string(), italic_style, None));
+                rest = after;
+                continue;
+            }
         }
         // `inline code`
         if let Some(end) = rest.strip_prefix('`').and_then(|s| s.find('`')) {
             let inner = &rest[1..1 + end];
-            out.push((inner.to_string(), code_style));
+            out.push(InlineToken::new(inner.to_string(), code_style, None));
             rest = &rest[1 + end + 1..];
             continue;
         }
         // ~~strikethrough~~
         if let Some(end) = rest.strip_prefix("~~").and_then(|s| s.find("~~")) {
             let inner = &rest[2..2 + end];
-            out.push((inner.to_string(), strike_style));
+            out.push(InlineToken::new(inner.to_string(), strike_style, None));
             rest = &rest[2 + end + 2..];
             continue;
         }
@@ -604,12 +654,19 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<(
                 && let Some(paren_end) = after_bracket.find(')')
             {
                 let url = &after_bracket[1..paren_end];
-                let content = if osc8::enabled() {
-                    osc8::wrap_link(url, text)
+                if osc8::enabled() {
+                    out.push(InlineToken::new(
+                        text.to_string(),
+                        link_style,
+                        Some(url.to_string()),
+                    ));
                 } else {
-                    format!("{text} ({url})")
-                };
-                out.push((content, link_style));
+                    out.push(InlineToken::new(
+                        format!("{text} ({url})"),
+                        link_style,
+                        None,
+                    ));
+                }
                 rest = &after_bracket[paren_end + 1..];
                 continue;
             }
@@ -618,18 +675,21 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<(
         if rest.starts_with("http://") || rest.starts_with("https://") {
             let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
             let url = &rest[..end];
-            let content = if osc8::enabled() {
-                osc8::wrap_link(url, url)
+            if osc8::enabled() {
+                out.push(InlineToken::new(
+                    url.to_string(),
+                    link_style,
+                    Some(url.to_string()),
+                ));
             } else {
-                url.to_string()
-            };
-            out.push((content, link_style));
+                out.push(InlineToken::new(url.to_string(), link_style, None));
+            }
             rest = &rest[end..];
             continue;
         }
         // Plain text: consume until next marker or URL; always advance at least 1 char.
         let next = find_next_marker(rest).max(rest.chars().next().map_or(1, |c| c.len_utf8()));
-        out.push((rest[..next].to_string(), base_style));
+        out.push(InlineToken::new(rest[..next].to_string(), base_style, None));
         rest = &rest[next..];
     }
     out
@@ -748,12 +808,11 @@ fn render_table_row(cells: &[String], width: usize, base_style: Style) -> Vec<Li
         let mut spans: Vec<Span> = vec![Span::styled("│ ".to_string(), sep_style)];
         for (i, cell_segments) in wrapped.iter().enumerate() {
             let segment = cell_segments.get(row).map(String::as_str).unwrap_or("");
-            let cell_spans: Vec<(String, Style)> =
-                parse_inline_spans(segment, base_style, link_style());
-            let cell_width: usize = cell_spans.iter().map(|(t, _)| t.width()).sum();
+            let cell_spans = parse_inline_spans(segment, base_style, link_style());
+            let cell_width: usize = cell_spans.iter().map(|token| token.text.width()).sum();
             let pad = col_width.saturating_sub(cell_width);
-            for (text, style) in cell_spans {
-                spans.push(Span::styled(text, style));
+            for token in cell_spans {
+                spans.push(token.into_span());
             }
             spans.push(Span::raw(" ".repeat(pad)));
             if i + 1 < cells.len() {
@@ -986,6 +1045,39 @@ mod tests {
     use ratatui::style::Style;
 
     #[test]
+    fn underscores_inside_identifiers_render_as_literal_text() {
+        // Regression for PR #1455 / @tiger-dog: previously the inline
+        // markdown parser ate the underscore in `deepseek_tui` because
+        // it matched the `_italic_` pattern without a CommonMark-style
+        // boundary check. The closing `_` followed by `t` (a letter)
+        // must now be treated as part of the identifier, not as
+        // markup. The same rule applies to `*` so identifiers like
+        // `crate*foo` round-trip cleanly.
+        let cases = [
+            "crate deepseek_tui handles approvals",
+            "see foo_bar_baz for details",
+            "look at *not_emphasised*tail",
+        ];
+        for source in cases {
+            let parsed = parse(source);
+            let rendered: String = render_parsed(&parsed, 80, Style::default())
+                .iter()
+                .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+                .collect();
+            // The original identifier (with underscores intact) must
+            // appear in the rendered output. We don't assert on style
+            // here — that's an implementation detail; we assert on
+            // the user-visible character sequence.
+            for token in source.split_whitespace().filter(|t| t.contains('_')) {
+                assert!(
+                    rendered.contains(token),
+                    "identifier {token:?} must survive markdown rendering of {source:?}; got {rendered:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn render_markdown_matches_parse_then_render() {
         // Both calls run in the same thread under the same OSC8 lock so the
         // flag is identical for both paths.
@@ -1154,8 +1246,12 @@ mod tests {
     /// value. We serialize through a static mutex because `osc8::ENABLED` is
     /// process-wide state and other tests touching it would race otherwise.
     fn render_with_osc8(enabled: bool, source: &str) -> String {
+        render_with_osc8_width(enabled, source, 80)
+    }
+
+    fn render_with_osc8_width(enabled: bool, source: &str, width: u16) -> String {
         with_osc8(enabled, || {
-            render_markdown(source, 80, Style::default())
+            render_markdown(source, width, Style::default())
                 .iter()
                 .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
                 .collect::<String>()
@@ -1179,6 +1275,24 @@ mod tests {
         assert!(
             joined.contains("\x1b]8;;https://example.com\x1b\\https://example.com\x1b]8;;\x1b\\"),
             "expected OSC 8 wrapper around URL; got {joined:?}"
+        );
+    }
+
+    #[test]
+    fn wrapped_osc_8_url_chunks_keep_full_link_target() {
+        let url = "https://raw.githubusercontent.com/Hmbown/deepseek-skills/main/index.json";
+        let joined = render_with_osc8_width(true, url, 34);
+        let full_target = format!("\x1b]8;;{url}\x1b\\");
+
+        assert!(
+            joined.matches(&full_target).count() > 1,
+            "expected each wrapped URL chunk to reopen the full OSC 8 target; got {joined:?}"
+        );
+        assert!(
+            !joined.contains(
+                "\x1b]8;;https://raw.githubusercontent.com/Hmbown/deepseek-skills/main/inde\x1b\\"
+            ),
+            "wrapped link must not expose a truncated OSC 8 target: {joined:?}"
         );
     }
 
@@ -1376,7 +1490,9 @@ mod tests {
     }
 
     fn render_paragraph_for_test(text: &str, width: usize) -> Vec<Line<'static>> {
-        render_line_with_links(text, width, Style::default(), Style::default())
+        with_osc8(false, || {
+            render_line_with_links(text, width, Style::default(), Style::default())
+        })
     }
 
     #[test]

@@ -142,7 +142,6 @@ const ALLOW_INSECURE_HTTP_ENV: &str = "DEEPSEEK_ALLOW_INSECURE_HTTP";
 pub(super) const SSE_BACKPRESSURE_HIGH_WATERMARK: usize = 8 * 1024 * 1024; // 8 MB
 pub(super) const SSE_BACKPRESSURE_SLEEP_MS: u64 = 10;
 pub(super) const SSE_MAX_LINES_PER_CHUNK: usize = 256;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionState {
     Healthy,
@@ -573,6 +572,62 @@ fn build_default_headers(
 }
 
 impl DeepSeekClient {
+    /// Translate text to the requested target language using a focused
+    /// non-streaming chat completion call on the supplied model.
+    ///
+    /// This is a lightweight translation service — no tool calls, no
+    /// streaming, no conversation history. The dedicated translation agent
+    /// receives the source text and returns only the translated result.
+    pub async fn translate(
+        &self,
+        text: &str,
+        model: &str,
+        target_language: &str,
+    ) -> Result<String> {
+        let url = api_url(&self.base_url, "chat/completions");
+        let mut body = serde_json::json!({
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": format!(
+                        "You are a professional translator. Your ONLY task is to translate text to {target_language}. \
+                         Rules:\n\
+                         1. Output ONLY the translation, nothing else — no explanations, no notes, no quotes.\n\
+                         2. Preserve all code blocks (```...```), URLs, file paths, command names, \
+                         and technical terms like API names, function names, and library names untranslated.\n\
+                         3. Keep Markdown formatting (headings, lists, bold, italics, links) intact.\n\
+                         4. Translate all natural-language prose naturally and professionally.\n\
+                         5. Do NOT add any prefix, suffix, or commentary.\n\
+                         6. If the input is already in {target_language} or contains no prose to translate, \
+                         return it as-is."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": text
+                }
+            ],
+            "max_tokens": 4096,
+            "temperature": 0.1,
+            "stream": false
+        });
+        apply_reasoning_effort(&mut body, Some("off"), self.api_provider);
+
+        let response = self
+            .send_with_retry(|| self.http_client.post(&url).json(&body))
+            .await?;
+
+        let value: serde_json::Value = response.json().await?;
+        let translated = value["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("translate: unexpected API response shape"))?
+            .trim()
+            .to_string();
+
+        Ok(translated)
+    }
+
     /// List available models from the provider.
     pub async fn list_models(&self) -> Result<Vec<AvailableModel>> {
         let url = api_url(&self.base_url, "models");
@@ -832,12 +887,25 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::DeepseekCN
             | ApiProvider::Openrouter
             | ApiProvider::Novita
-            | ApiProvider::Fireworks
-            | ApiProvider::Sglang
-            | ApiProvider::Vllm => {
+            | ApiProvider::Sglang => {
                 body["thinking"] = json!({ "type": "disabled" });
             }
-            ApiProvider::Openai | ApiProvider::Ollama => {}
+            ApiProvider::Fireworks => {}
+            // vLLM is an OpenAI-protocol server, not an Anthropic-protocol one.
+            // For Qwen3 / DeepSeek-R1 / other reasoning models hosted via vLLM,
+            // the canonical OpenAI extension to disable thinking is
+            // `chat_template_kwargs.enable_thinking`. The old
+            // `thinking: {type: disabled}` field is Anthropic-native and
+            // silently ignored by vLLM — the model still emits a full
+            // reasoning trace into the `reasoning` field (which this client
+            // doesn't surface), causing 10+ seconds of perceived "freeze"
+            // before the first content token (PR #1480 by @h3c-hexin).
+            ApiProvider::Vllm => {
+                body["chat_template_kwargs"] = json!({
+                    "enable_thinking": false,
+                });
+            }
+            ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": false,
@@ -849,13 +917,20 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::DeepseekCN
             | ApiProvider::Openrouter
             | ApiProvider::Novita
-            | ApiProvider::Fireworks
-            | ApiProvider::Sglang
-            | ApiProvider::Vllm => {
+            | ApiProvider::Sglang => {
                 body["reasoning_effort"] = json!("high");
                 body["thinking"] = json!({ "type": "enabled" });
             }
-            ApiProvider::Openai | ApiProvider::Ollama => {}
+            ApiProvider::Fireworks => {
+                body["reasoning_effort"] = json!("high");
+            }
+            ApiProvider::Vllm => {
+                body["chat_template_kwargs"] = json!({
+                    "enable_thinking": true,
+                });
+                body["reasoning_effort"] = json!("high");
+            }
+            ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": true,
@@ -868,13 +943,20 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::DeepseekCN
             | ApiProvider::Openrouter
             | ApiProvider::Novita
-            | ApiProvider::Fireworks
-            | ApiProvider::Sglang
-            | ApiProvider::Vllm => {
+            | ApiProvider::Sglang => {
                 body["reasoning_effort"] = json!("max");
                 body["thinking"] = json!({ "type": "enabled" });
             }
-            ApiProvider::Openai | ApiProvider::Ollama => {}
+            ApiProvider::Fireworks => {
+                body["reasoning_effort"] = json!("max");
+            }
+            ApiProvider::Vllm => {
+                body["chat_template_kwargs"] = json!({
+                    "enable_thinking": true,
+                });
+                body["reasoning_effort"] = json!("max");
+            }
+            ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": true,
@@ -1007,7 +1089,8 @@ pub(crate) fn build_cache_warmup_request(request: &MessageRequest) -> MessageReq
 mod tests {
     use super::*;
     use crate::client::chat::{
-        build_chat_messages, build_chat_messages_for_request, count_reasoning_replay_chars,
+        build_chat_messages, build_chat_messages_for_request,
+        build_chat_messages_for_request_and_provider, count_reasoning_replay_chars,
         parse_chat_message, parse_sse_chunk, sanitize_thinking_mode_messages, tool_to_chat,
         tool_to_chat_for_base_url,
     };
@@ -1177,6 +1260,62 @@ mod tests {
             assistant.get("reasoning_content").and_then(Value::as_str),
             Some("plan"),
             "thinking-mode models keep reasoning_content while still in the current turn"
+        );
+    }
+
+    #[test]
+    fn generic_openai_provider_drops_deepseek_reasoning_content() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "plan".to_string(),
+                    },
+                    ContentBlock::Text {
+                        text: "done".to_string(),
+                        cache_control: None,
+                    },
+                ],
+            }],
+            max_tokens: 16,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some("max".to_string()),
+            stream: None,
+            temperature: None,
+            top_p: None,
+        };
+
+        let deepseek =
+            build_chat_messages_for_request_and_provider(&request, ApiProvider::Deepseek);
+        let native_assistant = deepseek
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+        assert_eq!(
+            native_assistant
+                .get("reasoning_content")
+                .and_then(Value::as_str),
+            Some("plan")
+        );
+
+        let openai = build_chat_messages_for_request_and_provider(&request, ApiProvider::Openai);
+        let generic_assistant = openai
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+        assert_eq!(
+            generic_assistant.get("content").and_then(Value::as_str),
+            Some("done")
+        );
+        assert!(
+            generic_assistant.get("reasoning_content").is_none(),
+            "generic OpenAI-compatible providers reject DeepSeek-only reasoning_content (#1542)"
         );
     }
 
@@ -1674,7 +1813,7 @@ mod tests {
             ],
             max_tokens: 1024,
             system: Some(SystemPrompt::Text(
-                "Base policy\n\n<project_instructions source=\"AGENTS.md\">\nStable project rules\n</project_instructions>\n\n## Previous Session Handoff\n\nDynamic handoff"
+                "Base policy\n\n<project_instructions source=\"AGENTS.md\">\nStable project rules\n</project_instructions>\n\n## Previous Session Relay\n\nDynamic relay"
                     .to_string(),
             )),
             tools: None,
@@ -1710,7 +1849,7 @@ mod tests {
             .and_then(Value::as_str)
             .expect("warmup system prompt");
         assert!(system.contains("Stable project rules"));
-        assert!(!system.contains("Dynamic handoff"));
+        assert!(!system.contains("Dynamic relay"));
         assert!(
             !wire
                 .iter()
@@ -1780,6 +1919,21 @@ mod tests {
         assert!(
             body.pointer("/chat_template_kwargs/reasoning_effort")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_uses_openai_compatible_shape_for_fireworks() {
+        let mut body = json!({});
+        apply_reasoning_effort(&mut body, Some("max"), ApiProvider::Fireworks);
+
+        assert_eq!(
+            body.get("reasoning_effort").and_then(Value::as_str),
+            Some("max")
+        );
+        assert!(
+            body.get("thinking").is_none(),
+            "Fireworks strict-validates OpenAI-compatible requests and rejects top-level thinking"
         );
     }
 
@@ -1918,6 +2072,27 @@ mod tests {
                 Some(true)
             );
         }
+    }
+
+    #[test]
+    fn chat_tool_wire_shape_omits_anthropic_only_metadata() {
+        let tool = Tool {
+            tool_type: Some("function".to_string()),
+            name: "mcp_read_resource".to_string(),
+            description: "Read resource".to_string(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(false),
+            input_examples: Some(vec![json!({"uri": "file://example"})]),
+            strict: None,
+            cache_control: None,
+        };
+
+        let encoded = tool_to_chat_for_base_url(&tool, "https://api.fireworks.ai/inference/v1");
+
+        assert!(encoded.get("allowed_callers").is_none());
+        assert!(encoded.get("defer_loading").is_none());
+        assert!(encoded.get("input_examples").is_none());
     }
 
     #[test]
@@ -2451,9 +2626,13 @@ mod tests {
             ]
         });
 
-        let approx_tokens =
-            sanitize_thinking_mode_messages(&mut body, "deepseek-v4-pro", Some("max"))
-                .expect("multi-turn thinking-mode conversation should report replay tokens");
+        let approx_tokens = sanitize_thinking_mode_messages(
+            &mut body,
+            "deepseek-v4-pro",
+            Some("max"),
+            ApiProvider::Deepseek,
+        )
+        .expect("multi-turn thinking-mode conversation should report replay tokens");
         // ~4 chars/token; 46 bytes of reasoning -> 11 tokens.
         assert_eq!(approx_tokens, 11);
 
@@ -2486,7 +2665,12 @@ mod tests {
                 { "role": "user", "content": "hi" }
             ]
         });
-        let result = sanitize_thinking_mode_messages(&mut body, "deepseek-v4-flash", None);
+        let result = sanitize_thinking_mode_messages(
+            &mut body,
+            "deepseek-v4-flash",
+            None,
+            ApiProvider::Deepseek,
+        );
         // reasoning_effort is None → no thinking injection, result is None
         assert!(result.is_none());
     }
@@ -2509,11 +2693,52 @@ mod tests {
             ]
         });
 
-        sanitize_thinking_mode_messages(&mut body, "deepseek-v4-pro", Some("max"));
+        sanitize_thinking_mode_messages(
+            &mut body,
+            "deepseek-v4-pro",
+            Some("max"),
+            ApiProvider::Deepseek,
+        );
 
         let chars = count_reasoning_replay_chars(&body);
         // "(reasoning omitted)" is 19 bytes.
         assert_eq!(chars, 19);
+    }
+
+    #[test]
+    fn sanitize_thinking_mode_skips_generic_openai_provider() {
+        let mut body = json!({
+            "model": "deepseek-v4-pro",
+            "messages": [
+                { "role": "user", "content": "hi" },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{ "id": "1", "type": "function" }]
+                }
+            ]
+        });
+
+        let result = sanitize_thinking_mode_messages(
+            &mut body,
+            "deepseek-v4-pro",
+            Some("max"),
+            ApiProvider::Openai,
+        );
+
+        assert!(result.is_none());
+        let assistant = body["messages"]
+            .as_array()
+            .and_then(|messages| {
+                messages
+                    .iter()
+                    .find(|message| message["role"] == "assistant")
+            })
+            .expect("assistant message");
+        assert!(
+            assistant.get("reasoning_content").is_none(),
+            "generic OpenAI-compatible provider payload must not get reasoning_content (#1542)"
+        );
     }
 
     #[test]
@@ -2532,7 +2757,12 @@ mod tests {
             ]
         });
 
-        sanitize_thinking_mode_messages(&mut body, "deepseek-v4-pro", Some("max"));
+        sanitize_thinking_mode_messages(
+            &mut body,
+            "deepseek-v4-pro",
+            Some("max"),
+            ApiProvider::Deepseek,
+        );
 
         let messages = body["messages"].as_array().unwrap();
         let assistant = messages

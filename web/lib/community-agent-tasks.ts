@@ -1,6 +1,6 @@
 import { fetchFeed, fetchRepoStats } from "@/lib/github";
 import { curate } from "@/lib/deepseek";
-import { putDispatch } from "@/lib/kv";
+import { putDispatchWithKv } from "@/lib/kv";
 import {
   agentChat,
   TRIAGE_PROMPT,
@@ -12,6 +12,7 @@ import {
   hasFreshDraft,
   logUsage,
   type AgentDraft,
+  type DeepSeekEnv,
 } from "@/lib/community-agent";
 
 export interface AgentEnv {
@@ -22,11 +23,22 @@ export interface AgentEnv {
     delete(key: string): Promise<void>;
   };
   DEEPSEEK_API_KEY?: string;
+  DEEPSEEK_BASE_URL?: string;
+  DEEPSEEK_MODEL?: string;
   GITHUB_TOKEN?: string;
   CRON_SECRET?: string;
   GITHUB_REPO?: string;
   MAINTAINER_TOKEN?: string;
   MAINTAINER_GITHUB_PAT?: string;
+}
+
+const CRON_STATUS_TTL = 60 * 60 * 24 * 14;
+
+function dsEnv(env: AgentEnv): DeepSeekEnv {
+  return {
+    baseUrl: env.DEEPSEEK_BASE_URL ?? process.env.DEEPSEEK_BASE_URL,
+    model: env.DEEPSEEK_MODEL ?? process.env.DEEPSEEK_MODEL,
+  };
 }
 
 export async function runCurate(env: AgentEnv): Promise<Record<string, unknown>> {
@@ -38,11 +50,30 @@ export async function runCurate(env: AgentEnv): Promise<Record<string, unknown>>
       fetchRepoStats(env.GITHUB_TOKEN),
       fetchFeed(env.GITHUB_TOKEN, 30),
     ]);
-    const dispatch = await curate(env.DEEPSEEK_API_KEY, stats, feed);
-    await putDispatch(dispatch);
-    return { ok: true, headline: dispatch.headline };
+    const dispatch = await curate(env.DEEPSEEK_API_KEY, stats, feed, dsEnv(env));
+    await putDispatchWithKv(env.CURATED_KV, dispatch);
+    await env.CURATED_KV?.put(
+      "cron:curate:last",
+      JSON.stringify({
+        ok: true,
+        generatedAt: dispatch.generatedAt,
+        headline: dispatch.headline,
+      }),
+      { expirationTtl: CRON_STATUS_TTL }
+    );
+    return { ok: true, headline: dispatch.headline, stored: env.CURATED_KV ? "kv" : "memory" };
   } catch (e) {
-    return { ok: false, error: String(e) };
+    const error = String(e);
+    await env.CURATED_KV?.put(
+      "cron:curate:last",
+      JSON.stringify({
+        ok: false,
+        generatedAt: new Date().toISOString(),
+        error,
+      }),
+      { expirationTtl: CRON_STATUS_TTL }
+    );
+    return { ok: false, error };
   }
 }
 
@@ -84,7 +115,8 @@ export async function runTriage(env: AgentEnv): Promise<Record<string, unknown>>
         const { content, usage } = await agentChat(
           [{ role: "system", content: TRIAGE_PROMPT }, { role: "user", content: JSON.stringify(payload) }],
           env.DEEPSEEK_API_KEY!,
-          true
+          true,
+          dsEnv(env)
         );
         const parsed = JSON.parse(content) as { bodyEn: string; bodyZh: string };
         const draft: AgentDraft = {
@@ -166,7 +198,8 @@ export async function runPrReview(env: AgentEnv): Promise<Record<string, unknown
         const { content, usage } = await agentChat(
           [{ role: "system", content: PR_REVIEW_PROMPT }, { role: "user", content: JSON.stringify(payload) }],
           env.DEEPSEEK_API_KEY!,
-          true
+          true,
+          dsEnv(env)
         );
         const parsed = JSON.parse(content) as { bodyEn: string; bodyZh: string };
         const draft: AgentDraft = {
@@ -232,7 +265,8 @@ export async function runStale(env: AgentEnv): Promise<Record<string, unknown>> 
         const { content, usage } = await agentChat(
           [{ role: "system", content: STALE_PROMPT }, { role: "user", content: JSON.stringify(payload) }],
           env.DEEPSEEK_API_KEY!,
-          true
+          true,
+          dsEnv(env)
         );
         const parsed = JSON.parse(content) as { bodyEn: string; bodyZh: string };
         const draft: AgentDraft = {
@@ -290,7 +324,8 @@ export async function runDupes(env: AgentEnv): Promise<Record<string, unknown>> 
     const { content, usage } = await agentChat(
       [{ role: "system", content: DUPES_PROMPT }, { role: "user", content: JSON.stringify({ issues: openIssues }) }],
       env.DEEPSEEK_API_KEY!,
-      true
+      true,
+      dsEnv(env)
     );
 
     const parsed = JSON.parse(content) as { suggestions?: { targetNumber: number; duplicateNumber: number; reason: string; bodyEn: string; bodyZh: string }[] };
@@ -373,7 +408,8 @@ export async function runDigest(env: AgentEnv): Promise<Record<string, unknown>>
     const { content, usage } = await agentChat(
       [{ role: "system", content: DIGEST_PROMPT }, { role: "user", content: JSON.stringify(payload) }],
       env.DEEPSEEK_API_KEY!,
-      true
+      true,
+      dsEnv(env)
     );
 
     const parsed = JSON.parse(content) as { titleEn: string; titleZh: string; summaryEn: string; summaryZh: string; sections: { heading: string; items: string[] }[] };

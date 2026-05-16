@@ -204,6 +204,9 @@ impl From<&ArtifactRecord> for TranscriptArtifactRef {
 
 #[must_use]
 pub fn render_transcript_artifact_ref(reference: &TranscriptArtifactRef) -> String {
+    // The model sees several identifiers in this block. Keep a literal
+    // retrieve command next to them so it does not have to infer which
+    // field is accepted by `retrieve_tool_result`.
     format!(
         "[artifact: {tool}]\n\
          id:           {id}\n\
@@ -211,7 +214,8 @@ pub fn render_transcript_artifact_ref(reference: &TranscriptArtifactRef) -> Stri
          tool_call_id: {tool_call_id}\n\
          size:         {size}\n\
          path:         {path}\n\
-         preview:      {preview}",
+         preview:      {preview}\n\
+         retrieve:     retrieve_tool_result ref={id}",
         tool = reference.tool_name,
         id = reference.artifact_id,
         tool_call_id = reference.tool_call_id,
@@ -273,6 +277,10 @@ mod tests {
         let rendered = render_transcript_artifact_ref(&reference);
 
         assert!(rendered.contains("path:         artifacts/art_call-big.txt"));
+        assert!(
+            rendered.contains("retrieve:     retrieve_tool_result ref=art_call-big"),
+            "rendered block must embed the literal retrieve command: {rendered}"
+        );
     }
 
     #[test]
