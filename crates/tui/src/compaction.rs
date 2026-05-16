@@ -432,6 +432,31 @@ pub fn plan_compaction(
     // Ensure tool result messages are not kept without their corresponding tool call.
     enforce_tool_call_pairs(messages, &mut pinned_indices);
 
+    // FIX: Jinja templates on some backends (like vLLM/SGLang with DeepSeek V4) crash with
+    // "Jinja Exception: No user query found in messages" if the final context is entirely
+    // tool calls and tool results. Ensure at least one user text query is preserved.
+    let is_user_text_query = |msg: &Message| {
+        msg.role == "user"
+            && msg
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { .. }))
+    };
+
+    if !pinned_indices
+        .iter()
+        .any(|&idx| is_user_text_query(&messages[idx]))
+    {
+        if let Some(idx) = messages
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(idx, msg)| is_user_text_query(msg).then_some(idx))
+        {
+            pinned_indices.insert(idx);
+        }
+    }
+
     let summarize_indices = (0..len)
         .filter(|idx| !pinned_indices.contains(idx))
         .collect();
@@ -2285,6 +2310,44 @@ mod tests {
         let config = CompactionConfig::default();
         assert_eq!(config.auto_floor_tokens, MINIMUM_AUTO_COMPACTION_TOKENS);
         assert_eq!(config.auto_floor_tokens, 500_000);
+    }
+
+    #[test]
+    fn test_plan_compaction_ensures_user_text_query_present() {
+        // A long conversation where the only recent messages are tool calls and tool results.
+        // The original user query is old (e.g. index 0).
+        let mut messages = vec![msg(
+            "user",
+            "This is the original query that started the chain.",
+        )];
+
+        // Add 10 tool call/result pairs
+        for i in 0..10 {
+            messages.push(Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: format!("call-{}", i),
+                    name: "test_tool".to_string(),
+                    input: serde_json::json!({}),
+                    caller: None,
+                }],
+            });
+            messages.push(Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: format!("call-{}", i),
+                    content: "tool output".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            });
+        }
+
+        let plan = plan_compaction(&messages, None, KEEP_RECENT_MESSAGES, None, None);
+
+        // The fix should ensure that index 0 (the only user text query) is pinned,
+        // even though it's much older than KEEP_RECENT_MESSAGES.
+        assert!(plan.pinned_indices.contains(&0));
     }
 
     #[test]
