@@ -124,10 +124,11 @@ impl PagerView {
     }
 
     fn max_scroll(&self) -> usize {
-        // Match the existing 1-line scroll convention used by `j`/`k`. Render
-        // clamps `self.scroll` to `lines.len() - visible_height` for display
-        // purposes, so over-scrolling here is harmless.
-        self.lines.len().saturating_sub(1)
+        // Must match the render-side clamp (lines.len() - visible_height) so
+        // that G / End land at the actual bottom and k / Up immediately scroll
+        // back up by one visible line — over-scrolling would make N consecutive
+        // scroll-up presses invisible to the user.
+        self.lines.len().saturating_sub(self.page_height().max(1))
     }
 
     fn start_search(&mut self) {
@@ -615,6 +616,33 @@ mod tests {
         let mut p = make_pager(50);
         let _ = p.handle_key(key(KeyCode::End));
         assert_eq!(p.scroll, p.max_scroll());
+    }
+
+    /// After G / End jumps to the bottom, pressing k / Up must immediately
+    /// decrease scroll by one line — the scroll value must not overshoot the
+    /// render clamp so far that the first N scroll-up presses are invisible.
+    #[test]
+    fn up_immediately_scrolls_after_shift_g_to_bottom() {
+        let mut p = make_pager(50);
+        prime_layout(&mut p, 22);
+        let bottom = p.max_scroll();
+        let _ = p.handle_key(key(KeyCode::Char('G')));
+        assert_eq!(p.scroll, bottom);
+        let _ = p.handle_key(key(KeyCode::Up));
+        assert_eq!(p.scroll, bottom - 1, "Up should scroll up by 1 after G");
+        let _ = p.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(p.scroll, bottom - 2, "k should scroll up by 1 more");
+    }
+
+    #[test]
+    fn k_immediately_scrolls_after_end_to_bottom() {
+        let mut p = make_pager(50);
+        prime_layout(&mut p, 22);
+        let bottom = p.max_scroll();
+        let _ = p.handle_key(key(KeyCode::End));
+        assert_eq!(p.scroll, bottom);
+        let _ = p.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(p.scroll, bottom - 1, "k should scroll up by 1 after End");
     }
 
     #[test]
