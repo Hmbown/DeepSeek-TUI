@@ -1797,12 +1797,10 @@ impl Engine {
     }
 
     fn sync_session_system_prompt_hash(&mut self) {
-        self.session.last_system_prompt_hash = if self.session.system_prompt.is_some() {
+        self.session.last_system_prompt_hash = self.session.system_prompt.as_ref().map(|_| {
             let stable_prompt = self.stable_system_prompt_for_mode(AppMode::Agent);
-            Some(system_prompt_hash(stable_prompt.as_ref()))
-        } else {
-            Some(system_prompt_hash(None))
-        };
+            system_prompt_hash(stable_prompt.as_ref())
+        });
     }
 
     /// Refresh the system prompt based on current mode and context.
