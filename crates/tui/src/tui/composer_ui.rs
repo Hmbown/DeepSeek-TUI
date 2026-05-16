@@ -56,15 +56,17 @@ pub(crate) fn handle_composer_history_arrow(
         return false;
     }
 
-    // When `composer_arrows_scroll` is enabled and the composer is empty,
-    // plain Up/Down scroll the transcript.  This helps terminals that map
-    // trackpad gestures to arrow keys.  Otherwise arrows always navigate
-    // input history regardless of composer state (#1117).
-    let scroll_on_empty = app.composer_arrows_scroll && app.input.trim().is_empty();
+    // When `composer_arrows_scroll` is enabled, plain Up/Down always
+    // scroll the transcript regardless of whether the composer has text.
+    // Terminals without mouse capture (e.g. legacy conhost, warp on
+    // Windows) convert mouse-wheel events to arrow keys; without this
+    // guard the wheel would navigate input history instead of scrolling
+    // the transcript when the composer is non-empty (#1677).
+    let scroll_transcript = app.composer_arrows_scroll;
 
     match key.code {
         KeyCode::Up => {
-            if scroll_on_empty {
+            if scroll_transcript {
                 app.scroll_up(COMPOSER_ARROW_SCROLL_LINES);
             } else {
                 app.history_up();
@@ -72,7 +74,7 @@ pub(crate) fn handle_composer_history_arrow(
             true
         }
         KeyCode::Down => {
-            if scroll_on_empty {
+            if scroll_transcript {
                 app.scroll_down(COMPOSER_ARROW_SCROLL_LINES);
             } else {
                 app.history_down();

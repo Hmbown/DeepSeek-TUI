@@ -5330,6 +5330,9 @@ fn history_arrow_handles_whitespace_input() {
 #[test]
 fn history_arrow_handles_nonempty_input() {
     let mut app = create_test_app();
+    // Explicitly disable arrows-scroll so this test covers the
+    // history-navigation path regardless of the mouse-capture default.
+    app.composer_arrows_scroll = false;
     app.input = "hello".to_string();
     app.cursor_position = app.input.chars().count();
     app.input_history.push("previous prompt".to_string());
@@ -5375,21 +5378,25 @@ fn composer_arrows_scroll_empty_down() {
 }
 
 #[test]
-fn composer_arrows_scroll_nonempty_still_navigates_history() {
+fn composer_arrows_scroll_nonempty_also_scrolls() {
     let mut app = create_test_app();
     app.composer_arrows_scroll = true;
     app.input = "hello".to_string();
     app.cursor_position = app.input.chars().count();
     app.input_history.push("previous prompt".to_string());
 
-    // Even with the option on, non-empty composer still navigates history.
+    // #1677: with arrows-scroll on, non-empty composer also scrolls the
+    // transcript instead of navigating input history.  This ensures
+    // terminals that convert mouse-wheel to arrow keys scroll the
+    // transcript even when the user is mid-typing.
     assert!(handle_composer_history_arrow(
         &mut app,
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
         false,
         false,
     ));
-    assert_eq!(app.input, "previous prompt");
+    assert_eq!(app.viewport.pending_scroll_delta, -3);
+    assert_eq!(app.input, "hello");
 }
 
 // #1443: when mouse capture is off (e.g. Windows CMD), arrow-scroll
