@@ -368,7 +368,7 @@ pub(crate) struct InputHistoryDraft {
     cursor: usize,
 }
 
-fn char_count(text: &str) -> usize {
+pub(crate) fn char_count(text: &str) -> usize {
     text.chars().count()
 }
 
@@ -638,6 +638,10 @@ pub struct ComposerState {
     /// user presses `d` in Normal mode; cleared on the next key (either `d`
     /// to complete `dd`, or any other key to cancel).
     pub vim_pending_d: bool,
+    /// When set, the cursor is the active end of a text selection and
+    /// `selection_anchor` is the fixed end.  Both are char-indexed.
+    /// `None` means no selection is active.
+    pub selection_anchor: Option<usize>,
 }
 
 impl Default for ComposerState {
@@ -661,6 +665,7 @@ impl Default for ComposerState {
             vim_enabled: false,
             vim_mode: VimMode::Normal,
             vim_pending_d: false,
+            selection_anchor: None,
         }
     }
 }
@@ -675,11 +680,21 @@ pub struct ViewportState {
     pub selection_autoscroll: Option<SelectionAutoscroll>,
     pub transcript_scrollbar_dragging: bool,
     pub last_transcript_area: Option<Rect>,
+    pub last_composer_area: Option<Rect>,
     pub last_transcript_top: usize,
     pub last_transcript_visible: usize,
     pub last_transcript_total: usize,
     pub last_transcript_padding_top: usize,
     pub jump_to_latest_button_area: Option<Rect>,
+    /// Inner content rect of the composer (excluding border/padding),
+    /// stored at render time for mouse coordinate mapping.
+    pub last_composer_content: Option<Rect>,
+    /// Number of rendered text lines scrolled off the top of the composer,
+    /// stored at render time for mouse coordinate mapping.
+    pub last_composer_scroll_offset: usize,
+    /// Vertical padding above the first text line in the composer,
+    /// stored at render time for mouse coordinate mapping.
+    pub last_composer_top_padding: usize,
 }
 
 impl Default for ViewportState {
@@ -693,11 +708,15 @@ impl Default for ViewportState {
             selection_autoscroll: None,
             transcript_scrollbar_dragging: false,
             last_transcript_area: None,
+            last_composer_area: None,
             last_transcript_top: 0,
             last_transcript_visible: 0,
             last_transcript_total: 0,
             last_transcript_padding_top: 0,
             jump_to_latest_button_area: None,
+            last_composer_content: None,
+            last_composer_scroll_offset: 0,
+            last_composer_top_padding: 0,
         }
     }
 }
@@ -1463,6 +1482,7 @@ impl App {
                 vim_enabled: composer_vim_enabled,
                 vim_mode: VimMode::Normal,
                 vim_pending_d: false,
+                selection_anchor: None,
             },
             viewport: ViewportState::default(),
             goal: GoalState::default(),
@@ -2703,6 +2723,7 @@ impl App {
         if text.is_empty() {
             return;
         }
+        self.delete_selection();
         self.selected_attachment_index = None;
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
@@ -2965,6 +2986,7 @@ impl App {
 
     pub fn insert_char(&mut self, c: char) {
         self.clear_input_history_navigation();
+        self.delete_selection();
         self.selected_attachment_index = None;
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
@@ -2991,6 +3013,9 @@ impl App {
 
     pub fn delete_char(&mut self) {
         self.clear_input_history_navigation();
+        if self.delete_selection() {
+            return;
+        }
         self.selected_attachment_index = None;
         if self.cursor_position == 0 {
             return;
@@ -3008,6 +3033,9 @@ impl App {
 
     pub fn delete_char_forward(&mut self) {
         self.clear_input_history_navigation();
+        if self.delete_selection() {
+            return;
+        }
         self.selected_attachment_index = None;
         if self.input.is_empty() {
             return;
@@ -3026,6 +3054,9 @@ impl App {
     /// Delete the word before the cursor.
     pub fn delete_word_backward(&mut self) {
         self.clear_input_history_navigation();
+        if self.delete_selection() {
+            return;
+        }
         self.selected_attachment_index = None;
         if self.cursor_position == 0 {
             return;
@@ -3067,6 +3098,9 @@ impl App {
     /// Delete from the cursor to the start of the line.
     pub fn delete_to_start_of_line(&mut self) {
         self.clear_input_history_navigation();
+        if self.delete_selection() {
+            return;
+        }
         self.selected_attachment_index = None;
         if self.cursor_position == 0 {
             return;
@@ -3092,6 +3126,9 @@ impl App {
     /// Delete the word after the cursor.
     pub fn delete_word_forward(&mut self) {
         self.clear_input_history_navigation();
+        if self.delete_selection() {
+            return;
+        }
         self.selected_attachment_index = None;
         let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
         if cursor_byte >= self.input.len() {
@@ -3136,6 +3173,9 @@ impl App {
     /// Returns `true` when bytes were moved into the kill buffer.
     pub fn kill_to_end_of_line(&mut self) -> bool {
         self.clear_input_history_navigation();
+        if self.delete_selection() {
+            return true;
+        }
         let total_chars = char_count(&self.input);
         let cursor = self.cursor_position.min(total_chars);
         let start_byte = byte_index_at_char(&self.input, cursor);
@@ -3181,6 +3221,7 @@ impl App {
         if self.kill_buffer.is_empty() {
             return false;
         }
+        self.delete_selection();
         self.clear_input_history_navigation();
         let text = self.kill_buffer.clone();
         let cursor = self.cursor_position.min(char_count(&self.input));
@@ -3277,6 +3318,58 @@ impl App {
         }
         self.cursor_position = pos;
         self.needs_redraw = true;
+    }
+
+    // === Selection helpers ===
+
+    /// Return the (start, end) of the active selection, or `None`.
+    /// `start` is inclusive, `end` is exclusive; both are char indices.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        let cursor = self.cursor_position;
+        if anchor == cursor {
+            return None;
+        }
+        Some(if anchor < cursor {
+            (anchor, cursor)
+        } else {
+            (cursor, anchor)
+        })
+    }
+
+    /// Return the selected text, or empty string if no selection.
+    pub fn selected_text(&self) -> String {
+        self.selection_range()
+            .map(|(s, e)| {
+                let sb = byte_index_at_char(&self.input, s);
+                let eb = byte_index_at_char(&self.input, e);
+                self.input[sb..eb].to_string()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Delete the selected text, place cursor at the start of the deleted range.
+    /// Returns true if a selection was deleted.
+    pub fn delete_selection(&mut self) -> bool {
+        let Some((start, end)) = self.selection_range() else {
+            return false;
+        };
+        let sb = byte_index_at_char(&self.input, start);
+        let eb = byte_index_at_char(&self.input, end);
+        self.input.replace_range(sb..eb, "");
+        self.cursor_position = start;
+        self.selection_anchor = None;
+        self.clear_input_history_navigation();
+        self.slash_menu_hidden = false;
+        self.mention_menu_hidden = false;
+        self.mention_menu_selected = 0;
+        self.needs_redraw = true;
+        true
+    }
+
+    /// Clear the selection without moving the cursor.
+    pub fn clear_selection(&mut self) {
+        self.selection_anchor = None;
     }
 
     // === Vim composer mode helpers ===
@@ -3461,6 +3554,7 @@ impl App {
         self.clear_input_history_navigation();
         self.input.clear();
         self.cursor_position = 0;
+        self.selection_anchor = None;
         self.selected_attachment_index = None;
         self.slash_menu_selected = 0;
         self.slash_menu_hidden = false;
@@ -5725,5 +5819,108 @@ mod tests {
         assert!(app.yank());
         assert_eq!(app.input, "café 你好");
         assert_eq!(app.cursor_position, 7);
+    }
+
+    #[test]
+    fn selection_range_returns_none_when_no_anchor() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = 5;
+        app.selection_anchor = None;
+        assert!(app.selection_range().is_none());
+    }
+
+    #[test]
+    fn selection_range_returns_ordered_range() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = 5;
+        app.selection_anchor = Some(2);
+        assert_eq!(app.selection_range(), Some((2, 5)));
+    }
+
+    #[test]
+    fn selection_range_normalizes_order() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = 2;
+        app.selection_anchor = Some(5);
+        assert_eq!(app.selection_range(), Some((2, 5)));
+    }
+
+    #[test]
+    fn selection_range_returns_none_when_anchor_equals_cursor() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello".to_string();
+        app.cursor_position = 3;
+        app.selection_anchor = Some(3);
+        assert!(app.selection_range().is_none());
+    }
+
+    #[test]
+    fn delete_selection_removes_selected_text() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = 5;
+        app.selection_anchor = Some(2);
+        assert!(app.delete_selection());
+        assert_eq!(app.input, "he world");
+        assert_eq!(app.cursor_position, 2);
+        assert!(app.selection_anchor.is_none());
+    }
+
+    #[test]
+    fn insert_char_replaces_selection() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = 5;
+        app.selection_anchor = Some(2);
+        app.insert_char('X');
+        assert_eq!(app.input, "heX world");
+        assert_eq!(app.cursor_position, 3);
+        assert!(app.selection_anchor.is_none());
+    }
+
+    #[test]
+    fn delete_char_removes_selection_instead_of_single_char() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = 5;
+        app.selection_anchor = Some(2);
+        app.delete_char();
+        assert_eq!(app.input, "he world");
+        assert_eq!(app.cursor_position, 2);
+    }
+
+    #[test]
+    fn selected_text_returns_correct_substring() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = 5;
+        app.selection_anchor = Some(2);
+        assert_eq!(app.selected_text(), "llo");
+    }
+
+    #[test]
+    fn insert_str_replaces_selection() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = 5;
+        app.selection_anchor = Some(2);
+        app.insert_str("yo");
+        assert_eq!(app.input, "heyo world");
+        assert_eq!(app.cursor_position, 4);
+        assert!(app.selection_anchor.is_none());
+    }
+
+    #[test]
+    fn delete_selection_noop_when_no_selection() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello".to_string();
+        app.cursor_position = 3;
+        app.selection_anchor = None;
+        assert!(!app.delete_selection());
+        assert_eq!(app.input, "hello");
+        assert_eq!(app.cursor_position, 3);
     }
 }
