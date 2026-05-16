@@ -128,7 +128,7 @@ impl PagerView {
         // that G / End land at the actual bottom and k / Up immediately scroll
         // back up by one visible line — over-scrolling would make N consecutive
         // scroll-up presses invisible to the user.
-        self.lines.len().saturating_sub(self.page_height().max(1))
+        self.lines.len().saturating_sub(self.page_height())
     }
 
     fn start_search(&mut self) {
