@@ -1258,11 +1258,7 @@ fn tool_status_marker(status: ToolStatus) -> (&'static str, ratatui::style::Colo
 }
 
 fn format_duration_ms(ms: u64) -> String {
-    if ms < 1000 {
-        format!("{ms}ms")
-    } else {
-        format!("{:.1}s", ms as f64 / 1000.0)
-    }
+    format!("{}s", ms / 1000)
 }
 
 fn duration_ms(duration: Duration) -> u64 {
@@ -2319,7 +2315,7 @@ mod tests {
 
         assert!(
             text.iter()
-                .any(|line| line.contains("[x] cargo check 1.2s")),
+                .any(|line| line.contains("[x] cargo check 1s")),
             "status marker and duration should stay in the row label: {text:?}"
         );
         assert!(
