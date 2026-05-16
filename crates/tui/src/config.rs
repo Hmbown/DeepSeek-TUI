@@ -378,6 +378,21 @@ fn canonical_official_deepseek_model_id(model: &str) -> Option<&'static str> {
 /// config/back-compat, and canonicalize only when the active provider is known.
 #[must_use]
 pub fn normalize_model_name_for_provider(provider: ApiProvider, model: &str) -> Option<String> {
+    // Pass-through providers (OpenAI, AtlasCloud, Ollama) accept any valid
+    // model name the user types — they are not limited to DeepSeek IDs.
+    if provider_passes_model_through(provider) {
+        let trimmed = model.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if !trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '/'))
+        {
+            return None;
+        }
+        return Some(trimmed.to_string());
+    }
     let normalized = normalize_model_name(model)?;
     if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
         && let Some(canonical) = canonical_official_deepseek_model_id(&normalized)

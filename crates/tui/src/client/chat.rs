@@ -134,6 +134,17 @@ impl DeepSeekClient {
         }
 
         let response_text = response.text().await.unwrap_or_default();
+        // Some OpenAI-compatible APIs return HTTP 200 with a JSON error body
+        // (e.g. {"success": false, "message": "service busy"}).
+        if let Ok(json) = serde_json::from_str::<Value>(&response_text)
+            && json.get("success").and_then(Value::as_bool) == Some(false)
+        {
+            let msg = json
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error");
+            anyhow::bail!("API error: {msg}");
+        }
         let value: Value =
             serde_json::from_str(&response_text).context("Failed to parse Chat API JSON")?;
         parse_chat_message(&value)
@@ -203,6 +214,7 @@ impl DeepSeekClient {
             .await?;
 
         let status = response.status();
+        let response_headers = format_stream_headers(response.headers());
         if !status.is_success() {
             let error_text = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
             // If DeepSeek rejected for missing reasoning_content despite the
@@ -214,14 +226,33 @@ impl DeepSeekClient {
             anyhow::bail!("SSE stream request failed: HTTP {status}: {error_text}");
         }
 
+        // Some OpenAI-compatible APIs return HTTP 200 with a JSON error body
+        // (e.g. {"success": false, "message": "service busy"}) using
+        // Content-Type: text/event-stream. Inspect the first byte: '{' means
+        // JSON error, 'd' (for "data:") means valid SSE.
         let model = request.model.clone();
+        let full_body = response.bytes().await.unwrap_or_default();
+        if full_body
+            .iter()
+            .find(|b| !b.is_ascii_whitespace())
+            .copied()
+            == Some(b'{')
+        {
+            let text = String::from_utf8_lossy(&full_body);
+            if let Ok(json) = serde_json::from_str::<Value>(&text)
+                && json.get("success").and_then(Value::as_bool) == Some(false)
+            {
+                let msg = json
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown error");
+                anyhow::bail!("API error: {msg}");
+            }
+        }
 
-        // Capture transport-shape headers before we consume `response` into
-        // `bytes_stream()`. They are surfaced in the decode-error log path so
-        // we can tell HTTP/2 RST_STREAM from chunked-encoding corruption from
-        // gzip-compressor failure when investigating #103.
-        let response_headers = format_stream_headers(response.headers());
-        let byte_stream = response.bytes_stream();
+        let byte_stream = futures_util::stream::once(async move {
+            Ok::<_, reqwest::Error>(full_body)
+        });
 
         let stream = async_stream::stream! {
             use futures_util::StreamExt;
@@ -366,6 +397,9 @@ impl DeepSeekClient {
                     }
 
                     if let Some(data) = line.strip_prefix("data: ") {
+                        line_buf.push_str(data);
+                    } else if let Some(data) = line.strip_prefix("data:") {
+                        // Some OpenAI-compatible APIs omit the space after the colon
                         line_buf.push_str(data);
                     }
                     // Ignore other SSE fields (event:, id:, retry:)

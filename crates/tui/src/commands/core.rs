@@ -3,7 +3,9 @@
 use std::fmt::Write;
 use std::path::PathBuf;
 
-use crate::config::{COMMON_DEEPSEEK_MODELS, normalize_model_name_for_provider};
+use crate::config::{
+    model_completion_names_for_provider, normalize_model_name_for_provider,
+};
 use crate::localization::{MessageId, tr};
 use crate::tui::app::{App, AppAction, AppMode, ReasoningEffort};
 use crate::tui::views::{HelpView, ModalKind, SubAgentsView, subagent_view_agents};
@@ -122,9 +124,10 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
             );
         }
         let Some(model_id) = normalize_model_name_for_provider(app.api_provider, name) else {
+            let models = model_completion_names_for_provider(app.api_provider);
             return CommandResult::error(format!(
-                "Invalid model '{name}'. Expected auto or a DeepSeek model ID. Common models: {}",
-                COMMON_DEEPSEEK_MODELS.join(", ")
+                "Invalid model '{name}'. Try: auto, {}",
+                models.join(", ")
             ));
         };
         let old_model = app.model_display_label();
