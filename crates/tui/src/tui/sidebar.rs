@@ -1398,7 +1398,7 @@ fn sidebar_agent_rows(app: &App) -> Vec<SidebarAgentRow> {
             .filter(|(id, _)| !cached_ids.contains(id.as_str()))
             .map(|(id, progress)| SidebarAgentRow {
                 id: id.clone(),
-                name: id.clone(),
+                name: progress.clone(),
                 role: "agent".to_string(),
                 status: "running".to_string(),
                 progress: Some(progress.clone()),
