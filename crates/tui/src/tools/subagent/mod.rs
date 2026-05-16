@@ -62,7 +62,7 @@ fn release_resident_leases_for(agent_id: &str) {
     }
 }
 
-const DEFAULT_MAX_STEPS: u32 = 100;
+
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-step LLM API call timeout. Each `create_message` request must complete
 /// within this window or the step is treated as timed out. Prevents a single
@@ -899,7 +899,6 @@ pub struct SubAgentManager {
     #[allow(dead_code)] // Stored for future workspace-scoped operations
     workspace: PathBuf,
     state_path: Option<PathBuf>,
-    max_steps: u32,
     max_agents: usize,
     /// Stable id assigned at manager construction (#405). Stamped on
     /// every agent the manager spawns; agents loaded from the
@@ -918,7 +917,6 @@ impl SubAgentManager {
             agents: HashMap::new(),
             workspace,
             state_path: None,
-            max_steps: DEFAULT_MAX_STEPS,
             max_agents,
             // Fresh boot id per manager. Used by #405 to classify
             // re-loaded persisted agents as "prior session".
@@ -1179,7 +1177,6 @@ impl SubAgentManager {
         agent.fork_context = options.fork_context;
         let agent_id = agent.id.clone();
         let started_at = agent.started_at;
-        let max_steps = self.max_steps;
 
         if let Some(event_tx) = runtime.event_tx.clone() {
             let _ = event_tx.try_send(Event::AgentSpawned {
@@ -1198,7 +1195,6 @@ impl SubAgentManager {
             allowed_tools: tools,
             fork_context: options.fork_context,
             started_at,
-            max_steps,
             input_rx,
         };
         let handle = spawn_supervised(
@@ -1328,7 +1324,6 @@ impl SubAgentManager {
                 allowed_tools: agent.allowed_tools.clone(),
                 fork_context: false,
                 started_at: restarted_at,
-                max_steps: self.max_steps,
                 input_rx,
             };
             let handle = spawn_supervised(
@@ -3164,7 +3159,6 @@ struct SubAgentTask {
     allowed_tools: Option<Vec<String>>,
     fork_context: bool,
     started_at: Instant,
-    max_steps: u32,
     input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
 }
 
@@ -3179,7 +3173,6 @@ async fn run_subagent_task(task: SubAgentTask) {
         task.allowed_tools,
         task.fork_context,
         task.started_at,
-        task.max_steps,
         task.input_rx,
     )
     .await;
@@ -3302,7 +3295,6 @@ async fn run_subagent(
     allowed_tools: Option<Vec<String>>,
     fork_context: bool,
     started_at: Instant,
-    max_steps: u32,
     mut input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
 ) -> Result<SubAgentResult> {
     let system_prompt = build_subagent_system_prompt(&agent_type, &assignment);
@@ -3333,7 +3325,11 @@ async fn run_subagent(
     }
     let tools = tool_registry.tools_for_model(&agent_type);
     if let Some(mb) = runtime.mailbox.as_ref() {
-        let _ = mb.send(MailboxMessage::started(&agent_id, agent_type.clone()));
+        let _ = mb.send(MailboxMessage::started(
+            &agent_id,
+            agent_type.clone(),
+            &assignment.objective,
+        ));
     }
     emit_agent_progress(
         runtime.event_tx.as_ref(),
@@ -3346,7 +3342,7 @@ async fn run_subagent(
     let mut final_result: Option<String> = None;
     let mut pending_inputs: VecDeque<SubAgentInput> = VecDeque::new();
 
-    for _step in 0..max_steps {
+    loop {
         // Cooperative cancellation: bail if the parent (or root) cancelled
         // us while we were between steps. Children derive their token from
         // the parent's via `child_token()` so this propagates the whole tree.
@@ -3355,7 +3351,7 @@ async fn run_subagent(
                 runtime.event_tx.as_ref(),
                 runtime.mailbox.as_ref(),
                 &agent_id,
-                format!("step {steps}/{max_steps}: cancelled"),
+                format!("step {steps}: cancelled"),
             );
             if let Some(mb) = runtime.mailbox.as_ref() {
                 let _ = mb.send(MailboxMessage::Cancelled {
@@ -3389,7 +3385,7 @@ async fn run_subagent(
             runtime.event_tx.as_ref(),
             runtime.mailbox.as_ref(),
             &agent_id,
-            format!("step {steps}/{max_steps}: requesting model response"),
+            format!("step {steps}: requesting model response"),
         );
 
         while let Ok(input) = input_rx.try_recv() {
@@ -3436,7 +3432,7 @@ async fn run_subagent(
                     runtime.event_tx.as_ref(),
                     runtime.mailbox.as_ref(),
                     &agent_id,
-                    format!("step {steps}/{max_steps}: cancelled mid-request"),
+                    format!("step {steps}: cancelled mid-request"),
                 );
                 if let Some(mb) = runtime.mailbox.as_ref() {
                     let _ = mb.send(MailboxMessage::Cancelled {
@@ -3507,7 +3503,7 @@ async fn run_subagent(
                     runtime.event_tx.as_ref(),
                     runtime.mailbox.as_ref(),
                     &agent_id,
-                    format!("step {steps}/{max_steps}: complete"),
+                    format!("step {steps}: complete"),
                 );
                 break;
             }
@@ -3519,7 +3515,7 @@ async fn run_subagent(
             runtime.mailbox.as_ref(),
             &agent_id,
             format!(
-                "step {steps}/{max_steps}: executing {} tool call(s)",
+                "step {steps}: executing {} tool call(s)",
                 tool_uses.len()
             ),
         );
@@ -3529,7 +3525,7 @@ async fn run_subagent(
                 runtime.event_tx.as_ref(),
                 runtime.mailbox.as_ref(),
                 &agent_id,
-                format!("step {steps}/{max_steps}: running tool '{tool_name}'"),
+                format!("step {steps}: running tool '{tool_name}'"),
             );
             if let Some(mb) = runtime.mailbox.as_ref() {
                 let _ = mb.send(MailboxMessage::ToolCallStarted {
@@ -3554,7 +3550,7 @@ async fn run_subagent(
                 runtime.event_tx.as_ref(),
                 runtime.mailbox.as_ref(),
                 &agent_id,
-                format!("step {steps}/{max_steps}: finished tool '{tool_name}'"),
+                format!("step {steps}: finished tool '{tool_name}'"),
             );
             if let Some(mb) = runtime.mailbox.as_ref() {
                 let _ = mb.send(MailboxMessage::ToolCallCompleted {
