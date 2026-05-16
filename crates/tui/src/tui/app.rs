@@ -840,6 +840,7 @@ pub struct App {
     #[allow(dead_code)]
     pub system_prompt: Option<SystemPrompt>,
     pub auto_compact: bool,
+    pub auto_compact_threshold_pct: f64,
     pub calm_mode: bool,
     pub low_motion: bool,
     /// Pending #61 (animated working strip). Set from config but not read
@@ -1312,6 +1313,7 @@ impl App {
             crate::config::active_provider_uses_env_only_api_key(&effective_auth_config);
         let was_onboarded = crate::tui::onboarding::is_onboarded();
         let auto_compact = settings.auto_compact;
+        let auto_compact_threshold_pct = settings.auto_compact_threshold_percent;
         let calm_mode = settings.calm_mode;
         let low_motion = settings.low_motion;
         let fancy_animations = settings.fancy_animations;
@@ -1499,6 +1501,7 @@ impl App {
             bracketed_paste_seen: false,
             system_prompt: None,
             auto_compact,
+            auto_compact_threshold_pct,
             calm_mode,
             low_motion,
             fancy_animations,
