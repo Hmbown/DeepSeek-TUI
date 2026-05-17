@@ -874,6 +874,15 @@ impl Engine {
                     content: content_blocks,
                 })
                 .await;
+            } else if turn_error.is_none() && !self.cancel_token.is_cancelled() {
+                // gpt-oss via ollama's harmony→OpenAI shim can return
+                // `reasoning_content` with empty `content` and no
+                // `tool_calls`, which would otherwise leave the UI silently
+                // idle while the engine quietly ends the turn.
+                let notice = "Model returned reasoning but no answer or tool call; \
+                              turn ended without output. Send a follow-up to retry.";
+                crate::logging::warn(notice);
+                let _ = self.tx_event.send(Event::status(notice.to_string())).await;
             }
 
             // If no tool uses, check for inline REPL blocks (paper §2) or
