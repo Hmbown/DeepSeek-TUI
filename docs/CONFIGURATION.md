@@ -328,11 +328,11 @@ replacement compaction. You can inspect or update these from the TUI with
 Common settings keys:
 
 - `theme` (`system`, `dark`, `light`, `grayscale`, `catppuccin-mocha`,
-  `tokyo-night`, `dracula`, `gruvbox-dark`; default `system`): `system`
+  `tokyo-night`, `dracula`, `gruvbox-dark`, or any custom theme name; default `system`): `system`
   follows terminal background detection, `dark`/`light` use the DeepSeek
   palettes, `grayscale` is the low-opinion black/white theme, and the named
   community presets apply across the TUI. Aliases such as `whale`, `mono`,
-  `black-white`, `tokyonight`, and `gruvbox` are accepted.
+  `black-white`, `tokyonight`, and `gruvbox` are accepted. You can also define custom themes or apply inline color overrides using `[themes.my-custom]` or `[theme.overrides]` in your configuration file.
 - `auto_compact` (on/off, default off)
 - `paste_burst_detection` (on/off, default on): fallback rapid-key paste
   detection for terminals that do not emit bracketed-paste events. This is

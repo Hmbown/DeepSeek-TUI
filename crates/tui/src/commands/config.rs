@@ -503,6 +503,8 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             app.ui_theme = crate::palette::ui_theme_from_settings(
                 &settings.theme,
                 settings.background_color.as_deref(),
+                Some(&settings.custom_themes),
+                Some(&settings.theme_overrides),
             );
             app.needs_redraw = true;
         }

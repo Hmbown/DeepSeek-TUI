@@ -1335,19 +1335,23 @@ impl App {
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
         let max_input_history = settings.max_input_history;
         let use_paste_burst_detection = settings.paste_burst_detection;
-        // Resolve the named theme from settings; unknown values were already
-        // normalised to "system" in Settings::load. The background_color
-        // setting still overlays on top.
         let theme_id =
             palette::ThemeId::from_name(&settings.theme).unwrap_or(palette::ThemeId::System);
-        let mut ui_theme = theme_id.ui_theme();
-        if let Some(background) = settings
-            .background_color
-            .as_deref()
-            .and_then(palette::parse_hex_rgb_color)
-        {
-            ui_theme = ui_theme.with_background_color(background);
-        }
+        // Resolve the named theme from settings with custom theme registry
+        // and inline overrides. Resolution order:
+        // 1. Custom themes from config.toml [themes.*] sections
+        // 2. Named theme from settings.theme
+        // 3. Inline overrides from settings.theme_overrides
+        // 4. background_color override (highest precedence)
+        let ui_theme = palette::ui_theme_from_settings(
+            &settings.theme,
+            settings.background_color.as_deref(),
+            config.themes.as_ref().or(Some(&settings.custom_themes)),
+            config
+                .theme_overrides
+                .as_ref()
+                .or(Some(&settings.theme_overrides)),
+        );
         let model = settings
             .provider_models
             .as_ref()

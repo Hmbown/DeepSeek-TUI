@@ -203,6 +203,14 @@ pub struct Settings {
     pub theme: String,
     /// Optional main TUI background color as a 6-digit hex RGB value.
     pub background_color: Option<String>,
+    /// Inline color overrides applied on top of the resolved theme.
+    /// Keys match `UiTheme` field names (`surface_bg`, `text_body`, etc.).
+    /// Values are `#RRGGBB` hex strings.
+    pub theme_overrides: crate::palette::ConfigTheme,
+    /// Named custom theme definitions from `[themes.*]` sections.
+    /// Each entry specifies a `base` theme and optional color overrides.
+    /// Select with `theme = "my-custom"`.
+    pub custom_themes: crate::palette::ConfigThemes,
     /// Composer layout density: compact, comfortable, spacious
     pub composer_density: String,
     /// Show a border around the composer input area
@@ -295,6 +303,8 @@ impl Default for Settings {
             locale: "auto".to_string(),
             theme: "system".to_string(),
             background_color: None,
+            theme_overrides: Default::default(),
+            custom_themes: Default::default(),
             composer_density: "comfortable".to_string(),
             composer_border: true,
             composer_vim_mode: "normal".to_string(),
@@ -496,21 +506,12 @@ impl Settings {
                 };
                 self.locale = locale.to_string();
             }
-            "theme" => {
-                let Some(id) = crate::palette::ThemeId::from_name(value) else {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid theme '{value}'. Expected: system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark."
-                    );
-                };
-                self.theme = id.name().to_string();
-            }
-            "ui_theme" => {
-                let Some(id) = crate::palette::ThemeId::from_name(value) else {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid theme '{value}'. Expected: system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark."
-                    );
-                };
-                self.theme = id.name().to_string();
+            "theme" | "ui_theme" => {
+                if let Some(id) = crate::palette::ThemeId::from_name(value) {
+                    self.theme = id.name().to_string();
+                } else {
+                    self.theme = value.to_string();
+                }
             }
             "background_color" | "background" | "bg" => {
                 self.background_color = normalize_background_color_setting(value)?;
@@ -1051,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn theme_normalizes_supported_values_and_rejects_unknowns() {
+    fn theme_normalizes_supported_values_and_accepts_custom_names() {
         let mut settings = Settings::default();
         assert_eq!(settings.theme, "system");
 
@@ -1069,10 +1070,10 @@ mod tests {
             .expect("set community theme alias");
         assert_eq!(settings.theme, "tokyo-night");
 
-        let err = settings
+        settings
             .set("theme", "solarized")
-            .expect_err("unknown theme should fail");
-        assert!(err.to_string().contains("invalid theme"));
+            .expect("set unknown custom theme");
+        assert_eq!(settings.theme, "solarized");
     }
 
     #[test]

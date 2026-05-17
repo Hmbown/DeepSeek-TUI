@@ -58,7 +58,7 @@ pub struct SettingsSection {
     pub show_thinking: bool,
     pub show_tool_details: bool,
     pub locale: UiLocale,
-    pub theme: UiThemeValue,
+    pub theme: String,
     #[schemars(
         title = "Background color",
         description = "Main TUI background color as #RRGGBB"
@@ -171,19 +171,6 @@ pub enum UiLocale {
     #[serde(rename = "es-419")]
     #[schemars(rename = "es-419")]
     Es419,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum UiThemeValue {
-    System,
-    Dark,
-    Light,
-    Grayscale,
-    CatppuccinMocha,
-    TokyoNight,
-    Dracula,
-    GruvboxDark,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -320,7 +307,7 @@ pub fn build_document(app: &App, config: &Config) -> Result<ConfigUiDocument> {
             show_thinking: settings.show_thinking,
             show_tool_details: settings.show_tool_details,
             locale: UiLocale::from_setting(&settings.locale)?,
-            theme: UiThemeValue::from_setting(&settings.theme)?,
+            theme: settings.theme.clone(),
             background_color: settings.background_color.clone(),
             bracketed_paste: settings.bracketed_paste,
             composer_density: settings.composer_density.as_str().into(),
@@ -484,7 +471,7 @@ pub fn apply_document(
             bool_str(doc.settings.show_tool_details),
         ),
         ("locale", doc.settings.locale.as_setting()),
-        ("theme", doc.settings.theme.as_setting()),
+        ("theme", doc.settings.theme.as_str()),
         (
             "background_color",
             doc.settings
@@ -728,36 +715,6 @@ impl UiLocale {
             Some("es-419") => Ok(Self::Es419),
             Some(other) => bail!("unsupported locale '{other}'"),
             None => bail!("invalid locale '{value}'"),
-        }
-    }
-}
-
-impl UiThemeValue {
-    fn as_setting(self) -> &'static str {
-        match self {
-            Self::System => "system",
-            Self::Dark => "dark",
-            Self::Light => "light",
-            Self::Grayscale => "grayscale",
-            Self::CatppuccinMocha => "catppuccin-mocha",
-            Self::TokyoNight => "tokyo-night",
-            Self::Dracula => "dracula",
-            Self::GruvboxDark => "gruvbox-dark",
-        }
-    }
-
-    fn from_setting(value: &str) -> Result<Self> {
-        match crate::palette::normalize_theme_name(value) {
-            Some("system") => Ok(Self::System),
-            Some("dark") => Ok(Self::Dark),
-            Some("light") => Ok(Self::Light),
-            Some("grayscale") => Ok(Self::Grayscale),
-            Some("catppuccin-mocha") => Ok(Self::CatppuccinMocha),
-            Some("tokyo-night") => Ok(Self::TokyoNight),
-            Some("dracula") => Ok(Self::Dracula),
-            Some("gruvbox-dark") => Ok(Self::GruvboxDark),
-            Some(other) => bail!("unsupported theme '{other}'"),
-            None => bail!("invalid theme '{value}'"),
         }
     }
 }
@@ -1172,20 +1129,6 @@ background_color = "#1A1B26"
         assert_eq!(
             locale,
             &serde_json::json!(["auto", "en", "ja", "zh-Hans", "pt-BR", "es-419"])
-        );
-        let theme = &schema["$defs"]["UiThemeValue"]["enum"];
-        assert_eq!(
-            theme,
-            &serde_json::json!([
-                "system",
-                "dark",
-                "light",
-                "grayscale",
-                "catppuccin-mocha",
-                "tokyo-night",
-                "dracula",
-                "gruvbox-dark"
-            ])
         );
     }
 

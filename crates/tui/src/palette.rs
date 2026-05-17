@@ -1,8 +1,12 @@
 //! DeepSeek color palette and semantic roles.
 
+use std::collections::HashMap;
+
 use ratatui::style::Color;
 #[cfg(target_os = "macos")]
 use std::process::Command;
+
+use serde::{Deserialize, Serialize};
 
 pub const DEEPSEEK_BLUE_RGB: (u8, u8, u8) = (53, 120, 229); // #3578E5
 pub const DEEPSEEK_SKY_RGB: (u8, u8, u8) = (106, 174, 242);
@@ -624,6 +628,111 @@ pub const SELECTABLE_THEMES: &[ThemeId] = &[
     ThemeId::GruvboxDark,
 ];
 
+/// User-facing theme configuration loaded from config.toml.
+///
+/// Supports two patterns:
+///
+/// 1. **Inline overrides** — select a base theme and override individual colors:
+///    ```toml
+///    [tui]
+///    theme = "catppuccin-mocha"
+///
+///    [theme.overrides]
+///    surface_bg = "#1a1b2e"
+///    text_body = "#e0e0e0"
+///    ```
+///
+/// 2. **Named custom themes** — define one or more complete theme presets:
+///    ```toml
+///    [themes.my-custom]
+///    base = "catppuccin-mocha"
+///    surface_bg = "#1a1b2e"
+///    text_body = "#e0e0e0"
+///    ```
+///    Then select with `theme = "my-custom"`.
+///
+/// All color fields accept `#RRGGBB` hex strings. A field omitted from the
+/// override inherits from the base theme.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ConfigTheme {
+    /// Base theme to extend. Accepts any value that `ThemeId::from_name`
+    /// recognizes. When absent the system-detected theme is used.
+    pub base: Option<String>,
+    /// Per-field color overrides. Keys match `UiTheme` field names
+    /// (`surface_bg`, `panel_bg`, `text_body`, etc.). Values are `#RRGGBB`
+    /// hex strings.
+    #[serde(flatten)]
+    pub overrides: HashMap<String, String>,
+}
+
+impl ConfigTheme {
+    /// Apply this configuration on top of a resolved `UiTheme`, returning
+    /// the merged theme.
+    #[must_use]
+    pub fn apply(self, base: UiTheme) -> UiTheme {
+        let mut theme = base;
+        for (key, hex_value) in self.overrides {
+            if let Some(color) = parse_hex_rgb_color(&hex_value) {
+                match key.as_str() {
+                    "surface_bg" => theme.surface_bg = color,
+                    "panel_bg" => theme.panel_bg = color,
+                    "elevated_bg" => theme.elevated_bg = color,
+                    "composer_bg" => theme.composer_bg = color,
+                    "selection_bg" => theme.selection_bg = color,
+                    "header_bg" => theme.header_bg = color,
+                    "footer_bg" => theme.footer_bg = color,
+                    "mode_agent" => theme.mode_agent = color,
+                    "mode_yolo" => theme.mode_yolo = color,
+                    "mode_plan" => theme.mode_plan = color,
+                    "status_ready" => theme.status_ready = color,
+                    "status_working" => theme.status_working = color,
+                    "status_warning" => theme.status_warning = color,
+                    "text_dim" => theme.text_dim = color,
+                    "text_hint" => theme.text_hint = color,
+                    "text_muted" => theme.text_muted = color,
+                    "text_body" => theme.text_body = color,
+                    "text_soft" => theme.text_soft = color,
+                    "border" => theme.border = color,
+                    _ => { /* unknown key — silently ignored */ }
+                }
+            }
+        }
+        theme
+    }
+}
+
+/// A collection of named custom themes loaded from the `[themes.*]` sections
+/// of config.toml.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ConfigThemes {
+    #[serde(flatten)]
+    pub themes: HashMap<String, ConfigTheme>,
+}
+
+impl ConfigThemes {
+    /// Resolve a theme name against the custom theme registry.
+    ///
+    /// If `name` matches a key in `self.themes`, the custom theme is resolved
+    /// by first loading the base theme (from `ThemeId` or system detection),
+    /// then applying the stored overrides.
+    ///
+    /// Returns `None` when the name is not found in the registry, falling
+    /// back to the standard `ThemeId` resolution path.
+    #[must_use]
+    pub fn resolve(&self, name: &str) -> Option<UiTheme> {
+        let config_theme = self.themes.get(name)?;
+        let base_id = config_theme
+            .base
+            .as_deref()
+            .and_then(ThemeId::from_name)
+            .unwrap_or(ThemeId::System);
+        let base_theme = base_id.ui_theme();
+        Some(config_theme.clone().apply(base_theme))
+    }
+}
+
 impl UiTheme {
     #[must_use]
     pub fn for_mode(mode: PaletteMode) -> Self {
@@ -678,12 +787,43 @@ pub fn theme_label_for_mode(mode: PaletteMode) -> &'static str {
     }
 }
 
+/// Resolve a `UiTheme` from settings, with optional custom theme registry
+/// and inline overrides.
+///
+/// Resolution order:
+/// 1. If `custom_themes` contains an entry for `theme`, resolve it and apply
+///    any `inline_overrides`.
+/// 2. Otherwise, resolve `theme` through `ThemeId::from_name` (or fall back
+///    to system detection).
+/// 3. Apply `inline_overrides` if present.
+/// 4. Apply `background_color` override if present.
 #[must_use]
-pub fn ui_theme_from_settings(theme: &str, background_color: Option<&str>) -> UiTheme {
-    let mut ui_theme = UiTheme::from_setting(theme).unwrap_or_else(UiTheme::detect);
+pub fn ui_theme_from_settings(
+    theme: &str,
+    background_color: Option<&str>,
+    custom_themes: Option<&ConfigThemes>,
+    inline_overrides: Option<&ConfigTheme>,
+) -> UiTheme {
+    // Step 1-2: Resolve the base theme
+    let base_theme = if let Some(ct) = custom_themes {
+        ct.resolve(theme)
+            .unwrap_or_else(|| UiTheme::from_setting(theme).unwrap_or_else(UiTheme::detect))
+    } else {
+        UiTheme::from_setting(theme).unwrap_or_else(UiTheme::detect)
+    };
+
+    // Step 3: Apply inline overrides
+    let mut ui_theme = if let Some(overrides) = inline_overrides {
+        overrides.clone().apply(base_theme)
+    } else {
+        base_theme
+    };
+
+    // Step 4: Apply background color override (highest precedence)
     if let Some(background) = background_color.and_then(parse_hex_rgb_color) {
         ui_theme = ui_theme.with_background_color(background);
     }
+
     ui_theme
 }
 
@@ -1348,6 +1488,7 @@ fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{
+        ThemeId, ConfigTheme, ConfigThemes,
         ACCENT_REASONING_LIVE, ColorDepth, DEEPSEEK_INK, DEEPSEEK_RED, DEEPSEEK_SKY,
         DEEPSEEK_SLATE, GRAYSCALE_BORDER, GRAYSCALE_ELEVATED, GRAYSCALE_PANEL, GRAYSCALE_REASONING,
         GRAYSCALE_SURFACE, GRAYSCALE_TEXT_BODY, GRAYSCALE_TEXT_HINT, GRAYSCALE_TEXT_SOFT,
@@ -1542,7 +1683,7 @@ mod tests {
 
     #[test]
     fn ui_theme_from_settings_applies_theme_and_background() {
-        let theme = ui_theme_from_settings("grayscale", Some("#111111"));
+        let theme = ui_theme_from_settings("grayscale", Some("#111111"), None, None);
         assert_eq!(theme.mode, PaletteMode::Grayscale);
         assert_eq!(theme.surface_bg, Color::Rgb(17, 17, 17));
         assert_eq!(theme.header_bg, Color::Rgb(17, 17, 17));
@@ -1693,5 +1834,103 @@ mod tests {
         // exercise the path so a panic would surface.
         let _ = ColorDepth::detect();
         let _ = adapt_color(DEEPSEEK_INK, ColorDepth::detect());
+    }
+
+    #[test]
+    fn config_theme_apply_overrides_colors() {
+        let base = ThemeId::Grayscale.ui_theme();
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("surface_bg".to_string(), "#1a1b2e".to_string());
+        overrides.insert("text_body".to_string(), "#e0e0e0".to_string());
+
+        let config_theme = ConfigTheme {
+            base: Some("grayscale".to_string()),
+            overrides,
+        };
+
+        let theme = config_theme.apply(base);
+        assert_eq!(theme.surface_bg, Color::Rgb(26, 27, 46));
+        assert_eq!(theme.text_body, Color::Rgb(224, 224, 224));
+        // Other fields should remain from the base theme
+        assert_eq!(theme.panel_bg, GRAYSCALE_PANEL);
+    }
+
+    #[test]
+    fn config_theme_apply_ignores_unknown_keys() {
+        let base = ThemeId::Grayscale.ui_theme();
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("unknown_field".to_string(), "#1a1b2e".to_string());
+
+        let config_theme = ConfigTheme {
+            base: Some("grayscale".to_string()),
+            overrides,
+        };
+
+        let theme = config_theme.apply(base);
+        // Should not panic and should keep the base value
+        assert_eq!(theme.surface_bg, GRAYSCALE_SURFACE);
+    }
+
+    #[test]
+    fn config_themes_resolve_custom_theme() {
+        let mut themes_map = std::collections::HashMap::new();
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("surface_bg".to_string(), "#2a2b3e".to_string());
+
+        let custom_theme = ConfigTheme {
+            base: Some("grayscale".to_string()),
+            overrides,
+        };
+        themes_map.insert("my-custom".to_string(), custom_theme);
+
+        let config_themes = ConfigThemes { themes: themes_map };
+
+        let theme = config_themes.resolve("my-custom");
+        assert!(theme.is_some());
+        let theme = theme.unwrap();
+        assert_eq!(theme.surface_bg, Color::Rgb(42, 43, 62));
+        // Other fields should come from the grayscale base
+        assert_eq!(theme.panel_bg, GRAYSCALE_PANEL);
+    }
+
+    #[test]
+    fn config_themes_resolve_returns_none_for_unknown() {
+        let config_themes = ConfigThemes::default();
+        let theme = config_themes.resolve("nonexistent");
+        assert!(theme.is_none());
+    }
+
+    #[test]
+    fn ui_theme_from_settings_with_custom_themes() {
+        let mut themes_map = std::collections::HashMap::new();
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("surface_bg".to_string(), "#3a3b4e".to_string());
+
+        let custom_theme = ConfigTheme {
+            base: Some("grayscale".to_string()),
+            overrides,
+        };
+        themes_map.insert("test-theme".to_string(), custom_theme);
+
+        let config_themes = ConfigThemes { themes: themes_map };
+
+        let theme = ui_theme_from_settings("test-theme", None, Some(&config_themes), None);
+        assert_eq!(theme.surface_bg, Color::Rgb(58, 59, 78));
+    }
+
+    #[test]
+    fn ui_theme_from_settings_with_inline_overrides() {
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("surface_bg".to_string(), "#4a4b5e".to_string());
+
+        let config_theme = ConfigTheme {
+            base: None,
+            overrides,
+        };
+
+        let theme = ui_theme_from_settings("grayscale", None, None, Some(&config_theme));
+        assert_eq!(theme.surface_bg, Color::Rgb(74, 75, 94));
+        // Other fields should come from the grayscale base
+        assert_eq!(theme.panel_bg, GRAYSCALE_PANEL);
     }
 }
