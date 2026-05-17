@@ -9,13 +9,16 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
+use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::client::DeepSeekClient;
 use crate::config::Config;
 use crate::llm_client::LlmClient;
-use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
+use crate::models::{
+    ContentBlock, ContentBlockStart, Delta, Message, MessageRequest, StreamEvent, SystemPrompt,
+};
 
 const ACP_PROTOCOL_VERSION: u64 = 1;
 
@@ -164,24 +167,12 @@ impl AcpServer {
             .filter(|text| !text.trim().is_empty())
             .ok_or_else(|| AcpError::invalid_params("prompt must include text content"))?;
 
-        let output = self
-            .run_prompt(&prompt, &session.cwd)
-            .await
-            .map_err(|err| AcpError::internal(err.to_string()))?;
+        let _cwd_guard =
+            ScopedCurrentDir::new(&session.cwd).map_err(|e| AcpError::internal(e.to_string()))?;
 
-        if !output.is_empty() {
-            write_session_update(writer, session_id, output)
-                .await
-                .map_err(|err| AcpError::internal(err.to_string()))?;
-        }
-
-        Ok(())
-    }
-
-    async fn run_prompt(&self, prompt: &str, cwd: &PathBuf) -> Result<String> {
-        let _cwd_guard = ScopedCurrentDir::new(cwd)?;
-        let client = DeepSeekClient::new(&self.config)?;
-        let route = crate::resolve_cli_auto_route(&self.config, &self.model, prompt).await;
+        let client =
+            DeepSeekClient::new(&self.config).map_err(|e| AcpError::internal(e.to_string()))?;
+        let route = crate::resolve_cli_auto_route(&self.config, &self.model, &prompt).await;
         let reasoning_effort = route
             .reasoning_effort
             .map(|effort| effort.as_setting().to_string());
@@ -204,19 +195,40 @@ impl AcpServer {
             metadata: None,
             thinking: None,
             reasoning_effort,
-            stream: Some(false),
+            stream: Some(true),
             temperature: Some(0.2),
             top_p: Some(0.9),
         };
 
-        let response = client.create_message(request).await?;
-        let mut output = String::new();
-        for block in response.content {
-            if let ContentBlock::Text { text, .. } = block {
-                output.push_str(&text);
+        let mut stream = client
+            .create_message_stream(request)
+            .await
+            .map_err(|e| AcpError::internal(e.to_string()))?;
+
+        while let Some(event) = stream.next().await {
+            let event = event.map_err(|e| AcpError::internal(e.to_string()))?;
+            match event {
+                StreamEvent::ContentBlockStart {
+                    content_block: ContentBlockStart::Text { text },
+                    ..
+                } if !text.is_empty() => {
+                    write_session_update(writer, session_id, text)
+                        .await
+                        .map_err(|e| AcpError::internal(e.to_string()))?;
+                }
+                StreamEvent::ContentBlockDelta {
+                    delta: Delta::TextDelta { text },
+                    ..
+                } if !text.is_empty() => {
+                    write_session_update(writer, session_id, text)
+                        .await
+                        .map_err(|e| AcpError::internal(e.to_string()))?;
+                }
+                _ => {}
             }
         }
-        Ok(output)
+
+        Ok(())
     }
 }
 
