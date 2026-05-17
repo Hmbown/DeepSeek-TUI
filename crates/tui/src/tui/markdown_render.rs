@@ -217,6 +217,7 @@ fn highlight_code_line(
             rest = &rest[end..];
             continue;
         }
+        #[allow(clippy::collapsible_if)]
         if let Some(ch) = rest.chars().next() {
             if ch.is_ascii_digit() {
                 let end = rest
@@ -237,6 +238,7 @@ fn highlight_code_line(
                 if rest.starts_with(*kw) {
                     let kw_end = kw.len();
                     let next = rest[kw_end..].chars().next();
+                    #[allow(clippy::unnecessary_map_or)]
                     if next.map_or(true, |c| !c.is_alphanumeric() && c != '_') {
                         spans.push(Span::styled(rest[..kw_end].to_string(), keyword_style));
                         rest = &rest[kw_end..];
@@ -297,6 +299,7 @@ pub fn parse(content: &str) -> ParsedMarkdown {
                 code_lang = None;
             } else {
                 in_code_block = true;
+                #[allow(clippy::manual_strip)]
                 let lang = trimmed[3..].trim();
                 code_lang = if lang.is_empty() {
                     None
