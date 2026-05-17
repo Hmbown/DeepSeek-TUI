@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Work panel status symbols are customisable via theme files.** Five new
+  keys — `work_pending_symbol`, `work_in_progress_symbol`, `work_completed_symbol`,
+  `work_failed_symbol`, `work_canceled_symbol` — let users replace the default
+  `[ ]` / `[~]` / `[x]` / `[!]` / `[-]` markers with arbitrary text or emoji.
+  Sidebar Work, Tasks, and Agents panels all honour the custom symbols. Task
+  panel tool rows also gain a `[tools]` prefix label.
+
 ### Fixed
 
 - **Feishu/Lark bridge startup order is guarded.** The bridge now keeps

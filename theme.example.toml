@@ -56,3 +56,11 @@ border_type  = "rounded"       # "plain" (default) or "rounded"
 
 # ── Reasoning tint ─────────────────────────────────────────────────────────
 reasoning_bg = "reset"       # thinking-block background. "reset" to clear.
+
+
+# Custom work panel status symbols
+work_pending_symbol     = "[ todo  ]"
+work_in_progress_symbol = "[ doing ]"
+work_completed_symbol   = "[ done  ]"
+work_failed_symbol      = "[ fail  ]"
+work_canceled_symbol    = "[ stop  ]"

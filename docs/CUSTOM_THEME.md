@@ -158,6 +158,31 @@ theme.  Color values accept `#RRGGBB`, `RRGGBB` (without `#`), or the keyword
 |----------------|-----------------------------------------------------------------|
 | `reasoning_bg` | Thinking-block background tint (`#RRGGBB` or `"reset"` to clear) |
 
+### Work Panel Status Symbols
+
+The five statuses shown in the sidebar Work panel (checklist items, strategy
+steps) and Tasks/Agents panels (tool rows, sub-agent rows) can be customised
+individually:
+
+| Field                      | Default | Applies to                                   |
+|----------------------------|---------|----------------------------------------------|
+| `work_pending_symbol`      | `[ ]`   | Pending / queued items                       |
+| `work_in_progress_symbol`  | `[~]`   | Running / active items                       |
+| `work_completed_symbol`    | `[x]`   | Completed / succeeded items                  |
+| `work_failed_symbol`       | `[!]`   | Failed / errored items                       |
+| `work_canceled_symbol`     | `[-]`   | Canceled / interrupted items                 |
+
+Values are free-form strings; emoji, Unicode glyphs, and multi-character
+labels are all accepted.  Example:
+
+```toml
+work_pending_symbol     = "○"
+work_in_progress_symbol = "◐"
+work_completed_symbol   = "●"
+work_failed_symbol      = "✗"
+work_canceled_symbol    = "⊘"
+```
+
 ## Activation
 
 ### From the Theme Picker

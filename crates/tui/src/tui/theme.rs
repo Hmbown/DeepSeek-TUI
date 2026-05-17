@@ -63,6 +63,15 @@ pub struct Theme {
     pub plan_pending_color: Color,
     pub plan_in_progress_color: Color,
     pub plan_completed_color: Color,
+    /// Work panel checklist/strategy step symbols. Configurable via
+    /// custom theme files (`work_pending_symbol`, etc.).
+    pub work_pending_symbol: &'static str,
+    pub work_in_progress_symbol: &'static str,
+    pub work_completed_symbol: &'static str,
+    /// Failed/error status symbol (e.g. "[!]", "✗").
+    pub work_failed_symbol: &'static str,
+    /// Canceled / interrupted status symbol (e.g. "[-]", "⊘").
+    pub work_canceled_symbol: &'static str,
     /// Reasoning / thinking block background tint.  `None` means "use the
     /// built-in hardcoded tint" (`palette::SURFACE_REASONING_TINT`).
     /// Set via theme file `reasoning_bg = "#RRGGBB"` or `"reset"`.
@@ -206,6 +215,22 @@ pub struct CustomThemeFile {
     /// Completed plan step colour.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_completed_color: Option<String>,
+    // ── Work panel symbols ──
+    /// Pending status symbol (e.g. "[ ]", "○").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_pending_symbol: Option<String>,
+    /// In-progress status symbol (e.g. "[~]", "◐").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_in_progress_symbol: Option<String>,
+    /// Completed status symbol (e.g. "[x]", "✓").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_completed_symbol: Option<String>,
+    /// Failed/error status symbol (e.g. "[!]", "✗").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_failed_symbol: Option<String>,
+    /// Canceled / interrupted status symbol (e.g. "[-]", "⊘").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_canceled_symbol: Option<String>,
     /// Extra keys that might be added in the future.
     #[serde(flatten)]
     #[serde(skip_serializing)]
@@ -273,6 +298,11 @@ impl Default for CustomThemeFile {
             plan_pending_color: None,
             plan_in_progress_color: None,
             plan_completed_color: None,
+            work_pending_symbol: None,
+            work_in_progress_symbol: None,
+            work_completed_symbol: None,
+            work_failed_symbol: None,
+            work_canceled_symbol: None,
             extras: std::collections::BTreeMap::new(),
         }
     }
@@ -553,6 +583,11 @@ pub const DARK_THEME: Theme = Theme {
     plan_pending_color: palette::TEXT_MUTED,
     plan_in_progress_color: palette::STATUS_WARNING,
     plan_completed_color: palette::STATUS_SUCCESS,
+    work_pending_symbol: "[ ]",
+    work_in_progress_symbol: "[~]",
+    work_completed_symbol: "[x]",
+    work_failed_symbol: "[!]",
+    work_canceled_symbol: "[-]",
     reasoning_bg: None,
 };
 
@@ -598,6 +633,11 @@ pub const LIGHT_THEME: Theme = Theme {
     plan_pending_color: palette::LIGHT_TEXT_MUTED,
     plan_in_progress_color: Color::Rgb(180, 83, 9),
     plan_completed_color: palette::DEEPSEEK_BLUE,
+    work_pending_symbol: "[ ]",
+    work_in_progress_symbol: "[~]",
+    work_completed_symbol: "[x]",
+    work_failed_symbol: "[!]",
+    work_canceled_symbol: "[-]",
     reasoning_bg: None,
 };
 
@@ -643,6 +683,11 @@ pub const GRAYSCALE_THEME: Theme = Theme {
     plan_pending_color: palette::GRAYSCALE_TEXT_MUTED,
     plan_in_progress_color: palette::GRAYSCALE_TEXT_BODY,
     plan_completed_color: palette::GRAYSCALE_TEXT_SOFT,
+    work_pending_symbol: "[ ]",
+    work_in_progress_symbol: "[~]",
+    work_completed_symbol: "[x]",
+    work_failed_symbol: "[!]",
+    work_canceled_symbol: "[-]",
     reasoning_bg: None,
 };
 
@@ -688,6 +733,11 @@ pub const CATPPUCCIN_MOCHA_THEME: Theme = {
         plan_pending_color: Color::Rgb(0xa6, 0xad, 0xc8),
         plan_in_progress_color: Color::Rgb(0xf9, 0xe2, 0xaf),
         plan_completed_color: Color::Rgb(0x74, 0xc7, 0xec),
+        work_pending_symbol: "[ ]",
+        work_in_progress_symbol: "[~]",
+        work_completed_symbol: "[x]",
+        work_failed_symbol: "[!]",
+        work_canceled_symbol: "[-]",
         reasoning_bg: None,
     }
 };
@@ -734,6 +784,11 @@ pub const TOKYO_NIGHT_THEME: Theme = {
         plan_pending_color: Color::Rgb(0xa9, 0xb1, 0xd6),
         plan_in_progress_color: Color::Rgb(0xe0, 0xaf, 0x68),
         plan_completed_color: Color::Rgb(0x7d, 0xcf, 0xff),
+        work_pending_symbol: "[ ]",
+        work_in_progress_symbol: "[~]",
+        work_completed_symbol: "[x]",
+        work_failed_symbol: "[!]",
+        work_canceled_symbol: "[-]",
         reasoning_bg: None,
     }
 };
@@ -780,6 +835,11 @@ pub const DRACULA_THEME: Theme = {
         plan_pending_color: Color::Rgb(0xc0, 0xc4, 0xd6),
         plan_in_progress_color: Color::Rgb(0xf1, 0xfa, 0x8c),
         plan_completed_color: Color::Rgb(0x8b, 0xe9, 0xfd),
+        work_pending_symbol: "[ ]",
+        work_in_progress_symbol: "[~]",
+        work_completed_symbol: "[x]",
+        work_failed_symbol: "[!]",
+        work_canceled_symbol: "[-]",
         reasoning_bg: None,
     }
 };
@@ -826,6 +886,11 @@ pub const GRUVBOX_DARK_THEME: Theme = {
         plan_pending_color: Color::Rgb(0xbd, 0xae, 0x93),
         plan_in_progress_color: Color::Rgb(0xfa, 0xbd, 0x2f),
         plan_completed_color: Color::Rgb(0x8e, 0xc0, 0x7c),
+        work_pending_symbol: "[ ]",
+        work_in_progress_symbol: "[~]",
+        work_completed_symbol: "[x]",
+        work_failed_symbol: "[!]",
+        work_canceled_symbol: "[-]",
         reasoning_bg: None,
     }
 };
@@ -1205,6 +1270,23 @@ impl Theme {
             with_plan_in_progress_color
         );
         try_override!(t, custom, plan_completed_color, with_plan_completed_color);
+
+        // ── Apply work panel symbol overrides ──
+        if let Some(ref s) = custom.work_pending_symbol {
+            t.work_pending_symbol = Box::leak(s.clone().into_boxed_str());
+        }
+        if let Some(ref s) = custom.work_in_progress_symbol {
+            t.work_in_progress_symbol = Box::leak(s.clone().into_boxed_str());
+        }
+        if let Some(ref s) = custom.work_completed_symbol {
+            t.work_completed_symbol = Box::leak(s.clone().into_boxed_str());
+        }
+        if let Some(ref s) = custom.work_failed_symbol {
+            t.work_failed_symbol = Box::leak(s.clone().into_boxed_str());
+        }
+        if let Some(ref s) = custom.work_canceled_symbol {
+            t.work_canceled_symbol = Box::leak(s.clone().into_boxed_str());
+        }
 
         t
     }

@@ -290,7 +290,7 @@ fn work_panel_lines(
         )));
     }
 
-    push_work_checklist_lines(summary, content_width, max_rows, &mut lines);
+    push_work_checklist_lines(summary, content_width, max_rows, &mut lines, theme);
     push_work_strategy_lines(summary, content_width, max_rows, &mut lines, theme);
 
     if summary.cycle_count > 0 && lines.len() < max_rows {
@@ -368,6 +368,7 @@ fn push_work_checklist_lines(
     content_width: usize,
     max_rows: usize,
     lines: &mut Vec<Line<'static>>,
+    theme: &Theme,
 ) {
     if summary.checklist_items.is_empty() || lines.len() >= max_rows {
         return;
@@ -407,9 +408,9 @@ fn push_work_checklist_lines(
         .min(summary.checklist_items.len());
     for item in summary.checklist_items[start..end].iter() {
         let (prefix, color) = match item.status {
-            TodoStatus::Pending => ("[ ]", palette::TEXT_MUTED),
-            TodoStatus::InProgress => ("[~]", palette::STATUS_WARNING),
-            TodoStatus::Completed => ("[x]", palette::STATUS_SUCCESS),
+            TodoStatus::Pending => (theme.work_pending_symbol, palette::TEXT_MUTED),
+            TodoStatus::InProgress => (theme.work_in_progress_symbol, palette::STATUS_WARNING),
+            TodoStatus::Completed => (theme.work_completed_symbol, palette::STATUS_SUCCESS),
         };
         let text = format!("{prefix} #{} {}", item.id, item.content);
         lines.push(Line::from(Span::styled(
@@ -498,9 +499,9 @@ fn push_work_strategy_lines(
         .min(summary.strategy_steps.len());
     for step in summary.strategy_steps.iter().take(max_steps) {
         let (prefix, color) = match step.status {
-            StepStatus::Pending => ("[ ]", theme.plan_pending_color),
-            StepStatus::InProgress => ("[~]", theme.plan_in_progress_color),
-            StepStatus::Completed => ("[x]", theme.plan_completed_color),
+            StepStatus::Pending => (theme.work_pending_symbol, theme.plan_pending_color),
+            StepStatus::InProgress => (theme.work_in_progress_symbol, theme.plan_in_progress_color),
+            StepStatus::Completed => (theme.work_completed_symbol, theme.plan_completed_color),
         };
         let mut text = format!("{prefix} {}", step.text);
         if !step.elapsed.is_empty() {
@@ -580,7 +581,7 @@ fn task_panel_lines(app: &App, content_width: usize, max_rows: usize) -> Vec<Lin
     let active_rows = active_tool_rows(app);
     if !active_rows.is_empty() && lines.len() < max_rows {
         push_sidebar_label(&mut lines, "Live tools", palette::DEEPSEEK_SKY);
-        push_tool_rows(&mut lines, &active_rows, content_width, max_rows);
+        push_tool_rows(&mut lines, &active_rows, content_width, max_rows, &app.theme);
     }
 
     let background_rows = background_task_rows(app, &active_rows);
@@ -662,7 +663,7 @@ fn task_panel_lines(app: &App, content_width: usize, max_rows: usize) -> Vec<Lin
         let recent_rows = recent_tool_rows(app, 4);
         if !recent_rows.is_empty() {
             push_sidebar_label(&mut lines, "Recent tools", palette::TEXT_DIM);
-            push_tool_rows(&mut lines, &recent_rows, content_width, max_rows);
+            push_tool_rows(&mut lines, &recent_rows, content_width, max_rows, &app.theme);
         }
     }
 
@@ -782,16 +783,17 @@ fn push_tool_rows(
     rows: &[SidebarToolRow],
     content_width: usize,
     max_rows: usize,
+    theme: &Theme,
 ) {
     for row in rows {
         if lines.len() >= max_rows {
             break;
         }
-        let (marker, color) = tool_status_marker(row.status);
+        let (marker, color) = tool_status_marker(theme, row.status);
         let label = if let Some(duration_ms) = row.duration_ms {
-            format!("{marker} {} {}", row.name, format_duration_ms(duration_ms))
+            format!("{marker} [tools] {} {}", row.name, format_duration_ms(duration_ms))
         } else {
-            format!("{marker} {}", row.name)
+            format!("{marker} [tools] {}", row.name)
         };
         lines.push(Line::from(Span::styled(
             truncate_line_to_width(&label, content_width),
@@ -1243,11 +1245,11 @@ fn first_nonempty_line(text: &str) -> &str {
         .unwrap_or("")
 }
 
-fn tool_status_marker(status: ToolStatus) -> (&'static str, ratatui::style::Color) {
+fn tool_status_marker(theme: &Theme, status: ToolStatus) -> (&'static str, ratatui::style::Color) {
     match status {
-        ToolStatus::Running => ("[~]", palette::STATUS_WARNING),
-        ToolStatus::Success => ("[x]", palette::STATUS_SUCCESS),
-        ToolStatus::Failed => ("[!]", palette::STATUS_ERROR),
+        ToolStatus::Running => (theme.work_in_progress_symbol, palette::STATUS_WARNING),
+        ToolStatus::Success => (theme.work_completed_symbol, palette::STATUS_SUCCESS),
+        ToolStatus::Failed => (theme.work_failed_symbol, palette::STATUS_ERROR),
     }
 }
 
@@ -1308,7 +1310,7 @@ fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &App) {
         role_counts,
     };
     let rows = sidebar_agent_rows(app);
-    let lines = subagent_panel_lines(&summary, &rows, content_width, usable_rows.max(1));
+    let lines = subagent_panel_lines(&summary, &rows, content_width, usable_rows.max(1), &app.theme);
 
     render_sidebar_section(f, area, "Agents", lines, app);
 }
@@ -1423,6 +1425,7 @@ pub fn subagent_panel_lines(
     rows: &[SidebarAgentRow],
     content_width: usize,
     max_rows: usize,
+    theme: &Theme,
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(max_rows.max(4));
 
@@ -1484,7 +1487,7 @@ pub fn subagent_panel_lines(
         if lines.len() >= max_rows {
             break;
         }
-        let (marker, color) = agent_status_marker(row.status.as_str());
+        let (marker, color) = agent_status_marker(theme, row.status.as_str());
         let label = format!("{marker} {} {}", row.role, row.name);
         lines.push(Line::from(Span::styled(
             truncate_line_to_width(&label, content_width.max(1)),
@@ -1532,13 +1535,13 @@ pub fn subagent_panel_lines(
     lines
 }
 
-fn agent_status_marker(status: &str) -> (&'static str, ratatui::style::Color) {
+fn agent_status_marker(theme: &Theme, status: &str) -> (&'static str, ratatui::style::Color) {
     match status {
-        "running" => ("[~]", palette::STATUS_WARNING),
-        "done" => ("[x]", palette::STATUS_SUCCESS),
-        "failed" => ("[!]", palette::STATUS_ERROR),
-        "canceled" | "interrupted" => ("[-]", palette::TEXT_MUTED),
-        _ => ("[ ]", palette::TEXT_MUTED),
+        "running" => (theme.work_in_progress_symbol, palette::STATUS_WARNING),
+        "done" => (theme.work_completed_symbol, palette::STATUS_SUCCESS),
+        "failed" => (theme.work_failed_symbol, palette::STATUS_ERROR),
+        "canceled" | "interrupted" => (theme.work_canceled_symbol, palette::TEXT_MUTED),
+        _ => (theme.work_pending_symbol, palette::TEXT_MUTED),
     }
 }
 
@@ -1991,7 +1994,7 @@ mod tests {
             "live section missing: {text:?}"
         );
         assert!(
-            text.iter().any(|line| line.contains("[~] agent_eval")),
+            text.iter().any(|line| line.contains("[~] [tools] agent_eval")),
             "active agent_eval row missing: {text:?}"
         );
         assert!(
@@ -2022,7 +2025,7 @@ mod tests {
             "recent section missing: {text:?}"
         );
         assert!(
-            text.iter().any(|line| line.contains("[x] read_file")),
+            text.iter().any(|line| line.contains("[x] [tools] read_file")),
             "recent read_file row missing: {text:?}"
         );
     }
@@ -2051,7 +2054,7 @@ mod tests {
         let text = lines_to_text(&task_panel_lines(&app, 64, 8));
 
         assert!(
-            !text.iter().any(|line| line.contains("[x] read_file")),
+            !text.iter().any(|line| line.contains("[x] [tools] read_file")),
             "expired completed active row should leave the sidebar: {text:?}"
         );
     }
@@ -2089,7 +2092,7 @@ mod tests {
         let text = lines_to_text(&task_panel_lines(&app, 64, 8));
 
         assert!(
-            text.iter().any(|line| line.contains("[x] read_file")),
+            text.iter().any(|line| line.contains("[x] [tools] read_file")),
             "fresh completed active row should linger briefly: {text:?}"
         );
     }
@@ -2118,7 +2121,7 @@ mod tests {
         let text = lines_to_text(&task_panel_lines(&app, 80, 8));
 
         assert!(
-            text.iter().any(|line| line.contains("[~] run x2")),
+            text.iter().any(|line| line.contains("[~] [tools] run x2")),
             "stale running rows should collapse into one sidebar row: {text:?}"
         );
         assert!(
@@ -2214,11 +2217,11 @@ mod tests {
         let text = lines_to_text(&task_panel_lines(&app, 80, 12));
         let failed_index = text
             .iter()
-            .position(|line| line.contains("[!] grep_files"))
+            .position(|line| line.contains("[!] [tools] grep_files"))
             .expect("failed grep row should stay visible");
         let read_group_index = text
             .iter()
-            .position(|line| line.contains("[x] read_file x3"))
+            .position(|line| line.contains("[x] [tools] read_file x3"))
             .expect("repeated read_file rows should collapse");
 
         assert!(
@@ -2227,7 +2230,7 @@ mod tests {
         );
         assert_eq!(
             text.iter()
-                .filter(|line| line.contains("[x] read_file"))
+                .filter(|line| line.contains("[x] [tools] read_file"))
                 .count(),
             1,
             "read_file should render once after grouping: {text:?}"
@@ -2258,7 +2261,7 @@ mod tests {
         let text = lines_to_text(&task_panel_lines(&app, 80, 12));
 
         assert!(
-            text.iter().any(|line| line.contains("[~] Waiting for CI")),
+            text.iter().any(|line| line.contains("[~] [tools] Waiting for CI")),
             "pending CI should not render as a hard failure: {text:?}"
         );
         assert!(
@@ -2297,7 +2300,7 @@ mod tests {
         let text = lines_to_text(&task_panel_lines(&app, 80, 8));
 
         assert!(
-            text.iter().any(|line| line.contains("[!] cargo test")),
+            text.iter().any(|line| line.contains("[!] [tools] cargo test")),
             "failed shell command should keep its concise label: {text:?}"
         );
         assert!(
@@ -2327,7 +2330,7 @@ mod tests {
 
         assert!(
             text.iter()
-                .any(|line| line.contains("[x] cargo check 1.2s")),
+                .any(|line| line.contains("[x] [tools] cargo check 1.2s")),
             "status marker and duration should stay in the row label: {text:?}"
         );
         assert!(
@@ -2358,7 +2361,7 @@ mod tests {
         let text = lines_to_text(&task_panel_lines(&app, 80, 6));
 
         assert!(
-            text.iter().any(|line| line.contains("[~] wait shell job")),
+            text.iter().any(|line| line.contains("[~] [tools] wait shell job")),
             "shell helper should render as a user-facing activity: {text:?}"
         );
         assert!(
@@ -2370,7 +2373,7 @@ mod tests {
     #[test]
     fn navigator_empty_state_says_no_agents() {
         let summary = SidebarSubagentSummary::default();
-        let lines = subagent_panel_lines(&summary, &[], 32, 8);
+        let lines = subagent_panel_lines(&summary, &[], 32, 8, &crate::tui::theme::DARK_THEME);
         let text = lines_to_text(&lines);
         assert_eq!(text, vec!["No agents".to_string()]);
     }
@@ -2410,7 +2413,7 @@ mod tests {
                 duration_ms: Some(21_000),
             },
         ];
-        let text = lines_to_text(&subagent_panel_lines(&summary, &rows, 64, 12));
+        let text = lines_to_text(&subagent_panel_lines(&summary, &rows, 64, 12, &crate::tui::theme::DARK_THEME));
         assert!(text[0].contains("2 running"), "header: {:?}", text[0]);
         assert!(text[0].contains("/ 3"), "total in header: {:?}", text[0]);
         assert!(
@@ -2441,7 +2444,7 @@ mod tests {
             role_counts: std::collections::BTreeMap::new(),
         };
 
-        let text = lines_to_text(&subagent_panel_lines(&summary, &[], 64, 8));
+        let text = lines_to_text(&subagent_panel_lines(&summary, &[], 64, 8, &crate::tui::theme::DARK_THEME));
 
         assert!(text[0].contains("1 running"), "header: {:?}", text[0]);
         assert!(text[0].contains("/ 6"), "fanout total: {:?}", text[0]);
@@ -2460,7 +2463,7 @@ mod tests {
             foreground_rlm_running: false,
             role_counts,
         };
-        let text = lines_to_text(&subagent_panel_lines(&summary, &[], 32, 8));
+        let text = lines_to_text(&subagent_panel_lines(&summary, &[], 32, 8, &crate::tui::theme::DARK_THEME));
         assert!(text[0].contains("1 done"), "settled header: {:?}", text[0]);
     }
 
@@ -2480,7 +2483,7 @@ mod tests {
             foreground_rlm_running: false,
             role_counts,
         };
-        let lines = subagent_panel_lines(&summary, &[], 16, 8);
+        let lines = subagent_panel_lines(&summary, &[], 16, 8, &crate::tui::theme::DARK_THEME);
         let role_line: &str = lines[1]
             .spans
             .first()
@@ -2498,7 +2501,7 @@ mod tests {
             foreground_rlm_running: true,
             ..SidebarSubagentSummary::default()
         };
-        let text = lines_to_text(&subagent_panel_lines(&summary, &[], 64, 8));
+        let text = lines_to_text(&subagent_panel_lines(&summary, &[], 64, 8, &crate::tui::theme::DARK_THEME));
 
         assert!(!text[0].contains("No agents"), "header: {:?}", text);
         assert!(
