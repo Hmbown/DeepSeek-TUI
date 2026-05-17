@@ -73,10 +73,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user with explicit UID/GID for filesystem ownership clarity.
+#
+# Pre-create the config dir owned by `deepseek` so that a named volume
+# mounted at `/home/deepseek/.deepseek` initializes with the container
+# user's ownership. Docker creates a missing bind/volume mountpoint as
+# root; without this the first run fails with `Permission denied
+# (os error 13)` creating `.deepseek/tasks/runtime/threads` (#1684).
 RUN groupadd --gid 1000 deepseek \
-    && useradd --create-home --shell /bin/bash --uid 1000 --gid 1000 deepseek
+    && useradd --create-home --shell /bin/bash --uid 1000 --gid 1000 deepseek \
+    && mkdir -p /home/deepseek/.deepseek \
+    && chown -R deepseek:deepseek /home/deepseek/.deepseek
 USER deepseek
 WORKDIR /home/deepseek
+VOLUME ["/home/deepseek/.deepseek"]
 
 COPY --from=builder --chown=deepseek:deepseek /out/deepseek /usr/local/bin/deepseek
 COPY --from=builder --chown=deepseek:deepseek /out/deepseek-tui /usr/local/bin/deepseek-tui

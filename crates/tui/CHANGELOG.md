@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or ambiguous (e.g. Ghostty), system-theme detection now falls back to the
   macOS `AppleInterfaceStyle` appearance so Light mode is no longer rendered
   in dark colors (#1670).
+- **Docker first run no longer fails with `Permission denied`.** The image
+  pre-creates `/home/deepseek/.deepseek` owned by the `deepseek` user and
+  declares it as a `VOLUME`, so a named volume mounted there initializes
+  with the container user's ownership instead of root (#1684).
 
 ### Documentation
 
