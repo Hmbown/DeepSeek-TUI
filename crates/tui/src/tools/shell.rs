@@ -192,8 +192,15 @@ fn push_shell_args(cmd: &mut Command, program: &str, args: &[String]) {
     use std::os::windows::process::CommandExt;
     // The `cmd /C <payload>` shape is the only place std's per-arg escaping
     // corrupts a quoted command. Pass `/C` and the payload raw so the quotes
-    // survive; any other program keeps normal (correct) escaping.
-    if program.eq_ignore_ascii_case("cmd")
+    // survive; any other program keeps normal (correct) escaping. Match `cmd`
+    // by file stem so a full path (`C:\Windows\System32\cmd.exe`) or `.exe`
+    // suffix still triggers the raw-arg path.
+    let is_cmd = std::path::Path::new(program)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.eq_ignore_ascii_case("cmd"))
+        .unwrap_or(false);
+    if is_cmd
         && args.len() == 2
         && args[0].eq_ignore_ascii_case("/C")
     {

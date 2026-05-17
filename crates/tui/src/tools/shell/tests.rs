@@ -852,6 +852,10 @@ fn issue_1691_quoted_commit_message_round_trips() {
         );
         let mut built = Command::new(&spec.program);
         push_shell_args(&mut built, &spec.program, &spec.args);
-        assert_eq!(built.get_args().count(), 2);
+        let got: Vec<String> = built
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(got, spec.args);
     }
 }
