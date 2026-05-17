@@ -571,20 +571,28 @@ fn enforce_tool_call_pairs(messages: &[Message], pinned_indices: &mut BTreeSet<u
     }
 }
 
+fn get_tokenizer() -> &'static tiktoken_rs::CoreBPE {
+    static TOKENIZER: OnceLock<tiktoken_rs::CoreBPE> = OnceLock::new();
+    TOKENIZER.get_or_init(|| tiktoken_rs::cl100k_base().unwrap())
+}
+
 fn estimate_tokens_for_message(message: &Message, include_thinking: bool) -> usize {
+    let tokenizer = get_tokenizer();
     message
         .content
         .iter()
         .map(|c| match c {
-            ContentBlock::Text { text, .. } => text.len() / 4,
+            ContentBlock::Text { text, .. } => tokenizer.encode_ordinary(text).len(),
             // Historical reasoning blocks are UI/session metadata for DeepSeek.
             // Only current-turn tool-call reasoning is sent back to the API.
-            ContentBlock::Thinking { thinking } if include_thinking => thinking.len() / 4,
+            ContentBlock::Thinking { thinking } if include_thinking => {
+                tokenizer.encode_ordinary(thinking).len()
+            }
             ContentBlock::Thinking { .. } => 0,
             ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
-                .map(|s| s.len() / 4)
+                .map(|s| tokenizer.encode_ordinary(&s).len())
                 .unwrap_or(100),
-            ContentBlock::ToolResult { content, .. } => content.len() / 4,
+            ContentBlock::ToolResult { content, .. } => tokenizer.encode_ordinary(content).len(),
             ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
             | ContentBlock::CodeExecutionToolResult { .. } => 0,
@@ -593,7 +601,7 @@ fn estimate_tokens_for_message(message: &Message, include_thinking: bool) -> usi
 }
 
 pub fn estimate_tokens(messages: &[Message]) -> usize {
-    // Rough estimate: ~4 chars per token. DeepSeek thinking-mode rule: any
+    // Exact token estimate using tiktoken. DeepSeek thinking-mode rule: any
     // assistant message with tool_calls keeps its reasoning_content forever
     // (replayed in all subsequent requests). Final text-only answers drop it.
     messages
@@ -610,7 +618,7 @@ fn message_has_tool_use(message: &Message) -> bool {
 }
 
 fn estimate_text_tokens_conservative(text: &str) -> usize {
-    text.chars().count().div_ceil(3)
+    get_tokenizer().encode_ordinary(text).len()
 }
 
 fn estimate_system_tokens_conservative(system: Option<&SystemPrompt>) -> usize {
@@ -630,8 +638,11 @@ pub fn estimate_input_tokens_conservative(
     messages: &[Message],
     system: Option<&SystemPrompt>,
 ) -> usize {
-    let message_tokens = estimate_tokens(messages).saturating_mul(3).div_ceil(2);
-    let system_tokens = estimate_system_tokens_conservative(system);
+    // 1.1x safety margin to account for tokenizer differences (cl100k vs Llama/DeepSeek)
+    let message_tokens = estimate_tokens(messages).saturating_mul(11).div_ceil(10);
+    let system_tokens = estimate_system_tokens_conservative(system)
+        .saturating_mul(11)
+        .div_ceil(10);
     let framing_overhead = messages.len().saturating_mul(12).saturating_add(48);
     message_tokens
         .saturating_add(system_tokens)
@@ -1149,11 +1160,65 @@ async fn create_summary(
 ) -> Result<String> {
     let limits = summary_input_limits_for_model(model);
     let used_cache_aligned = should_use_cache_aligned_summary(model, messages);
-    let request = if used_cache_aligned {
+    let mut request = if used_cache_aligned {
         build_cache_aligned_summary_request(model, messages, limits)
     } else {
         build_formatted_summary_request(model, messages, limits)
     };
+
+    // Pre-flight check: ensure payload fits within model context limit
+    if let Some(window) = context_window_for_model(model) {
+        let max_out = request.max_tokens;
+        let mut raw_message_tokens = estimate_tokens(&request.messages);
+        let system_tokens = estimate_system_tokens_conservative(request.system.as_ref())
+            .saturating_mul(11)
+            .div_ceil(10);
+        let mut dropped_count = 0;
+        while request.messages.len() > 1 {
+            let message_tokens_scaled = raw_message_tokens.saturating_mul(11).div_ceil(10);
+            let framing_overhead = request.messages.len().saturating_mul(12).saturating_add(48);
+            let estimated = message_tokens_scaled
+                .saturating_add(system_tokens)
+                .saturating_add(framing_overhead);
+
+            if estimated.saturating_add(max_out as usize) <= window as usize {
+                break;
+            }
+
+            let removed = request.messages.remove(0);
+            raw_message_tokens = raw_message_tokens.saturating_sub(estimate_tokens_for_message(
+                &removed,
+                message_has_tool_use(&removed),
+            ));
+            dropped_count += 1;
+
+            // Keep dropping if the new first message is a tool result or assistant message,
+            // to ensure we always start the truncated history with a clean user message.
+            while request.messages.len() > 1 {
+                let first = &request.messages[0];
+                let is_clean_user = first.role == "user"
+                    && first
+                        .content
+                        .iter()
+                        .all(|c| matches!(c, ContentBlock::Text { .. }));
+                if is_clean_user {
+                    break;
+                }
+                let removed = request.messages.remove(0);
+                raw_message_tokens = raw_message_tokens.saturating_sub(
+                    estimate_tokens_for_message(&removed, message_has_tool_use(&removed)),
+                );
+                dropped_count += 1;
+            }
+        }
+
+        if dropped_count > 0 {
+            logging::warn(format!(
+                "Compaction summary payload exceeded API limit. Dropped {} oldest messages to fit.",
+                dropped_count
+            ));
+        }
+    }
 
     let response = client.create_message(request).await?;
     // Compaction summary calls are billed by DeepSeek; route the
@@ -1914,7 +1979,7 @@ mod tests {
             messages
         };
 
-        let lower_bound = thinking.len() / 5;
+        let lower_bound = 800; // "reasoning " is at least 1 token, repeated 800 times = 800+ tokens
         assert!(estimate_tokens(&current_messages) > lower_bound);
         assert!(estimate_tokens(&completed_messages) > lower_bound);
         assert!(estimate_tokens(&historical_messages) > lower_bound);
@@ -2374,7 +2439,7 @@ mod tests {
 
         // Create messages that exceed token threshold
         let messages: Vec<Message> = (0..10)
-            .map(|_| msg("user", &"x".repeat(50))) // 50 chars = ~12 tokens each
+            .map(|_| msg("user", &"hello ".repeat(15))) // 50 chars = ~12 tokens each
             .collect();
 
         // Total tokens: ~120, which exceeds 100
@@ -2410,7 +2475,7 @@ mod tests {
             ..Default::default()
         };
 
-        let messages: Vec<Message> = (0..10).map(|_| msg("user", &"x".repeat(50))).collect();
+        let messages: Vec<Message> = (0..10).map(|_| msg("user", &"hello ".repeat(15))).collect();
         // Total tokens way under 500K, so floor blocks compaction.
         assert!(!should_compact(&messages, &config, None, None, None));
     }
@@ -2426,11 +2491,13 @@ mod tests {
             ..Default::default()
         };
 
-        // Each message ~500 tokens; 1100 messages → ~550K total tokens.
+        // Each message ~60,000 tokens; 11 messages → ~660K total tokens.
         // That's above the floor (500K) AND below the deliberately high
         // token_threshold, so auto-compaction stays off — by threshold,
         // not floor.
-        let messages: Vec<Message> = (0..1100).map(|_| msg("user", &"x".repeat(2000))).collect();
+        let messages: Vec<Message> = (0..11)
+            .map(|_| msg("user", &"hello ".repeat(60_000)))
+            .collect();
         assert!(!should_compact(&messages, &config, None, None, None));
 
         // Crank threshold below total → compaction fires now that we're

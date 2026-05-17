@@ -483,7 +483,7 @@ mod tests {
     #[test]
     fn inspector_marks_high_context_pressure() {
         let mut app = test_app();
-        app.api_messages.push(Message {
+        app.push_api_message(Message {
             role: "user".to_string(),
             content: vec![ContentBlock::Text {
                 text: "x".repeat(4_000_000),

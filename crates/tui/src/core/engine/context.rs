@@ -4,9 +4,9 @@
 //! engine session maintenance code. Keeping them here prevents the top-level
 //! engine module from accumulating unrelated context-policy details.
 
-use crate::compaction::estimate_tokens;
+pub(super) use crate::compaction::estimate_input_tokens_conservative;
 use crate::error_taxonomy::ErrorCategory;
-use crate::models::{Message, SystemPrompt, context_window_for_model};
+use crate::models::{SystemPrompt, context_window_for_model};
 use crate::tools::spec::ToolResult;
 
 /// Max output tokens requested for normal agent turns. Generous on purpose:
@@ -319,33 +319,6 @@ pub(super) fn extract_compaction_summary_prompt(
         }
         None => None,
     }
-}
-
-fn estimate_text_tokens_conservative(text: &str) -> usize {
-    text.chars().count().div_ceil(3)
-}
-
-fn estimate_system_tokens_conservative(system: Option<&SystemPrompt>) -> usize {
-    match system {
-        Some(SystemPrompt::Text(text)) => estimate_text_tokens_conservative(text),
-        Some(SystemPrompt::Blocks(blocks)) => blocks
-            .iter()
-            .map(|block| estimate_text_tokens_conservative(&block.text))
-            .sum(),
-        None => 0,
-    }
-}
-
-pub(super) fn estimate_input_tokens_conservative(
-    messages: &[Message],
-    system: Option<&SystemPrompt>,
-) -> usize {
-    let message_tokens = estimate_tokens(messages).saturating_mul(3).div_ceil(2);
-    let system_tokens = estimate_system_tokens_conservative(system);
-    let framing_overhead = messages.len().saturating_mul(12).saturating_add(48);
-    message_tokens
-        .saturating_add(system_tokens)
-        .saturating_add(framing_overhead)
 }
 
 pub(super) fn context_input_budget(model: &str, requested_output_tokens: u32) -> Option<usize> {

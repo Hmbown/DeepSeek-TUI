@@ -226,7 +226,7 @@ fn sidebar_work_summary(app: &App) -> SidebarWorkSummary {
     let mut summary = SidebarWorkSummary {
         goal_objective: app.goal.goal_objective.clone(),
         goal_token_budget: app.goal.goal_token_budget,
-        tokens_used: app.session.total_conversation_tokens,
+        tokens_used: app.session.estimated_context_tokens as u32,
         cycle_count: app.cycle_count,
         ..SidebarWorkSummary::default()
     };
@@ -1581,7 +1581,7 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
     ]));
 
     // ── Token usage ──────────────────────────────────────────────
-    let total_tokens = app.session.total_conversation_tokens;
+    let total_tokens = app.session.estimated_context_tokens;
     let window = crate::models::context_window_for_model(&app.model).unwrap_or(1_048_576);
     let pct = if window > 0 {
         ((total_tokens as f64 / window as f64) * 100.0).clamp(0.0, 100.0)
@@ -1598,7 +1598,7 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
     );
     lines.push(Line::from(Span::styled(
         format!(
-            "context: {}/{} tokens  {}",
+            "est. context: {}/{} tokens  {}",
             total_tokens,
             window,
             truncate_line_to_width(&bar, content_width.saturating_sub(32).max(8))
