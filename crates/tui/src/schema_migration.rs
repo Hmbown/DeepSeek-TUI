@@ -210,6 +210,7 @@ pub mod registry {
 
     /// Sessions: `~/.deepseek/sessions/<id>.json` and the latest
     /// checkpoint at `~/.deepseek/sessions/checkpoints/latest.json`.
+    #[allow(dead_code)]
     pub struct SessionMigration;
     impl SchemaMigration for SessionMigration {
         const CURRENT_VERSION: u32 = 1;
@@ -218,6 +219,7 @@ pub mod registry {
     }
 
     /// Offline queue: `~/.deepseek/sessions/checkpoints/offline_queue.json`.
+    #[allow(dead_code)]
     pub struct OfflineQueueMigration;
     impl SchemaMigration for OfflineQueueMigration {
         const CURRENT_VERSION: u32 = 1;
@@ -227,6 +229,7 @@ pub mod registry {
 
     /// Runtime threads / turns / items / events / store state — all
     /// share `CURRENT_RUNTIME_SCHEMA_VERSION`.
+    #[allow(dead_code)]
     pub struct RuntimeMigration;
     impl SchemaMigration for RuntimeMigration {
         const CURRENT_VERSION: u32 = 2;
@@ -235,6 +238,7 @@ pub mod registry {
     }
 
     /// Durable tasks under `~/.deepseek/tasks/`.
+    #[allow(dead_code)]
     pub struct TaskMigration;
     impl SchemaMigration for TaskMigration {
         const CURRENT_VERSION: u32 = 2;
@@ -243,6 +247,7 @@ pub mod registry {
     }
 
     /// Automation records and their per-run history.
+    #[allow(dead_code)]
     pub struct AutomationMigration;
     impl SchemaMigration for AutomationMigration {
         const CURRENT_VERSION: u32 = 1;
@@ -250,6 +255,7 @@ pub mod registry {
         const MIGRATIONS: &'static [MigrationFn] = &[];
     }
 
+    #[allow(dead_code)]
     pub struct AutomationRunMigration;
     impl SchemaMigration for AutomationRunMigration {
         const CURRENT_VERSION: u32 = 1;
