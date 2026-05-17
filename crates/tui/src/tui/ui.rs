@@ -150,6 +150,15 @@ const PERIODIC_FULL_REPAINT_EVERY_N: u64 = 50;
 const TURN_META_PREFIX: &str = "<turn_meta>";
 const SESSION_TITLE_MAX_CHARS: usize = 32;
 
+fn is_session_approved_for_tool(app: &App, tool_name: &str, grouping_key: &str) -> bool {
+    app.approval_session_approved.contains(grouping_key)
+        || app.approval_session_approved.contains(tool_name)
+}
+
+fn is_session_denied_for_key(app: &App, approval_key: &str) -> bool {
+    app.approval_session_denied.contains(approval_key)
+}
+
 fn sidebar_width_for_chat_area(app: &App, chat_width: u16) -> Option<u16> {
     if app.sidebar_focus == SidebarFocus::Hidden || chat_width < SIDEBAR_VISIBLE_MIN_WIDTH {
         return None;
@@ -487,6 +496,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                 session_id: app.current_session_id.clone(),
                 messages: app.api_messages.clone(),
                 system_prompt: app.system_prompt.clone(),
+                system_prompt_override: false,
                 model: app.model.clone(),
                 workspace: app.workspace.clone(),
             })
@@ -1894,12 +1904,11 @@ async fn run_event_loop(
                         tool_name,
                         description,
                         approval_key,
+                        approval_grouping_key,
                     } => {
                         let session_approved =
-                            app.approval_session_approved.contains(&approval_key)
-                                || app.approval_session_approved.contains(&tool_name);
-                        let session_denied = app.approval_session_denied.contains(&approval_key)
-                            || app.approval_session_denied.contains(&tool_name);
+                            is_session_approved_for_tool(app, &tool_name, &approval_grouping_key);
+                        let session_denied = is_session_denied_for_key(app, &approval_key);
                         if session_denied {
                             // The user already said no to this exact tool /
                             // approval key in this session; auto-deny so the
@@ -2501,6 +2510,7 @@ async fn run_event_loop(
                                                 session_id: app.current_session_id.clone(),
                                                 messages: app.api_messages.clone(),
                                                 system_prompt: app.system_prompt.clone(),
+                                                system_prompt_override: false,
                                                 model: app.model.clone(),
                                                 workspace: app.workspace.clone(),
                                             })
@@ -3378,6 +3388,7 @@ async fn run_event_loop(
                                         session_id: app.current_session_id.clone(),
                                         messages: app.api_messages.clone(),
                                         system_prompt: app.system_prompt.clone(),
+                                        system_prompt_override: false,
                                         model: app.model.clone(),
                                         workspace: app.workspace.clone(),
                                     })
@@ -4453,6 +4464,7 @@ async fn switch_provider(
                 session_id: app.current_session_id.clone(),
                 messages: app.api_messages.clone(),
                 system_prompt: app.system_prompt.clone(),
+                system_prompt_override: false,
                 model: app.model.clone(),
                 workspace: app.workspace.clone(),
             })
@@ -4565,6 +4577,7 @@ async fn apply_command_result(
                         session_id,
                         messages,
                         system_prompt,
+                        system_prompt_override: false,
                         model,
                         workspace,
                     })
@@ -4728,33 +4741,8 @@ async fn apply_command_result(
             }
             AppAction::OpenModelPicker => {
                 if app.view_stack.top_kind() != Some(ModalKind::ModelPicker) {
-                    app.status_message =
-                        Some(format!("Fetching {} models...", app.api_provider.as_str()));
-                    let picker = match fetch_available_models(config).await {
-                        Ok(models) if !models.is_empty() => {
-                            app.status_message = Some(format!("Found {} model(s)", models.len()));
-                            crate::tui::model_picker::ModelPickerView::new_with_models(app, models)
-                        }
-                        Ok(_) => {
-                            app.status_message = Some(format!(
-                                "{} returned no models; showing defaults",
-                                app.api_provider.as_str()
-                            ));
-                            crate::tui::model_picker::ModelPickerView::new(app)
-                        }
-                        Err(error) => {
-                            app.add_message(HistoryCell::System {
-                                content: format!(
-                                    "Failed to fetch {} models: {error}. Showing built-in defaults.",
-                                    app.api_provider.as_str()
-                                ),
-                            });
-                            app.status_message =
-                                Some("Model fetch failed; showing defaults".to_string());
-                            crate::tui::model_picker::ModelPickerView::new(app)
-                        }
-                    };
-                    app.view_stack.push(picker);
+                    app.view_stack
+                        .push(crate::tui::model_picker::ModelPickerView::new(app));
                 }
             }
             AppAction::OpenProviderPicker => {
@@ -4906,6 +4894,7 @@ async fn apply_command_result(
                                     session_id: app.current_session_id.clone(),
                                     messages: app.api_messages.clone(),
                                     system_prompt: app.system_prompt.clone(),
+                                    system_prompt_override: false,
                                     model: app.model.clone(),
                                     workspace: app.workspace.clone(),
                                 })
@@ -5052,6 +5041,7 @@ async fn switch_workspace(
                 session_id: app.current_session_id.clone(),
                 messages: app.api_messages.clone(),
                 system_prompt: app.system_prompt.clone(),
+                system_prompt_override: false,
                 model: app.model.clone(),
                 workspace: workspace.clone(),
             })
@@ -5935,12 +5925,15 @@ async fn handle_view_events(
                 decision,
                 timed_out,
                 approval_key,
+                approval_grouping_key,
             } => {
                 if decision == ReviewDecision::ApprovedForSession {
-                    // Store both the tool name (backward compat) and the
-                    // approval key (fingerprint-based).
+                    // Store the tool name (backward compat) and the lossy
+                    // grouping key so later flag variants of the same
+                    // command family are also auto-approved (v0.8.37).
                     app.approval_session_approved.insert(tool_name.clone());
-                    app.approval_session_approved.insert(approval_key.clone());
+                    app.approval_session_approved
+                        .insert(approval_grouping_key.clone());
                 }
 
                 match decision {
@@ -6046,6 +6039,7 @@ async fn handle_view_events(
                                 session_id: app.current_session_id.clone(),
                                 messages: app.api_messages.clone(),
                                 system_prompt: app.system_prompt.clone(),
+                                system_prompt_override: false,
                                 model: app.model.clone(),
                                 workspace: app.workspace.clone(),
                             })
@@ -6189,6 +6183,7 @@ async fn handle_view_events(
                             session_id: app.current_session_id.clone(),
                             messages: app.api_messages.clone(),
                             system_prompt: app.system_prompt.clone(),
+                            system_prompt_override: false,
                             model: app.model.clone(),
                             workspace: app.workspace.clone(),
                         })

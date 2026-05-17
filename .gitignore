@@ -104,3 +104,4 @@ docs/*_PLAN.md
 # direnv
 .envrc
 .direnv
+lessons.md

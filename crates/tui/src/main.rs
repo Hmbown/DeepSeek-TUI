@@ -4707,6 +4707,7 @@ async fn run_exec_agent(
                 session_id: Some(saved_id.clone()),
                 messages: saved.messages,
                 system_prompt: saved.system_prompt.map(SystemPrompt::Text),
+                system_prompt_override: false,
                 model: saved.metadata.model,
                 workspace: saved.metadata.workspace,
             })
