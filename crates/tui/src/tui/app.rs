@@ -1335,8 +1335,6 @@ impl App {
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
         let max_input_history = settings.max_input_history;
         let use_paste_burst_detection = settings.paste_burst_detection;
-        let theme_id =
-            palette::ThemeId::from_name(&settings.theme).unwrap_or(palette::ThemeId::System);
         // Resolve the named theme from settings with custom theme registry
         // and inline overrides. Resolution order:
         // 1. Custom themes from config.toml [themes.*] sections
@@ -1531,7 +1529,8 @@ impl App {
             pending_subagent_dispatch: None,
             agent_activity_started_at: None,
             ui_theme,
-            theme_id,
+            theme_id: palette::ThemeId::from_name(&settings.theme)
+                .unwrap_or(palette::ThemeId::System),
             onboarding,
             onboarding_needs_api_key: needs_api_key,
             onboarding_workspace_trust_gate,

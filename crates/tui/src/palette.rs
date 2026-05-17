@@ -670,10 +670,10 @@ impl ConfigTheme {
     /// Apply this configuration on top of a resolved `UiTheme`, returning
     /// the merged theme.
     #[must_use]
-    pub fn apply(self, base: UiTheme) -> UiTheme {
+    pub fn apply(&self, base: UiTheme) -> UiTheme {
         let mut theme = base;
-        for (key, hex_value) in self.overrides {
-            if let Some(color) = parse_hex_rgb_color(&hex_value) {
+        for (key, hex_value) in &self.overrides {
+            if let Some(color) = parse_hex_rgb_color(hex_value) {
                 match key.as_str() {
                     "surface_bg" => theme.surface_bg = color,
                     "panel_bg" => theme.panel_bg = color,
@@ -729,7 +729,7 @@ impl ConfigThemes {
             .and_then(ThemeId::from_name)
             .unwrap_or(ThemeId::System);
         let base_theme = base_id.ui_theme();
-        Some(config_theme.clone().apply(base_theme))
+        Some(config_theme.apply(base_theme))
     }
 }
 
@@ -814,7 +814,7 @@ pub fn ui_theme_from_settings(
 
     // Step 3: Apply inline overrides
     let mut ui_theme = if let Some(overrides) = inline_overrides {
-        overrides.clone().apply(base_theme)
+        overrides.apply(base_theme)
     } else {
         base_theme
     };
@@ -1488,15 +1488,14 @@ fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ThemeId, ConfigTheme, ConfigThemes,
-        ACCENT_REASONING_LIVE, ColorDepth, DEEPSEEK_INK, DEEPSEEK_RED, DEEPSEEK_SKY,
-        DEEPSEEK_SLATE, GRAYSCALE_BORDER, GRAYSCALE_ELEVATED, GRAYSCALE_PANEL, GRAYSCALE_REASONING,
-        GRAYSCALE_SURFACE, GRAYSCALE_TEXT_BODY, GRAYSCALE_TEXT_HINT, GRAYSCALE_TEXT_SOFT,
-        GRAYSCALE_UI_THEME, LIGHT_BORDER, LIGHT_ELEVATED, LIGHT_PANEL, LIGHT_REASONING,
-        LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT, LIGHT_UI_THEME, PaletteMode,
-        SURFACE_REASONING, SURFACE_REASONING_TINT, TEXT_BODY, TEXT_HINT, TEXT_REASONING,
-        TEXT_TOOL_OUTPUT, UI_THEME, adapt_bg, adapt_bg_for_palette_mode, adapt_color,
-        adapt_fg_for_palette_mode, blend, nearest_ansi16, normalize_hex_rgb_color,
+        ACCENT_REASONING_LIVE, ColorDepth, ConfigTheme, ConfigThemes, DEEPSEEK_INK, DEEPSEEK_RED,
+        DEEPSEEK_SKY, DEEPSEEK_SLATE, GRAYSCALE_BORDER, GRAYSCALE_ELEVATED, GRAYSCALE_PANEL,
+        GRAYSCALE_REASONING, GRAYSCALE_SURFACE, GRAYSCALE_TEXT_BODY, GRAYSCALE_TEXT_HINT,
+        GRAYSCALE_TEXT_SOFT, GRAYSCALE_UI_THEME, LIGHT_BORDER, LIGHT_ELEVATED, LIGHT_PANEL,
+        LIGHT_REASONING, LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT, LIGHT_UI_THEME,
+        PaletteMode, SURFACE_REASONING, SURFACE_REASONING_TINT, TEXT_BODY, TEXT_HINT,
+        TEXT_REASONING, TEXT_TOOL_OUTPUT, ThemeId, UI_THEME, adapt_bg, adapt_bg_for_palette_mode,
+        adapt_color, adapt_fg_for_palette_mode, blend, nearest_ansi16, normalize_hex_rgb_color,
         normalize_theme_name, parse_hex_rgb_color, pulse_brightness, reasoning_surface_tint,
         rgb_to_ansi256, theme_label_for_mode, ui_theme_from_settings,
     };
