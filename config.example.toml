@@ -300,6 +300,38 @@ osc8_links = true            # emit OSC 8 escapes around URLs (Cmd+click in iTer
 #                           # Note: this only affects TUI labels/chrome — it does NOT change model output language.
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Theme Configuration
+# ─────────────────────────────────────────────────────────────────────────────────
+# Select a built-in theme by name using the `/theme` slash command or
+# the `theme` setting in `~/.deepseek/state/settings.json`.
+#
+# Available themes:
+#   deepseek, grayscale, monokai, nord, tokyo-night, dracula, gruvbox,
+#   catppuccin, solarized, onedark, github, paper, terminal, minimal,
+#   high-contrast, terminal-16, terminal-256
+#
+# Override individual colors from the selected theme. Keys match the
+# `UiTheme` struct field names. Values are `#RRGGBB` hex strings.
+# Any unrecognized keys are silently ignored.
+#
+# [theme_overrides]
+# base = "deepseek"          # optional: base theme to extend (default: current setting)
+# surface_bg = "#1a1b2e"
+# text_body = "#e0e0e0"
+# panel_bg = "#2a2b3e"
+#
+# Define named custom themes by extending a built-in base. Each custom
+# theme is a table under `[themes]` with a `base` field and color overrides.
+#
+# [themes.my-custom]
+# base = "grayscale"
+# surface_bg = "#1a1b2e"
+# text_body = "#e0e0e0"
+#
+# Then select it with `/theme my-custom`.
+
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Feature Flags
 # ─────────────────────────────────────────────────────────────────────────────────
 [features]

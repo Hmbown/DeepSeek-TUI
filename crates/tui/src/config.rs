@@ -1008,6 +1008,17 @@ pub struct Config {
     /// Vision model configuration for the `image_analyze` tool.
     #[serde(default)]
     pub vision_model: Option<VisionModelConfig>,
+
+    /// Inline color overrides applied on top of the resolved theme.
+    /// Loaded from `[theme.overrides]` section of config.toml.
+    /// Keys match `UiTheme` field names (`surface_bg`, `text_body`, etc.).
+    /// Values are `#RRGGBB` hex strings.
+    #[serde(default)]
+    pub theme_overrides: Option<crate::palette::ConfigTheme>,
+
+    /// Named custom theme definitions from `[themes.*]` sections of config.toml.
+    #[serde(default)]
+    pub themes: Option<crate::palette::ConfigThemes>,
 }
 
 /// Vision model configuration for the `image_analyze` tool.
@@ -2834,6 +2845,8 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
         runtime_api: override_cfg.runtime_api.or(base.runtime_api),
         workshop: override_cfg.workshop.or(base.workshop),
+        theme_overrides: override_cfg.theme_overrides.or(base.theme_overrides),
+        themes: override_cfg.themes.or(base.themes),
     }
 }
 
