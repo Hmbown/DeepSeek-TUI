@@ -1487,6 +1487,17 @@ impl Config {
             if let Some(normalized) = normalize_model_for_provider(provider, model) {
                 return normalized;
             }
+            // An explicit provider-scoped model that is not a recognized
+            // DeepSeek alias is a deliberate custom choice for a non-DeepSeek
+            // provider (e.g. `MiniMax-M2.7` on an OpenAI-compatible endpoint).
+            // It must pass through verbatim rather than fall back to a
+            // DeepSeek/provider default (issue #1714).
+            if !matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
+                let trimmed = model.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+            }
         }
         if let Some(model) = self.default_text_model.as_deref()
             && (provider_passes_model_through(provider)
@@ -2365,7 +2376,36 @@ fn apply_env_overrides(config: &mut Config) {
     if let Ok(value) =
         std::env::var("DEEPSEEK_MODEL").or_else(|_| std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL"))
     {
-        config.default_text_model = Some(value);
+        // The CLI `--model` handoff always sets DEEPSEEK_MODEL, never the
+        // provider-specific *_MODEL var. The legacy root `default_text_model`
+        // is a DeepSeek-only slot (the validator rejects non-DeepSeek IDs
+        // there). For a non-DeepSeek provider the explicit model must land in
+        // the provider-scoped slot instead so the verbatim-passthrough path
+        // honors it rather than falling back to a DeepSeek/provider default
+        // (issue #1714). Mirror the OPENAI_MODEL branch above for every
+        // non-DeepSeek provider.
+        let provider = config.api_provider();
+        if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
+            config.default_text_model = Some(value);
+        } else {
+            let providers = config
+                .providers
+                .get_or_insert_with(ProvidersConfig::default);
+            let entry = match provider {
+                ApiProvider::Deepseek => &mut providers.deepseek,
+                ApiProvider::DeepseekCN => &mut providers.deepseek_cn,
+                ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
+                ApiProvider::Openai => &mut providers.openai,
+                ApiProvider::Atlascloud => &mut providers.atlascloud,
+                ApiProvider::Openrouter => &mut providers.openrouter,
+                ApiProvider::Novita => &mut providers.novita,
+                ApiProvider::Fireworks => &mut providers.fireworks,
+                ApiProvider::Sglang => &mut providers.sglang,
+                ApiProvider::Vllm => &mut providers.vllm,
+                ApiProvider::Ollama => &mut providers.ollama,
+            };
+            entry.model = Some(value);
+        }
     }
     if matches!(config.api_provider(), ApiProvider::NvidiaNim)
         && let Ok(value) = std::env::var("NVIDIA_NIM_MODEL")
@@ -5096,6 +5136,64 @@ model = "glm-5"
             "https://openai-compatible.example/api/coding/paas/v4"
         );
         assert_eq!(config.default_model(), "glm-5");
+        Ok(())
+    }
+
+    // Regression for issue #1714: `deepseek --provider openai --model
+    // MiniMax-M2.7` forwards the choice via DEEPSEEK_MODEL (never
+    // OPENAI_MODEL) and uses the DEFAULT base_url. The explicit custom model
+    // must pass through verbatim instead of silently becoming a
+    // DeepSeek/provider default.
+    #[test]
+    fn deepseek_model_env_passes_custom_model_through_for_non_deepseek_providers() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-1714-passthrough-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+
+        // (a) provider=openai + model="MiniMax-M2.7" via env, NO OPENAI_MODEL,
+        // DEFAULT base_url.
+        {
+            let _guard = EnvGuard::new(&temp_root);
+            // Safety: test-only environment mutation guarded by a global mutex.
+            unsafe {
+                env::set_var("DEEPSEEK_PROVIDER", "openai");
+                env::set_var("OPENAI_API_KEY", "openai-env-key");
+                env::set_var("DEEPSEEK_MODEL", "MiniMax-M2.7");
+            }
+
+            let config = Config::load(None, None)?;
+            assert_eq!(config.api_provider(), ApiProvider::Openai);
+            assert_eq!(config.deepseek_base_url(), DEFAULT_OPENAI_BASE_URL);
+            assert_eq!(config.default_model(), "MiniMax-M2.7");
+        }
+
+        // (b) a non-passthrough provider (novita) with an unknown custom model
+        // and the DEFAULT base_url must also be preserved verbatim — never
+        // rewritten to DEFAULT_NOVITA_MODEL.
+        {
+            let _guard = EnvGuard::new(&temp_root);
+            // Safety: test-only environment mutation guarded by a global mutex.
+            unsafe {
+                env::set_var("DEEPSEEK_PROVIDER", "novita");
+                env::set_var("NOVITA_API_KEY", "novita-env-key");
+                env::set_var("DEEPSEEK_MODEL", "MiniMax-M2.7");
+            }
+
+            let config = Config::load(None, None)?;
+            assert_eq!(config.api_provider(), ApiProvider::Novita);
+            assert_eq!(config.deepseek_base_url(), DEFAULT_NOVITA_BASE_URL);
+            assert_ne!(config.default_model(), DEFAULT_NOVITA_MODEL);
+            assert_eq!(config.default_model(), "MiniMax-M2.7");
+        }
+
         Ok(())
     }
 
