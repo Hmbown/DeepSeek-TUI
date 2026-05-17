@@ -2551,6 +2551,197 @@ fn should_auto_compact_before_send_respects_threshold_and_setting() {
     assert!(!should_auto_compact_before_send(&app));
 }
 
+#[test]
+fn auto_compact_respects_500k_floor_even_at_high_percent() {
+    let mut app = create_test_app();
+    app.auto_compact = true;
+    app.auto_compact_threshold_pct = 70.0;
+    app.session.last_prompt_tokens = Some(400_000);
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "x".repeat(400_000),
+            cache_control: None,
+        }],
+    }];
+    assert!(!should_auto_compact_before_send(&app));
+}
+
+#[test]
+fn auto_compact_fires_when_above_floor_and_threshold() {
+    let mut app = create_test_app();
+    app.auto_compact = true;
+    app.auto_compact_threshold_pct = 70.0;
+    app.session.last_prompt_tokens = Some(600_000);
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "x".repeat(600_000),
+            cache_control: None,
+        }],
+    }];
+    assert!(should_auto_compact_before_send(&app));
+}
+
+#[test]
+fn auto_compact_blocked_when_above_floor_but_below_threshold() {
+    let mut app = create_test_app();
+    app.auto_compact = true;
+    app.auto_compact_threshold_pct = 85.0;
+    app.session.last_prompt_tokens = Some(600_000);
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "x".repeat(600_000),
+            cache_control: None,
+        }],
+    }];
+    assert!(!should_auto_compact_before_send(&app));
+}
+
+#[test]
+fn auto_compact_threshold_10_percent_fires_early() {
+    let mut app = create_test_app();
+    app.auto_compact = true;
+    app.auto_compact_threshold_pct = 10.0;
+    app.session.last_prompt_tokens = Some(500_000);
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "x".repeat(500_000),
+            cache_control: None,
+        }],
+    }];
+    assert!(should_auto_compact_before_send(&app));
+}
+
+#[test]
+fn auto_compact_threshold_100_percent_never_fires() {
+    let mut app = create_test_app();
+    app.auto_compact = true;
+    app.auto_compact_threshold_pct = 100.0;
+    app.session.last_prompt_tokens = Some(999_000);
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "x".repeat(999_000),
+            cache_control: None,
+        }],
+    }];
+    assert!(!should_auto_compact_before_send(&app));
+}
+
+#[test]
+fn auto_compact_disabled_master_switch_always_blocks() {
+    let mut app = create_test_app();
+    app.auto_compact = false;
+    app.auto_compact_threshold_pct = 10.0;
+    app.session.last_prompt_tokens = Some(900_000);
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "x".repeat(900_000),
+            cache_control: None,
+        }],
+    }];
+    assert!(!should_auto_compact_before_send(&app));
+}
+
+#[test]
+fn context_warning_without_auto_compact_suggests_enabling() {
+    let mut app = create_test_app();
+    app.auto_compact = false;
+    app.auto_compact_threshold_pct = 70.0;
+    app.session.last_prompt_tokens = Some(650_000);
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "x".repeat(650_000),
+            cache_control: None,
+        }],
+    }];
+    maybe_warn_context_pressure(&mut app);
+    assert!(app.status_message.is_some());
+    let msg = app.status_message.unwrap();
+    assert!(msg.contains("Consider enabling auto_compact or use /compact."));
+}
+
+#[test]
+fn context_warning_below_floor_and_below_threshold() {
+    let mut app = create_test_app();
+    app.auto_compact = true;
+    app.auto_compact_threshold_pct = 70.0;
+    app.session.last_prompt_tokens = Some(300_000);
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "x".repeat(300_000),
+            cache_control: None,
+        }],
+    }];
+    maybe_warn_context_pressure(&mut app);
+    assert!(app.status_message.is_some());
+    let msg = app.status_message.unwrap();
+    assert!(msg.contains("below 500K floor and 70% threshold"));
+}
+
+#[test]
+fn context_warning_below_floor_above_threshold() {
+    let mut app = create_test_app();
+    app.auto_compact = true;
+    app.auto_compact_threshold_pct = 30.0;
+    app.session.last_prompt_tokens = Some(400_000);
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "x".repeat(400_000),
+            cache_control: None,
+        }],
+    }];
+    maybe_warn_context_pressure(&mut app);
+    assert!(app.status_message.is_some());
+    let msg = app.status_message.unwrap();
+    assert!(msg.contains("below 500K token floor"));
+}
+
+#[test]
+fn context_warning_above_floor_below_threshold() {
+    let mut app = create_test_app();
+    app.auto_compact = true;
+    app.auto_compact_threshold_pct = 90.0;
+    app.session.last_prompt_tokens = Some(700_000);
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "x".repeat(700_000),
+            cache_control: None,
+        }],
+    }];
+    maybe_warn_context_pressure(&mut app);
+    assert!(app.status_message.is_some());
+    let msg = app.status_message.unwrap();
+    assert!(msg.contains("will fire at 90%"));
+}
+
+#[test]
+fn context_warning_above_floor_and_threshold() {
+    let mut app = create_test_app();
+    app.auto_compact = true;
+    app.auto_compact_threshold_pct = 50.0;
+    app.session.last_prompt_tokens = Some(800_000);
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "x".repeat(800_000),
+            cache_control: None,
+        }],
+    }];
+    maybe_warn_context_pressure(&mut app);
+    assert!(app.status_message.is_some());
+    let msg = app.status_message.unwrap();
+    assert!(msg.contains("would fire now"));
+}
+
 // ============================================================================
 // Streaming Cancel Behavior Tests
 // ============================================================================
