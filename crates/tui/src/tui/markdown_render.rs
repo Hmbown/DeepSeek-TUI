@@ -191,13 +191,13 @@ fn highlight_code_line(
     let mut spans = Vec::new();
     let mut rest = line;
     while !rest.is_empty() {
-        if rest.starts_with('"') {
-            if let Some(end) = rest[1..].find('"') {
-                let end = end + 2;
-                spans.push(Span::styled(rest[..end].to_string(), string_style));
-                rest = &rest[end..];
-                continue;
-            }
+        if rest.starts_with('"')
+            && let Some(end) = rest[1..].find('"')
+        {
+            let end = end + 2;
+            spans.push(Span::styled(rest[..end].to_string(), string_style));
+            rest = &rest[end..];
+            continue;
         }
         if rest.starts_with('\'') && rest.len() > 2 {
             let end = if rest.as_bytes().get(1) == Some(&b'\\') {
@@ -209,13 +209,13 @@ fn highlight_code_line(
             rest = &rest[end..];
             continue;
         }
-        if rest.starts_with("/*") {
-            if let Some(end) = rest.find("*/") {
-                let end = end + 2;
-                spans.push(Span::styled(rest[..end].to_string(), comment_style));
-                rest = &rest[end..];
-                continue;
-            }
+        if rest.starts_with("/*")
+            && let Some(end) = rest.find("*/")
+        {
+            let end = end + 2;
+            spans.push(Span::styled(rest[..end].to_string(), comment_style));
+            rest = &rest[end..];
+            continue;
         }
         if let Some(ch) = rest.chars().next() {
             if ch.is_ascii_digit() {

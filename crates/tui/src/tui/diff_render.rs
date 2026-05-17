@@ -321,6 +321,7 @@ fn render_hunk_header(line: &str, width: u16) -> Vec<Line<'static>> {
     wrap_with_style(line, style, width)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_diff_line(
     content: &str,
     width: u16,

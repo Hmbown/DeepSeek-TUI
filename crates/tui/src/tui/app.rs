@@ -706,7 +706,7 @@ impl Default for ViewportState {
 /// Goal mode state (#397). Also hosts auto-continue (#goals):
 /// when enabled, the agent autonomously keeps pushing turns until
 /// all todos are completed or the user interrupts.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GoalState {
     pub goal_objective: Option<String>,
     pub goal_token_budget: Option<u32>,
@@ -737,23 +737,6 @@ pub struct GoalState {
     /// model can re-orient after many auto-continue turns. Includes the
     /// goal objective, initial transcript state, and workspace info.
     pub goal_context: Option<String>,
-}
-
-impl Default for GoalState {
-    fn default() -> Self {
-        Self {
-            goal_objective: None,
-            goal_token_budget: None,
-            goal_started_at: None,
-            auto_continue: false,
-            auto_continue_turn_count: 0,
-            prev_pending_count: None,
-            stuck_streak: 0,
-            idle_streak: 0,
-            completion_confirmation_pending: false,
-            goal_context: None,
-        }
-    }
 }
 
 impl Serialize for GoalState {
@@ -4011,24 +3994,22 @@ impl App {
         }
 
         // Last assistant summary (most recent assistant cell)
-        if let Some(last_assistant) = self
+        if let Some(HistoryCell::Assistant { content, .. }) = self
             .history
             .iter()
             .rev()
             .find(|cell| matches!(cell, HistoryCell::Assistant { .. }))
         {
-            if let HistoryCell::Assistant { content, .. } = last_assistant {
-                // Truncate to ~500 chars, safe on UTF-8 boundaries.
-                let summary = if content.chars().count() > 500 {
-                    let truncated: String = content.chars().take(500).collect();
-                    format!("{truncated}…")
-                } else {
-                    content.clone()
-                };
-                lines.push("### Last Response".to_string());
-                lines.push(summary);
-                lines.push(String::new());
-            }
+            // Truncate to ~500 chars, safe on UTF-8 boundaries.
+            let summary = if content.chars().count() > 500 {
+                let truncated: String = content.chars().take(500).collect();
+                format!("{truncated}…")
+            } else {
+                content.clone()
+            };
+            lines.push("### Last Response".to_string());
+            lines.push(summary);
+            lines.push(String::new());
         }
 
         // Active sub-agents (with per-model breakdown)
