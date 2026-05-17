@@ -684,6 +684,7 @@ impl WorkingSet {
         let prompt_entries: Vec<&WorkingSetEntry> = self
             .sorted_for_prompt()
             .into_iter()
+            .filter(|entry| prompt_eligible_entry(entry))
             .take(self.config.max_prompt_entries)
             .collect();
 
@@ -776,6 +777,9 @@ impl WorkingSet {
             else {
                 continue;
             };
+            if source == WorkingSetSource::ToolOutput && !exists {
+                continue;
+            }
             self.record_path(rel, exists, is_dir, source);
         }
 
@@ -854,6 +858,14 @@ fn score_entry(entry: &WorkingSetEntry, current_turn: u64) -> i64 {
     i64::from(entry.touches) * 4 + recency_bonus
 }
 
+fn prompt_eligible_entry(entry: &WorkingSetEntry) -> bool {
+    entry.exists
+        || matches!(
+            entry.last_source,
+            WorkingSetSource::UserMessage | WorkingSetSource::ToolInput
+        )
+}
+
 fn normalize_candidate(raw: &str) -> Option<String> {
     let trimmed = raw.trim().trim_matches(|c: char| {
         matches!(
@@ -905,6 +917,9 @@ fn relativize_candidate(
         .unwrap_or_else(|| candidate.ends_with('/'));
 
     let rel_string = path_to_string(&rel_path)?;
+    if rel_string.is_empty() {
+        return None;
+    }
     Some((rel_string, exists, is_dir))
 }
 
@@ -947,8 +962,8 @@ fn extract_paths_from_message(message: &Message) -> Vec<String> {
             ContentBlock::Text { text, .. } => {
                 paths.extend(extract_paths_from_text(text));
             }
-            ContentBlock::ToolUse { input, .. } => {
-                paths.extend(extract_paths_from_value(input, None));
+            ContentBlock::ToolUse { name, input, .. } => {
+                paths.extend(extract_paths_from_value(input, Some(name)));
             }
             ContentBlock::ToolResult { content, .. } => {
                 paths.extend(extract_paths_from_text(content));
@@ -976,14 +991,15 @@ fn extract_paths_from_value_inner(
 ) {
     match value {
         Value::String(s) => {
+            if tool_is_shell(tool_hint) && key_hint.map(key_is_shell_command).unwrap_or(false) {
+                return;
+            }
             let key_suggests_path = key_hint.map(key_is_path_like).unwrap_or(false);
             if key_suggests_path || looks_like_path(s) {
                 out.extend(extract_paths_from_text(s));
                 if key_suggests_path && !s.contains('/') && !s.contains('\\') {
                     out.push(s.to_string());
                 }
-            } else if tool_hint == Some("exec_shell") && s.len() < 400 {
-                out.extend(extract_paths_from_text(s));
             }
         }
         Value::Array(arr) => {
@@ -998,6 +1014,20 @@ fn extract_paths_from_value_inner(
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
+}
+
+fn tool_is_shell(tool_hint: Option<&str>) -> bool {
+    matches!(
+        tool_hint,
+        Some("exec_shell" | "exec_shell_wait" | "exec_shell_interact" | "task_shell_start")
+    )
+}
+
+fn key_is_shell_command(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "command" | "cmd" | "shell" | "script"
+    )
 }
 
 fn key_is_path_like(key: &str) -> bool {
@@ -1292,6 +1322,62 @@ mod tests {
         assert!(block.contains("Cargo.toml"));
         assert!(block.contains("src"));
         assert!(block.contains("src/lib.rs"));
+    }
+
+    #[test]
+    fn summary_block_omits_workspace_root_as_empty_path() {
+        let tmp = TempDir::new().expect("tempdir");
+        fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"").expect("write");
+
+        let mut ws = WorkingSet::default();
+        ws.observe_tool_call(
+            "read_file",
+            &serde_json::json!({ "path": tmp.path().display().to_string() }),
+            None,
+            tmp.path(),
+        );
+        let block = ws.summary_block(tmp.path()).expect("block");
+
+        assert!(!ws.entries.contains_key(""));
+        assert!(!block.contains("-  (dir)"));
+    }
+
+    #[test]
+    fn shell_command_text_does_not_pollute_working_set() {
+        let tmp = TempDir::new().expect("tempdir");
+
+        let mut ws = WorkingSet::default();
+        ws.observe_tool_call(
+            "exec_shell",
+            &serde_json::json!({
+                "command": "cd /tmp && echo 42/nfn && sed -n '1,20p' a/Users/nope.rs"
+            }),
+            None,
+            tmp.path(),
+        );
+
+        assert!(ws.entries.is_empty());
+    }
+
+    #[test]
+    fn tool_output_keeps_existing_paths_and_drops_missing_paths() {
+        let tmp = TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        fs::write(src.join("lib.rs"), "pub fn x() {}").expect("write");
+
+        let mut ws = WorkingSet::default();
+        ws.observe_tool_call(
+            "exec_shell",
+            &serde_json::json!({ "command": "printf '%s\n' src/lib.rs 42/nfn a/Users/nope.rs" }),
+            Some("src/lib.rs\n42/nfn\na/Users/nope.rs\n"),
+            tmp.path(),
+        );
+        let block = ws.summary_block(tmp.path()).expect("block");
+
+        assert!(block.contains("src/lib.rs"));
+        assert!(!block.contains("42/nfn"));
+        assert!(!block.contains("a/Users/nope.rs"));
     }
 
     /// #280 regression: `summary_block` must produce byte-identical output

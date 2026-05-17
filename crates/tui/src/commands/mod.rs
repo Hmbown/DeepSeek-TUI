@@ -21,6 +21,7 @@ mod network;
 mod note;
 mod provider;
 mod queue;
+mod recap;
 mod rename;
 mod restore;
 mod review;
@@ -456,6 +457,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         description_id: MessageId::CmdGoalDescription,
     },
     CommandInfo {
+        name: "recap",
+        aliases: &[],
+        usage: "/recap",
+        description_id: MessageId::CmdRecapDescription,
+    },
+    CommandInfo {
         name: "settings",
         aliases: &[],
         usage: "/settings",
@@ -626,6 +633,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "lsp" => config::lsp_command(app, arg),
         "share" => share::share(app, arg),
         "goal" | "mubiao" => goal::goal(app, arg),
+        "recap" => recap::recap(app, arg),
 
         // Skills commands
         "skills" | "jinengliebiao" => skills::list_skills(app, arg),

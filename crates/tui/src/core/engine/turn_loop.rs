@@ -791,6 +791,15 @@ impl Engine {
 
             // Update turn usage
             turn.add_usage(&usage);
+            if usage_has_signal(&usage) {
+                let _ = self
+                    .tx_event
+                    .send(Event::ApiRoundUsage {
+                        usage: usage.clone(),
+                        round: turn.api_rounds,
+                    })
+                    .await;
+            }
 
             // Build content blocks. If this assistant turn produced tool
             // calls, ensure a Thinking block is present even when the model
@@ -1959,6 +1968,16 @@ XML unless the user explicitly asks to debug sub-agent internals.\n\n\
             cache_control: None,
         }],
     }
+}
+
+fn usage_has_signal(usage: &Usage) -> bool {
+    usage.input_tokens > 0
+        || usage.output_tokens > 0
+        || usage.prompt_cache_hit_tokens.is_some()
+        || usage.prompt_cache_miss_tokens.is_some()
+        || usage.reasoning_tokens.is_some()
+        || usage.reasoning_replay_tokens.is_some()
+        || usage.server_tool_use.is_some()
 }
 
 fn should_hold_turn_for_subagents(queued_completions: usize, running_children: usize) -> bool {

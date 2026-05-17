@@ -358,35 +358,13 @@ fn spacer_rows_between(
 }
 
 fn tool_group_rail(
-    cells: &[CachedCell],
-    cell_index: usize,
-    line_in_cell: usize,
-    rendered_line_count: usize,
+    _cells: &[CachedCell],
+    _cell_index: usize,
+    _line_in_cell: usize,
+    _rendered_line_count: usize,
 ) -> Option<crate::tui::widgets::tool_card::CardRail> {
-    let cached = cells.get(cell_index)?;
-    if !cached.is_tool_groupable || rendered_line_count == 0 {
-        return None;
-    }
-
-    let previous_is_tool = cell_index
-        .checked_sub(1)
-        .and_then(|idx| cells.get(idx))
-        .is_some_and(|cell| cell.is_tool_groupable && !cell.is_empty);
-    let next_is_tool = cells
-        .get(cell_index + 1)
-        .is_some_and(|cell| cell.is_tool_groupable && !cell.is_empty);
-    let first_line_in_group = !previous_is_tool && line_in_cell == 0;
-    let last_line_in_group = !next_is_tool && line_in_cell + 1 == rendered_line_count;
-
-    let rail = match (first_line_in_group, last_line_in_group) {
-        (true, true) if rendered_line_count == 1 => {
-            crate::tui::widgets::tool_card::CardRail::Single
-        }
-        (true, _) => crate::tui::widgets::tool_card::CardRail::Top,
-        (_, true) => crate::tui::widgets::tool_card::CardRail::Bottom,
-        _ => crate::tui::widgets::tool_card::CardRail::Middle,
-    };
-    Some(rail)
+    // Claude Code style: no box-drawing rails. Tool output uses 2-space indent.
+    None
 }
 
 fn line_with_group_rail(
@@ -864,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_tool_cells_render_as_one_railed_group() {
+    fn adjacent_tool_cells_render_without_legacy_rails() {
         let cells = vec![exec_tool_cell("cargo test"), exec_tool_cell("cargo clippy")];
         let revisions = vec![1u64, 1];
         let mut cache = TranscriptViewCache::new();
@@ -875,18 +853,18 @@ mod tests {
         assert!(
             lines
                 .first()
-                .is_some_and(|line| line.starts_with("\u{256D} ")),
-            "first tool line should open the shared rail: {lines:?}"
+                .is_some_and(|line| line.contains("Bash(cargo test)")),
+            "first tool line should show the tool call header: {lines:?}"
         );
         assert!(
-            lines.iter().any(|line| line.starts_with("\u{2502} ")),
-            "middle tool lines should continue the shared rail: {lines:?}"
+            !lines.iter().any(|line| line.starts_with("\u{256D} ")
+                || line.starts_with("\u{2502} ")
+                || line.starts_with("\u{2570} ")),
+            "legacy rail glyphs should not render in Claude-style tool cells: {lines:?}"
         );
         assert!(
-            lines
-                .last()
-                .is_some_and(|line| line.starts_with("\u{2570} ")),
-            "last tool line should close the shared rail: {lines:?}"
+            lines.iter().filter(|line| line.starts_with("  ")).count() >= 2,
+            "tool detail rows should use plain two-space indentation: {lines:?}"
         );
         assert!(
             !lines.iter().any(String::is_empty),

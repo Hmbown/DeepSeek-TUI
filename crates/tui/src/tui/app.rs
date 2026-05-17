@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ratatui::layout::Rect;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -19,7 +20,7 @@ use crate::core::coherence::CoherenceState;
 use crate::cycle_manager::{CycleBriefing, CycleConfig};
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
 use crate::localization::{Locale, MessageId, resolve_locale, tr};
-use crate::models::{Message, SystemPrompt, compaction_threshold_for_model_and_effort};
+use crate::models::{Message, SystemPrompt, Usage, compaction_threshold_for_model_and_effort};
 use crate::palette::{self, UiTheme};
 use crate::pricing::{CostCurrency, CostEstimate};
 use crate::session_manager::SessionContextReference;
@@ -27,7 +28,7 @@ use crate::settings::Settings;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::shell::new_shared_shell_manager;
 use crate::tools::spec::RuntimeToolServices;
-use crate::tools::subagent::SubAgentResult;
+use crate::tools::subagent::{SubAgentResult, SubAgentStatus};
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::approval::ApprovalMode;
@@ -702,13 +703,115 @@ impl Default for ViewportState {
     }
 }
 
-/// Goal mode state (#397).
+/// Goal mode state (#397). Also hosts auto-continue (#goals):
+/// when enabled, the agent autonomously keeps pushing turns until
+/// all todos are completed or the user interrupts.
 #[derive(Debug, Clone, Default)]
 pub struct GoalState {
     pub goal_objective: Option<String>,
     pub goal_token_budget: Option<u32>,
     pub goal_started_at: Option<Instant>,
+    /// When true, after each turn completes the TUI automatically dispatches
+    /// a continuation turn if any checklist items remain incomplete.
+    /// Stops when all todos are completed, the token budget is exhausted,
+    /// or the user presses Esc.
+    pub auto_continue: bool,
+    /// How many auto-continue turns have been dispatched in the current
+    /// session. Reset when auto_continue is toggled off.
+    pub auto_continue_turn_count: u32,
+    /// Pending todo count from the PREVIOUS auto-continue turn. Used for
+    /// stuck detection: if this value doesn't change for
+    /// STUCK_THRESHOLD consecutive turns, auto-continue stops.
+    pub prev_pending_count: Option<usize>,
+    /// How many consecutive turns the pending count has been unchanged.
+    pub stuck_streak: u32,
+    /// How many consecutive turns the model produced no tool calls
+    /// (idle chatter instead of doing work).
+    pub idle_streak: u32,
+    /// When todos reach zero, we don't stop immediately. Instead we
+    /// send one confirmation turn asking the model whether the goal is
+    /// truly achieved. If the model confirms (no new todos added),
+    /// auto-continue stops. If it adds more todos, we continue.
+    pub completion_confirmation_pending: bool,
+    /// Conversation context snapshot captured at goal-set time so the
+    /// model can re-orient after many auto-continue turns. Includes the
+    /// goal objective, initial transcript state, and workspace info.
+    pub goal_context: Option<String>,
 }
+
+impl Serialize for GoalState {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = s.serialize_struct("GoalState", 10)?;
+        state.serialize_field("goal_objective", &self.goal_objective)?;
+        state.serialize_field("goal_token_budget", &self.goal_token_budget)?;
+        // Instant is not serializable; store elapsed seconds instead.
+        let elapsed_secs = self.goal_started_at.map(|t| t.elapsed().as_secs());
+        state.serialize_field("goal_started_elapsed_secs", &elapsed_secs)?;
+        state.serialize_field("auto_continue", &self.auto_continue)?;
+        state.serialize_field("auto_continue_turn_count", &self.auto_continue_turn_count)?;
+        state.serialize_field("prev_pending_count", &self.prev_pending_count)?;
+        state.serialize_field("stuck_streak", &self.stuck_streak)?;
+        state.serialize_field("idle_streak", &self.idle_streak)?;
+        state.serialize_field(
+            "completion_confirmation_pending",
+            &self.completion_confirmation_pending,
+        )?;
+        state.serialize_field("goal_context", &self.goal_context)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for GoalState {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Helper {
+            goal_objective: Option<String>,
+            goal_token_budget: Option<u32>,
+            goal_started_elapsed_secs: Option<u64>,
+            auto_continue: bool,
+            #[serde(default)]
+            auto_continue_turn_count: u32,
+            #[serde(default)]
+            prev_pending_count: Option<usize>,
+            #[serde(default)]
+            stuck_streak: u32,
+            #[serde(default)]
+            idle_streak: u32,
+            #[serde(default)]
+            completion_confirmation_pending: bool,
+            #[serde(default)]
+            goal_context: Option<String>,
+        }
+        let h = Helper::deserialize(d)?;
+        Ok(GoalState {
+            goal_objective: h.goal_objective,
+            goal_token_budget: h.goal_token_budget,
+            goal_started_at: h.goal_started_elapsed_secs.map(|secs| {
+                Instant::now()
+                    .checked_sub(Duration::from_secs(secs))
+                    .unwrap_or_else(Instant::now)
+            }),
+            auto_continue: h.auto_continue,
+            auto_continue_turn_count: h.auto_continue_turn_count,
+            prev_pending_count: h.prev_pending_count,
+            stuck_streak: h.stuck_streak,
+            idle_streak: h.idle_streak,
+            completion_confirmation_pending: h.completion_confirmation_pending,
+            goal_context: h.goal_context,
+        })
+    }
+}
+
+/// Auto-continue stops if the pending todo count hasn't changed for this
+/// many consecutive turns.
+pub const STUCK_THRESHOLD: u32 = 5;
+/// Auto-continue stops after this many turns regardless of progress.
+/// Set to 0 to disable the turn limit entirely.
+pub const MAX_AUTO_CONTINUE_TURNS: u32 = 0;
+/// Auto-continue stops if the model produces this many consecutive turns
+/// with no tool calls (idle chatter instead of work).
+pub const IDLE_TURN_THRESHOLD: u32 = 3;
 
 /// Session cost and token telemetry state.
 #[derive(Debug, Clone)]
@@ -725,6 +828,11 @@ pub struct SessionState {
     pub last_prompt_cache_hit_tokens: Option<u32>,
     pub last_prompt_cache_miss_tokens: Option<u32>,
     pub last_reasoning_replay_tokens: Option<u32>,
+    pub last_api_prompt_tokens: Option<u32>,
+    pub last_api_completion_tokens: Option<u32>,
+    pub last_api_prompt_cache_hit_tokens: Option<u32>,
+    pub last_api_prompt_cache_miss_tokens: Option<u32>,
+    pub last_api_reasoning_replay_tokens: Option<u32>,
     pub total_tokens: u32,
     pub total_conversation_tokens: u32,
     pub turn_cache_history: VecDeque<TurnCacheRecord>,
@@ -746,6 +854,11 @@ impl Default for SessionState {
             last_prompt_cache_hit_tokens: None,
             last_prompt_cache_miss_tokens: None,
             last_reasoning_replay_tokens: None,
+            last_api_prompt_tokens: None,
+            last_api_completion_tokens: None,
+            last_api_prompt_cache_hit_tokens: None,
+            last_api_prompt_cache_miss_tokens: None,
+            last_api_reasoning_replay_tokens: None,
             total_tokens: 0,
             total_conversation_tokens: 0,
             turn_cache_history: VecDeque::new(),
@@ -1255,12 +1368,29 @@ impl App {
         }
     }
 
-    pub(crate) fn clear_model_scoped_telemetry(&mut self) {
+    pub(crate) fn record_api_round_usage(&mut self, usage: &Usage) {
+        self.session.last_api_prompt_tokens = Some(usage.input_tokens);
+        self.session.last_api_completion_tokens = Some(usage.output_tokens);
+        self.session.last_api_prompt_cache_hit_tokens = usage.prompt_cache_hit_tokens;
+        self.session.last_api_prompt_cache_miss_tokens = usage.prompt_cache_miss_tokens;
+        self.session.last_api_reasoning_replay_tokens = usage.reasoning_replay_tokens;
+    }
+
+    pub(crate) fn clear_last_turn_telemetry(&mut self) {
         self.session.last_prompt_tokens = None;
         self.session.last_completion_tokens = None;
         self.session.last_prompt_cache_hit_tokens = None;
         self.session.last_prompt_cache_miss_tokens = None;
         self.session.last_reasoning_replay_tokens = None;
+        self.session.last_api_prompt_tokens = None;
+        self.session.last_api_completion_tokens = None;
+        self.session.last_api_prompt_cache_hit_tokens = None;
+        self.session.last_api_prompt_cache_miss_tokens = None;
+        self.session.last_api_reasoning_replay_tokens = None;
+    }
+
+    pub(crate) fn clear_model_scoped_telemetry(&mut self) {
+        self.clear_last_turn_telemetry();
         self.session.turn_cache_history.clear();
     }
 
@@ -1295,8 +1425,10 @@ impl App {
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
         let mut provider = config.api_provider();
 
-        // Let settings override the config provider so runtime switches survive restarts.
-        if let Some(ref provider_str) = settings.default_provider
+        // Let settings remember picker changes only when config does not
+        // explicitly select a provider.
+        if config.provider.is_none()
+            && let Some(ref provider_str) = settings.default_provider
             && let Some(parsed) = ApiProvider::parse(provider_str)
         {
             provider = parsed;
@@ -3799,6 +3931,145 @@ impl App {
         self.queued_messages.pop_front()
     }
 
+    /// Generate a structured recap of the current session state: goal,
+    /// todos with status, recent transcript summary, and pending work.
+    /// Used by `/recap` and embedded in auto-continue messages so the
+    /// model can re-orient without replaying the full transcript.
+    pub fn recap_text(&self) -> String {
+        let mut lines: Vec<String> = Vec::new();
+
+        // Goal
+        if let Some(ref obj) = self.goal.goal_objective {
+            let elapsed = self
+                .goal
+                .goal_started_at
+                .map(|t| {
+                    let secs = t.elapsed().as_secs();
+                    if secs >= 3600 {
+                        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+                    } else if secs >= 60 {
+                        format!("{}m {}s", secs / 60, secs % 60)
+                    } else {
+                        format!("{}s", secs)
+                    }
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            lines.push(format!("**Goal**: \"{obj}\" — elapsed: {elapsed}"));
+            if let Some(budget) = self.goal.goal_token_budget {
+                let used = self.session.total_conversation_tokens;
+                let pct = if budget > 0 {
+                    (used as f64 / budget as f64 * 100.0).min(100.0)
+                } else {
+                    0.0
+                };
+                lines.push(format!("**Token budget**: {used}/{budget} ({pct:.0}%)"));
+            }
+            let auto = if self.goal.auto_continue {
+                format!("on (turn #{})", self.goal.auto_continue_turn_count)
+            } else {
+                "off".to_string()
+            };
+            lines.push(format!("**Auto-continue**: {auto}"));
+            if self.goal.goal_context.is_some() {
+                lines.push("**Goal context**: captured — use /goal context to view".to_string());
+            }
+            lines.push(String::new());
+        }
+
+        // Todos
+        if let Ok(todos) = self.todos.try_lock() {
+            let snap = todos.snapshot();
+            if !snap.items.is_empty() {
+                lines.push("### Todos".to_string());
+                for item in &snap.items {
+                    let mark = match item.status {
+                        crate::tools::todo::TodoStatus::Completed => "✓",
+                        crate::tools::todo::TodoStatus::InProgress => "⏳",
+                        crate::tools::todo::TodoStatus::Pending => "○",
+                    };
+                    lines.push(format!("- [{mark}] {}", item.content));
+                }
+                lines.push(String::new());
+            }
+        }
+
+        // Last assistant summary (most recent assistant cell)
+        if let Some(HistoryCell::Assistant { content, .. }) = self
+            .history
+            .iter()
+            .rev()
+            .find(|cell| matches!(cell, HistoryCell::Assistant { .. }))
+        {
+            // Truncate to ~500 chars, safe on UTF-8 boundaries.
+            let summary = if content.chars().count() > 500 {
+                let truncated: String = content.chars().take(500).collect();
+                format!("{truncated}…")
+            } else {
+                content.clone()
+            };
+            lines.push("### Last Response".to_string());
+            lines.push(summary);
+            lines.push(String::new());
+        }
+
+        // Active sub-agents (with per-model breakdown)
+        let agent_count = crate::tui::subagent_routing::running_agent_count(self);
+        if agent_count > 0 {
+            // Count by model name for cost visibility.
+            let mut model_counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            for agent in &self.subagent_cache {
+                if matches!(agent.status, SubAgentStatus::Running) {
+                    let label = if agent.model.is_empty() {
+                        "default"
+                    } else {
+                        agent.model.as_str()
+                    };
+                    *model_counts.entry(label.to_string()).or_insert(0) += 1;
+                }
+            }
+            let breakdown: Vec<String> = model_counts
+                .iter()
+                .map(|(model, count)| format!("{count}×{model}"))
+                .collect();
+            lines.push(format!(
+                "**Active sub-agents**: {agent_count} ({})",
+                breakdown.join(", ")
+            ));
+            lines.push(String::new());
+        }
+
+        // Auto-continue status
+        if self.goal.auto_continue {
+            let pending = self.pending_todo_count();
+            if pending > 0 {
+                lines.push(format!(
+                    "**Status**: {} todo item(s) remaining. Continue working on them. Use checklist_write to update progress.",
+                    pending
+                ));
+            }
+        }
+
+        lines.join("\n")
+    }
+
+    /// Count pending (non-completed) todo items.
+    pub fn pending_todo_count(&self) -> usize {
+        self.todos
+            .try_lock()
+            .map(|todos| {
+                todos
+                    .snapshot()
+                    .items
+                    .iter()
+                    .filter(|item| {
+                        !matches!(item.status, crate::tools::todo::TodoStatus::Completed)
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
     pub fn remove_queued_message(&mut self, index: usize) -> Option<QueuedMessage> {
         self.queued_messages.remove(index)
     }
@@ -4497,6 +4768,41 @@ mod tests {
     }
 
     #[test]
+    fn explicit_config_provider_wins_over_settings_default_provider() {
+        let _lock = lock_test_env();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let config_path = tmp.path().join("config.toml");
+        let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+        let _openai_env = EnvVarGuard::remove("OPENAI_API_KEY");
+        std::fs::write(
+            tmp.path().join("settings.toml"),
+            "default_provider = \"deepseek\"\n",
+        )
+        .expect("settings");
+
+        let config = Config {
+            provider: Some("openai".to_string()),
+            providers: Some(ProvidersConfig {
+                openai: ProviderConfig {
+                    api_key: Some("openai-config-key".to_string()),
+                    ..ProviderConfig::default()
+                },
+                ..ProvidersConfig::default()
+            }),
+            ..Config::default()
+        };
+        let mut options = test_options(false);
+        options.workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&options.workspace).expect("workspace");
+
+        let app = App::new(options, &config);
+
+        assert_eq!(app.api_provider, ApiProvider::Openai);
+        assert!(!app.onboarding_needs_api_key);
+        assert_ne!(app.onboarding, OnboardingState::ApiKey);
+    }
+
+    #[test]
     fn new_caches_workspace_skills_for_slash_menu() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let workspace = tmp.path().join("workspace");
@@ -4781,7 +5087,9 @@ mod tests {
 
     #[test]
     fn test_set_mode_updates_state() {
-        let mut app = App::new(test_options(false), &Config::default());
+        let mut options = test_options(false);
+        options.start_in_agent_mode = true;
+        let mut app = App::new(options, &Config::default());
         let initial_mode = app.mode;
         app.set_mode(AppMode::Yolo);
         assert_eq!(app.mode, AppMode::Yolo);

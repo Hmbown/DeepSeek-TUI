@@ -378,6 +378,8 @@ fn selection_to_text_handles_multiline_and_reversed_endpoints() {
 #[test]
 fn selection_to_text_copies_rendered_transcript_block() {
     let mut app = create_test_app();
+    app.show_thinking = true;
+    app.show_tool_details = true;
     app.history = vec![
         HistoryCell::System {
             content: "copy system".to_string(),
@@ -439,9 +441,8 @@ fn selection_to_text_copies_rendered_transcript_block() {
     );
     assert!(selected.contains("tool output line"), "{selected:?}");
     assert!(selected.contains("copy assistant"), "{selected:?}");
-    // #1163: tool-card middle lines are rendered with a `│ ` left rail
-    // glyph, but that decoration must not leak into copied text. Assert
-    // no isolated rail glyph survives at the start of any line.
+    // #1163: legacy tool-card box rails must not leak into copied text.
+    // Assert no isolated rail glyph survives at the start of any line.
     for (idx, line) in selected.lines().enumerate() {
         assert!(
             !line.starts_with("\u{2502} "),
@@ -1284,6 +1285,8 @@ fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
         messages,
         system_prompt: None,
         context_references: Vec::new(),
+        goal_state_json: None,
+        todos_json: None,
         artifacts: Vec::new(),
     }
 }
@@ -2042,10 +2045,10 @@ fn hidden_sidebar_focus_suppresses_sidebar_split_even_when_wide() {
     app.sidebar_width_percent = 28;
 
     app.sidebar_focus = SidebarFocus::Auto;
-    assert_eq!(sidebar_width_for_chat_area(&app, 120), Some(33));
+    assert_eq!(sidebar_width_for_chat_area(&app, 260), Some(72));
 
     app.sidebar_focus = SidebarFocus::Hidden;
-    assert_eq!(sidebar_width_for_chat_area(&app, 120), None);
+    assert_eq!(sidebar_width_for_chat_area(&app, 260), None);
 }
 
 fn make_subagent(
@@ -2221,6 +2224,7 @@ fn event_poll_timeout_has_nonzero_floor() {
 #[test]
 fn footer_status_line_spans_show_mode_and_model_idle_and_active() {
     let mut app = create_test_app();
+    app.set_mode(AppMode::Agent);
     app.model = "deepseek-v4-flash".to_string();
     // Pin Agent mode regardless of user settings on the host machine.
     let _ = app.set_mode(crate::tui::app::AppMode::Agent);
@@ -2318,6 +2322,18 @@ fn footer_auxiliary_spans_show_cache_unavailable_when_provider_omits_cache_field
     let roomy = spans_text(&footer_auxiliary_spans(&app, 72));
 
     assert!(roomy.contains("Cache: unavailable"));
+}
+
+#[test]
+fn footer_auxiliary_spans_distinguish_api_round_cache_from_turn_cache() {
+    let mut app = create_test_app();
+    app.session.last_prompt_tokens = Some(1_246_923);
+    app.session.last_prompt_cache_hit_tokens = Some(447_360);
+    app.session.last_prompt_cache_miss_tokens = Some(799_563);
+
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 104));
+
+    assert!(roomy.contains("Cache: 35.9% hit | hit 447360 | miss 799563"));
 }
 
 #[test]
@@ -5075,6 +5091,7 @@ fn render_footer_from_with_default_items_renders_mode_and_model() {
     // Default footer composition should show the mode chip and model
     // identifier — whatever the configured default model is.
     let mut app = create_test_app();
+    app.set_mode(AppMode::Agent);
     app.session.session_cost = 0.00005;
     let items = crate::config::StatusItem::default_footer();
     let props = render_footer_from(&app, &items, None);
@@ -5150,6 +5167,7 @@ fn render_footer_from_with_empty_items_blanks_every_segment() {
 fn render_footer_from_drops_only_unselected_clusters() {
     // Toggling Cost off but keeping the rest should hide cost only.
     let mut app = create_test_app();
+    app.set_mode(AppMode::Agent);
     app.session.session_cost = 0.42;
     let items: Vec<crate::config::StatusItem> = crate::config::StatusItem::default_footer()
         .into_iter()
@@ -5318,6 +5336,7 @@ fn history_arrow_handles_whitespace_input() {
     app.cursor_position = app.input.chars().count();
     app.input_history.push("previous prompt".to_string());
 
+    // Whitespace-only composer follows the default history behavior.
     assert!(handle_composer_history_arrow(
         &mut app,
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
@@ -5337,6 +5356,7 @@ fn history_arrow_handles_nonempty_input() {
     app.cursor_position = app.input.chars().count();
     app.input_history.push("previous prompt".to_string());
 
+    // Non-empty composer: Up navigates input history.
     assert!(handle_composer_history_arrow(
         &mut app,
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),

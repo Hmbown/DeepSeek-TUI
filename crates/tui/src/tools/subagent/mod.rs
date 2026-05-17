@@ -62,7 +62,10 @@ fn release_resident_leases_for(agent_id: &str) {
     }
 }
 
-const DEFAULT_MAX_STEPS: u32 = 100;
+/// Circuit-breaker: maximum tool-call turns before a sub-agent is forcibly
+/// stopped. The model is expected to finish naturally; this only catches
+/// infinite loops. Not exposed to the model — it should not pace itself.
+const DEFAULT_MAX_STEPS: u32 = 200;
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-step LLM API call timeout. Each `create_message` request must complete
 /// within this window or the step is treated as timed out. Prevents a single
@@ -145,6 +148,49 @@ pub fn whale_nickname_for_index(index: usize) -> String {
         base.to_string()
     } else {
         format!("{base} {}", index / WHALE_NICKNAMES.len() + 1)
+    }
+}
+
+/// Derive a readable agent `session_name` from the objective. Caps at 50 chars,
+/// strips non-alphanumeric characters (replacing runs with a single dash), and
+/// falls back to the agent id when the objective is empty.
+fn slugify_agent_name(objective: &str, id: &str) -> String {
+    let slug: String = objective
+        .chars()
+        .filter_map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                Some(c.to_ascii_lowercase())
+            } else if c.is_whitespace() || c == '.' || c == ',' || c == ':' || c == ';' {
+                Some('-')
+            } else {
+                None
+            }
+        })
+        .collect();
+    let slug = slug.trim_matches('-');
+    // Collapse consecutive dashes
+    let mut compact = String::with_capacity(slug.len());
+    let mut prev_dash = false;
+    for c in slug.chars() {
+        if c == '-' {
+            if !prev_dash {
+                compact.push(c);
+            }
+            prev_dash = true;
+        } else {
+            compact.push(c);
+            prev_dash = false;
+        }
+    }
+    let compact = compact.trim_matches('-');
+    if compact.is_empty() {
+        id.to_string()
+    } else if compact.len() <= 50 {
+        compact.to_string()
+    } else {
+        // Cut at word boundary within limit
+        let end = compact[..50].rfind('-').unwrap_or(49);
+        compact[..=end].trim_end_matches('-').to_string()
     }
 }
 
@@ -510,6 +556,8 @@ struct SpawnRequest {
     /// When true, seed the child with the parent's system prompt and message
     /// prefix before appending the child task.
     fork_context: bool,
+    /// When true, allow this spawn to exceed the soft sub-agent cap.
+    force: bool,
     /// Optional recursion budget for descendants opened by this child.
     /// `0` means the child may not call `agent_open` recursively.
     max_depth: Option<u32>,
@@ -625,6 +673,14 @@ pub struct SubAgentRuntime {
     /// exceed this is rejected at the spawn entry. Use `>` (strictly
     /// greater than) so equality is allowed — matches codex's pattern.
     pub max_spawn_depth: u32,
+    /// Soft cap on concurrent sub-agents. The model can request more
+    /// sub-agents than this, but each spawn above the soft cap must
+    /// pass an explicit `force` flag. Defaults to the same value as
+    /// the manager's `max_agents`.
+    pub soft_max_subagents: usize,
+    /// When true, the model is allowed to exceed `soft_max_subagents`
+    /// by setting `force=true` in the spawn request.
+    pub auto_scale: bool,
     /// Cooperative cancellation token. Children derive a child_token() from
     /// the parent so cancelling the root cascades down.
     pub cancel_token: CancellationToken,
@@ -639,7 +695,7 @@ pub struct SubAgentRuntime {
     /// orchestrate. `None` when no consumer is wired (tests / legacy paths).
     pub parent_completion_tx: Option<mpsc::UnboundedSender<SubAgentCompletion>>,
     /// Snapshot of the request prefix visible to an opt-in forked child.
-    pub fork_context: Option<SubAgentForkContext>,
+    pub fork_context: Option<Arc<SubAgentForkContext>>,
 }
 
 impl SubAgentRuntime {
@@ -669,6 +725,8 @@ impl SubAgentRuntime {
             manager,
             spawn_depth: 0,
             max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
+            soft_max_subagents: crate::config::MAX_SUBAGENTS,
+            auto_scale: false,
             cancel_token: CancellationToken::new(),
             mailbox: None,
             parent_completion_tx: None,
@@ -691,7 +749,7 @@ impl SubAgentRuntime {
 
     /// Attach the current parent request prefix for `fork_context` spawns.
     #[must_use]
-    pub fn with_fork_context(mut self, context: SubAgentForkContext) -> Self {
+    pub fn with_fork_context(mut self, context: Arc<SubAgentForkContext>) -> Self {
         self.fork_context = Some(context);
         self
     }
@@ -722,6 +780,20 @@ impl SubAgentRuntime {
     #[allow(dead_code)]
     pub fn with_max_spawn_depth(mut self, max: u32) -> Self {
         self.max_spawn_depth = max;
+        self
+    }
+
+    /// Override the soft cap on concurrent sub-agents.
+    #[must_use]
+    pub fn with_soft_max_subagents(mut self, max: usize) -> Self {
+        self.soft_max_subagents = max.clamp(1, crate::config::MAX_SUBAGENTS);
+        self
+    }
+
+    /// Enable or disable auto-scaling above the soft cap.
+    #[must_use]
+    pub fn with_auto_scale(mut self, auto_scale: bool) -> Self {
+        self.auto_scale = auto_scale;
         self
     }
 
@@ -792,6 +864,8 @@ impl SubAgentRuntime {
             manager: self.manager.clone(),
             spawn_depth: self.spawn_depth + 1,
             max_spawn_depth: self.max_spawn_depth,
+            soft_max_subagents: self.soft_max_subagents,
+            auto_scale: self.auto_scale,
             cancel_token: self.cancel_token.child_token(),
             mailbox: self.mailbox.clone(),
             parent_completion_tx: self.parent_completion_tx.clone(),
@@ -846,7 +920,7 @@ impl SubAgent {
         session_boot_id: String,
     ) -> Self {
         let id = format!("agent_{}", &Uuid::new_v4().to_string()[..8]);
-        let session_name = id.clone();
+        let session_name = slugify_agent_name(&assignment.objective, &id);
 
         Self {
             id,
@@ -908,6 +982,12 @@ pub struct SubAgentManager {
     /// agents whose `session_boot_id` doesn't match this value as
     /// "from prior session" so `agent_list` can hide them by default.
     current_session_boot_id: String,
+    /// Shared read-only tool result cache. Before executing a read-only tool,
+    /// sub-agents consult this cache to avoid duplicating I/O and API calls.
+    /// Keyed by (tool_name, canonical_hash_of_input). Cache entries auto-expire
+    /// after the sub-agent turn completes.
+    #[allow(dead_code)] // Ready for integration into tool execution path (next PR)
+    read_cache: HashMap<(String, u64), ToolResult>,
 }
 
 impl SubAgentManager {
@@ -923,6 +1003,7 @@ impl SubAgentManager {
             // Fresh boot id per manager. Used by #405 to classify
             // re-loaded persisted agents as "prior session".
             current_session_boot_id: format!("boot_{}", &Uuid::new_v4().to_string()[..12]),
+            read_cache: HashMap::new(),
         }
     }
 
@@ -1175,6 +1256,21 @@ impl SubAgentManager {
                 return Err(anyhow!("Sub-agent session name '{name}' is already in use"));
             }
             agent.session_name = name.to_string();
+        } else {
+            // Auto-generated session_name (from objective). If a previous
+            // agent already has the same slug, append "-2", "-3", etc.
+            let base = agent.session_name.clone();
+            let mut unique = base.clone();
+            let mut n = 2u32;
+            while self
+                .agents
+                .values()
+                .any(|existing| existing.session_name == unique)
+            {
+                unique = format!("{base}-{n}");
+                n = n.saturating_add(1);
+            }
+            agent.session_name = unique;
         }
         agent.fork_context = options.fork_context;
         let agent_id = agent.id.clone();
@@ -1575,6 +1671,27 @@ impl SubAgentManager {
             self.persist_state_best_effort();
         }
     }
+
+    /// Try to serve a tool result from the shared read cache.
+    #[allow(dead_code)] // Ready for integration into tool execution path (next PR)
+    pub fn read_cache_get(&self, tool_name: &str, input_hash: u64) -> Option<ToolResult> {
+        self.read_cache
+            .get(&(tool_name.to_string(), input_hash))
+            .cloned()
+    }
+
+    /// Store a tool result in the shared read cache.
+    #[allow(dead_code)] // Ready for integration into tool execution path (next PR)
+    pub fn read_cache_put(&mut self, tool_name: &str, input_hash: u64, result: ToolResult) {
+        self.read_cache
+            .insert((tool_name.to_string(), input_hash), result);
+    }
+
+    /// Clear the read cache (called at turn boundaries).
+    #[allow(dead_code)] // Ready for integration into tool execution path (next PR)
+    pub fn clear_read_cache(&mut self) {
+        self.read_cache.clear();
+    }
 }
 
 /// Thread-safe wrapper for `SubAgentManager`.
@@ -1678,6 +1795,14 @@ fn instant_from_duration(duration: Duration) -> Instant {
     Instant::now()
         .checked_sub(duration)
         .unwrap_or_else(Instant::now)
+}
+
+#[allow(dead_code)] // Ready for integration into tool execution path (next PR)
+fn hash_tool_input(input: &serde_json::Value) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    input.to_string().hash(&mut hasher);
+    hasher.finish()
 }
 
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
@@ -1952,6 +2077,10 @@ impl ToolSpec for AgentSpawnTool {
                 "fork_context": {
                     "type": "boolean",
                     "description": "When true, inherit the parent's system prompt and conversation prefix before appending this task. This preserves DeepSeek prefix-cache reuse and gives the child full parent context. Defaults to false for independent exploration."
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "When true, allow this spawn to exceed the soft sub-agent cap. Only has an effect when auto_scale is enabled. Defaults to false."
                 }
             }
         })
@@ -1970,6 +2099,22 @@ impl ToolSpec for AgentSpawnTool {
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let spawn_request = parse_spawn_request(&input)?;
+
+        // Soft cap check: read current count before locking the manager.
+        // When auto_scale is enabled and force=true, the spawn is allowed
+        // to exceed the soft limit (the hard cap in the manager still applies).
+        if self.runtime.auto_scale {
+            let current_count = {
+                let manager = self.manager.read().await;
+                manager.running_count()
+            };
+            if current_count >= self.runtime.soft_max_subagents && !spawn_request.force {
+                return Err(ToolError::invalid_input(format!(
+                    "soft sub-agent limit reached ({}/{}). Set force=true to override.",
+                    current_count, self.runtime.soft_max_subagents
+                )));
+            }
+        }
 
         // Depth cap: reject before locking the manager so we don't introduce
         // unnecessary contention. Mirrors codex's pattern (allow-equal at the
@@ -3096,7 +3241,7 @@ fn build_subagent_system_prompt(
 
 fn subagent_request_system_prompt(
     subagent_system_prompt: &str,
-    fork_context: Option<&SubAgentForkContext>,
+    fork_context: Option<&Arc<SubAgentForkContext>>,
 ) -> SystemPrompt {
     fork_context
         .and_then(|context| context.system.clone())
@@ -3107,7 +3252,7 @@ fn build_initial_subagent_messages(
     prompt: &str,
     assignment: &SubAgentAssignment,
     agent_type: &SubAgentType,
-    fork_context: Option<&SubAgentForkContext>,
+    fork_context: Option<&Arc<SubAgentForkContext>>,
 ) -> Vec<Message> {
     let mut messages = fork_context
         .map(|context| context.messages.clone())
@@ -3313,11 +3458,13 @@ async fn run_subagent(
     let request_system = subagent_request_system_prompt(&system_prompt, fork_context);
     let mut messages =
         build_initial_subagent_messages(&prompt, &assignment, &agent_type, fork_context);
-    let runtime_for_tools = runtime.clone().with_fork_context(SubAgentForkContext {
-        system: Some(request_system.clone()),
-        messages: messages.clone(),
-        structured_state_block: None,
-    });
+    let runtime_for_tools = runtime
+        .clone()
+        .with_fork_context(Arc::new(SubAgentForkContext {
+            system: Some(request_system.clone()),
+            messages: messages.clone(),
+            structured_state_block: None,
+        }));
     let tool_registry = SubAgentToolRegistry::new(
         runtime_for_tools,
         allowed_tools.clone(),
@@ -3333,7 +3480,11 @@ async fn run_subagent(
     }
     let tools = tool_registry.tools_for_model(&agent_type);
     if let Some(mb) = runtime.mailbox.as_ref() {
-        let _ = mb.send(MailboxMessage::started(&agent_id, agent_type.clone()));
+        let _ = mb.send(MailboxMessage::started(
+            &agent_id,
+            agent_type.clone(),
+            &prompt,
+        ));
     }
     emit_agent_progress(
         runtime.event_tx.as_ref(),
@@ -3514,17 +3665,88 @@ async fn run_subagent(
             continue;
         }
 
+        // Partition tool calls: read-only tools can execute in parallel;
+        // side-effectful tools must run sequentially.
+        let (parallel, sequential): (Vec<_>, Vec<_>) = tool_uses
+            .into_iter()
+            .partition(|(_, name, _)| is_read_only_tool(name));
+
         emit_agent_progress(
             runtime.event_tx.as_ref(),
             runtime.mailbox.as_ref(),
             &agent_id,
             format!(
                 "step {steps}/{max_steps}: executing {} tool call(s)",
-                tool_uses.len()
+                parallel.len() + sequential.len()
             ),
         );
+
         let mut tool_results: Vec<ContentBlock> = Vec::new();
-        for (tool_id, tool_name, tool_input) in tool_uses {
+
+        // Execute parallel (read-only) tools concurrently.
+        if !parallel.is_empty() {
+            emit_agent_progress(
+                runtime.event_tx.as_ref(),
+                runtime.mailbox.as_ref(),
+                &agent_id,
+                format!(
+                    "step {steps}/{max_steps}: running {} parallel read-only tool(s)",
+                    parallel.len()
+                ),
+            );
+
+            let registry = &tool_registry;
+            let parallel_futures: Vec<_> = parallel
+                .into_iter()
+                .map(|(tool_id, tool_name, tool_input)| {
+                    let agent_id = agent_id.clone();
+                    let mb = runtime.mailbox.clone();
+                    let event_tx = runtime.event_tx.clone();
+                    async move {
+                        let result = tokio::time::timeout(TOOL_TIMEOUT, async {
+                            registry.execute(&agent_id, &tool_name, tool_input).await
+                        })
+                        .await;
+                        let output = match result {
+                            Ok(Ok(output)) => output,
+                            Ok(Err(e)) => format!("Error: {e}"),
+                            Err(_) => format!("Error: Tool {tool_name} timed out"),
+                        };
+                        let tool_ok = !output.starts_with("Error:");
+                        if let Some(mb) = mb.as_ref() {
+                            let _ = mb.send(MailboxMessage::ToolCallCompleted {
+                                agent_id: agent_id.clone(),
+                                tool_name: tool_name.clone(),
+                                step: steps,
+                                ok: tool_ok,
+                            });
+                        }
+                        if let Some(event_tx) = event_tx.as_ref() {
+                            let _ = event_tx.try_send(Event::AgentProgress {
+                                id: agent_id.clone(),
+                                status: format!(
+                                    "step {steps}/{max_steps}: finished tool '{tool_name}'"
+                                ),
+                            });
+                        }
+                        (tool_id, output)
+                    }
+                })
+                .collect();
+
+            let results = futures_util::future::join_all(parallel_futures).await;
+            for (tool_id, output) in results {
+                tool_results.push(ContentBlock::ToolResult {
+                    tool_use_id: tool_id,
+                    content: output,
+                    is_error: None,
+                    content_blocks: None,
+                });
+            }
+        }
+
+        // Execute sequential (side-effectful) tools one at a time.
+        for (tool_id, tool_name, tool_input) in sequential {
             emit_agent_progress(
                 runtime.event_tx.as_ref(),
                 runtime.mailbox.as_ref(),
@@ -3577,6 +3799,15 @@ async fn run_subagent(
             messages.push(Message {
                 role: "user".to_string(),
                 content: tool_results,
+            });
+        }
+
+        // Send incremental progress after each completed step so the
+        // parent's mailbox consumers can render live state.
+        if let Some(ref mailbox) = runtime.mailbox {
+            let _ = mailbox.send(MailboxMessage::Progress {
+                agent_id: agent_id.clone(),
+                status: format!("step {steps}/{max_steps}: completed"),
             });
         }
     }
@@ -3919,6 +4150,7 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
     let fork_context =
         parse_optional_bool(input, &["fork_context", "forkContext", "inherit_context"])
             .unwrap_or(false);
+    let force = parse_optional_bool(input, &["force"]).unwrap_or(false);
     let max_depth = input
         .get("max_depth")
         .or_else(|| input.get("maxDepth"))
@@ -3949,6 +4181,7 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
         cwd,
         resident_file,
         fork_context,
+        force,
         max_depth,
     })
 }
@@ -4293,6 +4526,26 @@ fn emit_agent_progress(
             status,
         });
     }
+}
+
+/// Whether a tool is read-only and safe to execute in parallel with other
+/// read-only tools. Tools not in this list are assumed to have side effects
+/// and must be executed sequentially.
+fn is_read_only_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "read_file"
+            | "list_dir"
+            | "grep_files"
+            | "file_search"
+            | "web_search"
+            | "diagnostics"
+            | "checklist_list"
+            | "todo_list"
+            | "task_list"
+            | "agent_list"
+            | "run_tests"
+    )
 }
 
 // === Tool Registry Helpers ===

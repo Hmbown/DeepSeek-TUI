@@ -15,7 +15,7 @@ visual motion and density for screen-reader and low-motion users.
 | `status_indicator` setting | `whale` | Header status chip. Set to `dots` for the compact dot cycle or `off` to hide it. |
 | `calm_mode` setting | `false` | Collapses tool-output details by default and trims status messages. Useful for screen readers that announce every redraw. |
 | `show_thinking` setting | `true` | Set to `false` to hide model `reasoning_content` blocks entirely. |
-| `show_tool_details` setting | `true` | Set to `false` to render tool calls as one-liners without expanded payloads. |
+| `show_tool_details` setting | `true` | Legacy setting kept for config compatibility; Claude-style tool calls keep a visible call/result preview in the main transcript. |
 
 ## Standard env-var surface
 

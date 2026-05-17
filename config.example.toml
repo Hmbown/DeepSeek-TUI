@@ -214,7 +214,7 @@ max_subagents = 10 # optional (1-20)
 # Self-hosted Ollama OpenAI-compatible server
 [providers.ollama]
 # api_key = "OPTIONAL_OLLAMA_TOKEN"
-# base_url = "http://localhost:11434/v1"
+# base_url = "http://127.0.0.1:11434/v1"
 # model = "deepseek-coder:1.3b"             # or any local Ollama tag
 
 # ─────────────────────────────────────────────────────────────────────────────────

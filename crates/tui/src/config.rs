@@ -43,7 +43,7 @@ pub const DEFAULT_VLLM_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 pub const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 pub const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
 pub const DEFAULT_OLLAMA_MODEL: &str = "deepseek-coder:1.3b";
-pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
+pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/v1";
 /// Legacy `deepseek-cn` provider alias.
 ///
 /// DeepSeek's official API host is the same worldwide. Keep this alias for
@@ -927,6 +927,14 @@ pub struct Config {
     pub managed_config_path: Option<String>,
     pub requirements_path: Option<String>,
     pub max_subagents: Option<usize>,
+    /// Soft cap on concurrent sub-agents. The model can request more
+    /// sub-agents than this, but each spawn above the soft cap must
+    /// pass an explicit `force` flag. Defaults to the same value as
+    /// `max_subagents` (no distinction).
+    pub soft_max_subagents: Option<usize>,
+    /// When true, the model is allowed to exceed `soft_max_subagents`
+    /// by setting `force=true` in the spawn request.
+    pub auto_scale: Option<bool>,
     pub retry: Option<RetryConfig>,
     pub capacity: Option<CapacityConfig>,
     pub features: Option<FeaturesToml>,
@@ -1778,6 +1786,22 @@ impl Config {
         self.max_subagents
             .unwrap_or(DEFAULT_MAX_SUBAGENTS)
             .clamp(1, MAX_SUBAGENTS)
+    }
+
+    /// Return the soft cap on concurrent sub-agents.
+    /// Defaults to `max_subagents()` when not explicitly configured.
+    #[must_use]
+    pub fn soft_max_subagents(&self) -> usize {
+        self.soft_max_subagents
+            .unwrap_or_else(|| self.max_subagents())
+            .clamp(1, MAX_SUBAGENTS)
+    }
+
+    /// Whether auto-scaling above the soft cap is enabled.
+    /// Defaults to `false` (no distinction from hard cap).
+    #[must_use]
+    pub fn auto_scale(&self) -> bool {
+        self.auto_scale.unwrap_or(false)
     }
 
     /// Raw sub-agent model override map. Values are validated at spawn time
@@ -2788,6 +2812,8 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             .or(base.managed_config_path),
         requirements_path: override_cfg.requirements_path.or(base.requirements_path),
         max_subagents: override_cfg.max_subagents.or(base.max_subagents),
+        soft_max_subagents: override_cfg.soft_max_subagents.or(base.soft_max_subagents),
+        auto_scale: override_cfg.auto_scale.or(base.auto_scale),
         retry: override_cfg.retry.or(base.retry),
         capacity: override_cfg.capacity.or(base.capacity),
         tui: override_cfg.tui.or(base.tui),
@@ -3234,8 +3260,11 @@ pub fn has_api_key(config: &Config) -> bool {
 
 #[must_use]
 pub fn active_provider_has_config_api_key(config: &Config) -> bool {
-    let provider = config.api_provider();
+    provider_has_config_api_key(config, config.api_provider())
+}
 
+#[must_use]
+pub fn provider_has_config_api_key(config: &Config, provider: ApiProvider) -> bool {
     if config
         .provider_config_for(provider)
         .and_then(|entry| entry.api_key.as_ref())
@@ -3253,7 +3282,12 @@ pub fn active_provider_has_config_api_key(config: &Config) -> bool {
 
 #[must_use]
 pub fn active_provider_has_env_api_key(config: &Config) -> bool {
-    match config.api_provider() {
+    provider_has_env_api_key(config.api_provider())
+}
+
+#[must_use]
+pub fn provider_has_env_api_key(provider: ApiProvider) -> bool {
+    match provider {
         ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
             std::env::var("DEEPSEEK_API_KEY").is_ok_and(|k| !k.trim().is_empty())
         }

@@ -16,7 +16,8 @@ use std::time::Duration;
 use std::{future::Future, pin::Pin};
 
 use anyhow::Result;
-use futures_util::future::join_all;
+use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use tokio::sync::Mutex;
 
 use crate::llm_client::LlmClient;
@@ -171,9 +172,15 @@ impl RlmBridge {
             }
         });
 
-        BatchResp {
-            results: join_all(futures).await,
+        let mut unordered = FuturesUnordered::new();
+        for fut in futures {
+            unordered.push(fut);
         }
+        let mut results = Vec::with_capacity(unordered.len());
+        while let Some(result) = unordered.next().await {
+            results.push(result);
+        }
+        BatchResp { results }
     }
 
     async fn dispatch_rlm(&self, prompt: String, _model: Option<String>) -> SingleResp {
@@ -235,9 +242,15 @@ impl RlmBridge {
         let futures = prompts
             .into_iter()
             .map(|p| async move { self.dispatch_rlm(p, None).await });
-        BatchResp {
-            results: join_all(futures).await,
+        let mut unordered = FuturesUnordered::new();
+        for fut in futures {
+            unordered.push(fut);
         }
+        let mut results = Vec::with_capacity(unordered.len());
+        while let Some(result) = unordered.next().await {
+            results.push(result);
+        }
+        BatchResp { results }
     }
 }
 

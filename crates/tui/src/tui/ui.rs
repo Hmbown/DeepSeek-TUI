@@ -19,19 +19,6 @@ use crossterm::{
 // On Windows the push/pop helpers write the escapes directly; crossterm's
 // PushKeyboardEnhancementFlags / PopKeyboardEnhancementFlags commands are
 // never referenced, so the imports are gated to avoid -D warnings failures.
-#[cfg(not(windows))]
-use crossterm::event::{
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-};
-use ratatui::{
-    Frame, Terminal,
-    layout::{Constraint, Direction, Layout, Rect, Size},
-    prelude::Widget,
-    style::Style,
-    widgets::Block,
-};
-use tracing;
-
 use crate::audit::log_sensitive_event;
 use crate::automation_manager::{AutomationManager, AutomationSchedulerConfig, spawn_scheduler};
 use crate::client::{DeepSeekClient, build_cache_warmup_request};
@@ -81,6 +68,18 @@ use crate::tui::pager::PagerView;
 use crate::tui::persistence_actor::{self, PersistRequest};
 use crate::tui::plan_prompt::PlanPromptView;
 use crate::tui::scrolling::TranscriptScroll;
+#[cfg(not(windows))]
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
+use ratatui::{
+    Frame, Terminal,
+    layout::{Constraint, Direction, Layout, Rect, Size},
+    prelude::Widget,
+    style::Style,
+    widgets::Block,
+};
+use tracing;
 // SelectionAutoscroll unused
 use crate::tui::session_picker::SessionPickerView;
 use crate::tui::shell_job_routing::{
@@ -103,9 +102,9 @@ use crate::tui::vim_mode;
 use crate::tui::workspace_context;
 
 use super::app::{
-    App, AppAction, AppMode, OnboardingState, QueuedMessage, ReasoningEffort, SidebarFocus,
-    StatusToastLevel, SubmitDisposition, TaskPanelEntry, TuiOptions,
-    looks_like_slash_command_input,
+    App, AppAction, AppMode, IDLE_TURN_THRESHOLD, MAX_AUTO_CONTINUE_TURNS, OnboardingState,
+    QueuedMessage, ReasoningEffort, STUCK_THRESHOLD, SidebarFocus, StatusToastLevel,
+    SubmitDisposition, TaskPanelEntry, TuiOptions, looks_like_slash_command_input,
 };
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
@@ -140,11 +139,11 @@ const UI_ACTIVE_POLL_MS: u64 = 24;
 const WEB_CONFIG_POLL_MS: u64 = 16;
 const DISPATCH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
 // Forced repaint cadence while a turn is live (model loading, compacting,
-// sub-agents running). Drives the footer water-spout animation as well as
-// the per-tool spinner pulse — keep this fast enough that the spout reads as
+// sub-agents running). Drives the footer whale animation as well as
+// the per-tool spinner pulse — keep this fast enough that the whale reads as
 // motion (~12 fps) instead of teleport-frames.
 const UI_STATUS_ANIMATION_MS: u64 = 80;
-const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 100;
+const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 240;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 const PERIODIC_FULL_REPAINT_EVERY_N: u64 = 50;
 const TURN_META_PREFIX: &str = "<turn_meta>";
@@ -693,6 +692,8 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         todos: app.todos.clone(),
         plan_state: app.plan_state.clone(),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
+        soft_max_subagents: config.soft_max_subagents(),
+        auto_scale: config.auto_scale(),
         network_policy: config.network.clone().map(|toml_cfg| {
             crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
         }),
@@ -1267,8 +1268,12 @@ async fn run_event_loop(
                         app.reasoning_header = None;
                         app.last_reasoning = None;
                         app.pending_tool_uses.clear();
+                        app.clear_last_turn_telemetry();
                         app.plan_tool_used_in_turn = false;
                         last_status_frame = Instant::now();
+                    }
+                    EngineEvent::ApiRoundUsage { usage, .. } => {
+                        app.record_api_round_usage(&usage);
                     }
                     EngineEvent::TurnComplete {
                         usage,
@@ -1426,6 +1431,209 @@ async fn run_event_loop(
                             }
                         }
                         app.plan_tool_used_in_turn = false;
+
+                        // Auto-continue (#goals): when enabled and todos are
+                        // not all completed, queue a continuation so the
+                        // agent autonomously pushes forward.
+                        if app.goal.auto_continue && !app.is_loading {
+                            // If the user interrupted the previous turn,
+                            // stop auto-continue so they can take control.
+                            if status == crate::core::events::TurnOutcomeStatus::Interrupted {
+                                app.goal.auto_continue = false;
+                                app.status_message = Some(
+                                    "Auto-continue stopped (turn interrupted). Use /goal auto to re-enable."
+                                        .to_string(),
+                                );
+                            } else {
+                                // Use recap_text to give the model full
+                                // session context: goal, todos with status,
+                                // last assistant response summary, and
+                                // active sub-agents. This is the same
+                                // structured output as /recap.
+                                let recap = app.recap_text();
+                                let incomplete = app.pending_todo_count();
+
+                                // Safety: enforce token budget if set.
+                                let budget_exceeded =
+                                    app.goal.goal_token_budget.is_some_and(|budget| {
+                                        app.session.total_conversation_tokens >= budget
+                                    });
+
+                                // Safety: detect stuck state (no progress
+                                // after N consecutive turns). Skip if any
+                                // todo is in_progress — the model IS
+                                // actively working on something.
+                                let has_in_progress = app
+                                    .todos
+                                    .try_lock()
+                                    .map(|todos| {
+                                        todos.snapshot().items.iter().any(|item| {
+                                            matches!(
+                                                item.status,
+                                                crate::tools::todo::TodoStatus::InProgress
+                                            )
+                                        })
+                                    })
+                                    .unwrap_or(false);
+                                let stuck = if has_in_progress {
+                                    // Model is working — reset streak.
+                                    app.goal.stuck_streak = 0;
+                                    false
+                                } else if let Some(prev) = app.goal.prev_pending_count
+                                    && prev == incomplete
+                                {
+                                    app.goal.stuck_streak += 1;
+                                    app.goal.stuck_streak >= STUCK_THRESHOLD
+                                } else {
+                                    app.goal.stuck_streak = 0;
+                                    false
+                                };
+                                app.goal.prev_pending_count = Some(incomplete);
+
+                                // Safety: detect idle turns (model
+                                // chatted without using any tools).
+                                let last_turn_had_tools = app
+                                    .api_messages
+                                    .iter()
+                                    .rev()
+                                    .find(|msg| msg.role == "assistant")
+                                    .map(|msg| {
+                                        msg.content.iter().any(|block| {
+                                            matches!(block, ContentBlock::ToolUse { .. })
+                                        })
+                                    })
+                                    .unwrap_or(false);
+                                if incomplete > 0 && !last_turn_had_tools {
+                                    app.goal.idle_streak += 1;
+                                } else {
+                                    app.goal.idle_streak = 0;
+                                }
+
+                                // Safety: enforce max turn limit (0 =
+                                // unlimited).
+                                #[allow(clippy::absurd_extreme_comparisons)]
+                                let turn_limit = MAX_AUTO_CONTINUE_TURNS > 0
+                                    && app.goal.auto_continue_turn_count >= MAX_AUTO_CONTINUE_TURNS;
+
+                                // When todos reach zero, don't stop
+                                // immediately. Send one confirmation
+                                // turn so the model can decide whether
+                                // the goal is truly achieved or needs
+                                // more checklist items.
+                                let stop_reason: Option<String> = if incomplete == 0 {
+                                    if app.goal.completion_confirmation_pending {
+                                        // Model already got a chance
+                                        // to add more todos and
+                                        // didn't — goal is done.
+                                        Some(
+                                            "Goal achieved — all todos completed and confirmed"
+                                                .to_string(),
+                                        )
+                                    } else {
+                                        // First time hitting zero:
+                                        // ask for confirmation.
+                                        app.goal.completion_confirmation_pending = true;
+                                        None // Don't stop yet
+                                    }
+                                } else {
+                                    // Model added more todos — reset
+                                    // confirmation flag.
+                                    app.goal.completion_confirmation_pending = false;
+                                    None
+                                };
+
+                                let stop_reason: Option<String> = if let Some(reason) = stop_reason
+                                {
+                                    Some(reason)
+                                } else if budget_exceeded {
+                                    Some("Token budget exhausted".to_string())
+                                } else if stuck {
+                                    Some(format!("No progress after {STUCK_THRESHOLD} turns"))
+                                } else if app.goal.idle_streak >= IDLE_TURN_THRESHOLD {
+                                    Some(format!(
+                                        "{} consecutive idle turns (no tool calls)",
+                                        app.goal.idle_streak
+                                    ))
+                                } else if turn_limit {
+                                    Some(format!(
+                                        "Reached max auto-continue turns ({MAX_AUTO_CONTINUE_TURNS})"
+                                    ))
+                                } else {
+                                    None
+                                };
+
+                                if let Some(reason) = stop_reason {
+                                    let status = format!("Auto-continue finished: {reason}.",);
+                                    app.status_message = Some(status.clone());
+                                    // Also push the stop reason into the
+                                    // transcript so the user can see why.
+                                    app.history.push(HistoryCell::System {
+                                        content: format!("⏹ {status}"),
+                                    });
+                                    app.mark_history_updated();
+                                    app.goal.auto_continue = false;
+                                    app.goal.completion_confirmation_pending = false;
+                                } else if app.goal.completion_confirmation_pending {
+                                    // All todos done but the model may
+                                    // have marked items done prematurely.
+                                    // Require a 3-point verification:
+                                    //   1. Tests/build pass?
+                                    //   2. All referenced issues resolved?
+                                    //   3. Any remaining TODO/FIXME?
+                                    // Only reply GOAL_COMPLETE if all three
+                                    // pass. Otherwise add checklist items.
+                                    let msg = format!(
+                                        "You've marked all checklist items as completed. \
+                                         Before confirming, verify with objective evidence:\n\n\
+                                         1. Run relevant tests/build — do they pass?\n\
+                                         2. Review the conversation — are ALL issues resolved?\n\
+                                         3. Search for remaining TODO/FIXME/hack markers.\n\n\
+                                         If ALL three pass, reply \"GOAL_COMPLETE\". \
+                                         If ANY issue remains, add new items with checklist_add.\n\n{recap}"
+                                    );
+                                    app.queued_messages.push_back(QueuedMessage::new(msg, None));
+                                    app.goal.auto_continue_turn_count += 1;
+                                    app.status_message = Some(format!(
+                                        "Auto-continue turn #{} — verifying goal completion",
+                                        app.goal.auto_continue_turn_count
+                                    ));
+                                } else {
+                                    // Include the goal context so the model
+                                    // can re-orient across many turns.
+                                    let goal_context_block = app
+                                        .goal
+                                        .goal_context
+                                        .as_deref()
+                                        .map(|ctx| {
+                                            format!(
+                                                "\n\n## Goal Context (from /goal set time)\n\n{ctx}"
+                                            )
+                                        })
+                                        .unwrap_or_default();
+                                    let decomposition_hint = if let Some(prev) =
+                                        app.goal.prev_pending_count
+                                        && incomplete < prev
+                                    {
+                                        // Todo was just completed:
+                                        // prompt to split next tasks.
+                                        "\n\nProgress made. Review the Goal Context above and split the \
+                                             next set of tasks from the remaining goal. \
+                                             Add them with checklist_add."
+                                    } else {
+                                        ""
+                                    };
+                                    let msg = format!(
+                                        "Continue working on the remaining todo items.\n\n{recap}{goal_context_block}{decomposition_hint}"
+                                    );
+                                    app.queued_messages.push_back(QueuedMessage::new(msg, None));
+                                    app.goal.auto_continue_turn_count += 1;
+                                    app.status_message = Some(format!(
+                                        "Auto-continue turn #{} ({incomplete} todo(s) remaining)",
+                                        app.goal.auto_continue_turn_count
+                                    ));
+                                }
+                            }
+                        }
 
                         // Legacy pending-steer recovery. Current keyboard
                         // handling keeps Esc as cancel-only, but older saved
@@ -2732,7 +2940,7 @@ async fn run_event_loop(
                             app.dispatch_started_at = None;
                             app.streaming_state.reset();
                             // Optimistically clear the turn-in-progress flag
-                            // so the footer wave animation halts immediately —
+                            // so the footer whale animation halts immediately —
                             // without this, the strip keeps animating until
                             // the engine eventually emits TurnComplete (#5a).
                             // The engine's eventual TurnComplete event will
@@ -3503,7 +3711,16 @@ async fn run_cache_warmup(app: &App, config: &Config) -> Result<Usage> {
     Ok(response.usage)
 }
 
-// `format_*` chip/message builders moved to `tui/format_helpers.rs`.
+fn current_goal_json(app: &App) -> Option<String> {
+    serde_json::to_string(&app.goal).ok()
+}
+
+fn current_todos_json(app: &App) -> Option<String> {
+    app.todos
+        .try_lock()
+        .ok()
+        .and_then(|todos| serde_json::to_string(&todos.snapshot().items).ok())
+}
 
 fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
     if let Some(ref existing_id) = app.current_session_id
@@ -3518,6 +3735,8 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
         updated.metadata.mode = Some(app.mode.as_setting().to_string());
         app.sync_cost_to_metadata(&mut updated.metadata);
         updated.context_references = app.session_context_references.clone();
+        updated.goal_state_json = current_goal_json(app);
+        updated.todos_json = current_todos_json(app);
         updated.artifacts = app.session_artifacts.clone();
         updated
     } else {
@@ -3543,6 +3762,8 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
         };
         app.sync_cost_to_metadata(&mut session.metadata);
         session.context_references = app.session_context_references.clone();
+        session.goal_state_json = current_goal_json(app);
+        session.todos_json = current_todos_json(app);
         session.artifacts = app.session_artifacts.clone();
         session
     }
@@ -3903,11 +4124,7 @@ async fn dispatch_user_message(
         app.status_message = Some("Context critical; compacting before send...".to_string());
         let _ = engine_handle.send(Op::CompactContext).await;
     }
-    app.session.last_prompt_tokens = None;
-    app.session.last_completion_tokens = None;
-    app.session.last_prompt_cache_hit_tokens = None;
-    app.session.last_prompt_cache_miss_tokens = None;
-    app.session.last_reasoning_replay_tokens = None;
+    app.clear_last_turn_telemetry();
     // Persist immediately so abrupt termination can recover this in-flight turn.
     // Offloaded to the persistence actor.
     if let Ok(manager) = SessionManager::default_location() {
@@ -4233,8 +4450,7 @@ async fn switch_provider(
     if cache_scope_changed {
         app.clear_model_scoped_telemetry();
     } else {
-        app.session.last_prompt_tokens = None;
-        app.session.last_completion_tokens = None;
+        app.clear_last_turn_telemetry();
     }
 
     let _ = engine_handle.send(Op::Shutdown).await;
@@ -4666,8 +4882,7 @@ async fn apply_command_result(
                         let new_model = config.default_model();
                         app.model = new_model.clone();
                         app.update_model_compaction_budget();
-                        app.session.last_prompt_tokens = None;
-                        app.session.last_completion_tokens = None;
+                        app.clear_last_turn_telemetry();
                         // Rebuild the engine with the new config so API key/model/base URL take effect.
                         let _ = engine_handle.send(Op::Shutdown).await;
                         let engine_config = build_engine_config(app, config);
@@ -5389,14 +5604,17 @@ fn render(f: &mut Frame, app: &mut App) {
     let pending_preview = build_pending_input_preview(app);
     let preview_height = pending_preview.desired_height(size.width);
 
+    let todos_panel_height = super::sidebar::todos_panel_height(app);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(header_height),   // Header
-            Constraint::Min(1),                  // Chat area
-            Constraint::Length(preview_height),  // Pending input preview (0 if empty)
-            Constraint::Length(composer_height), // Composer
-            Constraint::Length(footer_height),   // Footer
+            Constraint::Length(header_height),      // Header
+            Constraint::Min(1),                     // Chat area
+            Constraint::Length(preview_height),     // Pending input preview (0 if empty)
+            Constraint::Length(todos_panel_height), // Todos panel (0 when empty)
+            Constraint::Length(composer_height),    // Composer
+            Constraint::Length(footer_height),      // Footer
         ])
         .split(size);
 
@@ -5445,7 +5663,7 @@ fn render(f: &mut Frame, app: &mut App) {
         .with_usage(
             app.session.total_conversation_tokens,
             sanitized_context_window,
-            app.session.session_cost,
+            app.displayed_session_cost_for_currency(app.cost_currency),
             sanitized_prompt_tokens,
         )
         .with_reasoning_effort(Some(&effort_label))
@@ -5516,6 +5734,11 @@ fn render(f: &mut Frame, app: &mut App) {
         pending_preview.render(chunks[2], buf);
     }
 
+    // Render todos panel above the composer
+    if todos_panel_height > 0 {
+        super::sidebar::render_todos_panel(f, chunks[3], app);
+    }
+
     // Render composer
     let cursor_pos = {
         let composer_widget = ComposerWidget::new(
@@ -5525,15 +5748,15 @@ fn render(f: &mut Frame, app: &mut App) {
             &mention_menu_entries,
         );
         let buf = f.buffer_mut();
-        composer_widget.render(chunks[3], buf);
-        composer_widget.cursor_pos(chunks[3])
+        composer_widget.render(chunks[4], buf);
+        composer_widget.cursor_pos(chunks[4])
     };
     if let Some(cursor_pos) = cursor_pos {
         f.set_cursor_position(cursor_pos);
     }
 
     // Render footer
-    render_footer(f, chunks[4], app);
+    render_footer(f, chunks[5], app);
     // Toast stack overlay (#439): when multiple status toasts are queued,
     // surface the older ones as a 1-2 line strip above the footer so a
     // burst of events isn't collapsed to a single visible message.
@@ -6229,12 +6452,22 @@ fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSession) 
         .cost
         .displayed_cost_high_water_cny
         .max(total_restored_cny);
-    app.session.last_prompt_tokens = None;
-    app.session.last_completion_tokens = None;
-    app.session.last_prompt_cache_hit_tokens = None;
-    app.session.last_prompt_cache_miss_tokens = None;
-    app.session.last_reasoning_replay_tokens = None;
-    app.session.turn_cache_history.clear();
+    app.clear_model_scoped_telemetry();
+
+    // Restore persisted goal state and todos so auto-continue can
+    // pick up where it left off after a restart/crash.
+    if let Some(ref json) = session.goal_state_json
+        && let Ok(goal) = serde_json::from_str::<crate::tui::app::GoalState>(json)
+    {
+        app.goal = goal;
+    }
+    if let Some(ref json) = session.todos_json
+        && let Ok(items) = serde_json::from_str::<Vec<crate::tools::todo::TodoItem>>(json)
+        && let Ok(mut todos) = app.todos.try_lock()
+    {
+        *todos = crate::tools::todo::TodoList::from_items(items);
+    }
+
     app.current_session_id = Some(session.metadata.id.clone());
     app.session_artifacts = session.artifacts.clone();
     app.session_title = Some(session.metadata.title.clone());
@@ -6251,6 +6484,27 @@ fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSession) 
     } else {
         false
     };
+
+    // If the restored session has auto-continue enabled and incomplete
+    // todos, queue a continuation message so the agent picks up where
+    // it left off without user intervention.
+    if app.goal.auto_continue && app.pending_todo_count() > 0 {
+        let obj_hint = app
+            .goal
+            .goal_objective
+            .as_deref()
+            .map(|obj| format!(" for \"{obj}\""))
+            .unwrap_or_default();
+        app.status_message = Some(format!(
+            "Session restored — resuming auto-continue{obj_hint} (turn #{}, {} todo(s) remaining).",
+            app.goal.auto_continue_turn_count,
+            app.pending_todo_count()
+        ));
+        let recap = app.recap_text();
+        let msg = format!("Continue working on the remaining todo items.\n\n{recap}");
+        app.queued_messages.push_back(QueuedMessage::new(msg, None));
+    }
+
     app.scroll_to_bottom();
     recovered
 }

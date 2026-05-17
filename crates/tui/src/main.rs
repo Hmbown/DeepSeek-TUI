@@ -3128,6 +3128,10 @@ fn fork_session(session_id: Option<String>, last: bool, workspace: &Path) -> Res
         system_prompt.as_ref(),
     );
     forked.metadata.copy_cost_from(&saved.metadata);
+    forked.context_references = saved.context_references.clone();
+    forked.goal_state_json = saved.goal_state_json.clone();
+    forked.todos_json = saved.todos_json.clone();
+    forked.artifacts = saved.artifacts.clone();
     manager.save_session(&forked)?;
 
     let source_title = saved.metadata.title.trim();
@@ -4645,6 +4649,8 @@ async fn run_exec_agent(
         todos: new_shared_todo_list(),
         plan_state: new_shared_plan_state(),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
+        soft_max_subagents: config.soft_max_subagents(),
+        auto_scale: config.auto_scale(),
         network_policy,
         snapshots_enabled: config.snapshots_config().enabled,
         snapshots_max_workspace_bytes: config

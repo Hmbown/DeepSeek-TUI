@@ -1549,7 +1549,6 @@ mod tests {
             );
         }
         for retired in [
-            "agent_spawn",
             "agent_wait",
             "agent_result",
             "agent_send_input",

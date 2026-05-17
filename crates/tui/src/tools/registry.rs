@@ -243,6 +243,7 @@ impl ToolRegistry {
 
     /// Convert tools to API Tool format with optional cache control on the last tool.
     #[must_use]
+    #[allow(dead_code)]
     pub fn to_api_tools_with_cache(&self, enable_cache: bool) -> Vec<Tool> {
         let mut tools = self.to_api_tools();
         if enable_cache && let Some(last) = tools.last_mut() {

@@ -269,6 +269,7 @@ pub enum MessageId {
     CmdHooksDescription,
     CmdAgentDescription,
     CmdGoalDescription,
+    CmdRecapDescription,
     CmdInitDescription,
     CmdJobsDescription,
     CmdLinksDescription,
@@ -859,7 +860,7 @@ fn fallback_translation(candidate: Option<&'static str>, id: MessageId) -> &'sta
 
 fn english(id: MessageId) -> &'static str {
     match id {
-        MessageId::ComposerPlaceholder => "Write a task or use /.",
+        MessageId::ComposerPlaceholder => "Try \"fix lint errors\"",
         MessageId::HistorySearchPlaceholder => "Search prompt history...",
         MessageId::HistorySearchTitle => "History Search",
         MessageId::HistoryHintMove => "Up/Down move",
@@ -933,6 +934,7 @@ fn english(id: MessageId) -> &'static str {
             "Open a persistent sub-agent session: /agent [0-3] <task>"
         }
         MessageId::CmdGoalDescription => "Set a session goal with optional token budget",
+        MessageId::CmdRecapDescription => "Print a structured session state summary",
         MessageId::CmdInitDescription => "Generate AGENTS.md for project",
         MessageId::CmdLspDescription => "Toggle LSP diagnostics on or off",
         MessageId::CmdShareDescription => "Export current session as a shareable web URL",
@@ -1236,7 +1238,7 @@ fn traditional_chinese(id: MessageId) -> Option<&'static str> {
 
 fn japanese(id: MessageId) -> Option<&'static str> {
     Some(match id {
-        MessageId::ComposerPlaceholder => "タスクを書くか / を使う。",
+        MessageId::ComposerPlaceholder => "例: \"lint エラーを直す\"",
         MessageId::HistorySearchPlaceholder => "プロンプト履歴を検索...",
         MessageId::HistorySearchTitle => "履歴検索",
         MessageId::HistoryHintMove => "Up/Down 移動",
@@ -1314,6 +1316,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
             "永続サブエージェントセッションを開く: /agent [0-3] <task>"
         }
         MessageId::CmdGoalDescription => "トークンバジェット付きのセッション目標を設定",
+        MessageId::CmdRecapDescription => "構造化されたセッション状態のサマリーを表示",
         MessageId::CmdInitDescription => "プロジェクト用に AGENTS.md を生成",
         MessageId::CmdLspDescription => "LSP 診断のオン・オフを切り替え",
         MessageId::CmdShareDescription => "現在のセッションを共有可能な Web URL としてエクスポート",
@@ -1596,7 +1599,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
 
 fn chinese_simplified(id: MessageId) -> Option<&'static str> {
     Some(match id {
-        MessageId::ComposerPlaceholder => "编写任务或使用 /。",
+        MessageId::ComposerPlaceholder => "试试“修复 lint 错误”",
         MessageId::HistorySearchPlaceholder => "搜索提示历史...",
         MessageId::HistorySearchTitle => "历史搜索",
         MessageId::HistoryHintMove => "Up/Down 移动",
@@ -1660,6 +1663,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdHooksDescription => "列出已配置的生命周期钩子（只读）",
         MessageId::CmdAgentDescription => "打开持久子代理会话：/agent [0-3] <task>",
         MessageId::CmdGoalDescription => "设置带有可选令牌预算的会话目标",
+        MessageId::CmdRecapDescription => "输出结构化的会话状态摘要",
         MessageId::CmdInitDescription => "为项目生成 AGENTS.md",
         MessageId::CmdLspDescription => "切换 LSP 诊断的开启或关闭",
         MessageId::CmdShareDescription => "将当前会话导出为可共享的 Web URL",
@@ -1900,7 +1904,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
 
 fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
     Some(match id {
-        MessageId::ComposerPlaceholder => "Escreva uma tarefa ou use /.",
+        MessageId::ComposerPlaceholder => "Tente \"corrigir erros de lint\"",
         MessageId::HistorySearchPlaceholder => "Pesquisar histórico de prompts...",
         MessageId::HistorySearchTitle => "Busca no histórico",
         MessageId::HistoryHintMove => "Up/Down move",
@@ -1982,6 +1986,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdGoalDescription => {
             "Definir uma meta de sessão com orçamento de tokens opcional"
         }
+        MessageId::CmdRecapDescription => "Exibir um resumo estruturado do estado da sessão",
         MessageId::CmdInitDescription => "Gerar AGENTS.md para o projeto",
         MessageId::CmdLspDescription => "Alternar diagnóstico LSP ligado ou desligado",
         MessageId::CmdShareDescription => "Exportar a sessão atual como uma URL web compartilhável",
@@ -2389,6 +2394,9 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::CmdThemeDescription => "Alternar entre tema claro y oscuro",
         MessageId::CmdProviderDescription => {
             "Cambiar o mostrar el backend LLM activo (deepseek | nvidia-nim | ollama)"
+        }
+        MessageId::CmdRecapDescription => {
+            "Imprimir un resumen estructurado del estado de la sesión"
         }
         MessageId::CmdQueueDescription => "Ver o editar mensajes en cola",
         MessageId::CmdRecallDescription => {

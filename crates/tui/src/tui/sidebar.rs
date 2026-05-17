@@ -20,7 +20,7 @@ use crate::deepseek_theme::Theme;
 use crate::palette;
 use crate::tools::plan::StepStatus;
 use crate::tools::subagent::SubAgentStatus;
-use crate::tools::todo::TodoStatus;
+use crate::tools::todo::{TodoItem, TodoStatus};
 
 use super::app::{App, SidebarFocus, TaskPanelEntry};
 use super::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus, summarize_tool_output};
@@ -1258,11 +1258,7 @@ fn tool_status_marker(status: ToolStatus) -> (&'static str, ratatui::style::Colo
 }
 
 fn format_duration_ms(ms: u64) -> String {
-    if ms < 1000 {
-        format!("{ms}ms")
-    } else {
-        format!("{:.1}s", ms as f64 / 1000.0)
-    }
+    format!("{}s", ms / 1000)
 }
 
 fn duration_ms(duration: Duration) -> u64 {
@@ -1335,6 +1331,7 @@ pub struct SidebarSubagentSummary {
 
 #[derive(Debug, Clone)]
 pub struct SidebarAgentRow {
+    #[allow(dead_code)]
     pub id: String,
     pub name: String,
     pub role: String,
@@ -1397,8 +1394,8 @@ fn sidebar_agent_rows(app: &App) -> Vec<SidebarAgentRow> {
             .iter()
             .filter(|(id, _)| !cached_ids.contains(id.as_str()))
             .map(|(id, progress)| SidebarAgentRow {
-                id: id.clone(),
                 name: id.clone(),
+                id: id.clone(),
                 role: "agent".to_string(),
                 status: "running".to_string(),
                 progress: Some(progress.clone()),
@@ -1503,7 +1500,7 @@ pub fn subagent_panel_lines(
         let mut detail_parts = Vec::new();
         detail_parts.push(truncate_line_to_width(&row.id, 10));
         if row.steps_taken > 0 {
-            detail_parts.push(format!("{} step(s)", row.steps_taken));
+            detail_parts.push(format!("{} steps", row.steps_taken));
         }
         if let Some(duration) = row.duration_ms {
             detail_parts.push(format_duration_ms(duration));
@@ -1685,6 +1682,163 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
     }
 
     render_sidebar_section(f, area, "Session", lines, app);
+}
+
+/// Maximum visible items in the todos area above the composer.
+const TODOS_PANEL_MAX_ITEMS: usize = 6;
+
+// Cached todos panel height so a transient lock failure doesn't collapse
+// the panel for a single frame. Per-thread, zero means "uninitialised".
+thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
+    static LAST_TODOS_HEIGHT: std::cell::Cell<u16> = std::cell::Cell::new(0);
+}
+
+/// Compute the height needed for the todos area above the composer.
+/// Returns 0 when the checklist is empty. Falls back to the last known
+/// height on lock contention to prevent layout flicker.
+pub fn todos_panel_height(app: &App) -> u16 {
+    let snapshot = match app.todos.try_lock() {
+        Ok(todos) => todos.snapshot(),
+        Err(_) => return LAST_TODOS_HEIGHT.with(|h| h.get()),
+    };
+    if snapshot.items.is_empty() {
+        LAST_TODOS_HEIGHT.with(|h| h.set(0));
+        return 0;
+    }
+    // Title + progress summary + N visible items (capped, one line
+    // reserved for "+N more" when items exceed the max), no border chrome.
+    let total = snapshot.items.len();
+    let items = if total > TODOS_PANEL_MAX_ITEMS {
+        TODOS_PANEL_MAX_ITEMS - 1
+    } else {
+        total
+    };
+    let remaining = total.saturating_sub(TODOS_PANEL_MAX_ITEMS);
+    let height = 2 + items as u16 + u16::from(remaining > 0);
+    LAST_TODOS_HEIGHT.with(|h| h.set(height));
+    height
+}
+
+fn todos_window_start(items: &[TodoItem], max_items: usize) -> usize {
+    if max_items >= items.len() {
+        return 0;
+    }
+    // Anchor on the in-progress item; if none, anchor on the first
+    // non-completed item so the user sees what's left to do.
+    let active_idx = items
+        .iter()
+        .position(|item| item.status == TodoStatus::InProgress)
+        .or_else(|| {
+            items
+                .iter()
+                .position(|item| item.status != TodoStatus::Completed)
+        });
+    let Some(active_idx) = active_idx else {
+        return 0;
+    };
+    active_idx
+        .saturating_sub(max_items / 2)
+        .min(items.len().saturating_sub(max_items))
+}
+
+/// Render the todos area as a lightweight list above the composer.
+///
+/// Shows checklist progress with a title, completion summary, and each item on
+/// its own line with status markers. Width below 24 columns silently renders
+/// nothing. Items beyond the cap show a "+N more" footer.
+///
+/// Design follows Claude Code's pattern of placing the checklist above
+/// the composer/input area so the user can see task progress at a glance
+/// without needing the sidebar visible.
+pub fn render_todos_panel(f: &mut Frame, area: Rect, app: &App) {
+    if area.width < 24 || area.height < 2 {
+        return;
+    }
+
+    let snapshot = match app.todos.try_lock() {
+        Ok(todos) => todos.snapshot(),
+        Err(_) => return,
+    };
+
+    if snapshot.items.is_empty() {
+        return;
+    }
+
+    let theme = Theme::for_palette_mode(app.ui_theme.mode);
+    let content_width = area.width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(TODOS_PANEL_MAX_ITEMS + 3);
+
+    let total = snapshot.items.len();
+    let completed = snapshot
+        .items
+        .iter()
+        .filter(|item| item.status == TodoStatus::Completed)
+        .count();
+    lines.push(Line::from(Span::styled(
+        "Todos",
+        Style::default().fg(theme.section_title_color).bold(),
+    )));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{}%", snapshot.completion_pct),
+            Style::default().fg(palette::STATUS_SUCCESS).bold(),
+        ),
+        Span::styled(
+            format!(" complete ({completed}/{total})"),
+            Style::default().fg(palette::TEXT_MUTED),
+        ),
+    ]));
+
+    let max_visible = if total > TODOS_PANEL_MAX_ITEMS {
+        TODOS_PANEL_MAX_ITEMS - 1 // reserve one line for "+N more"
+    } else {
+        total
+    };
+    let start = todos_window_start(&snapshot.items, max_visible);
+    let end = start.saturating_add(max_visible).min(total);
+    for item in snapshot.items[start..end].iter() {
+        let (prefix, color) = match item.status {
+            TodoStatus::Pending => ("[ ]", palette::TEXT_MUTED),
+            TodoStatus::InProgress => ("[~]", palette::STATUS_WARNING),
+            TodoStatus::Completed => ("[x]", palette::STATUS_SUCCESS),
+        };
+        let text = format!("{prefix} #{} {}", item.id, item.content);
+        lines.push(Line::from(Span::styled(
+            truncate_line_to_width(&text, content_width.max(1)),
+            Style::default().fg(color),
+        )));
+    }
+
+    let earlier = start;
+    let later = total.saturating_sub(end);
+    let remaining = earlier.saturating_add(later);
+    if remaining > 0 {
+        let label = match (earlier, later) {
+            (0, later) => format!("+{later} more"),
+            (earlier, 0) => format!("+{earlier} earlier"),
+            (earlier, later) => format!("+{earlier} earlier, +{later} more"),
+        };
+        lines.push(Line::from(Span::styled(
+            label,
+            Style::default().fg(palette::TEXT_MUTED),
+        )));
+    }
+
+    let visible_rows = area.height as usize;
+    let lines: Vec<Line<'static>> = if lines.len() > visible_rows && visible_rows > 0 {
+        lines.into_iter().take(visible_rows).collect()
+    } else {
+        lines
+    };
+
+    Block::default()
+        .style(Style::default().bg(app.ui_theme.surface_bg))
+        .render(area, f.buffer_mut());
+    let section = Paragraph::new(lines)
+        .wrap(Wrap { trim: true })
+        .style(Style::default().bg(app.ui_theme.surface_bg));
+    f.render_widget(section, area);
 }
 
 fn render_sidebar_section(
@@ -2318,8 +2472,7 @@ mod tests {
         let text = lines_to_text(&task_panel_lines(&app, 80, 8));
 
         assert!(
-            text.iter()
-                .any(|line| line.contains("[x] cargo check 1.2s")),
+            text.iter().any(|line| line.contains("[x] cargo check 1s")),
             "status marker and duration should stay in the row label: {text:?}"
         );
         assert!(
