@@ -867,6 +867,17 @@ impl Engine {
                 )
             });
 
+            // Issue #1727: did this turn produce ONLY a reasoning/thinking
+            // block — empty content, no tool calls (e.g. gpt-oss via ollama's
+            // harmony→OpenAI shim mapping to `reasoning_content`)? We do NOT
+            // surface anything here: after this point the same turn can still
+            // CONTINUE for pending steers (~below) or sub-agent completions,
+            // and emitting now would show a spurious "turn ended" notice right
+            // before the turn resumes. Capture the fact and decide later, at
+            // the point the turn is certain to be finishing with no sendable
+            // content (see the `tool_uses.is_empty()` tail).
+            let thinking_only_no_sendable = !has_sendable_assistant_content;
+
             // Add assistant message to session
             if has_sendable_assistant_content {
                 self.add_session_message(Message {
@@ -874,25 +885,6 @@ impl Engine {
                     content: content_blocks,
                 })
                 .await;
-            } else if should_emit_thinking_only_status(
-                tool_uses.is_empty(),
-                turn_error.is_none(),
-                self.cancel_token.is_cancelled(),
-            ) {
-                // Issue #1727: the model streamed ONLY a reasoning/thinking
-                // block — empty content, no tool calls (e.g. gpt-oss via
-                // ollama's harmony→OpenAI shim mapping to `reasoning_content`).
-                // We intentionally do NOT persist an assistant message
-                // (preserves prior behavior), but the previous code emitted
-                // nothing at all and fell straight through to finishing the
-                // turn, leaving the UI spinner hung with no error. Surface a
-                // status so the user knows the turn ended and can retry.
-                let message =
-                    "Model returned reasoning but no answer or tool call; turn ended without \
-                     output. Send a follow-up to retry."
-                        .to_string();
-                crate::logging::warn(&message);
-                let _ = self.tx_event.send(Event::status(message)).await;
             }
 
             // If no tool uses, check for inline REPL blocks (paper §2) or
@@ -1081,6 +1073,39 @@ impl Engine {
                     // No FINAL — let the model iterate with the feedback.
                     turn.next_step();
                     continue;
+                }
+
+                // Issue #1727: the turn is now genuinely finishing with no
+                // sendable content. Control only reaches here when there were
+                // no pending steers (`continue`d above), no sub-agent
+                // completions to resume with, and we were not holding for
+                // running children (the `should_hold_turn_for_subagents`
+                // branch above would have awaited / `continue`d / returned).
+                // If the assistant produced ONLY a reasoning block, the prior
+                // code fell straight through to this `break`, emitting nothing
+                // and leaving the UI spinner hung. Surface a status now —
+                // safe because the turn can no longer resume.
+                if thinking_only_no_sendable {
+                    let holding_for_subagents = {
+                        let running = {
+                            let mgr = self.subagent_manager.read().await;
+                            mgr.running_count()
+                        };
+                        should_hold_turn_for_subagents(0, running)
+                    };
+                    if should_emit_thinking_only_status(
+                        tool_uses.is_empty(),
+                        turn_error.is_none(),
+                        self.cancel_token.is_cancelled(),
+                        !pending_steers.is_empty(),
+                        holding_for_subagents,
+                    ) {
+                        let message = "Model returned reasoning but no answer or tool call; \
+                                       turn ended without output. Send a follow-up to retry."
+                            .to_string();
+                        crate::logging::warn(&message);
+                        let _ = self.tx_event.send(Event::status(message)).await;
+                    }
                 }
 
                 break;
@@ -1988,16 +2013,25 @@ fn should_hold_turn_for_subagents(queued_completions: usize, running_children: u
 ///
 /// Reached when the assistant turn had no sendable content (no Text, no
 /// ToolUse — only a reasoning/thinking block). We notify the user *only* when
-/// the turn is otherwise ending cleanly: no tool uses to dispatch, no
-/// `turn_error` already surfaced for this turn, and the request wasn't
-/// cancelled. In those cases the prior code emitted nothing and the UI
-/// spinner hung silently.
+/// the turn is genuinely finishing: no tool uses to dispatch, no `turn_error`
+/// already surfaced for this turn, the request wasn't cancelled, AND the turn
+/// is not about to CONTINUE — there are no pending steers and we are not
+/// holding the turn open for running sub-agents. The status must fire at the
+/// point the turn truly ends; emitting it earlier (at the persist site) would
+/// show a spurious "turn ended" notice immediately before the turn resumed
+/// for a steer or a sub-agent completion.
 fn should_emit_thinking_only_status(
     tool_uses_empty: bool,
     turn_error_is_none: bool,
     cancelled: bool,
+    steers_pending: bool,
+    holding_for_subagents: bool,
 ) -> bool {
-    tool_uses_empty && turn_error_is_none && !cancelled
+    tool_uses_empty
+        && turn_error_is_none
+        && !cancelled
+        && !steers_pending
+        && !holding_for_subagents
 }
 
 /// Resolve an `"auto"` reasoning-effort tier to a concrete value.
@@ -2092,30 +2126,59 @@ mod tests {
     /// error, looking hung.
     ///
     /// This pins the decision: a clean turn end (no tool uses to dispatch, no
-    /// `turn_error`, not cancelled) must surface a status. We must NOT spam the
-    /// status when the turn is ending for another reason (error already shown,
-    /// cancelled) or when there are tool uses still to dispatch.
+    /// `turn_error`, not cancelled, no pending steers, not holding for
+    /// sub-agents) must surface a status. We must NOT spam the status when the
+    /// turn is ending for another reason (error already shown, cancelled),
+    /// when there are tool uses still to dispatch, or — critically (the
+    /// MEDIUM review finding) — when the turn is about to CONTINUE because a
+    /// steer is pending or sub-agents are still running. Emitting at the old
+    /// persist site fired before those continuations were known.
     ///
     /// Limitation: this tests the extracted pure decision, not the full async
     /// `handle_deepseek_turn` loop (driving it would need a mock DeepSeek
     /// client + session + channels — far beyond a surgical fix and unlike any
     /// existing turn-loop test, which all pin pure helpers the same way). The
-    /// `else if` wiring at the persist site is reviewed by inspection.
+    /// wiring at the `tool_uses.is_empty()` tail (capture-then-decide, with the
+    /// live steer/sub-agent signals) is reviewed by inspection — consistent
+    /// with how the other turn-loop helpers in this module are tested.
     #[test]
     fn thinking_only_turn_emits_status_only_on_clean_end() {
-        // Thinking-only response, turn ending cleanly → surface a status so
-        // the user isn't left staring at a hung spinner.
-        assert!(should_emit_thinking_only_status(true, true, false));
+        // Thinking-only response, turn genuinely ending (no tool uses, no
+        // error, not cancelled, no steers pending, not holding for
+        // sub-agents) → surface a status so the user isn't left staring at a
+        // hung spinner.
+        assert!(should_emit_thinking_only_status(
+            true, true, false, false, false
+        ));
 
         // Tool uses still pending → the normal dispatch path handles it; no
         // thinking-only status.
-        assert!(!should_emit_thinking_only_status(false, true, false));
+        assert!(!should_emit_thinking_only_status(
+            false, true, false, false, false
+        ));
 
         // A turn_error was already surfaced → don't double-report.
-        assert!(!should_emit_thinking_only_status(true, false, false));
+        assert!(!should_emit_thinking_only_status(
+            true, false, false, false, false
+        ));
 
         // Request was cancelled → cancellation status already covers it.
-        assert!(!should_emit_thinking_only_status(true, true, true));
+        assert!(!should_emit_thinking_only_status(
+            true, true, true, false, false
+        ));
+
+        // A steer is pending → the turn will resume with the steer; emitting
+        // "turn ended" now would be a spurious notice right before the turn
+        // continues (the MEDIUM correctness finding).
+        assert!(!should_emit_thinking_only_status(
+            true, true, false, true, false
+        ));
+
+        // Sub-agents are still running / completions queued → the turn is
+        // held open and will resume; do not claim it ended.
+        assert!(!should_emit_thinking_only_status(
+            true, true, false, false, true
+        ));
     }
 
     /// Regression test for the OpenAI streaming batch tool_calls bug.
