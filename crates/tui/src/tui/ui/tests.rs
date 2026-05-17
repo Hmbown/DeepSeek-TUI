@@ -5588,12 +5588,14 @@ fn home_at_line_start_stays_put() {
 }
 
 #[test]
-fn end_at_newline_skips_to_next_line_end() {
+fn end_at_newline_stays_at_line_end() {
     let mut app = create_test_app();
     app.input = "line one\nline two\nline three".to_string();
+    // Cursor sitting on the first '\n'.
     app.cursor_position = "line one".len();
     app.move_cursor_line_end();
-    assert_eq!(app.cursor_position, "line one\nline two".len());
+    // Stays at end of current line.
+    assert_eq!(app.cursor_position, "line one".len());
 }
 
 #[test]

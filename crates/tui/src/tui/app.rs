@@ -3236,12 +3236,7 @@ impl App {
     /// (just before the next `\n` or at the end of input).
     /// On single-line input this is equivalent to `move_cursor_end`.
     pub fn move_cursor_line_end(&mut self) {
-        let mut search_start = byte_index_at_char(&self.input, self.cursor_position);
-        // If the cursor sits on a '\n', skip past it — the user
-        // wants the end of the *next* line.
-        if self.input.as_bytes().get(search_start) == Some(&b'\n') {
-            search_start += 1;
-        }
+        let search_start = byte_index_at_char(&self.input, self.cursor_position);
         if let Some(offset) = self.input[search_start..].find('\n') {
             self.cursor_position = char_count(&self.input[..search_start + offset]);
         } else {
@@ -4295,12 +4290,12 @@ mod tests {
     }
 
     #[test]
-    fn move_cursor_line_end_at_newline_skips_to_next_line() {
+    fn move_cursor_line_end_at_newline_stays_at_line_end() {
         let mut app = App::new(test_options(false), &Config::default());
         app.input = "abc\ndef\nghi".to_string();
         app.cursor_position = "abc".len(); // on the '\n'
         app.move_cursor_line_end();
-        assert_eq!(app.cursor_position, "abc\ndef".len()); // end of second line
+        assert_eq!(app.cursor_position, "abc".len()); // stays at line end
     }
 
     #[test]
