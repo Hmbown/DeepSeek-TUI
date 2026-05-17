@@ -1628,7 +1628,12 @@ fn should_replay_reasoning_content_for_provider(
     model: &str,
     effort: Option<&str>,
 ) -> bool {
-    if !provider_accepts_reasoning_content(provider) {
+    if !provider_accepts_reasoning_content(provider) && !requires_reasoning_content(model) {
+        // Generic non-DeepSeek model on a provider that rejects the field:
+        // keep stripping it (preserves the #1542 fix). But a known DeepSeek
+        // reasoning model pointed at a DeepSeek-compatible endpoint via the
+        // generic `openai` provider still requires reasoning_content replay,
+        // or the thinking-mode API returns 400 (#1739 / #1694).
         return false;
     }
     should_replay_reasoning_content(model, effort)
@@ -2828,7 +2833,7 @@ mod alias_thinking_detection_tests {
     //! https://api-docs.deepseek.com/guides/thinking_mode
     use super::{
         provider_accepts_reasoning_content, requires_reasoning_content,
-        should_replay_reasoning_content,
+        should_replay_reasoning_content, should_replay_reasoning_content_for_provider,
     };
     use crate::config::ApiProvider;
 
@@ -2896,5 +2901,50 @@ mod alias_thinking_detection_tests {
         assert!(!provider_accepts_reasoning_content(ApiProvider::Openai));
         assert!(provider_accepts_reasoning_content(ApiProvider::Deepseek));
         assert!(provider_accepts_reasoning_content(ApiProvider::NvidiaNim));
+    }
+
+    #[test]
+    fn deepseek_model_on_openai_provider_still_replays_reasoning_content() {
+        // #1739 / #1694: a DeepSeek thinking model pointed at a
+        // DeepSeek-compatible endpoint via the generic `openai` provider must
+        // still replay reasoning_content, even though the provider itself does
+        // not accept the field. Otherwise the thinking-mode API returns 400.
+        assert!(should_replay_reasoning_content_for_provider(
+            ApiProvider::Openai,
+            "deepseek-v4-flash",
+            None,
+        ));
+        assert!(should_replay_reasoning_content_for_provider(
+            ApiProvider::Openai,
+            "deepseek-v4-pro",
+            None,
+        ));
+        assert!(should_replay_reasoning_content_for_provider(
+            ApiProvider::Openai,
+            "deepseek-reasoner",
+            Some("medium"),
+        ));
+        // The documented escape hatch still wins over model detection.
+        assert!(!should_replay_reasoning_content_for_provider(
+            ApiProvider::Openai,
+            "deepseek-v4-flash",
+            Some("off"),
+        ));
+    }
+
+    #[test]
+    fn generic_model_on_openai_provider_still_strips_reasoning_content() {
+        // #1542 no-regression guard: a genuine non-DeepSeek model on the
+        // openai provider must continue to have reasoning_content stripped.
+        assert!(!should_replay_reasoning_content_for_provider(
+            ApiProvider::Openai,
+            "gpt-4o",
+            None,
+        ));
+        assert!(!should_replay_reasoning_content_for_provider(
+            ApiProvider::Openai,
+            "claude-sonnet-4-6",
+            None,
+        ));
     }
 }
