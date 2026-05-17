@@ -3267,10 +3267,10 @@ async fn run_event_loop(
                     app.move_cursor_start();
                 }
                 KeyCode::Home => {
-                    app.move_cursor_start();
+                    app.move_cursor_line_start();
                 }
                 KeyCode::End => {
-                    app.move_cursor_end();
+                    app.move_cursor_line_end();
                 }
                 KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.move_cursor_end();

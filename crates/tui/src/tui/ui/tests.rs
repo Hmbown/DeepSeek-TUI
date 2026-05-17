@@ -5525,6 +5525,78 @@ fn composer_arrows_scroll_config_overrides_default() {
 }
 
 #[test]
+fn home_jumps_to_line_start_multiline() {
+    let mut app = create_test_app();
+    app.input = "line one\nline two\nline three".to_string();
+    app.cursor_position = app.input.chars().count();
+    app.move_cursor_line_start();
+    assert_eq!(app.cursor_position, "line one\nline two\n".len());
+}
+
+#[test]
+fn home_from_middle_of_line_jumps_to_line_start() {
+    let mut app = create_test_app();
+    app.input = "line one\nline two".to_string();
+    app.cursor_position = "line one\nli".len();
+    app.move_cursor_line_start();
+    assert_eq!(app.cursor_position, "line one\n".len());
+}
+
+#[test]
+fn home_on_singleline_jumps_to_zero() {
+    let mut app = create_test_app();
+    app.input = "hello world".to_string();
+    app.cursor_position = 6;
+    app.move_cursor_line_start();
+    assert_eq!(app.cursor_position, 0);
+}
+
+#[test]
+fn end_jumps_to_line_end_multiline() {
+    let mut app = create_test_app();
+    app.input = "line one\nline two\nline three".to_string();
+    app.cursor_position = 0;
+    app.move_cursor_line_end();
+    assert_eq!(app.cursor_position, "line one".len());
+}
+
+#[test]
+fn end_from_middle_of_line_jumps_to_line_end() {
+    let mut app = create_test_app();
+    app.input = "line one\nline two".to_string();
+    app.cursor_position = "line one\nli".len();
+    app.move_cursor_line_end();
+    assert_eq!(app.cursor_position, "line one\nline two".len());
+}
+
+#[test]
+fn end_on_singleline_jumps_to_absolute_end() {
+    let mut app = create_test_app();
+    app.input = "hello world".to_string();
+    app.cursor_position = 0;
+    app.move_cursor_line_end();
+    assert_eq!(app.cursor_position, app.input.chars().count());
+}
+
+#[test]
+fn home_at_line_start_stays_put() {
+    let mut app = create_test_app();
+    app.input = "line one\nline two".to_string();
+    app.cursor_position = "line one\n".len();
+    app.move_cursor_line_start();
+    assert_eq!(app.cursor_position, "line one\n".len());
+}
+
+#[test]
+fn end_at_newline_skips_to_next_line_end() {
+    let mut app = create_test_app();
+    app.input = "line one\nline two\nline three".to_string();
+    app.cursor_position = "line one".len();
+    app.move_cursor_line_end();
+    assert_eq!(app.cursor_position, "line one\nline two".len());
+}
+
+#[test]
 fn notification_settings_tui_always_keeps_configured_method_no_threshold() {
     let config = Config {
         tui: Some(crate::config::TuiConfig {

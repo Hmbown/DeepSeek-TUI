@@ -3218,6 +3218,38 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// In a multiline composer, jump to the start of the current line.
+    /// On single-line input this is equivalent to `move_cursor_start`.
+    pub fn move_cursor_line_start(&mut self) {
+        let byte_pos = byte_index_at_char(&self.input, self.cursor_position);
+        let before = &self.input[..byte_pos];
+        if let Some(last_nl_byte) = before.rfind('\n') {
+            // Position after the '\n' (start of the current line).
+            self.cursor_position = char_count(&self.input[..=last_nl_byte]);
+        } else {
+            self.cursor_position = 0;
+        }
+        self.needs_redraw = true;
+    }
+
+    /// In a multiline composer, jump to the end of the current line
+    /// (just before the next `\n` or at the end of input).
+    /// On single-line input this is equivalent to `move_cursor_end`.
+    pub fn move_cursor_line_end(&mut self) {
+        let mut search_start = byte_index_at_char(&self.input, self.cursor_position);
+        // If the cursor sits on a '\n', skip past it — the user
+        // wants the end of the *next* line.
+        if self.input.as_bytes().get(search_start) == Some(&b'\n') {
+            search_start += 1;
+        }
+        if let Some(offset) = self.input[search_start..].find('\n') {
+            self.cursor_position = char_count(&self.input[..search_start + offset]);
+        } else {
+            self.cursor_position = char_count(&self.input);
+        }
+        self.needs_redraw = true;
+    }
+
     /// Move forward one word. Skips over the current word then any trailing
     /// whitespace to land on the first character of the next word.
     pub fn move_cursor_word_forward(&mut self) {
@@ -4233,6 +4265,60 @@ mod tests {
     #[test]
     fn composer_arrows_scroll_default_is_true_on_windows_even_with_mouse_capture() {
         assert!(default_composer_arrows_scroll_for_platform(true, true));
+    }
+
+    #[test]
+    fn move_cursor_line_start_multiline() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "abc\ndef\nghi".to_string();
+        app.cursor_position = "abc\ndef\nghi".chars().count(); // absolute end
+        app.move_cursor_line_start();
+        assert_eq!(app.cursor_position, "abc\ndef\n".len()); // start of "ghi"
+    }
+
+    #[test]
+    fn move_cursor_line_start_singleline() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello".to_string();
+        app.cursor_position = 3;
+        app.move_cursor_line_start();
+        assert_eq!(app.cursor_position, 0);
+    }
+
+    #[test]
+    fn move_cursor_line_end_multiline() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "abc\ndef\nghi".to_string();
+        app.cursor_position = 0; // start of first line
+        app.move_cursor_line_end();
+        assert_eq!(app.cursor_position, "abc".len()); // before first '\n'
+    }
+
+    #[test]
+    fn move_cursor_line_end_at_newline_skips_to_next_line() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "abc\ndef\nghi".to_string();
+        app.cursor_position = "abc".len(); // on the '\n'
+        app.move_cursor_line_end();
+        assert_eq!(app.cursor_position, "abc\ndef".len()); // end of second line
+    }
+
+    #[test]
+    fn move_cursor_line_end_last_line() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "abc\ndef".to_string();
+        app.cursor_position = "abc\n".len(); // start of last line
+        app.move_cursor_line_end();
+        assert_eq!(app.cursor_position, "abc\ndef".chars().count()); // absolute end
+    }
+
+    #[test]
+    fn move_cursor_line_start_already_at_start() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "abc\ndef".to_string();
+        app.cursor_position = "abc\n".len(); // start of second line
+        app.move_cursor_line_start();
+        assert_eq!(app.cursor_position, "abc\n".len()); // unchanged
     }
 
     struct EnvVarGuard {
