@@ -1,5 +1,6 @@
 # Build artifacts
 /target
+/target-*
 *.pdb
 *.exe
 *.dll
@@ -103,3 +104,7 @@ docs/*_PLAN.md
 # direnv
 .envrc
 .direnv
+
+# Local dev files (not for upstream)
+dev-container.ps1
+docs/DEBUG_CLIPBOARD_PASTE.md
