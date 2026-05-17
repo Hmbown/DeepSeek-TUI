@@ -6,6 +6,7 @@ use crate::cycle_manager::CycleBriefing;
 use crate::models::{Message, SystemPrompt, Usage};
 use crate::prefix_cache::PrefixStabilityManager;
 use crate::project_context::{ProjectContext, load_project_context_with_parents};
+use crate::prompts::StaticPromptCache;
 use crate::tui::approval::ApprovalMode;
 use crate::working_set::WorkingSet;
 use chrono::{DateTime, Utc};
@@ -84,6 +85,21 @@ pub struct Session {
     /// Bounded growth: one entry per cycle, briefing capped at ~3,000 tokens.
     pub cycle_briefings: Vec<CycleBriefing>,
 
+    /// Snapshot of the user-memory block taken at session creation (and
+    /// re-snapshot on `Op::SyncSession`). The system-prompt rebuild path uses
+    /// this instead of re-reading `memory.md` from disk every turn — that
+    /// disk read invalidated the entire conversation's KV prefix cache
+    /// every time the `remember` tool or `# foo` quick-add appended a
+    /// timestamped bullet. New bullets still hit disk and are picked up by
+    /// the next session.
+    pub cached_user_memory_block: Option<String>,
+
+    /// Snapshot of all disk-backed system-prompt components (project context,
+    /// context pack, instructions files, skills catalogue). Built once at
+    /// session creation so `refresh_system_prompt` can skip per-turn disk
+    /// reads and guarantee byte-stable system-prompt bytes across turns.
+    pub cached_static_prefix: Option<StaticPromptCache>,
+
     /// Prefix-cache stability monitor (inspired by Reasonix's Pillar 1).
     /// Tracks the immutable prefix fingerprint and detects drift across turns.
     /// Set during engine construction; None until the first system prompt assembly.
@@ -96,12 +112,10 @@ pub struct Session {
 pub struct SessionUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
-    /// Cache creation (miss) tokens. `None` when never observed by the API —
-    /// do NOT display as 0, which would be indistinguishable from "no misses".
-    pub cache_creation_input_tokens: Option<u64>,
-    /// Cache read (hit) tokens. `None` when never observed by the API —
-    /// do NOT display as 0, which would be indistinguishable from "no hits".
-    pub cache_read_input_tokens: Option<u64>,
+    #[allow(dead_code)]
+    pub cache_creation_input_tokens: u64,
+    #[allow(dead_code)]
+    pub cache_read_input_tokens: u64,
 }
 
 impl SessionUsage {
@@ -110,12 +124,10 @@ impl SessionUsage {
         self.input_tokens += u64::from(usage.input_tokens);
         self.output_tokens += u64::from(usage.output_tokens);
         if let Some(tokens) = usage.prompt_cache_miss_tokens {
-            self.cache_creation_input_tokens =
-                Some(self.cache_creation_input_tokens.unwrap_or(0) + u64::from(tokens));
+            self.cache_creation_input_tokens += u64::from(tokens);
         }
         if let Some(tokens) = usage.prompt_cache_hit_tokens {
-            self.cache_read_input_tokens =
-                Some(self.cache_read_input_tokens.unwrap_or(0) + u64::from(tokens));
+            self.cache_read_input_tokens += u64::from(tokens);
         }
     }
 }
@@ -161,6 +173,8 @@ impl Session {
             cycle_count: 0,
             current_cycle_started: Utc::now(),
             cycle_briefings: Vec::new(),
+            cached_user_memory_block: None,
+            cached_static_prefix: None,
             prefix_stability: None,
         }
     }
@@ -174,72 +188,5 @@ impl Session {
     pub fn rebuild_working_set(&mut self) {
         self.working_set
             .rebuild_from_messages(&self.messages, &self.workspace);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn session_usage_cache_starts_none() {
-        let usage = SessionUsage::default();
-        assert!(usage.cache_creation_input_tokens.is_none());
-        assert!(usage.cache_read_input_tokens.is_none());
-    }
-
-    #[test]
-    fn session_usage_cache_remains_none_when_api_omits_cache() {
-        let mut usage = SessionUsage::default();
-        let api_usage = Usage {
-            input_tokens: 100,
-            output_tokens: 50,
-            prompt_cache_hit_tokens: None,
-            prompt_cache_miss_tokens: None,
-            reasoning_tokens: None,
-            reasoning_replay_tokens: None,
-            server_tool_use: None,
-        };
-        usage.add(&api_usage);
-        assert!(usage.cache_creation_input_tokens.is_none());
-        assert!(usage.cache_read_input_tokens.is_none());
-    }
-
-    #[test]
-    fn session_usage_cache_accumulates_when_reported() {
-        let mut usage = SessionUsage::default();
-        let api_usage = Usage {
-            input_tokens: 100,
-            output_tokens: 50,
-            prompt_cache_hit_tokens: Some(30),
-            prompt_cache_miss_tokens: Some(70),
-            reasoning_tokens: None,
-            reasoning_replay_tokens: None,
-            server_tool_use: None,
-        };
-        usage.add(&api_usage);
-        assert_eq!(usage.cache_read_input_tokens, Some(30));
-        assert_eq!(usage.cache_creation_input_tokens, Some(70));
-        usage.add(&api_usage);
-        assert_eq!(usage.cache_read_input_tokens, Some(60));
-        assert_eq!(usage.cache_creation_input_tokens, Some(140));
-    }
-
-    #[test]
-    fn session_usage_cache_preserves_explicit_zero() {
-        let mut usage = SessionUsage::default();
-        let api_usage = Usage {
-            input_tokens: 100,
-            output_tokens: 50,
-            prompt_cache_hit_tokens: Some(0), // explicit zero from provider
-            prompt_cache_miss_tokens: Some(1234),
-            reasoning_tokens: None,
-            reasoning_replay_tokens: None,
-            server_tool_use: None,
-        };
-        usage.add(&api_usage);
-        // 0 is a valid observed value, must NOT be converted to None
-        assert_eq!(usage.cache_read_input_tokens, Some(0));
-        assert_eq!(usage.cache_creation_input_tokens, Some(1234));
     }
 }

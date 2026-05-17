@@ -1,4 +1,4 @@
-## Compaction Relay
+## Compaction Handoff
 
 The conversation above this point has been compacted. Below is a structured summary of what was discussed and decided. Read this first — it replaces re-reading the compressed transcript.
 

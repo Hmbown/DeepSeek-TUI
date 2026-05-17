@@ -1297,6 +1297,66 @@ fn refresh_system_prompt_is_noop_when_unchanged() {
     assert_eq!(engine.session.system_prompt, first_prompt);
 }
 
+/// Regression guard for the prefix-cache buster identified during the
+/// v0.8.26 cache-hit-rate audit: the `remember` tool and the `# foo`
+/// quick-add path both append timestamped bullets to `memory.md`. Before
+/// the fix, every such append would change the next turn's system-prompt
+/// bytes (because `refresh_system_prompt` re-read the file every turn),
+/// invalidating the entire conversation's DeepSeek KV prefix cache. The
+/// snapshot stored on `Session::cached_user_memory_block` should make
+/// the system prompt byte-stable across mid-session memory writes.
+#[test]
+fn refresh_system_prompt_ignores_mid_session_memory_writes() {
+    let tmp = tempdir().expect("tempdir");
+    let memory_path = tmp.path().join("memory.md");
+    fs::write(&memory_path, "* initial preference\n").expect("seed memory");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        memory_enabled: true,
+        memory_path: memory_path.clone(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+
+    engine.refresh_system_prompt(AppMode::Agent);
+    let baseline_hash = engine.session.last_system_prompt_hash;
+    let baseline_prompt = engine.session.system_prompt.clone();
+    assert!(
+        baseline_hash.is_some(),
+        "system prompt must be initialized after the first refresh"
+    );
+    let snapshot_after_init = engine.session.cached_user_memory_block.clone();
+    assert!(
+        snapshot_after_init
+            .as_deref()
+            .is_some_and(|s| s.contains("initial preference")),
+        "Engine::new must snapshot memory.md so refresh can stop reading disk"
+    );
+
+    // Simulate `remember` / `# foo`: a new timestamped bullet lands on disk.
+    fs::write(
+        &memory_path,
+        "* initial preference\n* 2026-05-10 20:14 UTC: new bullet from remember\n",
+    )
+    .expect("rewrite memory");
+
+    engine.refresh_system_prompt(AppMode::Agent);
+
+    assert_eq!(
+        engine.session.last_system_prompt_hash, baseline_hash,
+        "memory.md edits must not bust the prefix cache mid-session"
+    );
+    assert_eq!(
+        engine.session.system_prompt, baseline_prompt,
+        "system prompt bytes must be stable across mid-session memory writes"
+    );
+    assert_eq!(
+        engine.session.cached_user_memory_block, snapshot_after_init,
+        "session snapshot of memory must not be silently re-read from disk"
+    );
+}
+
 #[test]
 fn compaction_summary_stays_in_stable_system_prompt() {
     let tmp = tempdir().expect("tempdir");

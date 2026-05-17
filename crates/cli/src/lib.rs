@@ -115,6 +115,9 @@ enum Commands {
     Run(RunArgs),
     /// Run DeepSeek TUI diagnostics.
     Doctor(TuiPassthroughArgs),
+    /// Diff consecutive request dumps to find prefix-cache busters.
+    /// Run `DEEPSEEK_DUMP_REQUESTS=1 deepseek …` first to capture dumps.
+    CacheDiff(TuiPassthroughArgs),
     /// List live DeepSeek API models via the TUI binary.
     Models(TuiPassthroughArgs),
     /// List saved TUI sessions.
@@ -451,6 +454,10 @@ fn run() -> Result<()> {
         Some(Commands::Doctor(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("doctor", args))
+        }
+        Some(Commands::CacheDiff(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("cache-diff", args))
         }
         Some(Commands::Models(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);

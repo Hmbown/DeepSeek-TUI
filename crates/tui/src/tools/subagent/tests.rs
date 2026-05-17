@@ -1402,6 +1402,7 @@ fn stub_runtime() -> SubAgentRuntime {
         mailbox: None,
         parent_completion_tx: None,
         fork_context: None,
+        static_prefix: None,
     }
 }
 

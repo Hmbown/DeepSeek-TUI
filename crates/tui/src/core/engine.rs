@@ -416,11 +416,25 @@ impl Engine {
             config.notes_path.clone(),
             config.mcp_config_path.clone(),
         );
+        // Snapshot all disk-backed prompt components at session creation
+        // so the per-turn `refresh_system_prompt` path never hits the
+        // filesystem and guarantees byte-stable system-prompt bytes. Build
+        // this first so the initial prompt assembly uses it too — no
+        // double disk-read on startup.
+        let user_memory_block =
+            crate::memory::compose_block(config.memory_enabled, &config.memory_path);
+        let static_prefix = prompts::StaticPromptCache::build(
+            &config.workspace,
+            config.project_context_pack_enabled,
+            Some(&config.instructions),
+            Some(&config.skills_dir),
+        );
+        session.cached_user_memory_block = user_memory_block;
+        session.cached_static_prefix = Some(static_prefix.clone());
+
         // Set up stable system prompt with project context (default to agent mode).
         // Per-turn working-set metadata is injected into the latest user
         // message at request time so file churn does not rewrite this prefix.
-        let user_memory_block =
-            crate::memory::compose_block(config.memory_enabled, &config.memory_path);
         let system_prompt =
             prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
                 AppMode::Agent,
@@ -429,10 +443,11 @@ impl Engine {
                 Some(&config.skills_dir),
                 Some(&config.instructions),
                 prompts::PromptSessionContext {
-                    user_memory_block: user_memory_block.as_deref(),
+                    user_memory_block: session.cached_user_memory_block.as_deref(),
                     goal_objective: config.goal_objective.as_deref(),
                     project_context_pack_enabled: config.project_context_pack_enabled,
                     locale_tag: &config.locale_tag,
+                    static_prefix: session.cached_static_prefix.as_ref(),
                     translation_enabled: config.translation_enabled,
                 },
                 session.approval_mode,
@@ -654,8 +669,11 @@ impl Engine {
                         self.session.reasoning_effort.clone(),
                         self.session.reasoning_effort_auto,
                     )
-                    .with_max_spawn_depth(self.config.max_spawn_depth)
-                    .background_runtime();
+                    .with_max_spawn_depth(self.config.max_spawn_depth);
+                    if let Some(ref sp) = self.session.cached_static_prefix {
+                        runtime = runtime.with_static_prefix(sp.clone());
+                    }
+                    runtime = runtime.background_runtime();
                     let route = resolve_subagent_assignment_route(&runtime, None, &prompt).await;
                     runtime.model = route.model;
                     runtime.reasoning_effort = route.reasoning_effort;
@@ -757,6 +775,20 @@ impl Engine {
                         None
                     };
                     self.session.rebuild_working_set();
+                    // Re-snapshot memory for the synced session so subsequent
+                    // mid-session writes don't invalidate the prefix cache.
+                    self.session.cached_user_memory_block = crate::memory::compose_block(
+                        self.config.memory_enabled,
+                        &self.config.memory_path,
+                    );
+                    // Rebuild the static prefix cache for the new workspace.
+                    self.session.cached_static_prefix =
+                        Some(prompts::StaticPromptCache::build(
+                            &self.config.workspace,
+                            self.config.project_context_pack_enabled,
+                            Some(&self.config.instructions),
+                            Some(&self.config.skills_dir),
+                        ));
                     self.rehydrate_latest_canonical_state();
                     self.emit_session_updated().await;
                     let _ = self
@@ -846,11 +878,44 @@ impl Engine {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        let summary = if let Some(working_set_summary) = working_set_summary {
-            format!("Current local date: {today}\n{working_set_summary}")
+        let estimated_tokens = self.estimated_input_tokens();
+        let context_window = crate::models::context_window_for_model(&self.session.model)
+            .unwrap_or(0);
+        let context_pct = if context_window > 0 {
+            ((estimated_tokens as f64 / context_window as f64) * 100.0) as u32
         } else {
-            format!("Current local date: {today}")
+            0
         };
+
+        let mut summary = if let Some(working_set_summary) = working_set_summary {
+            format!(
+                "Current local date: {today}\n\
+                 Context usage: {context_pct}% ({estimated_tokens} / {context_window} tokens)\n\
+                 {working_set_summary}"
+            )
+        } else {
+            format!(
+                "Current local date: {today}\n\
+                 Context usage: {context_pct}% ({estimated_tokens} / {context_window} tokens)"
+            )
+        };
+
+        // Proactive handoff checkpoint (#667). At 80%+ remind the model
+        // to write a handoff so the next session doesn't start cold.
+        if context_pct >= 90 {
+            summary.push_str(
+                "\n\nACTION REQUIRED: context >= 90%. Write a handoff to \
+                 .deepseek/handoff.md NOW using the format in \
+                 'Compaction Handoff Template' above. This session may be \
+                 terminated soon.",
+            );
+        } else if context_pct >= 80 {
+            summary.push_str(
+                "\n\nContext >= 80%. Consider: (1) suggest /compact to the \
+                 user, (2) draft a handoff to .deepseek/handoff.md for the \
+                 next session.",
+            );
+        }
 
         ContentBlock::Text {
             text: format!("<turn_meta>\n{summary}\n</turn_meta>"),
@@ -890,6 +955,11 @@ impl Engine {
     ) {
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.reset_cancel_token();
+
+        // Fire a best-effort cache warmup if this is a resumed session
+        // with existing history. Runs in background — never blocks the
+        // real turn.
+        self.maybe_warm_cache();
 
         // Drain stale steer messages from previous turns.
         while self.rx_steer.try_recv().is_ok() {}
@@ -1060,6 +1130,9 @@ impl Engine {
                         )
                         .with_max_spawn_depth(self.config.max_spawn_depth)
                         .with_parent_completion_tx(self.tx_subagent_completion.clone());
+                        if let Some(ref sp) = self.session.cached_static_prefix {
+                            rt = rt.with_static_prefix(sp.clone());
+                        }
                         if let Some(context) = fork_context_for_runtime.clone() {
                             rt = rt.with_fork_context(context);
                         }
@@ -1774,9 +1847,15 @@ impl Engine {
     }
 
     /// Refresh the system prompt based on current mode and context.
+    ///
+    /// Uses `session.cached_*` fields (user_memory_block + static_prefix)
+    /// instead of re-reading from disk every turn. Five disk sources
+    /// (project context, context pack, instructions, skills, memory)
+    /// are all snapshotted at session creation. Only the mode-sensitive
+    /// tail (mode prompt, approval policy, context management section,
+    /// handoff) is rebuilt; the static prefix stays byte-identical
+    /// across turns, keeping DeepSeek's KV prefix cache hot.
     fn refresh_system_prompt(&mut self, mode: AppMode) {
-        let user_memory_block =
-            crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path);
         let base = prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
             mode,
             &self.config.workspace,
@@ -1784,10 +1863,11 @@ impl Engine {
             Some(&self.config.skills_dir),
             Some(&self.config.instructions),
             prompts::PromptSessionContext {
-                user_memory_block: user_memory_block.as_deref(),
+                user_memory_block: self.session.cached_user_memory_block.as_deref(),
                 goal_objective: self.config.goal_objective.as_deref(),
                 project_context_pack_enabled: self.config.project_context_pack_enabled,
                 locale_tag: &self.config.locale_tag,
+                static_prefix: self.session.cached_static_prefix.as_ref(),
                 translation_enabled: self.config.translation_enabled,
             },
             self.session.approval_mode,
@@ -1799,6 +1879,51 @@ impl Engine {
             self.session.system_prompt = stable_prompt;
             self.session.last_system_prompt_hash = Some(stable_hash);
         }
+    }
+
+    /// Fire-and-forget cache warmup for resumed sessions. Sends a
+    /// minimal request (system prefix + history up to the last user
+    /// message + `"请只回复 OK"`) so DeepSeek pre-populates its KV
+    /// prefix cache before the first real turn. Best-effort — failures
+    /// are logged and swallowed.
+    fn maybe_warm_cache(&self) {
+        let Some(client) = self.deepseek_client.clone() else { return };
+        if self.session.messages.len() < 2 {
+            return;
+        }
+        let request = crate::models::MessageRequest {
+            model: self.session.model.clone(),
+            messages: self.session.messages.clone(),
+            max_tokens: 1024,
+            system: self.session.system_prompt.clone(),
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: self.session.reasoning_effort.clone(),
+            stream: None,
+            temperature: None,
+            top_p: None,
+        };
+        let warmup = crate::client::build_cache_warmup_request(&request);
+        if warmup.messages.is_empty() {
+            return;
+        }
+        let model = warmup.model.clone();
+        tokio::spawn(async move {
+            match client.create_message(warmup).await {
+                Ok(_) => tracing::debug!(
+                    target: "deepseek::cache_warmup",
+                    %model,
+                    "cache warmup sent",
+                ),
+                Err(e) => tracing::debug!(
+                    target: "deepseek::cache_warmup",
+                    %model,
+                    "cache warmup failed (non-fatal): {e}",
+                ),
+            }
+        });
     }
 
     fn merge_compaction_summary(&mut self, summary_prompt: Option<SystemPrompt>) {

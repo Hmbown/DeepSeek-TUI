@@ -154,11 +154,17 @@ pub(crate) fn run_rlm_turn_inner(
     ))
 }
 
-/// RLM turns are long-running background-style work. Do not kill the whole
-/// turn with the old fixed 180s wall-clock cap; per-request cancellation still
-/// comes from the parent turn token and the user can cancel from the TUI.
+/// RLM turns are long-running background-style work. A generous wall-clock
+/// cap (default 600 s) prevents truly hung sessions (e.g. the parent cancel
+/// token never fires because the user walked away). Override with
+/// `DEEPSEEK_RLM_TIMEOUT_SECS=0` for unbounded; per-request cancellation
+/// still comes from the parent turn token.
 fn turn_timeout() -> Option<Duration> {
-    None
+    let secs = std::env::var("DEEPSEEK_RLM_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(600);
+    (secs > 0).then(|| Duration::from_secs(secs))
 }
 
 // ---------------------------------------------------------------------------
@@ -985,10 +991,25 @@ mod tests {
     }
 
     #[test]
-    fn rlm_turn_has_no_fixed_wall_clock_timeout() {
+    fn rlm_turn_timeout_default_and_unbounded() {
+        // SAFETY: the test runner serialises rlm::turn tests (RLM_TEST_LOCK).
+        // This is the only test mutating DEEPSEEK_RLM_TIMEOUT_SECS in the crate.
+        unsafe {
+            std::env::set_var("DEEPSEEK_RLM_TIMEOUT_SECS", "0");
+        }
         assert!(
             turn_timeout().is_none(),
-            "RLM turns should not be killed by the old fixed 180s wall-clock cap"
+            "DEEPSEEK_RLM_TIMEOUT_SECS=0 should restore unbounded behavior"
+        );
+        unsafe {
+            std::env::remove_var("DEEPSEEK_RLM_TIMEOUT_SECS");
+            // Also scrub stale values that other tests might have cached.
+            std::env::remove_var("DEEPSEEK_RLM_TIMEOUT_SECS");
+        }
+        assert_eq!(
+            turn_timeout(),
+            Some(std::time::Duration::from_secs(600)),
+            "default RLM wall-clock timeout should be 600 s"
         );
     }
 }
