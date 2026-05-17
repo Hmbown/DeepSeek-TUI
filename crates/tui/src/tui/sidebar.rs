@@ -2037,10 +2037,8 @@ mod tests {
             })),
         );
         app.active_cell = Some(active);
-        app.active_tool_entry_completed_at.insert(
-            0,
-            Instant::now() - ACTIVE_TOOL_COMPLETED_ROW_TTL - Duration::from_secs(1),
-        );
+        let expired_at = instant_older_than(ACTIVE_TOOL_COMPLETED_ROW_TTL + Duration::from_secs(1));
+        app.active_tool_entry_completed_at.insert(0, expired_at);
 
         let text = lines_to_text(&task_panel_lines(&app, 64, 8));
 
@@ -2048,6 +2046,16 @@ mod tests {
             !text.iter().any(|line| line.contains("[x] read_file")),
             "expired completed active row should leave the sidebar: {text:?}"
         );
+    }
+
+    fn instant_older_than(age: Duration) -> Instant {
+        if let Some(instant) = Instant::now().checked_sub(age) {
+            return instant;
+        }
+
+        let instant = Instant::now();
+        std::thread::sleep(age);
+        instant
     }
 
     #[test]

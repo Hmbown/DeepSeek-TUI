@@ -19,7 +19,6 @@ Feishu/Lark mobile app
   -> http://127.0.0.1:7878 deepseek serve --http
   -> /opt/whalebro
        -> deepseek-tui/
-       -> whalescale/ when product work is needed
 
 Optional public edge:
 EdgeOne -> Caddy/Nginx public site on Lighthouse
@@ -32,18 +31,16 @@ HTTP service, not the runtime API.
 ## Remote Whalebro Workspace
 
 Use `/opt/whalebro` as the VPS workspace root. The first-class checkout is
-`/opt/whalebro/deepseek-tui`; add `/opt/whalebro/whalescale` if you want the
-desktop product repo available from the phone too.
+`/opt/whalebro/deepseek-tui`.
 
 Create these paths first:
 
 - `/opt/whalebro/deepseek-tui`
-- `/opt/whalebro/whalescale`
 - `/opt/whalebro/worktrees`
 
-Linux is enough for Rust, Node, service work, and most `whalescale-desktop`
-web/Tauri development. Mac-only release work such as iOS simulator runs,
-`.app`/DMG checks, notarization, and Apple signing still belongs on the Mac.
+Linux is enough for Rust, Node, and service work. Mac-only release work such
+as iOS simulator runs, `.app`/DMG checks, notarization, and Apple signing
+still belongs on the Mac.
 
 ## Lighthouse Instance
 
@@ -89,7 +86,7 @@ SSH into the Lighthouse instance and run:
 ```bash
 sudo apt-get update
 sudo apt-get install -y git
-export DEEPSEEK_BRANCH=work/v0.8.37-feishu-lighthouse
+export DEEPSEEK_BRANCH=main
 export DEEPSEEK_REPO_URL=https://cnb.cool/deepseek-tui.com/DeepSeek-TUI.git
 git clone --branch "$DEEPSEEK_BRANCH" "$DEEPSEEK_REPO_URL" /tmp/deepseek-tui
 cd /tmp/deepseek-tui
@@ -98,17 +95,8 @@ sudo DEEPSEEK_REPO_URL="$DEEPSEEK_REPO_URL" \
   bash scripts/tencent-lighthouse/bootstrap-ubuntu.sh
 ```
 
-If you also want `whalescale` cloned during bootstrap, pass it explicitly:
-
-```bash
-sudo DEEPSEEK_REPO_URL="$DEEPSEEK_REPO_URL" \
-  DEEPSEEK_REPO_BRANCH="$DEEPSEEK_BRANCH" \
-  WHALEBRO_EXTRA_REPOS='whalescale=https://github.com/Hmbown/whalescale.git' \
-  bash scripts/tencent-lighthouse/bootstrap-ubuntu.sh
-```
-
-Use SSH repo URLs instead if either repo is private or you want push access
-from the VPS. If the CNB mirror is unavailable, fall back to:
+Use an SSH repo URL instead if you want push access from the VPS. If the CNB
+mirror is unavailable, fall back to:
 
 ```bash
 export DEEPSEEK_REPO_URL=https://github.com/Hmbown/DeepSeek-TUI.git
@@ -120,13 +108,12 @@ using it:
 ```bash
 export DEEPSEEK_REPO_URL=https://cnb.cool/deepseek-tui.com/DeepSeek-TUI.git
 git ls-remote "$DEEPSEEK_REPO_URL" \
-  refs/heads/work/v0.8.37-feishu-lighthouse \
+  refs/heads/main \
   refs/tags/v0.8.37
 ```
 
-The CNB mirror receives `main`, release tags, and Tencent setup branches that
-match `work/v*-feishu-*` or `work/v*-lighthouse*`. CNB is the default source
-for this Lighthouse path; GitHub is the fallback only when the CNB workflow or
+The CNB mirror receives `main` and release tags. CNB is the default source for
+this Lighthouse path; GitHub is the fallback only when the CNB workflow or
 credentials are unhealthy.
 
 If this deployment setup has not been pushed to Git yet, either push the branch
@@ -304,4 +291,3 @@ From a phone DM to the bot:
 - Use `tmux` for emergency terminal work from Blink/Termius.
 - Keep `/opt/whalebro/deepseek-tui` on a personal branch while working from the
   phone.
-- Keep `/opt/whalebro/whalescale` on its own branch when doing product work.

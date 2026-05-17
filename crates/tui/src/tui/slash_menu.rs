@@ -26,6 +26,7 @@ pub fn visible_slash_menu_entries(app: &App, limit: usize) -> Vec<SlashMenuEntry
         &app.cached_skills,
         app.ui_locale,
         Some(&app.workspace),
+        app.api_provider,
     )
 }
 
@@ -76,6 +77,7 @@ pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
         &app.cached_skills,
         app.ui_locale,
         Some(&app.workspace),
+        app.api_provider,
     )
     .into_iter()
     .map(|entry| entry.name)

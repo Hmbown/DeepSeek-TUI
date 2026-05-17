@@ -69,6 +69,49 @@ impl Drop for ConfigPathEnvGuard {
     }
 }
 
+struct SettingsHomeGuard {
+    _tmp: TempDir,
+    previous_home: Option<OsString>,
+    previous_userprofile: Option<OsString>,
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl SettingsHomeGuard {
+    fn new() -> Self {
+        let lock = crate::test_support::lock_test_env();
+        let tmp = TempDir::new().expect("settings tempdir");
+        let previous_home = std::env::var_os("HOME");
+        let previous_userprofile = std::env::var_os("USERPROFILE");
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("USERPROFILE", tmp.path());
+        }
+        Self {
+            _tmp: tmp,
+            previous_home,
+            previous_userprofile,
+            _lock: lock,
+        }
+    }
+}
+
+impl Drop for SettingsHomeGuard {
+    fn drop(&mut self) {
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            match self.previous_home.take() {
+                Some(previous) => std::env::set_var("HOME", previous),
+                None => std::env::remove_var("HOME"),
+            }
+            match self.previous_userprofile.take() {
+                Some(previous) => std::env::set_var("USERPROFILE", previous),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+    }
+}
+
 #[test]
 fn resume_hint_uses_canonical_resume_command() {
     assert_eq!(
@@ -165,8 +208,8 @@ fn push_keyboard_flags_writes_kitty_push_sequence_on_windows() {
     push_keyboard_enhancement_flags(&mut buf);
     let seq = String::from_utf8_lossy(&buf);
     assert!(
-        seq.contains("\x1b[>1u"),
-        "push_keyboard_enhancement_flags must write kitty push (\\x1b[>1u) on Windows (#1359); got: {seq:?}"
+        seq.contains("\x1b[>0u"),
+        "push_keyboard_enhancement_flags must write kitty probe (\\x1b[>0u) on Windows (#1599); got: {seq:?}"
     );
 }
 
@@ -1160,6 +1203,33 @@ fn create_test_app() -> App {
     app
 }
 
+#[test]
+fn session_denied_cache_matches_only_approval_key() {
+    let mut app = create_test_app();
+    app.approval_session_denied.insert("edit_file".to_string());
+
+    assert!(
+        !is_session_denied_for_key(&app, "file:edit_file:fresh"),
+        "a legacy tool-name entry must not deny a later fresh call"
+    );
+
+    app.approval_session_denied
+        .insert("file:edit_file:retry".to_string());
+    assert!(is_session_denied_for_key(&app, "file:edit_file:retry"));
+}
+
+#[test]
+fn session_approved_cache_keeps_tool_name_session_grants() {
+    let mut app = create_test_app();
+    app.approval_session_approved
+        .insert("edit_file".to_string());
+
+    assert!(
+        is_session_approved_for_tool(&app, "edit_file", "file:edit_file:fresh"),
+        "approve-for-session should still cover future calls of the same tool"
+    );
+}
+
 fn create_test_options() -> TuiOptions {
     TuiOptions {
         model: "deepseek-v4-pro".to_string(),
@@ -1642,6 +1712,42 @@ async fn model_change_update_syncs_engine_model_before_compaction() {
         }
         other => panic!("expected SetCompaction, got {other:?}"),
     }
+}
+
+#[test]
+fn saved_default_provider_syncs_back_to_runtime_config() {
+    let _home = SettingsHomeGuard::new();
+    let settings = crate::settings::Settings {
+        default_provider: Some("ollama".to_string()),
+        ..Default::default()
+    };
+    settings.save().expect("save settings");
+
+    let mut config = Config::default();
+    assert_eq!(config.api_provider(), ApiProvider::Deepseek);
+
+    let app = App::new(create_test_options(), &config);
+    assert_eq!(app.api_provider, ApiProvider::Ollama);
+
+    sync_config_provider_from_app(&mut config, &app);
+
+    assert_eq!(config.api_provider(), ApiProvider::Ollama);
+}
+
+#[test]
+fn provider_picker_reselecting_active_provider_preserves_current_model() {
+    let mut app = create_test_app();
+    app.api_provider = ApiProvider::Ollama;
+    app.model = "deepseek-coder-v2:16b".to_string();
+
+    assert_eq!(
+        provider_picker_model_override(&app, ApiProvider::Ollama).as_deref(),
+        Some("deepseek-coder-v2:16b")
+    );
+    assert_eq!(
+        provider_picker_model_override(&app, ApiProvider::Deepseek),
+        None
+    );
 }
 
 #[tokio::test]
@@ -4985,18 +5091,17 @@ fn render_footer_from_with_default_items_renders_mode_and_model() {
 }
 
 #[test]
-fn default_footer_includes_prefix_stability_before_cache() {
+fn default_footer_keeps_prefix_stability_opt_in() {
     let items = crate::config::StatusItem::default_footer();
-    let prefix = items
-        .iter()
-        .position(|item| *item == crate::config::StatusItem::PrefixStability)
-        .expect("default footer includes prefix stability");
-    let cache = items
-        .iter()
-        .position(|item| *item == crate::config::StatusItem::Cache)
-        .expect("default footer includes cache");
 
-    assert!(prefix < cache);
+    assert!(
+        !items.contains(&crate::config::StatusItem::PrefixStability),
+        "prefix stability is a diagnostic chip and should not crowd the default footer"
+    );
+    assert!(
+        items.contains(&crate::config::StatusItem::Cache),
+        "default footer should still include provider-reported cache hit rate"
+    );
 }
 
 #[test]
@@ -5007,7 +5112,7 @@ fn render_footer_from_prefix_stability_item_renders_cache_slot_chip() {
 
     let props = render_footer_from(&app, &[crate::config::StatusItem::PrefixStability], None);
 
-    assert_eq!(spans_text(&props.cache), "P 100%");
+    assert_eq!(spans_text(&props.cache), "cache prefix 100%");
 }
 
 #[test]
@@ -5028,7 +5133,7 @@ fn render_footer_from_preserves_prefix_then_cache_order() {
         None,
     );
 
-    assert!(spans_text(&props.cache).starts_with("P 100%  Cache: 90.0% hit"));
+    assert!(spans_text(&props.cache).starts_with("cache prefix 100%  Cache: 90.0% hit"));
 }
 
 #[test]
@@ -5230,6 +5335,9 @@ fn history_arrow_handles_whitespace_input() {
 #[test]
 fn history_arrow_handles_nonempty_input() {
     let mut app = create_test_app();
+    // Explicitly disable arrows-scroll so this test covers the
+    // history-navigation path regardless of the mouse-capture default.
+    app.composer_arrows_scroll = false;
     app.input = "hello".to_string();
     app.cursor_position = app.input.chars().count();
     app.input_history.push("previous prompt".to_string());
@@ -5275,20 +5383,98 @@ fn composer_arrows_scroll_empty_down() {
 }
 
 #[test]
-fn composer_arrows_scroll_nonempty_still_navigates_history() {
+fn composer_arrows_scroll_nonempty_also_scrolls() {
     let mut app = create_test_app();
     app.composer_arrows_scroll = true;
     app.input = "hello".to_string();
     app.cursor_position = app.input.chars().count();
     app.input_history.push("previous prompt".to_string());
 
-    // Even with the option on, non-empty composer still navigates history.
+    // #1677: terminals that convert mouse-wheel to arrow keys should scroll
+    // the transcript without mutating a draft the user is editing.
     assert!(handle_composer_history_arrow(
         &mut app,
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
         false,
         false,
     ));
+    assert_eq!(app.viewport.pending_scroll_delta, -3);
+    assert_eq!(app.input, "hello");
+}
+
+#[test]
+fn composer_arrow_up_moves_within_multiline_input() {
+    let mut app = create_test_app();
+    app.composer_arrows_scroll = false;
+    app.input = "line one\nline two".to_string();
+    app.cursor_position = app.input.chars().count();
+    app.input_history.push("previous prompt".to_string());
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
+    assert_eq!(app.input, "line one\nline two");
+    assert!(app.cursor_position < app.input.chars().count());
+}
+
+#[test]
+fn composer_arrow_down_moves_within_multiline_input() {
+    let mut app = create_test_app();
+    app.composer_arrows_scroll = false;
+    app.input = "line one\nline two".to_string();
+    app.cursor_position = 0;
+    app.input_history.push("next prompt".to_string());
+    app.history_index = Some(app.input_history.len() - 1);
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
+    assert_eq!(app.input, "line one\nline two");
+    assert!(app.cursor_position >= "line one\n".chars().count());
+}
+
+#[test]
+fn composer_arrows_scroll_multiline_input_navigates_lines() {
+    let mut app = create_test_app();
+    app.composer_arrows_scroll = true;
+    app.input = "line one\nline two".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
+    assert_eq!(app.input, "line one\nline two");
+    assert!(app.cursor_position < app.input.chars().count());
+    assert_eq!(app.viewport.pending_scroll_delta, 0);
+}
+
+#[test]
+fn composer_arrow_up_at_first_line_falls_back_to_history_up() {
+    let mut app = create_test_app();
+    app.composer_arrows_scroll = false;
+    app.input = "line one\nline two".to_string();
+    app.cursor_position = 0;
+    app.input_history.push("previous prompt".to_string());
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
     assert_eq!(app.input, "previous prompt");
 }
 
@@ -5309,15 +5495,16 @@ fn composer_arrows_scroll_defaults_true_without_mouse_capture() {
 }
 
 #[test]
-fn composer_arrows_scroll_defaults_false_with_mouse_capture() {
+fn composer_arrows_scroll_defaults_follow_platform_with_mouse_capture() {
     let options = TuiOptions {
         use_mouse_capture: true,
         ..create_test_options()
     };
     let app = App::new(options, &Config::default());
-    assert!(
-        !app.composer_arrows_scroll,
-        "arrows-scroll must default to false when mouse capture is on"
+    assert_eq!(
+        app.composer_arrows_scroll,
+        cfg!(windows),
+        "arrows-scroll should default to true on Windows and false on other platforms when mouse capture is on"
     );
 }
 

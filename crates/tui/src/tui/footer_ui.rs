@@ -510,8 +510,10 @@ pub(crate) fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'s
     let prefix_spans = app
         .prefix_stability_pct
         .map(|_| {
-            let (label, color) = format_helpers::prefix_stability_chip(app)
-                .unwrap_or(("P --".to_string(), ratatui::style::Color::DarkGray));
+            let (label, color) = format_helpers::prefix_stability_chip(app).unwrap_or((
+                "cache prefix --".to_string(),
+                ratatui::style::Color::DarkGray,
+            ));
             vec![Span::styled(label, Style::default().fg(color))]
         })
         .unwrap_or_default();

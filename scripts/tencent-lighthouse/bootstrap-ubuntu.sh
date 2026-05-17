@@ -67,12 +67,6 @@ for repo_spec in ${WHALEBRO_EXTRA_REPOS}; do
   fi
 done
 
-if [[ ! -f "${WHALEBRO_ROOT}/AGENTS.md" && -f "${SOURCE_ROOT}/deploy/tencent-lighthouse/examples/whalebro.AGENTS.md" ]]; then
-  install -m 0644 -o "${DEEPSEEK_USER}" -g "${DEEPSEEK_USER}" \
-    "${SOURCE_ROOT}/deploy/tencent-lighthouse/examples/whalebro.AGENTS.md" \
-    "${WHALEBRO_ROOT}/AGENTS.md"
-fi
-
 if [[ ! -f /etc/deepseek/runtime.env ]]; then
   cat >/etc/deepseek/runtime.env <<'EOF'
 DEEPSEEK_RUNTIME_TOKEN=replace-with-long-random-token
