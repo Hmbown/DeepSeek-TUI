@@ -1690,7 +1690,7 @@ const TODOS_PANEL_MAX_ITEMS: usize = 6;
 // Cached todos panel height so a transient lock failure doesn't collapse
 // the panel for a single frame. Per-thread, zero means "uninitialised".
 thread_local! {
-    #[allow(clippy::thread_local_initializer_can_be_made_const)]
+    #[allow(clippy::missing_const_for_thread_local)]
     static LAST_TODOS_HEIGHT: std::cell::Cell<u16> = std::cell::Cell::new(0);
 }
 

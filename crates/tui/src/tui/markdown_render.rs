@@ -293,14 +293,13 @@ pub fn parse(content: &str) -> ParsedMarkdown {
 
     for raw_line in content.lines() {
         let trimmed = raw_line.trim_start();
-        if trimmed.starts_with("```") {
+        if let Some(stripped) = trimmed.strip_prefix("```") {
             if in_code_block {
                 in_code_block = false;
                 code_lang = None;
             } else {
                 in_code_block = true;
-                #[allow(clippy::manual_strip)]
-                let lang = trimmed[3..].trim();
+                let lang = stripped.trim();
                 code_lang = if lang.is_empty() {
                     None
                 } else {
