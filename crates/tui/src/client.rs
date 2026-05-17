@@ -1264,7 +1264,7 @@ mod tests {
     }
 
     #[test]
-    fn generic_openai_provider_drops_deepseek_reasoning_content() {
+    fn generic_openai_provider_drops_reasoning_content_for_non_deepseek_models() {
         // #1542 intent (narrowed by #1739/#1694): a *genuine non-DeepSeek*
         // model on the generic openai provider must not carry DeepSeek-only
         // `reasoning_content`. A DeepSeek reasoning model on the openai

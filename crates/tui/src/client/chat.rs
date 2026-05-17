@@ -252,8 +252,7 @@ impl DeepSeekClient {
             let mut text_started = false;
             let mut thinking_started = false;
             let mut tool_indices: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-            let is_reasoning_model =
-                requires_reasoning_content(&model) && provider_accepts_reasoning_content(api_provider);
+            let is_reasoning_model = is_reasoning_model_for_stream(api_provider, &model);
 
             let mut byte_stream = std::pin::pin!(byte_stream);
             let idle = stream_idle_timeout();
@@ -1639,6 +1638,27 @@ fn should_replay_reasoning_content_for_provider(
     should_replay_reasoning_content(model, effort)
 }
 
+/// Should the SSE parser treat incoming `reasoning_content` deltas as thinking
+/// (vs. inlining them as answer text)?
+///
+/// This is the streaming-path twin of `should_replay_reasoning_content_for_provider`:
+/// both must agree on whether a model is a DeepSeek-family reasoning model, or
+/// stream parsing stores reasoning tokens in `content` while the replay path
+/// expects them in `reasoning_content` (DeepSeek thinking-mode API 400s —
+/// #1739 / #1694). Like that predicate's model-aware gate, a known reasoning
+/// model is classified as such on ANY provider (including the generic `openai`
+/// provider used for DeepSeek-compatible endpoints); a genuine non-DeepSeek
+/// model is never reclassified, so #1542 is not regressed.
+///
+/// `provider_accepts_reasoning_content(provider) || requires_reasoning_content(model)`
+/// short-circuits to `requires_reasoning_content(model)` once the model gate
+/// already holds, so the effective rule is purely model-driven — kept explicit
+/// here to mirror the predicate above.
+fn is_reasoning_model_for_stream(provider: ApiProvider, model: &str) -> bool {
+    requires_reasoning_content(model)
+        && (provider_accepts_reasoning_content(provider) || requires_reasoning_content(model))
+}
+
 fn provider_accepts_reasoning_content(provider: ApiProvider) -> bool {
     matches!(
         provider,
@@ -2832,8 +2852,9 @@ mod alias_thinking_detection_tests {
     //! turn. See upstream API docs:
     //! https://api-docs.deepseek.com/guides/thinking_mode
     use super::{
-        provider_accepts_reasoning_content, requires_reasoning_content,
-        should_replay_reasoning_content, should_replay_reasoning_content_for_provider,
+        is_reasoning_model_for_stream, provider_accepts_reasoning_content,
+        requires_reasoning_content, should_replay_reasoning_content,
+        should_replay_reasoning_content_for_provider,
     };
     use crate::config::ApiProvider;
 
@@ -2946,5 +2967,67 @@ mod alias_thinking_detection_tests {
             "claude-sonnet-4-6",
             None,
         ));
+    }
+
+    #[test]
+    fn stream_classifies_deepseek_model_on_openai_provider_as_reasoning() {
+        // #1739: the SSE parser must treat a DeepSeek thinking model on the
+        // generic `openai` provider (DeepSeek-compatible endpoint) as a
+        // reasoning model, or incoming `reasoning_content` tokens are stored
+        // as answer text and the subsequent replay still 400s.
+        assert!(is_reasoning_model_for_stream(
+            ApiProvider::Openai,
+            "deepseek-v4-flash"
+        ));
+        assert!(is_reasoning_model_for_stream(
+            ApiProvider::Openai,
+            "deepseek-v4-pro"
+        ));
+        assert!(is_reasoning_model_for_stream(
+            ApiProvider::Openai,
+            "deepseek-reasoner"
+        ));
+        // Native DeepSeek provider was already correct; stays correct.
+        assert!(is_reasoning_model_for_stream(
+            ApiProvider::Deepseek,
+            "deepseek-v4-pro"
+        ));
+    }
+
+    #[test]
+    fn stream_does_not_classify_generic_model_as_reasoning() {
+        // #1542 no-regression guard: a genuine non-DeepSeek model on the
+        // openai provider must NOT be treated as a reasoning model, so the
+        // parser keeps inlining any `reasoning_content` it emits as text.
+        assert!(!is_reasoning_model_for_stream(
+            ApiProvider::Openai,
+            "gpt-4o"
+        ));
+        assert!(!is_reasoning_model_for_stream(
+            ApiProvider::Openai,
+            "claude-sonnet-4-6"
+        ));
+        // Non-DeepSeek model on a reasoning-aware provider is also unchanged.
+        assert!(!is_reasoning_model_for_stream(
+            ApiProvider::Deepseek,
+            "gpt-4o"
+        ));
+    }
+
+    #[test]
+    fn stream_classification_matches_replay_predicate() {
+        // The streaming classifier and the replay predicate must agree on
+        // model identity, or stream parsing and message sanitisation disagree
+        // about where reasoning tokens live. Effort=None isolates the
+        // model/provider dimension shared by both.
+        for model in ["deepseek-v4-pro", "deepseek-reasoner", "gpt-4o"] {
+            for provider in [ApiProvider::Openai, ApiProvider::Deepseek] {
+                assert_eq!(
+                    is_reasoning_model_for_stream(provider, model),
+                    should_replay_reasoning_content_for_provider(provider, model, None),
+                    "stream vs replay disagree for {model} on {provider:?}"
+                );
+            }
+        }
     }
 }
