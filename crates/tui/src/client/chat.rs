@@ -521,6 +521,12 @@ pub(crate) const CACHE_WARMUP_USER_TAIL: &str = "请只回复 OK";
 const TOOL_RESULT_SENT_CHAR_BUDGET: usize = 12_000;
 const TOOL_RESULT_HEAD_CHARS: usize = 4_000;
 const TOOL_RESULT_TAIL_CHARS: usize = 4_000;
+const STALE_TOOL_RESULT_SENT_CHAR_BUDGET: usize = 4_000;
+const STALE_TOOL_RESULT_HEAD_CHARS: usize = 1_500;
+const STALE_TOOL_RESULT_TAIL_CHARS: usize = 900;
+const STALE_READ_FILE_TOOL_RESULT_SENT_CHAR_BUDGET: usize = 2_500;
+const STALE_READ_FILE_TOOL_RESULT_HEAD_CHARS: usize = 1_200;
+const STALE_READ_FILE_TOOL_RESULT_TAIL_CHARS: usize = 400;
 /// Tool results shorter than this stay inline even when repeated. The
 /// extra prompt bytes are cheaper than forcing the model through an
 /// unnecessary retrieval hop for tiny command outputs.
@@ -861,6 +867,37 @@ struct WireToolResult {
     deduplicated: bool,
 }
 
+#[derive(Clone, Copy)]
+struct ToolReplayLimits {
+    sent_char_budget: usize,
+    head_chars: usize,
+    tail_chars: usize,
+}
+
+fn tool_result_replay_limits(tool_name: &str, is_stale: bool) -> ToolReplayLimits {
+    if !is_stale {
+        return ToolReplayLimits {
+            sent_char_budget: TOOL_RESULT_SENT_CHAR_BUDGET,
+            head_chars: TOOL_RESULT_HEAD_CHARS,
+            tail_chars: TOOL_RESULT_TAIL_CHARS,
+        };
+    }
+
+    if matches!(tool_name, "read_file") {
+        return ToolReplayLimits {
+            sent_char_budget: STALE_READ_FILE_TOOL_RESULT_SENT_CHAR_BUDGET,
+            head_chars: STALE_READ_FILE_TOOL_RESULT_HEAD_CHARS,
+            tail_chars: STALE_READ_FILE_TOOL_RESULT_TAIL_CHARS,
+        };
+    }
+
+    ToolReplayLimits {
+        sent_char_budget: STALE_TOOL_RESULT_SENT_CHAR_BUDGET,
+        head_chars: STALE_TOOL_RESULT_HEAD_CHARS,
+        tail_chars: STALE_TOOL_RESULT_TAIL_CHARS,
+    }
+}
+
 #[derive(Clone)]
 struct TurnMetaBudget {
     original_chars: usize,
@@ -928,6 +965,7 @@ fn compact_tool_result_for_wire(
     input: &Value,
     content: &str,
     message_label: &str,
+    is_stale: bool,
     seen_tool_results: &mut HashMap<String, SeenToolResult>,
 ) -> WireToolResult {
     let original_chars = content.chars().count();
@@ -982,7 +1020,9 @@ fn compact_tool_result_for_wire(
         }
     }
 
-    if original_chars <= TOOL_RESULT_SENT_CHAR_BUDGET {
+    let limits = tool_result_replay_limits(tool_name, is_stale);
+
+    if original_chars <= limits.sent_char_budget {
         return WireToolResult {
             content: content.to_string(),
             original_chars,
@@ -992,8 +1032,8 @@ fn compact_tool_result_for_wire(
         };
     }
 
-    let head = first_chars(content, TOOL_RESULT_HEAD_CHARS);
-    let tail = last_chars(content, TOOL_RESULT_TAIL_CHARS);
+    let head = first_chars(content, limits.head_chars);
+    let tail = last_chars(content, limits.tail_chars);
     let kept = head.chars().count() + tail.chars().count();
     let omitted = original_chars.saturating_sub(kept);
     let compacted = format!(
@@ -1083,6 +1123,9 @@ fn build_chat_messages_with_reasoning(
     let mut pending_tool_calls: HashMap<String, PendingToolCallInfo> = HashMap::new();
     let mut seen_tool_results: HashMap<String, SeenToolResult> = HashMap::new();
     let mut last_full_turn_meta: Option<LastFullTurnMeta> = None;
+    let last_assistant_index = messages
+        .iter()
+        .rposition(|message| message.role.as_str() == "assistant");
 
     if let Some(instructions) = system_to_instructions(system.cloned())
         && !instructions.trim().is_empty()
@@ -1245,11 +1288,14 @@ fn build_chat_messages_with_reasoning(
             } else {
                 for (tool_id, content, message_label) in tool_results {
                     if let Some(tool_info) = pending_tool_calls.remove(&tool_id) {
+                        let is_stale =
+                            last_assistant_index.is_some_and(|last_idx| message_index < last_idx);
                         let wire_result = compact_tool_result_for_wire(
                             &tool_info.tool_name,
                             &tool_info.input,
                             &content,
                             &message_label,
+                            is_stale,
                             &mut seen_tool_results,
                         );
                         let mut tool_msg = json!({
@@ -2763,6 +2809,174 @@ mod stream_decoder_tests {
             ContentBlock::ToolResult { content, .. } => assert_eq!(content, &long_output),
             other => panic!("expected tool result, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn request_builder_compacts_stale_read_file_replays_more_than_recent_ones() {
+        let old_output = format!(
+            "<file path=\"src/old.rs\" total_lines=\"800\" shown_lines=\"1-200\" truncated=\"true\" next_start_line=\"201\">\n{}\n[TRUNCATED] Showing lines 1-200 of 800. To continue, call read_file with path=\"src/old.rs\" start_line=201 max_lines=200\n</file>",
+            "A".repeat(14_000)
+        );
+        let recent_output = format!(
+            "<file path=\"src/new.rs\" total_lines=\"800\" shown_lines=\"1-200\" truncated=\"true\" next_start_line=\"201\">\n{}\n[TRUNCATED] Showing lines 1-200 of 800. To continue, call read_file with path=\"src/new.rs\" start_line=201 max_lines=200\n</file>",
+            "B".repeat(14_000)
+        );
+        let messages = vec![
+            tool_use_message("tool-old", "read_file", json!({"path": "src/old.rs"})),
+            tool_result_message("tool-old", &old_output),
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Observed old file window".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Open the current file now".to_string(),
+                    cache_control: None,
+                }],
+            },
+            tool_use_message("tool-new", "read_file", json!({"path": "src/new.rs"})),
+            tool_result_message("tool-new", &recent_output),
+        ];
+
+        let built = build_chat_messages(None, &messages, "deepseek-v4-flash");
+        let stale_sent = tool_message_content(&built, 0);
+        let recent_sent = tool_message_content(&built, 1);
+
+        assert!(
+            stale_sent.len() < recent_sent.len(),
+            "stale read_file replay should be slimmer than the recent one\nstale={}\nrecent={}",
+            stale_sent.len(),
+            recent_sent.len()
+        );
+        assert!(
+            stale_sent.contains("src/old.rs"),
+            "stale replay should still keep the file identity: {stale_sent}"
+        );
+    }
+
+    #[test]
+    fn request_builder_compacts_stale_shell_replays_more_than_recent_ones() {
+        let old_output = format!(
+            "{}\n{}\n{}",
+            "A".repeat(7_000),
+            "mid".repeat(800),
+            "Z".repeat(7_000)
+        );
+        let recent_output = format!(
+            "{}\n{}\n{}",
+            "B".repeat(7_000),
+            "new".repeat(800),
+            "Y".repeat(7_000)
+        );
+        let messages = vec![
+            tool_use_message(
+                "tool-old",
+                "shell_command",
+                json!({"command": "cargo test --lib"}),
+            ),
+            tool_result_message("tool-old", &old_output),
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Older test output noted".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Run the tests again".to_string(),
+                    cache_control: None,
+                }],
+            },
+            tool_use_message(
+                "tool-new",
+                "shell_command",
+                json!({"command": "cargo test --lib"}),
+            ),
+            tool_result_message("tool-new", &recent_output),
+        ];
+
+        let built = build_chat_messages(None, &messages, "deepseek-v4-flash");
+        let stale_sent = tool_message_content(&built, 0);
+        let recent_sent = tool_message_content(&built, 1);
+
+        assert!(
+            stale_sent.len() < recent_sent.len(),
+            "stale shell replay should be slimmer than the recent one\nstale={}\nrecent={}",
+            stale_sent.len(),
+            recent_sent.len()
+        );
+        assert!(
+            stale_sent.contains("cargo test --lib"),
+            "stale shell replay should still keep the command: {stale_sent}"
+        );
+    }
+
+    #[test]
+    fn request_builder_keeps_parallel_current_turn_tool_results_fresh() {
+        let first_output = format!(
+            "{}\n{}\n{}",
+            "A".repeat(7_000),
+            "mid".repeat(800),
+            "Z".repeat(7_000)
+        );
+        let second_output = format!(
+            "{}\n{}\n{}",
+            "B".repeat(7_000),
+            "new".repeat(800),
+            "Y".repeat(7_000)
+        );
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "tool-1".to_string(),
+                        name: "shell_command".to_string(),
+                        input: json!({"command": "cargo test --lib"}),
+                        caller: None,
+                    },
+                    ContentBlock::ToolUse {
+                        id: "tool-2".to_string(),
+                        name: "shell_command".to_string(),
+                        input: json!({"command": "cargo test --lib"}),
+                        caller: None,
+                    },
+                ],
+            },
+            tool_result_message("tool-1", &first_output),
+            tool_result_message("tool-2", &second_output),
+        ];
+
+        let built = build_chat_messages(None, &messages, "deepseek-v4-flash");
+        let first_sent = tool_message_content(&built, 0);
+        let second_sent = tool_message_content(&built, 1);
+
+        assert_eq!(
+            first_sent.len(),
+            second_sent.len(),
+            "parallel tool results in the active turn should stay on the same fresh replay budget\nfirst={}\nsecond={}",
+            first_sent.len(),
+            second_sent.len()
+        );
+        assert!(
+            first_sent.len() > STALE_TOOL_RESULT_SENT_CHAR_BUDGET,
+            "active-turn tool result unexpectedly fell onto stale compaction budget: {}",
+            first_sent.len()
+        );
+    }
+
+    #[test]
+    fn stale_unknown_tool_results_use_compact_default_budget() {
+        let limits = tool_result_replay_limits("custom_large_output_tool", true);
+        assert_eq!(limits.sent_char_budget, STALE_TOOL_RESULT_SENT_CHAR_BUDGET);
+        assert_eq!(limits.head_chars, STALE_TOOL_RESULT_HEAD_CHARS);
+        assert_eq!(limits.tail_chars, STALE_TOOL_RESULT_TAIL_CHARS);
     }
 
     #[test]
