@@ -2971,6 +2971,29 @@ async fn dismissed_plan_prompt_leaves_non_numeric_input_for_normal_send_path() {
 }
 
 #[tokio::test]
+async fn dispatch_user_message_records_prompt_for_cancel_restore() {
+    let mut app = create_test_app();
+    let config = Config::default();
+    let mut engine = crate::core::engine::mock_engine_handle();
+    let queued = crate::tui::app::QueuedMessage::new("fix this typo\nthen retry".to_string(), None);
+
+    dispatch_user_message(&mut app, &config, &engine.handle, queued)
+        .await
+        .expect("dispatch user message");
+
+    assert_eq!(
+        app.last_submitted_prompt.as_deref(),
+        Some("fix this typo\nthen retry")
+    );
+    match engine.rx_op.recv().await.expect("send message op") {
+        crate::core::ops::Op::SendMessage { content, .. } => {
+            assert_eq!(content, "fix this typo\nthen retry");
+        }
+        other => panic!("expected SendMessage, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn numeric_plan_choice_still_queues_follow_up_when_busy() {
     let mut app = create_test_app();
     app.mode = AppMode::Plan;

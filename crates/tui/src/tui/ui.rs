@@ -2731,6 +2731,7 @@ async fn run_event_loop(
                             app.is_loading = false;
                             app.dispatch_started_at = None;
                             app.streaming_state.reset();
+                            let prompt_restored = app.restore_last_submitted_prompt_if_empty();
                             // Optimistically clear the turn-in-progress flag
                             // so the footer wave animation halts immediately —
                             // without this, the strip keeps animating until
@@ -2738,7 +2739,14 @@ async fn run_event_loop(
                             // The engine's eventual TurnComplete event will
                             // overwrite with the real outcome ("interrupted").
                             app.runtime_turn_status = None;
-                            app.status_message = Some("Request cancelled".to_string());
+                            app.status_message = Some(
+                                if prompt_restored {
+                                    "Request cancelled; prompt restored to composer"
+                                } else {
+                                    "Request cancelled"
+                                }
+                                .to_string(),
+                            );
                             app.disarm_quit();
                         }
                         CtrlCDisposition::ConfirmExit => {
@@ -3860,6 +3868,7 @@ async fn dispatch_user_message(
     app.dispatch_started_at = Some(dispatch_started_at);
     app.runtime_turn_status = None;
     app.last_send_at = Some(dispatch_started_at);
+    app.last_submitted_prompt = Some(message.display.clone());
 
     let cwd = std::env::current_dir().ok();
     let references = crate::tui::file_mention::context_references_from_input(
@@ -5078,6 +5087,7 @@ async fn steer_user_message(
     let message_index = app.api_messages.len();
 
     engine_handle.steer(content.clone()).await?;
+    app.last_submitted_prompt = Some(message.display.clone());
 
     // Mirror steer input in local transcript/session state.
     app.add_message(HistoryCell::User {
@@ -6427,7 +6437,6 @@ fn push_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
                 "PushKeyboardEnhancementFlags direct write failed on Windows"
             );
         }
-        return;
     }
     #[cfg(not(windows))]
     if let Err(err) = execute!(
@@ -6459,7 +6468,6 @@ pub(crate) fn pop_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
                 "PopKeyboardEnhancementFlags direct write failed on Windows"
             );
         }
-        return;
     }
     #[cfg(not(windows))]
     let _ = execute!(writer, PopKeyboardEnhancementFlags);

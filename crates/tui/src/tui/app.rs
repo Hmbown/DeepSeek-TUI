@@ -1086,6 +1086,9 @@ pub struct App {
     pub coherence_state: CoherenceState,
     /// Timestamp of the last user message send (for brief visual feedback).
     pub last_send_at: Option<Instant>,
+    /// Most recent user prompt accepted for an active engine turn. Ctrl+C can
+    /// restore this into an empty composer after cancelling that turn.
+    pub last_submitted_prompt: Option<String>,
     /// Two-tap quit confirmation. When set, a prior Ctrl+C in idle state has
     /// armed the quit shortcut; a second Ctrl+C before this `Instant` exits
     /// the app, while expiry silently re-arms the prompt for next time.
@@ -1621,6 +1624,7 @@ impl App {
             user_scrolled_during_stream: false,
             coherence_state: CoherenceState::default(),
             last_send_at: None,
+            last_submitted_prompt: None,
             quit_armed_until: None,
             cycle_count: 0,
             cycle_briefings: Vec::new(),
@@ -3693,6 +3697,28 @@ impl App {
         Some(input)
     }
 
+    pub fn restore_last_submitted_prompt_if_empty(&mut self) -> bool {
+        if !self.input.is_empty() {
+            return false;
+        }
+        let Some(prompt) = self
+            .last_submitted_prompt
+            .as_ref()
+            .filter(|prompt| !prompt.is_empty())
+            .cloned()
+        else {
+            return false;
+        };
+
+        self.input = prompt;
+        self.cursor_position = char_count(&self.input);
+        self.history_index = None;
+        self.history_navigation_draft = None;
+        self.selected_attachment_index = None;
+        self.needs_redraw = true;
+        true
+    }
+
     /// Composer-Enter dispatch. Returns `Some(input)` when the press should
     /// fire a submit; `None` when Enter was absorbed (paste-burst Enter
     /// suppression — see #1073).
@@ -4341,6 +4367,31 @@ mod tests {
 
         assert_eq!(submitted, input);
         assert_eq!(app.input_history.last().map(String::as_str), Some(input));
+    }
+
+    #[test]
+    fn restore_last_submitted_prompt_rehydrates_empty_composer() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.last_submitted_prompt = Some("fix the typo\nand retry".to_string());
+
+        assert!(app.restore_last_submitted_prompt_if_empty());
+
+        assert_eq!(app.input, "fix the typo\nand retry");
+        assert_eq!(app.cursor_position, app.input.chars().count());
+        assert!(app.needs_redraw);
+    }
+
+    #[test]
+    fn restore_last_submitted_prompt_preserves_existing_draft() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.last_submitted_prompt = Some("previous prompt".to_string());
+        app.input = "new draft".to_string();
+        app.cursor_position = app.input.chars().count();
+
+        assert!(!app.restore_last_submitted_prompt_if_empty());
+
+        assert_eq!(app.input, "new draft");
+        assert_eq!(app.cursor_position, "new draft".chars().count());
     }
 
     #[test]
