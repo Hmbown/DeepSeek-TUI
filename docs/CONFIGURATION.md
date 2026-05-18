@@ -439,9 +439,9 @@ If you are upgrading from older releases:
   related persistent sub-agent sessions. Explicit tool `model` values win, then role/type
   overrides, then the parent runtime model. Supported convenience keys are
   `default_model`, `worker_model`, `explorer_model`, `awaiter_model`,
-  `review_model`, `custom_model`, and `max_concurrent`. The
+  `review_model`, `custom_model`, `max_concurrent`, and `api_timeout_secs`. The
   `[subagents] max_concurrent` value overrides top-level `max_subagents` and is
-  also clamped to `1..=20`. `[subagents.models]` accepts lower-case role or type
+  also clamped to `1..=20`. `[subagents] api_timeout_secs` (int, optional, default `120`): per-step LLM API call timeout in seconds. Increase for sub-agents that process large prompts or need deep reasoning. `[subagents.models]` accepts lower-case role or type
   keys such as `worker`, `explorer`, `general`, `explore`, `plan`, and
   `review`. Values must normalize to a supported DeepSeek model id before an
   agent is spawned.

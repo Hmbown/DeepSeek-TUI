@@ -99,7 +99,7 @@ the next turn.
 
 The dispatcher caps concurrent sub-agents at 10 by default
 (configurable via `[subagents].max_concurrent` in `~/.deepseek/config.toml`,
-hard ceiling 20). When the parent hits the cap, `agent_open` returns
+hard ceiling 20). Per-step API call timeout defaults to 120 s; override with `[subagents].api_timeout_secs`. When the parent hits the cap, `agent_open` returns
 an error with the cap value; the parent should use `agent_eval` to wait for
 completion or `agent_close` to free a slot before retrying.
 

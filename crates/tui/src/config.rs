@@ -868,6 +868,9 @@ pub struct SubagentsConfig {
     /// setting. Clamped to [1, MAX_SUBAGENTS].
     #[serde(default)]
     pub max_concurrent: Option<usize>,
+    /// Per-step LLM API call timeout in seconds. Default: 120.
+    #[serde(default)]
+    pub api_timeout_secs: Option<u64>,
 }
 
 /// `[auto]` table — knobs for the `--model auto` / `/model auto` router.
