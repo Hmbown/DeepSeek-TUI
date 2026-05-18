@@ -100,6 +100,21 @@ fn render_environment_block(workspace: &Path, locale_tag: &str) -> String {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".to_string());
     let pwd = workspace.display();
 
+    // Build a comma-separated list of shells supported by the `exec_shell`
+    // tool on this platform. Only high-confidence built-in shells are listed —
+    // bash, zsh, and pwsh are not included without runtime detection since
+    // they may not be installed.
+    let supported_shells = {
+        #[cfg(windows)]
+        {
+            "auto, cmd, powershell"
+        }
+        #[cfg(not(windows))]
+        {
+            "auto, sh"
+        }
+    };
+
     format!(
         "## Environment\n\
          \n\
@@ -107,7 +122,13 @@ fn render_environment_block(workspace: &Path, locale_tag: &str) -> String {
          - deepseek_version: {deepseek_version}\n\
          - platform: {platform}\n\
          - shell: {shell}\n\
-         - pwd: {pwd}"
+         - pwd: {pwd}\n\
+         - supported_shells: {supported_shells}\n\
+         \n\
+         The optional `shell` parameter of `exec_shell` chooses the shell \
+         dialect. `auto` preserves the platform default (sh on Unix, cmd on \
+         Windows). Use an explicit value when the command depends on a \
+         specific shell's syntax."
     )
 }
 
@@ -816,6 +837,8 @@ mod tests {
         assert!(block.contains(&format!("- pwd: {}", tmp.path().display())));
         assert!(block.contains("- platform:"));
         assert!(block.contains("- shell:"));
+        assert!(block.contains("- supported_shells:"));
+        assert!(block.contains("optional `shell` parameter"));
     }
 
     #[test]
