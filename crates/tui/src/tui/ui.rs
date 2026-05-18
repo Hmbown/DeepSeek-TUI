@@ -966,7 +966,7 @@ async fn run_event_loop(
                         }
                         app.stream_output_chars = app
                             .stream_output_chars
-                            .saturating_add(u64::try_from(sanitized.len()).unwrap_or(0));
+                            .saturating_add(sanitized.len() as u64);
                         current_streaming_text.push_str(&sanitized);
                         let index = ensure_streaming_assistant_history_cell(app);
                         app.streaming_state.push_content(0, &sanitized);
@@ -1092,7 +1092,7 @@ async fn run_event_loop(
                         }
                         app.stream_output_chars = app
                             .stream_output_chars
-                            .saturating_add(u64::try_from(sanitized.len()).unwrap_or(0));
+                            .saturating_add(sanitized.len() as u64);
                         app.reasoning_buffer.push_str(&sanitized);
                         if app.reasoning_header.is_none() {
                             app.reasoning_header = extract_reasoning_header(&app.reasoning_buffer);
@@ -1376,11 +1376,8 @@ async fn run_event_loop(
                         if usage.output_tokens > 0 && gen_elapsed.as_secs_f64() > 0.0 {
                             let avg_tps =
                                 usage.output_tokens as f64 / gen_elapsed.as_secs_f64();
-                            let label = if avg_tps >= 10.0 {
-                                format!("{:.0} tok/s avg", avg_tps)
-                            } else {
-                                format!("{:.1} tok/s avg", avg_tps)
-                            };
+                            let label =
+                                format!("{} avg", crate::tui::footer_ui::format_tok_s_label(avg_tps));
                             app.last_turn_output_speed = Some(label);
                         } else {
                             app.last_turn_output_speed = None;

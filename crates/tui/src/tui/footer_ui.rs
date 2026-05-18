@@ -642,6 +642,17 @@ pub(crate) fn footer_reasoning_replay_spans(app: &App) -> Vec<Span<'static>> {
     vec![Span::styled(label, Style::default().fg(color))]
 }
 
+/// Format a tokens-per-second value into a display label.
+/// Rounds to integer when ≥10, one decimal place when <10.
+#[must_use]
+pub(crate) fn format_tok_s_label(tps: f64) -> String {
+    if tps >= 10.0 {
+        format!("{:.0} tok/s", tps)
+    } else {
+        format!("{:.1} tok/s", tps)
+    }
+}
+
 /// Token output speed chip shown during streaming (real-time estimate) and
 /// persisted briefly after the turn ends (final average from actual token counts).
 ///
@@ -681,11 +692,7 @@ pub(crate) fn footer_output_speed_spans(app: &App) -> Vec<Span<'static>> {
     let estimated_tokens = app.stream_output_chars as f64 / 4.0;
     let tps = estimated_tokens / elapsed_secs;
 
-    let label = if tps >= 10.0 {
-        format!("{:.0} tok/s", tps)
-    } else {
-        format!("{:.1} tok/s", tps)
-    };
+    let label = format_tok_s_label(tps);
 
     // Colour ramp: green when cranking (>50 tok/s), sky at mid-range,
     // dim for low output (thinking-heavy turns).
