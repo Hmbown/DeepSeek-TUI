@@ -7,6 +7,7 @@
 //! tested in isolation.
 
 use crate::client::AccountBalance;
+use crate::localization::{Locale, MessageId, tr};
 use crate::models::Usage;
 use crate::tui::app::App;
 
@@ -75,23 +76,45 @@ pub(super) fn available_models_message(current_model: &str, models: &[String]) -
     lines.join("\n")
 }
 
-pub(super) fn account_balance_message(provider: &str, balance: &AccountBalance) -> String {
-    let mut lines = vec![format!("Provider: {provider}")];
+pub(super) fn account_balance_message(
+    locale: Locale,
+    provider: &str,
+    balance: &AccountBalance,
+) -> String {
+    let mut lines = vec![format!(
+        "{}: {provider}",
+        tr(locale, MessageId::AccountBalanceProvider)
+    )];
     if balance.balance_infos.is_empty() {
-        lines.push("Balance : unavailable".to_string());
+        lines.push(format!(
+            "{} : {}",
+            tr(locale, MessageId::AccountBalanceBalance),
+            tr(locale, MessageId::AccountBalanceUnavailable)
+        ));
     } else {
         for info in &balance.balance_infos {
             lines.push(format!(
-                "Balance : {} (topped up: {}, granted: {})",
+                "{} : {} ({}: {}, {}: {})",
+                tr(locale, MessageId::AccountBalanceBalance),
                 format_money(&info.currency, &info.total_balance),
+                tr(locale, MessageId::AccountBalanceToppedUp),
                 format_money(&info.currency, &info.topped_up_balance),
+                tr(locale, MessageId::AccountBalanceGranted),
                 format_money(&info.currency, &info.granted_balance),
             ));
         }
     }
     lines.push(format!(
-        "Available: {}",
-        if balance.is_available { "yes" } else { "no" }
+        "{}: {}",
+        tr(locale, MessageId::AccountBalanceAvailable),
+        tr(
+            locale,
+            if balance.is_available {
+                MessageId::AccountBalanceYes
+            } else {
+                MessageId::AccountBalanceNo
+            }
+        )
     ));
     lines.join("\n")
 }
@@ -144,7 +167,7 @@ mod tests {
             }],
         };
 
-        let msg = account_balance_message("deepseek", &balance);
+        let msg = account_balance_message(Locale::En, "deepseek", &balance);
         assert!(msg.contains("Provider: deepseek"), "got: {msg}");
         assert!(
             msg.contains("Balance : ¥8.66 (topped up: ¥8.66, granted: ¥0.00)"),

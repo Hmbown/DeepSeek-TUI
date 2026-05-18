@@ -247,6 +247,19 @@ pub enum MessageId {
     CmdAttachDescription,
     CmdAnchorDescription,
     CmdBalanceDescription,
+    AccountBalanceProvider,
+    AccountBalanceBalance,
+    AccountBalanceToppedUp,
+    AccountBalanceGranted,
+    AccountBalanceAvailable,
+    AccountBalanceUnavailable,
+    AccountBalanceYes,
+    AccountBalanceNo,
+    AccountBalanceFetching,
+    AccountBalanceFetched,
+    AccountBalanceFetchFailed,
+    AccountBalanceFetchFailedPrefix,
+    AccountBalanceUnsupportedProviderPrefix,
     CmdCacheDescription,
     CmdChangeDescription,
     CmdChangeHeader,
@@ -486,6 +499,19 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdAnchorDescription,
     MessageId::CmdAttachDescription,
     MessageId::CmdBalanceDescription,
+    MessageId::AccountBalanceProvider,
+    MessageId::AccountBalanceBalance,
+    MessageId::AccountBalanceToppedUp,
+    MessageId::AccountBalanceGranted,
+    MessageId::AccountBalanceAvailable,
+    MessageId::AccountBalanceUnavailable,
+    MessageId::AccountBalanceYes,
+    MessageId::AccountBalanceNo,
+    MessageId::AccountBalanceFetching,
+    MessageId::AccountBalanceFetched,
+    MessageId::AccountBalanceFetchFailed,
+    MessageId::AccountBalanceFetchFailedPrefix,
+    MessageId::AccountBalanceUnsupportedProviderPrefix,
     MessageId::CmdCacheDescription,
     MessageId::CmdClearDescription,
     MessageId::CmdCompactDescription,
@@ -901,6 +927,21 @@ fn english(id: MessageId) -> &'static str {
             "Attach image/video media; use @path for text files or directories"
         }
         MessageId::CmdBalanceDescription => "Show DeepSeek API account balance",
+        MessageId::AccountBalanceProvider => "Provider",
+        MessageId::AccountBalanceBalance => "Balance",
+        MessageId::AccountBalanceToppedUp => "topped up",
+        MessageId::AccountBalanceGranted => "granted",
+        MessageId::AccountBalanceAvailable => "Available",
+        MessageId::AccountBalanceUnavailable => "unavailable",
+        MessageId::AccountBalanceYes => "yes",
+        MessageId::AccountBalanceNo => "no",
+        MessageId::AccountBalanceFetching => "Fetching account balance...",
+        MessageId::AccountBalanceFetched => "Account balance fetched",
+        MessageId::AccountBalanceFetchFailed => "Balance fetch failed",
+        MessageId::AccountBalanceFetchFailedPrefix => "Failed to fetch account balance: ",
+        MessageId::AccountBalanceUnsupportedProviderPrefix => {
+            "/balance is only supported by the DeepSeek provider. Current provider: "
+        }
         MessageId::CmdCacheDescription => {
             "Show DeepSeek prefix-cache hit/miss stats for the last N turns"
         }
@@ -1279,6 +1320,21 @@ fn japanese(id: MessageId) -> Option<&'static str> {
             "画像・動画メディアを添付（テキストファイルやディレクトリは @path）"
         }
         MessageId::CmdBalanceDescription => "DeepSeek API アカウント残高を表示",
+        MessageId::AccountBalanceProvider => "プロバイダー",
+        MessageId::AccountBalanceBalance => "残高",
+        MessageId::AccountBalanceToppedUp => "チャージ分",
+        MessageId::AccountBalanceGranted => "付与分",
+        MessageId::AccountBalanceAvailable => "利用可能",
+        MessageId::AccountBalanceUnavailable => "利用不可",
+        MessageId::AccountBalanceYes => "はい",
+        MessageId::AccountBalanceNo => "いいえ",
+        MessageId::AccountBalanceFetching => "アカウント残高を取得中...",
+        MessageId::AccountBalanceFetched => "アカウント残高を取得しました",
+        MessageId::AccountBalanceFetchFailed => "残高の取得に失敗しました",
+        MessageId::AccountBalanceFetchFailedPrefix => "アカウント残高の取得に失敗しました: ",
+        MessageId::AccountBalanceUnsupportedProviderPrefix => {
+            "/balance は DeepSeek プロバイダーでのみ利用できます。現在のプロバイダー: "
+        }
         MessageId::CmdCacheDescription => {
             "直近 N ターンの DeepSeek プレフィックスキャッシュのヒット/ミス統計を表示"
         }
@@ -1634,6 +1690,21 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdAnchorDescription => "钉选关键事实，在压缩后自动注入上下文",
         MessageId::CmdAttachDescription => "附加图片或视频媒体；文本文件或目录请使用 @path",
         MessageId::CmdBalanceDescription => "显示 DeepSeek API 账户余额",
+        MessageId::AccountBalanceProvider => "提供商",
+        MessageId::AccountBalanceBalance => "余额",
+        MessageId::AccountBalanceToppedUp => "充值余额",
+        MessageId::AccountBalanceGranted => "赠送余额",
+        MessageId::AccountBalanceAvailable => "可用",
+        MessageId::AccountBalanceUnavailable => "不可用",
+        MessageId::AccountBalanceYes => "是",
+        MessageId::AccountBalanceNo => "否",
+        MessageId::AccountBalanceFetching => "正在获取账户余额...",
+        MessageId::AccountBalanceFetched => "账户余额已获取",
+        MessageId::AccountBalanceFetchFailed => "余额获取失败",
+        MessageId::AccountBalanceFetchFailedPrefix => "获取账户余额失败: ",
+        MessageId::AccountBalanceUnsupportedProviderPrefix => {
+            "/balance 仅支持 DeepSeek 提供商。当前提供商: "
+        }
         MessageId::CmdCacheDescription => "显示最近 N 轮的 DeepSeek 前缀缓存命中/未命中统计",
         MessageId::CmdChangeDescription => "显示最新的更新日志",
         MessageId::CmdChangeHeader => "最新更新日志",
@@ -1945,6 +2016,21 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
             "Anexar imagem ou vídeo; use @path para arquivos de texto ou diretórios"
         }
         MessageId::CmdBalanceDescription => "Exibir o saldo da conta da API DeepSeek",
+        MessageId::AccountBalanceProvider => "Provedor",
+        MessageId::AccountBalanceBalance => "Saldo",
+        MessageId::AccountBalanceToppedUp => "recarregado",
+        MessageId::AccountBalanceGranted => "concedido",
+        MessageId::AccountBalanceAvailable => "Disponível",
+        MessageId::AccountBalanceUnavailable => "indisponível",
+        MessageId::AccountBalanceYes => "sim",
+        MessageId::AccountBalanceNo => "não",
+        MessageId::AccountBalanceFetching => "Buscando saldo da conta...",
+        MessageId::AccountBalanceFetched => "Saldo da conta obtido",
+        MessageId::AccountBalanceFetchFailed => "Falha ao buscar saldo",
+        MessageId::AccountBalanceFetchFailedPrefix => "Falha ao buscar saldo da conta: ",
+        MessageId::AccountBalanceUnsupportedProviderPrefix => {
+            "/balance é compatível apenas com o provedor DeepSeek. Provedor atual: "
+        }
         MessageId::CmdCacheDescription => {
             "Exibir estatísticas de hit/miss do cache de prefixo DeepSeek nas últimas N rodadas"
         }
@@ -2328,6 +2414,21 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
             "Adjuntar imagen o video; usa @ruta para archivos de texto o directorios"
         }
         MessageId::CmdBalanceDescription => "Mostrar el saldo de la cuenta de la API DeepSeek",
+        MessageId::AccountBalanceProvider => "Proveedor",
+        MessageId::AccountBalanceBalance => "Saldo",
+        MessageId::AccountBalanceToppedUp => "recargado",
+        MessageId::AccountBalanceGranted => "concedido",
+        MessageId::AccountBalanceAvailable => "Disponible",
+        MessageId::AccountBalanceUnavailable => "no disponible",
+        MessageId::AccountBalanceYes => "sí",
+        MessageId::AccountBalanceNo => "no",
+        MessageId::AccountBalanceFetching => "Obteniendo saldo de la cuenta...",
+        MessageId::AccountBalanceFetched => "Saldo de la cuenta obtenido",
+        MessageId::AccountBalanceFetchFailed => "No se pudo obtener el saldo",
+        MessageId::AccountBalanceFetchFailedPrefix => "No se pudo obtener el saldo de la cuenta: ",
+        MessageId::AccountBalanceUnsupportedProviderPrefix => {
+            "/balance solo es compatible con el proveedor DeepSeek. Proveedor actual: "
+        }
         MessageId::CmdCacheDescription => {
             "Mostrar estadísticas de hit/miss del caché de prefijo DeepSeek en las últimas N rondas"
         }

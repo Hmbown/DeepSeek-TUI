@@ -660,10 +660,7 @@ impl DeepSeekClient {
 
     /// Fetch the current DeepSeek account balance.
     pub async fn account_balance(&self) -> Result<AccountBalance> {
-        let url = format!(
-            "{}/user/balance",
-            unversioned_base_url(&self.base_url).trim_end_matches('/')
-        );
+        let url = format!("{}/user/balance", unversioned_base_url(&self.base_url));
         let response = self.send_with_retry(|| self.http_client.get(&url)).await?;
 
         let status = response.status();
