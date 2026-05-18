@@ -172,6 +172,26 @@ impl ShellDispatcher {
         cmd
     }
 
+    /// Build the program + args tuple for the given shell command string.
+    /// Useful when the caller needs to inspect or modify the args before
+    /// passing them to `Command::new(program).args(args)`.
+    pub fn build_command_parts(&self, shell_command: &str) -> (String, Vec<String>) {
+        let program = self.kind.binary().to_string();
+        let args = if self.kind.needs_command_flag() {
+            vec![
+                self.kind.command_flag().to_string(),
+                "-Command".to_string(),
+                shell_command.to_string(),
+            ]
+        } else {
+            vec![
+                self.kind.command_flag().to_string(),
+                shell_command.to_string(),
+            ]
+        };
+        (program, args)
+    }
+
     /// Build a `std::process::Command` from separate program + args (bypasses
     /// the shell). This is used when the caller already has a resolved
     /// executable and argument vector — e.g. `ExecEnv` from the sandbox.
