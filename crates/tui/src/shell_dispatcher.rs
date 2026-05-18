@@ -31,6 +31,8 @@
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
+use std::fs::OpenOptions;
+use std::io::Write;
 
 // ---------------------------------------------------------------------------
 // Shell kind
@@ -88,6 +90,56 @@ impl ShellKind {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Direct file logger — bypasses tracing subscriber entirely so we
+// always know where the dispatcher logs land.
+// ---------------------------------------------------------------------------
+
+use std::sync::Mutex;
+
+static LOG_FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
+
+/// Set the dispatcher log file path. Must be called before any
+/// `log_dispatcher!()` invocation.
+pub fn init_log_file(path: &std::path::Path) {
+    if let Ok(mut guard) = LOG_FILE.lock() {
+        match OpenOptions::new().create(true).append(true).open(path) {
+            Ok(file) => {
+                let _ = writeln!(&file, "--- ShellDispatcher log started pid={} ---", std::process::id());
+                *guard = Some(file);
+            }
+            Err(e) => {
+                eprintln!("ShellDispatcher: cannot open log file {}: {e}", path.display());
+            }
+        }
+    }
+}
+
+macro_rules! log_dispatcher {
+    ($($arg:tt)*) => {{
+        if let Ok(mut guard) = $crate::shell_dispatcher::LOG_FILE.lock() {
+            if let Some(ref mut file) = *guard {
+                let ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+                let _ = writeln!(file, "[{ts}] {}", format!($($arg)*));
+                let _ = file.flush();
+            }
+        }
+    }};
+}
+
+/// Helper to log a value that implements Debug.
+fn log_init(kind: &ShellKind) {
+    log_dispatcher!("detect: {:?}", kind);
+}
+
+fn log_exec(kind: &ShellKind, command: &str) {
+    log_dispatcher!("exec via {:?}: {}", kind, command);
+}
+
+fn log_raw_mode(phase: &str) {
+    log_dispatcher!("raw_mode: {}", phase);
+}
+
 /// Global dispatcher instance, detected once at startup.
 ///
 /// Any code path that needs to spawn a shell command can use
@@ -95,7 +147,18 @@ impl ShellKind {
 /// function signature.
 pub fn global_dispatcher() -> &'static ShellDispatcher {
     use std::sync::LazyLock;
-    static DISPATCHER: LazyLock<ShellDispatcher> = LazyLock::new(ShellDispatcher::detect);
+    static DISPATCHER: LazyLock<ShellDispatcher> = LazyLock::new(|| {
+        // Init log file on first access. Check env var first, then cwd fallback.
+        let log_path = std::env::var("SHELL_DISPATCHER_LOG")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                let mut p = std::env::current_dir().unwrap_or_default();
+                p.push("shell-dispatcher.log");
+                p
+            });
+        init_log_file(&log_path);
+        ShellDispatcher::detect()
+    });
     &DISPATCHER
 }
 
@@ -223,13 +286,13 @@ impl ShellDispatcher {
     ) -> Result<String, anyhow::Error> {
         use anyhow::Context;
 
-        tracing::info!(target: "shell_dispatcher", shell = ?self.kind, command = %shell_command,
-            "exec_shell via {:?}: {}", self.kind, shell_command);
+        log_exec(&self.kind, shell_command);
 
         // Save terminal state — crossterm raw mode must be off while the
         // child process owns the console, otherwise Windows loses
         // ENABLE_VIRTUAL_TERMINAL_INPUT and the TUI keyboard breaks.
         let _ = crossterm::terminal::disable_raw_mode();
+        log_raw_mode("disabled");
 
         let mut cmd = self.build_command(shell_command);
         cmd.current_dir(cwd);
@@ -240,6 +303,7 @@ impl ShellDispatcher {
 
         // Restore raw mode so the TUI input pipeline works again.
         let _ = crossterm::terminal::enable_raw_mode();
+        log_raw_mode("enabled");
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
