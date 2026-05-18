@@ -1,0 +1,12 @@
+- 会话持久化必须保留完整 API 消息历史；静默截断旧消息会改变恢复后的请求前缀，导致 DeepSeek prefix cache 真实命中率暴跌。
+- 排查 provider 时同时检查 `~/.deepseek/config.toml` 和 UI 设置 `~/Library/Application Support/deepseek/settings.toml`；显式配置里的 `provider` 应优先于 UI 记忆的 `default_provider`。
+- TUI 运行中收到子代理 mailbox `Started` 时，实时子代理卡必须插入当前 `active_cell`；不要直接插入 `history`，也不要提前 `flush_active_cell`，否则会打乱虚拟索引并可能让主终端和 alt-screen 画面混在一起。
+- 子代理 `Task` 的 live 行只能展示短 `description`/会话名；当模型只给长 prompt 或缺少 description 时，TUI 也必须生成短标签，禁止把 `<N chars>` 或长 prompt 摘要塞进头部。
+- 子代理查询类工具（如 `agent_eval`）渲染成 `Task` 家族时，标题必须优先使用输出里的 `name`/`display_name`/`nickname`，不能在已有任务摘要时继续显示输入参数 `agent_id`。
+- Claude Code 风格子代理展示必须以任务摘要/name 为第一显示对象；role/type 只能作为弱化元信息，live 卡片和 footer 都不能优先显示 `agent_id` 或重复显示 `implementer`。
+- Claude Code 风格 live 子代理卡片应渲染为 `Task(任务摘要) [status]`；状态 toast/通知也先用任务摘要作主语，只有完全拿不到摘要时才显示内部 `agent_id`。
+- 子代理执行编译/测试等长 shell 命令时必须保持父 TUI 可刷新；禁止让子代理 shell 走父终端接管路径或把高频完整输出同步刷进主界面。
+- `agent_eval`/`agent_wait`/`agent_close` 这类子代理查询工具即使还在 running、尚无输出，也必须从已有子代理卡或缓存反查任务名；不能把输入里的 `agent_id` 渲染成 `Task(agent_id: ...)`。
+- 父轮次不能因为还有 running 子代理而保持 busy；只注入已经完成的子代理结果，未完成的子代理必须作为后台任务继续跑，否则用户输入会长期落入 Pending inputs，表现成 TUI 卡死。
+- 子代理 live 卡的 `Started` envelope 可能只带 role（如 `implementer`）；TUI 必须用刚启动的 `Task.description` FIFO 绑定生成的 agent_id，不能退回显示泛泛 role。
+- Claude Code 风格里 `Task(...)` spawn 工具行和 live 子代理卡不能同时显示；成功启动应折叠工具行，只在启动失败时暴露工具错误。

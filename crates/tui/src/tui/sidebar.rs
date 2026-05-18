@@ -1258,11 +1258,7 @@ fn tool_status_marker(status: ToolStatus) -> (&'static str, ratatui::style::Colo
 }
 
 fn format_duration_ms(ms: u64) -> String {
-    if ms < 1000 {
-        format!("{ms}ms")
-    } else {
-        format!("{:.1}s", ms as f64 / 1000.0)
-    }
+    format!("{}s", ms / 1000)
 }
 
 fn duration_ms(duration: Duration) -> u64 {
@@ -1335,7 +1331,6 @@ pub struct SidebarSubagentSummary {
 
 #[derive(Debug, Clone)]
 pub struct SidebarAgentRow {
-    pub id: String,
     pub name: String,
     pub role: String,
     pub status: String,
@@ -1376,7 +1371,6 @@ fn sidebar_agent_rows(app: &App) -> Vec<SidebarAgentRow> {
                         .filter(|summary| !summary.trim().is_empty())
                 });
             SidebarAgentRow {
-                id: agent.agent_id.clone(),
                 name: agent.nickname.clone().unwrap_or_else(|| agent.name.clone()),
                 role: agent.agent_type.as_str().to_string(),
                 status: subagent_status_text(&agent.status).to_string(),
@@ -1396,9 +1390,8 @@ fn sidebar_agent_rows(app: &App) -> Vec<SidebarAgentRow> {
         app.agent_progress
             .iter()
             .filter(|(id, _)| !cached_ids.contains(id.as_str()))
-            .map(|(id, progress)| SidebarAgentRow {
-                id: id.clone(),
-                name: id.clone(),
+            .map(|(_, progress)| SidebarAgentRow {
+                name: progress.clone(),
                 role: "agent".to_string(),
                 status: "running".to_string(),
                 progress: Some(progress.clone()),
@@ -1501,9 +1494,8 @@ pub fn subagent_panel_lines(
             break;
         }
         let mut detail_parts = Vec::new();
-        detail_parts.push(truncate_line_to_width(&row.id, 10));
         if row.steps_taken > 0 {
-            detail_parts.push(format!("{} step(s)", row.steps_taken));
+            detail_parts.push(format!("{} steps", row.steps_taken));
         }
         if let Some(duration) = row.duration_ms {
             detail_parts.push(format_duration_ms(duration));
@@ -2318,8 +2310,7 @@ mod tests {
         let text = lines_to_text(&task_panel_lines(&app, 80, 8));
 
         assert!(
-            text.iter()
-                .any(|line| line.contains("[x] cargo check 1.2s")),
+            text.iter().any(|line| line.contains("[x] cargo check 1s")),
             "status marker and duration should stay in the row label: {text:?}"
         );
         assert!(
@@ -2384,7 +2375,6 @@ mod tests {
         };
         let rows = vec![
             SidebarAgentRow {
-                id: "agent_a5e674dc".to_string(),
                 name: "check-docs-mcp".to_string(),
                 role: "explore".to_string(),
                 status: "running".to_string(),
@@ -2393,7 +2383,6 @@ mod tests {
                 duration_ms: Some(22_000),
             },
             SidebarAgentRow {
-                id: "agent_850aa63f".to_string(),
                 name: "check-install-docs".to_string(),
                 role: "general".to_string(),
                 status: "done".to_string(),
