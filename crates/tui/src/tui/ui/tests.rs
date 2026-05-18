@@ -2971,6 +2971,62 @@ async fn dismissed_plan_prompt_leaves_non_numeric_input_for_normal_send_path() {
 }
 
 #[tokio::test]
+async fn bang_shell_input_dispatches_shell_op_instead_of_model_message() {
+    let mut app = create_test_app();
+    app.mode = AppMode::Agent;
+    app.allow_shell = false;
+    app.trust_mode = false;
+
+    let mut engine = crate::core::engine::mock_engine_handle();
+
+    let handled = handle_bang_shell_input(&mut app, &engine.handle, "! pwd")
+        .await
+        .expect("bang shell handler");
+
+    assert!(handled);
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Shell command submitted: pwd")
+    );
+
+    let op = engine.rx_op.recv().await.expect("engine op");
+    match op {
+        Op::RunShellCommand {
+            command,
+            mode,
+            allow_shell,
+            trust_mode,
+            auto_approve,
+            approval_mode,
+        } => {
+            assert_eq!(command, "pwd");
+            assert_eq!(mode, AppMode::Agent);
+            assert!(!allow_shell);
+            assert!(!trust_mode);
+            assert!(!auto_approve);
+            assert_eq!(approval_mode, ApprovalMode::Suggest);
+        }
+        other => panic!("expected RunShellCommand, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn empty_bang_shell_input_is_consumed_with_usage_error() {
+    let mut app = create_test_app();
+    let engine = crate::core::engine::mock_engine_handle();
+
+    let handled = handle_bang_shell_input(&mut app, &engine.handle, "!   ")
+        .await
+        .expect("bang shell handler");
+
+    assert!(handled);
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Error: Usage: ! <shell command>")
+    );
+}
+
+#[tokio::test]
 async fn numeric_plan_choice_still_queues_follow_up_when_busy() {
     let mut app = create_test_app();
     app.mode = AppMode::Plan;

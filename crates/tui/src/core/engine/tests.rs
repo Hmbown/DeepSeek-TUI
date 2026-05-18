@@ -900,6 +900,119 @@ async fn session_update_preserves_reasoning_tool_only_turn() {
     assert_eq!(messages, vec![assistant]);
 }
 
+#[tokio::test]
+async fn run_shell_command_op_requests_approval_and_executes_shell() {
+    let (mut engine, handle) = Engine::new(EngineConfig::default(), &Config::default());
+    let handle_for_approval = handle.clone();
+
+    let task = tokio::spawn(async move {
+        engine
+            .handle_run_shell_command(
+                "echo bang-ok".to_string(),
+                AppMode::Agent,
+                false,
+                false,
+                false,
+                crate::tui::approval::ApprovalMode::Suggest,
+            )
+            .await;
+    });
+
+    let mut saw_started = false;
+    let mut saw_approval = false;
+    let mut saw_complete = false;
+    let mut saw_turn_complete = false;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(event) = rx.recv().await {
+        match event {
+            Event::TurnStarted { turn_id } => {
+                assert!(turn_id.starts_with(crate::core::ops::USER_SHELL_TOOL_ID_PREFIX));
+            }
+            Event::ToolCallStarted { id, name, input } => {
+                saw_started = true;
+                assert!(id.starts_with(crate::core::ops::USER_SHELL_TOOL_ID_PREFIX));
+                assert_eq!(name, "exec_shell");
+                assert_eq!(input["command"], json!("echo bang-ok"));
+            }
+            Event::ApprovalRequired { id, tool_name, .. } => {
+                saw_approval = true;
+                assert!(id.starts_with(crate::core::ops::USER_SHELL_TOOL_ID_PREFIX));
+                assert_eq!(tool_name, "exec_shell");
+                handle_for_approval
+                    .approve_tool_call(id)
+                    .await
+                    .expect("approve shell");
+            }
+            Event::ToolCallComplete { id, name, result } => {
+                saw_complete = true;
+                assert!(id.starts_with(crate::core::ops::USER_SHELL_TOOL_ID_PREFIX));
+                assert_eq!(name, "exec_shell");
+                let result = result.expect("shell result");
+                assert!(result.success, "{result:?}");
+                assert!(result.content.contains("bang-ok"), "{result:?}");
+            }
+            Event::TurnComplete { status, .. } => {
+                saw_turn_complete = true;
+                assert_eq!(status, TurnOutcomeStatus::Completed);
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    task.await.expect("shell op task");
+
+    assert!(saw_started);
+    assert!(saw_approval);
+    assert!(saw_complete);
+    assert!(saw_turn_complete);
+}
+
+#[tokio::test]
+async fn run_shell_command_op_preserves_plan_mode_shell_block() {
+    let (mut engine, handle) = Engine::new(EngineConfig::default(), &Config::default());
+
+    engine
+        .handle_run_shell_command(
+            "echo blocked".to_string(),
+            AppMode::Plan,
+            true,
+            false,
+            false,
+            crate::tui::approval::ApprovalMode::Suggest,
+        )
+        .await;
+
+    let mut saw_complete = false;
+    let mut saw_turn_complete = false;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(event) = rx.recv().await {
+        match event {
+            Event::ApprovalRequired { .. } => {
+                panic!("Plan mode shell should be blocked before approval");
+            }
+            Event::ToolCallComplete { name, result, .. } => {
+                saw_complete = true;
+                assert_eq!(name, "exec_shell");
+                let err = result.expect_err("plan shell should fail");
+                assert!(
+                    err.to_string().contains("unavailable in Plan mode"),
+                    "{err}"
+                );
+            }
+            Event::TurnComplete { status, .. } => {
+                saw_turn_complete = true;
+                assert_eq!(status, TurnOutcomeStatus::Failed);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(saw_complete);
+    assert!(saw_turn_complete);
+}
+
 #[test]
 fn detects_context_length_errors_from_provider_payloads() {
     let msg = r#"SSE stream request failed: HTTP 400 Bad Request: {"error":{"message":"This model's maximum context length is 131072 tokens. However, you requested 153056 tokens (148960 in the messages, 4096 in the completion).","type":"invalid_request_error"}}"#;

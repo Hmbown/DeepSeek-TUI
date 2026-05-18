@@ -381,6 +381,7 @@ ACP workflows outside the built-in Zed slice.
 | `Ctrl+R` | Resume an earlier session |
 | `Alt+R` | Search prompt history and recover cleared drafts |
 | `Ctrl+S` | Stash current draft (`/stash list`, `/stash pop` to recover) |
+| `! command` | Run a shell command through normal approval and sandbox handling |
 | `@path` | Attach file/directory context in composer |
 | `↑` (at composer start) | Select attachment row for removal |
 
