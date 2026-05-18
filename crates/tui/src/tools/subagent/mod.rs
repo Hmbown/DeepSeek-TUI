@@ -3418,8 +3418,7 @@ async fn run_subagent(
                      consider splitting it or using a more focused objective."
                 )),
                 steps_taken: steps,
-                duration_ms: u64::try_from(started_at.elapsed().as_millis())
-                    .unwrap_or(u64::MAX),
+                duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
                 from_prior_session: false,
             });
         }
@@ -3558,10 +3557,7 @@ async fn run_subagent(
             runtime.event_tx.as_ref(),
             runtime.mailbox.as_ref(),
             &agent_id,
-            format!(
-                "step {steps}: executing {} tool call(s)",
-                tool_uses.len()
-            ),
+            format!("step {steps}: executing {} tool call(s)", tool_uses.len()),
         );
         let mut tool_results: Vec<ContentBlock> = Vec::new();
         for (tool_id, tool_name, tool_input) in tool_uses {

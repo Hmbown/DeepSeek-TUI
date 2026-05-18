@@ -1331,7 +1331,6 @@ pub struct SidebarSubagentSummary {
 
 #[derive(Debug, Clone)]
 pub struct SidebarAgentRow {
-    pub id: String,
     pub name: String,
     pub role: String,
     pub status: String,
@@ -1372,7 +1371,6 @@ fn sidebar_agent_rows(app: &App) -> Vec<SidebarAgentRow> {
                         .filter(|summary| !summary.trim().is_empty())
                 });
             SidebarAgentRow {
-                id: agent.agent_id.clone(),
                 name: agent.nickname.clone().unwrap_or_else(|| agent.name.clone()),
                 role: agent.agent_type.as_str().to_string(),
                 status: subagent_status_text(&agent.status).to_string(),
@@ -1392,8 +1390,7 @@ fn sidebar_agent_rows(app: &App) -> Vec<SidebarAgentRow> {
         app.agent_progress
             .iter()
             .filter(|(id, _)| !cached_ids.contains(id.as_str()))
-            .map(|(id, progress)| SidebarAgentRow {
-                id: id.clone(),
+            .map(|(_, progress)| SidebarAgentRow {
                 name: progress.clone(),
                 role: "agent".to_string(),
                 status: "running".to_string(),
@@ -2313,8 +2310,7 @@ mod tests {
         let text = lines_to_text(&task_panel_lines(&app, 80, 8));
 
         assert!(
-            text.iter()
-                .any(|line| line.contains("[x] cargo check 1s")),
+            text.iter().any(|line| line.contains("[x] cargo check 1s")),
             "status marker and duration should stay in the row label: {text:?}"
         );
         assert!(
@@ -2379,7 +2375,6 @@ mod tests {
         };
         let rows = vec![
             SidebarAgentRow {
-                id: "agent_a5e674dc".to_string(),
                 name: "check-docs-mcp".to_string(),
                 role: "explore".to_string(),
                 status: "running".to_string(),
@@ -2388,7 +2383,6 @@ mod tests {
                 duration_ms: Some(22_000),
             },
             SidebarAgentRow {
-                id: "agent_850aa63f".to_string(),
                 name: "check-install-docs".to_string(),
                 role: "general".to_string(),
                 status: "done".to_string(),
