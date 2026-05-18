@@ -51,6 +51,8 @@ pub enum ShellKind {
     Sh,
     /// Bash — detected via `$SHELL` on either Unix or WSL/Git Bash on Windows.
     Bash,
+    /// Any other POSIX shell from $SHELL (zsh, fish, dash, …).
+    Custom { binary: String, flag: String },
 }
 
 impl ShellKind {
@@ -62,6 +64,7 @@ impl ShellKind {
             ShellKind::Cmd => "cmd.exe",
             ShellKind::Sh => "sh",
             ShellKind::Bash => "bash",
+            ShellKind::Custom { binary, .. } => binary,
         }
     }
 
@@ -72,6 +75,7 @@ impl ShellKind {
             ShellKind::Pwsh | ShellKind::WindowsPowerShell => "-NoProfile",
             ShellKind::Cmd => "/C",
             ShellKind::Sh | ShellKind::Bash => "-c",
+            ShellKind::Custom { flag, .. } => flag,
         }
     }
 
@@ -88,6 +92,7 @@ impl ShellKind {
     pub fn is_powershell(&self) -> bool {
         matches!(self, ShellKind::Pwsh | ShellKind::WindowsPowerShell)
     }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -287,11 +292,17 @@ impl ShellDispatcher {
 
         log_exec(&self.kind, shell_command);
 
-        // Save terminal state — crossterm raw mode must be off while the
-        // child process owns the console, otherwise Windows loses
-        // ENABLE_VIRTUAL_TERMINAL_INPUT and the TUI keyboard breaks.
+        // Disable raw mode; guard restores it even on early return (review feedback).
         let _ = crossterm::terminal::disable_raw_mode();
         log_raw_mode("disabled");
+        struct FgRawModeGuard;
+        impl Drop for FgRawModeGuard {
+            fn drop(&mut self) {
+                let _ = crossterm::terminal::enable_raw_mode();
+                log_raw_mode("enabled");
+            }
+        }
+        let _guard = FgRawModeGuard;
 
         let mut cmd = self.build_command(shell_command);
         cmd.current_dir(cwd);
@@ -299,10 +310,6 @@ impl ShellDispatcher {
         let output = cmd
             .output()
             .with_context(|| format!("failed to execute shell command: {shell_command}"))?;
-
-        // Restore raw mode so the TUI input pipeline works again.
-        let _ = crossterm::terminal::enable_raw_mode();
-        log_raw_mode("enabled");
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -332,8 +339,12 @@ impl ShellDispatcher {
             if lower.contains("powershell") {
                 return ShellKind::WindowsPowerShell;
             }
-            // zsh, fish, dash, etc. — all POSIX-compatible via -c
-            return ShellKind::Sh;
+            // zsh, fish, dash, etc. — use the actual binary from $SHELL
+            // rather than defaulting to "sh" (review feedback).
+            return ShellKind::Custom {
+                binary: shell,
+                flag: "-c".to_string(),
+            };
         }
 
         #[cfg(windows)]
