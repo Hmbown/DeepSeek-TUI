@@ -2687,7 +2687,9 @@ impl App {
 
         self.viewport.last_transcript_area = None;
         self.viewport.last_transcript_top = 0;
-        self.viewport.last_transcript_visible = 0;
+        // Seed visible height from the resize event so paging keys use a
+        // useful page size immediately, before the next render updates it.
+        self.viewport.last_transcript_visible = (_height as usize).saturating_sub(2).max(1);
         self.viewport.last_transcript_total = 0;
         self.viewport.last_transcript_padding_top = 0;
         self.viewport.jump_to_latest_button_area = None;
@@ -4893,6 +4895,18 @@ mod tests {
         app.handle_resize(120, 40);
 
         assert!(app.viewport.transcript_scroll.is_at_tail());
+    }
+
+    #[test]
+    fn resize_seeds_visible_height_for_paging_before_next_render() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.viewport.last_transcript_visible = 12;
+
+        app.handle_resize(120, 40);
+        assert_eq!(app.viewport.last_transcript_visible, 38);
+
+        app.handle_resize(120, 1);
+        assert_eq!(app.viewport.last_transcript_visible, 1);
     }
 
     #[test]

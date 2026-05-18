@@ -5,7 +5,88 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.39] - 2026-05-17
+
+### Fixed
+
+- **Feishu/Lark bridge startup order is guarded.** The bridge now keeps
+  `ThreadStore` initialized before startup opens persisted thread state, with a
+  regression test to prevent moving it below its first use.
+- **`/model` picker opens instantly with the curated list again.** Reverted
+  the v0.8.38 live-catalog rework: the picker no longer makes a blocking
+  network call on open and once again shows the curated `auto` /
+  `deepseek-v4-pro` / `deepseek-v4-flash` rows. The `/models` command still
+  lists the live provider catalog.
+- **"Approve for session" groups by command family again.** Session approvals
+  are keyed by a lossy, arity-aware fingerprint once more, so approving
+  `cargo build` also covers `cargo build --release`. Denials keep the exact
+  per-call fingerprint from #1617, so denying one call no longer over-blocks
+  later, different calls to the same tool.
+- **Docker first-run state directories are writable.** The image now
+  pre-creates `/home/deepseek/.deepseek` with `deepseek` ownership so the
+  documented named-volume launch can create runtime thread state on first use
+  (#1684).
+- **Runtime API system prompt overrides survive the first turn.** Threads
+  created with a `system_prompt` override now keep that prompt through
+  mode/context refreshes before the model request is built (#1688).
+- **Compaction keeps a user text query in tool-heavy histories.** Automatic
+  compaction now pins the latest user text message when the retained tail only
+  contains tool calls/results, avoiding OpenAI-compatible Jinja template
+  failures on the next request (#1704).
+- **Pager jumps land at the visible bottom.** Pressing `G` or End in the pager
+  no longer overshoots the render clamp, so `k`/Up scrolls upward immediately
+  afterward, and mouse wheels now scroll pager overlays directly (#1706,
+  #1716).
+- **Mouse-wheel-as-arrow scrolling preserves composer drafts.** When
+  `composer_arrows_scroll` is enabled, Up/Down now scroll the transcript even
+  with text in the composer instead of replacing the draft with input history
+  (#1677).
+- **Multiline composer arrows move between input lines.** Plain Up/Down now
+  move the cursor within multiline drafts before falling back to input history,
+  while single-line mouse-wheel-as-arrow scrolling remains unchanged (#1721).
+- **Third-party `reasoning_content` streams no longer corrupt text output.**
+  Generic OpenAI-compatible providers that stream answer text in
+  `reasoning_content` now render it as normal text unless the selected provider
+  is one whose reasoning-content semantics are supported (#1673).
+- **macOS system theme detection recognizes Light mode.** When `COLORFGBG` is
+  missing or unusable, `theme = "system"` now falls back to macOS appearance
+  detection and treats a missing `AppleInterfaceStyle` key as Light mode
+  (#1670).
+- **`rlm_open` accepts schema-filled blank source fields.** Empty `file_path`,
+  `content`, and `url` strings now count as absent, so calls that provide one
+  real source no longer fail the exactly-one-source validator (#1712).
+- **Resize keeps transcript paging usable immediately.** After a terminal
+  resize, PageUp/PageDown now use the resized viewport height instead of
+  falling back to one-line jumps before the next render (#1724).
+- **ACP responses stringify JSON-RPC ids.** `serve --acp` now returns string
+  ids even when clients send numeric ids, matching Zed's stricter ACP client
+  expectations (#1696).
+
+### Thanks
+
+Thanks to **Matt Van Horn ([@mvanhorn](https://github.com/mvanhorn))** for the
+Docker first-run permission fix in #1699 and the runtime system-prompt
+regression tests harvested from #1702. Thanks to **Kristopher Clark
+([@krisclarkdev](https://github.com/krisclarkdev))** for the compaction
+user-query preservation fix in #1704. Thanks to **Stephen Xu
+([@wlon](https://github.com/wlon))** for the pager jump-bottom fix in #1706.
+Thanks to **tdccccc ([@tdccccc](https://github.com/tdccccc))** for the
+composer scroll fix in #1715 and pager mouse-wheel support in #1716.
+Thanks to **Paulo Aboim Pinto
+([@aboimpinto](https://github.com/aboimpinto))** for the multiline composer
+arrow navigation tests harvested from #1719. Thanks to **LittleBlacky
+([@LittleBlacky](https://github.com/LittleBlacky))** for the provider-gated
+`reasoning_content` stream fix in #1680.
+Thanks to **Eosin Ai ([@Aitensa](https://github.com/Aitensa))** for the macOS
+system appearance fallback in #1674.
+Thanks to **Anaheim ([@AnaheimEX](https://github.com/AnaheimEX))** for the
+`rlm_open` schema validation report in #1712.
+Thanks to **THatch26 ([@THatch26](https://github.com/THatch26))** for the
+terminal resize paging fix in #1724.
+Thanks to **Alvin ([@alvin1](https://github.com/alvin1))** for the Zed ACP id
+compatibility report in #1696.
+
+## [0.8.38] - 2026-05-15
 
 ### Changed
 
@@ -39,6 +120,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default providers sync into the runtime config before the first request, and
   reselecting the active provider from the picker keeps the current model
   instead of falling back to the provider default (#1632).
+- **OpenAI-compatible batch tool calls keep all start events.** Streaming
+  responses with multiple `tool_calls` in one assistant message now preserve
+  every tool-use block instead of pairing many tool results with only the last
+  tool start event (#1686).
+- **Diagnostics tool schemas include an empty `required` list.** The built-in
+  `diagnostics` tool now sends `required: []` with its empty object schema so
+  DeepSeek no longer rejects it as a null required array (#1685).
 - **Windows wheel-as-arrow scrolling works with mouse capture enabled.**
   `composer_arrows_scroll` now defaults on for Windows terminals even when
   mouse capture is enabled, so wheel events that arrive as arrow keys scroll the
@@ -47,6 +135,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   legacy Windows console hosts now automatically enable low-motion rendering,
   disable fancy animations, and resolve `synchronized_output = "auto"` to off
   so streaming redraws do not overlap or visibly flicker (#1590).
+- **LoopGuard blocks now count as failed tool calls.** Identical tool-call
+  blocks now return a failed tool result instead of a success, so repeated
+  blocked checklist/tool retries can trip the existing failure warning and halt
+  path instead of spinning indefinitely (#1574).
+- **Denied tool approvals are scoped to the exact call.** Denying one
+  write/shell approval now caches the canonical argument fingerprint instead of
+  a lossy tool/prefix key, so later calls to the same tool with different
+  arguments can still be reviewed and approved (#1617).
 
 ### Thanks
 
@@ -55,11 +151,21 @@ terminal cleanup-guard idea harvested from #1630, and **imkingjh999
 ([@imkingjh999](https://github.com/imkingjh999))** for the provider/model
 switching fixes harvested from #1642. Thanks to **Photo
 ([@eng2007](https://github.com/eng2007))** for the provider-aware `/model`
-picker catalog work harvested from #1201. Thanks to
+picker catalog work harvested from #1201. Thanks to **hexin
+([@h3c-hexin](https://github.com/h3c-hexin))** for the OpenAI batch tool-call
+streaming fix in #1686. Thanks to **chennest
+([@chennest](https://github.com/chennest))** for the diagnostics schema report
+in #1685. Thanks to
 **[@kunpeng-ai-lab](https://github.com/kunpeng-ai-lab)** for the Windows
 composer scroll fix harvested from #1578, and **WuMing
 ([@asdfg314284230](https://github.com/asdfg314284230))** for the Windows
-PowerShell flicker fix harvested from #1591.
+PowerShell flicker fix harvested from #1591. Thanks to
+**[@maker316](https://github.com/maker316)** for the LoopGuard/checklist loop
+report in #1574. Thanks to **lalala
+([@lalala-233](https://github.com/lalala-233))** for the approval denial
+regression report in #1617, and **Nightt
+([@nightt5879](https://github.com/nightt5879))** for the exact-call approval
+key work harvested from #1624.
 
 ## [0.8.37] - 2026-05-14
 
@@ -4258,7 +4364,9 @@ Welcome — and thank you.
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.37...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.39...HEAD
+[0.8.39]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.38...v0.8.39
+[0.8.38]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.37...v0.8.38
 [0.8.37]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.36...v0.8.37
 [0.8.36]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.35...v0.8.36
 [0.8.35]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.34...v0.8.35
