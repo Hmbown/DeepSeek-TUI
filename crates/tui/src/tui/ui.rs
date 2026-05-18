@@ -5662,21 +5662,22 @@ fn toggle_live_thinking_overlay(app: &mut App) {
     let mut overlay = LiveTranscriptOverlay::thinking_only();
     overlay.refresh_from_app(app);
     app.view_stack.push(overlay);
-    app.status_message = Some("Thinking stream: tailing (Esc to close)".to_string());
+    app.status_message = Some(
+        crate::localization::tr(
+            app.ui_locale,
+            crate::localization::MessageId::LiveThinkingStatusTailing,
+        )
+        .to_string(),
+    );
     app.needs_redraw = true;
 }
 
 fn live_transcript_overlay_mode(app: &mut App) -> Option<LiveTranscriptMode> {
-    if app.view_stack.top_kind() != Some(ModalKind::LiveTranscript) {
-        return None;
-    }
-    let mut overlay = app.view_stack.pop()?;
-    let mode = overlay
+    app.view_stack
+        .top_mut()?
         .as_any_mut()
         .downcast_mut::<LiveTranscriptOverlay>()
-        .map(|typed| typed.mode());
-    app.view_stack.push_boxed(overlay);
-    mode
+        .map(|typed| typed.mode())
 }
 
 async fn handle_view_events(

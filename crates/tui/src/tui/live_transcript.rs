@@ -31,6 +31,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap},
 };
 
+use crate::localization::{Locale, MessageId, tr};
 use crate::palette;
 use crate::tui::app::App;
 use crate::tui::backtrack::Direction;
@@ -81,6 +82,8 @@ pub struct LiveTranscriptOverlay {
     /// Render options sampled from `App` at refresh time so toggles like
     /// `show_thinking` propagate into the overlay live.
     options: TranscriptRenderOptions,
+    /// UI locale sampled from `App` at refresh time for overlay-only chrome.
+    locale: Locale,
     /// Wrapped-line cache. `RefCell` so `render(&self)` can write through.
     cache: RefCell<TranscriptCache>,
     /// Sticky-tail flag: when `true`, refresh re-pins scroll to the bottom.
@@ -111,6 +114,7 @@ impl LiveTranscriptOverlay {
         Self {
             snapshots: Vec::new(),
             options: TranscriptRenderOptions::default(),
+            locale: Locale::En,
             cache: RefCell::new(TranscriptCache::new()),
             sticky_to_bottom: Cell::new(true),
             scroll: Cell::new(0),
@@ -200,6 +204,7 @@ impl LiveTranscriptOverlay {
         }
         self.snapshots = new_snapshots;
         self.options = app.transcript_render_options();
+        self.locale = app.ui_locale;
     }
 
     /// Wrap each cell (using the cache) and return the flat line vector.
@@ -237,31 +242,27 @@ impl LiveTranscriptOverlay {
 
         let mut cache = self.cache.borrow_mut();
         for (cell_idx, snap) in self.snapshots.iter().enumerate() {
+            if matches!(self.mode, Mode::ThinkingOnly)
+                && !matches!(snap.cell, HistoryCell::Thinking { .. })
+            {
+                continue;
+            }
+
             let revision = if matches!(self.mode, Mode::ThinkingOnly) {
                 snap.revision.wrapping_add(THINKING_ONLY_REVISION_SALT)
             } else {
                 snap.revision
             };
-            let lines: Vec<Line<'static>> = if matches!(self.mode, Mode::ThinkingOnly) {
-                if !matches!(snap.cell, HistoryCell::Thinking { .. }) {
-                    continue;
-                }
-                match cache.get(snap.id, width, revision) {
-                    Some(cached) => cached.to_vec(),
-                    None => {
-                        let rendered = snap.cell.transcript_lines(width);
-                        cache.insert(snap.id, width, revision, rendered.clone());
-                        rendered
-                    }
-                }
-            } else {
-                match cache.get(snap.id, width, revision) {
-                    Some(cached) => cached.to_vec(),
-                    None => {
-                        let rendered = snap.cell.lines_with_options(width, self.options);
-                        cache.insert(snap.id, width, revision, rendered.clone());
-                        rendered
-                    }
+            let lines: Vec<Line<'static>> = match cache.get(snap.id, width, revision) {
+                Some(cached) => cached.to_vec(),
+                None => {
+                    let rendered = if matches!(self.mode, Mode::ThinkingOnly) {
+                        snap.cell.transcript_lines(width)
+                    } else {
+                        snap.cell.lines_with_options(width, self.options)
+                    };
+                    cache.insert(snap.id, width, revision, rendered.clone());
+                    rendered
                 }
             };
 
@@ -581,12 +582,12 @@ impl ModalView for LiveTranscriptOverlay {
         let end = (scroll + visible_height).min(lines.len());
         let visible_lines: Vec<Line<'static>> = if lines.is_empty() {
             let empty_label = if matches!(self.mode, Mode::ThinkingOnly) {
-                "(no thinking stream yet)"
+                tr(self.locale, MessageId::LiveThinkingEmpty)
             } else {
-                "(no transcript yet)"
+                tr(self.locale, MessageId::LiveTranscriptEmpty)
             };
             vec![Line::from(Span::styled(
-                empty_label,
+                empty_label.to_string(),
                 Style::default().fg(palette::TEXT_DIM),
             ))]
         } else {

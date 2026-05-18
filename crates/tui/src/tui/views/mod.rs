@@ -254,6 +254,10 @@ impl ViewStack {
         self.views.last().map(|view| view.kind())
     }
 
+    pub fn top_mut(&mut self) -> Option<&mut dyn ModalView> {
+        self.views.last_mut().map(|view| view.as_mut())
+    }
+
     pub fn push<V: ModalView + 'static>(&mut self, view: V) {
         let kind = view.kind();
         self.views.push(Box::new(view));
