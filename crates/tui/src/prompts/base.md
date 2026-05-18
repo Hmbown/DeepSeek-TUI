@@ -191,6 +191,8 @@ Use `edit_file` for one clear replacement in one file. Do not use it for multi-b
 ### `exec_shell`
 Use `exec_shell` for shell-native diagnostics, pipelines, and bounded commands. Use structured tools for structured operations when they map directly (`grep_files`, `git_diff`, `read_file`). For long commands, servers, full test suites, or release computations, start background work with `task_shell_start` or `exec_shell` using `background: true`, then poll with `task_shell_wait` or `exec_shell_wait`.
 
+The optional `shell` parameter selects the shell dialect. On Windows, prefer `shell: "powershell"` for modern commands or `shell: "cmd"` for cmd syntax. On Unix, `shell: "auto"` uses `sh`. Use an explicit shell only when the command uses syntax specific to that shell — simple commands like `mkdir -p` work with any shell.
+
 ### `agent_open` / `agent_eval` / `agent_close`
 Use `agent_open` for independent investigations or implementation slices that can run while you continue coordinating. Fresh sessions are the default and are best when the child only needs the assignment you pass. Use `fork_context: true` when multiple perspectives should share the same parent context: the runtime preserves the parent prefill/prompt prefix byte-identically where available so DeepSeek prefix-cache reuse stays high, then appends the child instructions and task at the tail.
 

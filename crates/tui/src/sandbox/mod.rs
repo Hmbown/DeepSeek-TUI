@@ -72,8 +72,8 @@ impl ShellKind {
         match self {
             ShellKind::Auto => Self::auto(command),
             ShellKind::Sh => ("sh", vec!["-c".to_string(), command.to_string()]),
-            ShellKind::Bash => ("bash", vec!["-lc".to_string(), command.to_string()]),
-            ShellKind::Zsh => ("zsh", vec!["-lc".to_string(), command.to_string()]),
+            ShellKind::Bash => ("bash", vec!["-c".to_string(), command.to_string()]),
+            ShellKind::Zsh => ("zsh", vec!["-c".to_string(), command.to_string()]),
             ShellKind::Cmd => (
                 "cmd",
                 vec!["/C".to_string(), format!("chcp 65001 >NUL & {command}")],
@@ -653,6 +653,72 @@ mod tests {
             assert_eq!(spec.args, vec!["-c", "echo hello"]);
         }
         assert_eq!(spec.display_command(), "echo hello");
+    }
+
+    #[test]
+    fn test_shell_with_kind_auto_equals_default_shell() {
+        // shell_with_kind(…, Auto) must match the old shell() exactly
+        for cmd in ["echo hi", "ls", "cd /tmp && python -c 'print(1)'"] {
+            let old = CommandSpec::shell(cmd, PathBuf::from("."), Duration::from_secs(30));
+            let new = CommandSpec::shell_with_kind(
+                cmd,
+                PathBuf::from("."),
+                Duration::from_secs(30),
+                ShellKind::Auto,
+            );
+            assert_eq!(
+                old.program, new.program,
+                "Auto program must match default for: {cmd}"
+            );
+            assert_eq!(
+                old.args, new.args,
+                "Auto args must match default for: {cmd}"
+            );
+            assert_eq!(old.display_command(), cmd);
+        }
+    }
+
+    #[test]
+    fn test_shell_with_kind_resolves_all_variants() {
+        // Verify each ShellKind produces a valid (program, args) pair
+        // without panicking or returning empty args.
+        let command = "echo test";
+        for &kind in &[
+            ShellKind::Sh,
+            ShellKind::Bash,
+            ShellKind::Zsh,
+            ShellKind::Cmd,
+            ShellKind::Powershell,
+            ShellKind::Pwsh,
+        ] {
+            let spec = CommandSpec::shell_with_kind(
+                command,
+                PathBuf::from("."),
+                Duration::from_secs(30),
+                kind,
+            );
+            assert!(
+                !spec.program.is_empty(),
+                "program must not be empty for {kind:?}"
+            );
+            assert!(!spec.args.is_empty(), "args must not be empty for {kind:?}");
+            // display_command should unwrap to the raw command
+            assert_eq!(
+                spec.display_command(),
+                command,
+                "display_command failed for {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_shell_kind_resolve_platform_defaults() {
+        // On any platform, Auto must resolve without cfg clashes
+        let (prog, _) = ShellKind::Auto.resolve("cmd");
+        #[cfg(windows)]
+        assert_eq!(prog, "cmd");
+        #[cfg(not(windows))]
+        assert_eq!(prog, "sh");
     }
 
     #[test]
