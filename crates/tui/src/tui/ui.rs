@@ -1366,9 +1366,16 @@ async fn run_event_loop(
                         app.session.last_reasoning_replay_tokens = usage.reasoning_replay_tokens;
                         // Compute average output speed from actual token counts
                         // and persist it so the footer chip survives turn end.
-                        if usage.output_tokens > 0 && turn_elapsed.as_secs_f64() > 0.0 {
+                        // Uses `stream_started_at` (first content delta) rather than
+                        // `turn_started_at` to exclude request preparation and TTFB,
+                        // giving a more accurate measure of generation throughput.
+                        let gen_elapsed = app
+                            .stream_started_at
+                            .map(|t| t.elapsed())
+                            .unwrap_or(turn_elapsed);
+                        if usage.output_tokens > 0 && gen_elapsed.as_secs_f64() > 0.0 {
                             let avg_tps =
-                                usage.output_tokens as f64 / turn_elapsed.as_secs_f64();
+                                usage.output_tokens as f64 / gen_elapsed.as_secs_f64();
                             let label = if avg_tps >= 10.0 {
                                 format!("{:.0} tok/s avg", avg_tps)
                             } else {
