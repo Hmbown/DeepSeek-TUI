@@ -1,7 +1,7 @@
 //! TUI runtime logging. Initializes a `tracing-subscriber` that writes to a
-//! daily-rolling file under `~/.deepseek/logs/`, and (on Unix) redirects the
-//! process's `stderr` fd to that same file for the lifetime of the alt-screen
-//! TUI.
+//! per-instance file under `~/.deepseek/logs/tui-YYYY-MM-DD-PID.log`, and
+//! (on Unix) redirects the process's `stderr` fd to that same file for the
+//! lifetime of the alt-screen TUI.
 //!
 //! Why this exists:
 //!
@@ -22,7 +22,7 @@
 //!
 //! Defence-in-depth:
 //!   1. A `tracing-subscriber` writes formatted logs to
-//!      `~/.deepseek/logs/tui-YYYY-MM-DD.log` so `tracing::warn!` /
+//!      `~/.deepseek/logs/tui-YYYY-MM-DD-PID.log` so `tracing::warn!` /
 //!      `tracing::error!` calls go somewhere observable instead of
 //!      disappearing into the void (the TUI previously had no global
 //!      subscriber, so contributors reached for `eprintln!`).
