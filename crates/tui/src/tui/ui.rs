@@ -936,6 +936,22 @@ async fn run_event_loop(
             let mut rx = engine_handle.rx_event.write().await;
             while let Ok(event) = rx.try_recv() {
                 received_engine_event = true;
+                if app.suppress_stream_events_until_turn_complete {
+                    if matches!(event, EngineEvent::TurnStarted { .. }) {
+                        // Ctrl+C can race with the engine's per-turn token
+                        // reset: the first cancel may hit the previous token
+                        // if SendMessage is queued but TurnStarted has not
+                        // arrived yet. Reassert cancellation once the real
+                        // turn starts, then keep hiding its queued deltas.
+                        engine_handle.cancel();
+                        continue;
+                    }
+                    if suppress_engine_event_after_local_cancel(&event) {
+                        continue;
+                    }
+                } else if !app.is_loading && ignore_stale_stream_event_while_idle(&event) {
+                    continue;
+                }
                 match event {
                     EngineEvent::MessageStarted { .. } => {
                         // Assistant text starting after parallel tool work
@@ -1242,6 +1258,7 @@ async fn run_event_loop(
                         }
                     }
                     EngineEvent::TurnStarted { turn_id } => {
+                        app.suppress_stream_events_until_turn_complete = false;
                         app.is_loading = true;
                         app.offline_mode = false;
                         app.turn_error_posted = false;
@@ -1275,6 +1292,8 @@ async fn run_event_loop(
                         status,
                         error,
                     } => {
+                        let was_locally_cancelled = app.suppress_stream_events_until_turn_complete;
+                        app.suppress_stream_events_until_turn_complete = false;
                         if !matches!(status, crate::core::events::TurnOutcomeStatus::Completed)
                             || draws_since_last_full_repaint >= PERIODIC_FULL_REPAINT_EVERY_N
                         {
@@ -1302,6 +1321,9 @@ async fn run_event_loop(
                         app.dispatch_started_at = None;
                         app.offline_mode = false;
                         app.streaming_state.reset();
+                        if was_locally_cancelled {
+                            current_streaming_text.clear();
+                        }
                         // Capture elapsed before clearing turn_started_at so
                         // notifications can use the real wall-clock duration.
                         let turn_elapsed =
@@ -2728,17 +2750,9 @@ async fn run_event_loop(
                         }
                         CtrlCDisposition::CancelTurn => {
                             engine_handle.cancel();
-                            app.is_loading = false;
-                            app.dispatch_started_at = None;
-                            app.streaming_state.reset();
+                            mark_active_turn_cancelled_locally(app);
+                            current_streaming_text.clear();
                             let prompt_restored = app.restore_last_submitted_prompt_if_empty();
-                            // Optimistically clear the turn-in-progress flag
-                            // so the footer wave animation halts immediately —
-                            // without this, the strip keeps animating until
-                            // the engine eventually emits TurnComplete (#5a).
-                            // The engine's eventual TurnComplete event will
-                            // overwrite with the real outcome ("interrupted").
-                            app.runtime_turn_status = None;
                             app.status_message = Some(
                                 if prompt_restored {
                                     "Request cancelled; prompt restored to composer"
@@ -2793,24 +2807,8 @@ async fn run_event_loop(
                         EscapeAction::CancelRequest => {
                             app.backtrack.reset();
                             engine_handle.cancel();
-                            app.is_loading = false;
-                            app.dispatch_started_at = None;
-                            app.streaming_state.reset();
-                            // Optimistically halt the wave + working label —
-                            // engine's TurnComplete will resync with the real
-                            // outcome. Fixes #5a (wave kept animating after Esc).
-                            app.runtime_turn_status = None;
-                            // Finalize any in-flight tool entries optimistically so
-                            // the composer regains focus and the footer's "tool ...
-                            // · X active" chip clears immediately rather than
-                            // waiting for the engine's TurnComplete echo to drain.
-                            // Idempotent with the TurnComplete handler that runs
-                            // when the engine actually echoes the cancel (#243).
-                            // Background sub-agents continue running — they are
-                            // tracked via `subagent_cache` independently of the
-                            // foreground turn.
-                            app.finalize_active_cell_as_interrupted();
-                            app.finalize_streaming_assistant_as_interrupted();
+                            mark_active_turn_cancelled_locally(app);
+                            current_streaming_text.clear();
                             app.status_message = Some("Request cancelled".to_string());
                         }
                         EscapeAction::DiscardQueuedDraft => {
@@ -5990,18 +5988,60 @@ async fn handle_view_events(
             ViewEvent::ShellControlCancel => {
                 app.backtrack.reset();
                 engine_handle.cancel();
-                app.is_loading = false;
-                app.dispatch_started_at = None;
-                app.streaming_state.reset();
-                app.runtime_turn_status = None;
-                app.finalize_active_cell_as_interrupted();
-                app.finalize_streaming_assistant_as_interrupted();
+                mark_active_turn_cancelled_locally(app);
                 app.status_message = Some("Request cancelled".to_string());
             }
         }
     }
 
     Ok(false)
+}
+
+fn mark_active_turn_cancelled_locally(app: &mut App) {
+    app.is_loading = false;
+    app.dispatch_started_at = None;
+    app.streaming_state.reset();
+    app.runtime_turn_status = None;
+    app.suppress_stream_events_until_turn_complete = true;
+    app.finalize_active_cell_as_interrupted();
+    app.finalize_streaming_assistant_as_interrupted();
+}
+
+fn suppress_engine_event_after_local_cancel(event: &EngineEvent) -> bool {
+    matches!(
+        event,
+        EngineEvent::MessageStarted { .. }
+            | EngineEvent::MessageDelta { .. }
+            | EngineEvent::MessageComplete { .. }
+            | EngineEvent::ThinkingStarted { .. }
+            | EngineEvent::ThinkingDelta { .. }
+            | EngineEvent::ThinkingComplete { .. }
+            | EngineEvent::ToolCallStarted { .. }
+            | EngineEvent::ToolCallProgress { .. }
+            | EngineEvent::ToolCallComplete { .. }
+            | EngineEvent::ApprovalRequired { .. }
+            | EngineEvent::UserInputRequired { .. }
+            | EngineEvent::ElevationRequired { .. }
+            | EngineEvent::SessionUpdated { .. }
+    )
+}
+
+fn ignore_stale_stream_event_while_idle(event: &EngineEvent) -> bool {
+    matches!(
+        event,
+        EngineEvent::MessageStarted { .. }
+            | EngineEvent::MessageDelta { .. }
+            | EngineEvent::MessageComplete { .. }
+            | EngineEvent::ThinkingStarted { .. }
+            | EngineEvent::ThinkingDelta { .. }
+            | EngineEvent::ThinkingComplete { .. }
+            | EngineEvent::ToolCallStarted { .. }
+            | EngineEvent::ToolCallProgress { .. }
+            | EngineEvent::ToolCallComplete { .. }
+            | EngineEvent::ApprovalRequired { .. }
+            | EngineEvent::UserInputRequired { .. }
+            | EngineEvent::ElevationRequired { .. }
+    )
 }
 
 /// Push the new `selected_idx` into the live transcript overlay so the

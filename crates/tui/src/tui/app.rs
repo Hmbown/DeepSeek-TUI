@@ -1018,6 +1018,11 @@ pub struct App {
     pub last_exec_wait_command: Option<String>,
     /// Current streaming assistant cell
     pub streaming_message_index: Option<usize>,
+    /// True after a local cancel key has been handled and before the engine's
+    /// authoritative TurnComplete arrives. Stream events already queued for
+    /// the cancelled turn are ignored so text does not keep appearing after
+    /// Ctrl+C/Esc returns focus to the composer.
+    pub suppress_stream_events_until_turn_complete: bool,
     /// Index into `active_cell.entries` of the thinking entry currently being
     /// streamed. `None` when no thinking block is in flight. P2.3 routes
     /// thinking into the active cell so it groups visually with tool calls
@@ -1598,6 +1603,7 @@ impl App {
             ignored_tool_calls: HashSet::new(),
             last_exec_wait_command: None,
             streaming_message_index: None,
+            suppress_stream_events_until_turn_complete: false,
             streaming_thinking_active_entry: None,
             streaming_state: StreamingState::new(),
             reasoning_buffer: String::new(),

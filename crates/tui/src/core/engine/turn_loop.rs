@@ -309,7 +309,14 @@ impl Engine {
             // first call) so we can resend it on a transparent retry below
             // when the wire dies before any content was streamed (#103).
             let stream_request = request;
-            let stream_result = client.create_message_stream(stream_request.clone()).await;
+            let stream_result = tokio::select! {
+                biased;
+                () = self.cancel_token.cancelled() => {
+                    let _ = self.tx_event.send(Event::status("Request cancelled")).await;
+                    return (TurnOutcomeStatus::Interrupted, None);
+                }
+                result = client.create_message_stream(stream_request.clone()) => result,
+            };
             let stream = match stream_result {
                 Ok(s) => {
                     context_recovery_attempts = 0;
@@ -391,6 +398,7 @@ impl Engine {
             // Process stream events
             loop {
                 let poll_outcome = tokio::select! {
+                    biased;
                     _ = self.cancel_token.cancelled() => None,
                     result = tokio::time::timeout(chunk_timeout, stream.next()) => {
                         match result {
@@ -487,7 +495,12 @@ impl Engine {
                             // Drop the failed stream before issuing the new
                             // request to release the underlying connection.
                             drop(stream);
-                            match client.create_message_stream(stream_request.clone()).await {
+                            let retry_stream_result = tokio::select! {
+                                biased;
+                                () = self.cancel_token.cancelled() => break,
+                                result = client.create_message_stream(stream_request.clone()) => result,
+                            };
+                            match retry_stream_result {
                                 Ok(fresh) => {
                                     stream = fresh;
                                     stream_start = Instant::now();
@@ -744,6 +757,11 @@ impl Engine {
                     }
                     StreamEvent::MessageStop | StreamEvent::Ping => {}
                 }
+            }
+
+            if self.cancel_token.is_cancelled() {
+                let _ = self.tx_event.send(Event::status("Request cancelled")).await;
+                return (TurnOutcomeStatus::Interrupted, None);
             }
 
             // #103 Phase 3 — transparent retry. The inner loop above bails

@@ -2660,6 +2660,57 @@ fn test_ctrl_c_cancels_streaming_sets_status() {
 }
 
 #[test]
+fn local_cancel_marks_late_stream_events_for_suppression() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.streaming_state.start_text(0, None);
+
+    mark_active_turn_cancelled_locally(&mut app);
+
+    assert!(!app.is_loading);
+    assert!(app.suppress_stream_events_until_turn_complete);
+    assert!(suppress_engine_event_after_local_cancel(
+        &EngineEvent::MessageDelta {
+            index: 0,
+            content: "late text".to_string(),
+        }
+    ));
+    assert!(suppress_engine_event_after_local_cancel(
+        &EngineEvent::ThinkingDelta {
+            index: 0,
+            content: "late thinking".to_string(),
+        }
+    ));
+    assert!(suppress_engine_event_after_local_cancel(
+        &EngineEvent::SessionUpdated {
+            session_id: "session".to_string(),
+            messages: Vec::new(),
+            system_prompt: None,
+            model: "deepseek-v4-flash".to_string(),
+            workspace: PathBuf::from("."),
+        }
+    ));
+    assert!(ignore_stale_stream_event_while_idle(
+        &EngineEvent::MessageDelta {
+            index: 0,
+            content: "late text".to_string(),
+        }
+    ));
+    assert!(!suppress_engine_event_after_local_cancel(
+        &EngineEvent::TurnComplete {
+            usage: Usage::default(),
+            status: crate::core::events::TurnOutcomeStatus::Interrupted,
+            error: None,
+        }
+    ));
+    assert!(!suppress_engine_event_after_local_cancel(
+        &EngineEvent::Status {
+            message: "Request cancelled".to_string(),
+        }
+    ));
+}
+
+#[test]
 fn test_ctrl_c_exits_when_not_loading() {
     let mut app = create_test_app();
     app.is_loading = false;
