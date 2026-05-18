@@ -1,40 +1,69 @@
 # CNB is a one-way mirror from GitHub. Keep this file source-controlled here;
 # CNB-side edits will be overwritten by the GitHub -> CNB sync workflow.
 
-main:
+$:
+  vscode:
+    - runner:
+       tags: cnb:arch:amd64
+       cpus: 8
+      docker:
+        image: docker.cnb.cool/yamingnetwork/ide/rust:stable
+      services:
+        - vscode
+        - docker
   push:
-    - docker:
-        image: node:22-bookworm
+    - name: Push Test AMD64
+      runner:
+       tags: cnb:arch:amd64
+      docker:
+        image: docker.cnb.cool/yamingnetwork/ide/rust:stable
       stages:
         - name: feishu bridge tests
           script: |
-            set -euo pipefail
             cd integrations/feishu-bridge
             npm ci
             npm run check
             npm test
-
-    - docker:
-        image: rust:1.88-bookworm
-      stages:
         - name: release version check
           script: |
-            set -euo pipefail
             apt-get update
-            apt-get install -y git libdbus-1-dev nodejs pkg-config
+            apt-get install -y git libdbus-1-dev libsqlite3-dev nodejs pkg-config
             ./scripts/release/check-versions.sh
 
-$:
-  tag_push:
-    - docker:
-        image: rust:1.88-bookworm
-      stages:
-        - name: build linux x64 release assets
+        - name: push build test
           script: |
-            set -euo pipefail
-
+            cargo build --release
+    - name: Push Test arm64
+      runner:
+       tags: cnb:arch:arm64:v8
+      docker:
+        image: docker.cnb.cool/yamingnetwork/ide/rust:stable
+      stages:
+        - name: feishu bridge tests
+          script: |
+            cd integrations/feishu-bridge
+            npm ci
+            npm run check
+            npm test
+        - name: release version check
+          script: |
             apt-get update
-            apt-get install -y git libdbus-1-dev nodejs pkg-config
+            apt-get install -y git libdbus-1-dev libsqlite3-dev nodejs pkg-config
+            ./scripts/release/check-versions.sh
+
+        - name: Push build test
+          script: |
+            cargo build --release
+        
+  tag_push:
+    - name: linux-x64
+      docker:
+        image: docker.cnb.cool/yamingnetwork/ide/rust:stable
+      stages:
+        - name: build linux x64
+          script: |
+            apt-get update
+            apt-get install -y git libdbus-1-dev libsqlite3-dev nodejs pkg-config
 
             ./scripts/release/check-versions.sh
             cargo build --release --locked -p deepseek-tui-cli -p deepseek-tui
@@ -44,9 +73,86 @@ $:
             cp target/release/deepseek-tui target/cnb-release/deepseek-tui-linux-x64
             strip target/cnb-release/deepseek-linux-x64 target/cnb-release/deepseek-tui-linux-x64 || true
 
+        - name: upload linux x64 assets
+          image: cnbcool/attachments:latest
+          settings:
+            attachments:
+              - target/cnb-release/deepseek-linux-x64
+              - target/cnb-release/deepseek-tui-linux-x64
+
+        - name: notify-release
+          type: cnb:resolve
+          options:
+            key: linux-x64-ready
+
+    - name: linux-arm64
+      runner:
+        tags: cnb:arch:arm64:v8
+      docker:
+        image: docker.cnb.cool/yamingnetwork/ide/rust:stable
+      stages:
+        - name: build linux arm64
+          script: |
+            apt-get update
+            apt-get install -y git libdbus-1-dev libsqlite3-dev nodejs pkg-config
+
+            ./scripts/release/check-versions.sh
+            cargo build --release --locked -p deepseek-tui-cli -p deepseek-tui
+
+            mkdir -p target/cnb-release
+            cp target/release/deepseek target/cnb-release/deepseek-linux-arm64
+            cp target/release/deepseek-tui target/cnb-release/deepseek-tui-linux-arm64
+            strip target/cnb-release/deepseek-linux-arm64 target/cnb-release/deepseek-tui-linux-arm64 || true
+
+        - name: upload linux arm64 assets
+          image: cnbcool/attachments:latest
+          settings:
+            attachments:
+              - target/cnb-release/deepseek-linux-arm64
+              - target/cnb-release/deepseek-tui-linux-arm64
+
+        - name: notify-release
+          type: cnb:resolve
+          options:
+            key: linux-arm64-ready
+
+    - name: release
+      docker:
+        image: docker.cnb.cool/yamingnetwork/ide/rust:stable
+      stages:
+        - name: wait-for-x64
+          type: cnb:await
+          options:
+            key: linux-x64-ready
+
+        - name: wait-for-arm64
+          type: cnb:await
+          options:
+            key: linux-arm64-ready
+
+        - name: download linux x64 assets
+          image: cnbcool/attachments:latest
+          settings:
+            type: DOWNLOAD
+            attachments:
+              - deepseek-linux-x64
+              - deepseek-tui-linux-x64
+
+        - name: download linux arm64 assets
+          image: cnbcool/attachments:latest
+          settings:
+            type: DOWNLOAD
+            attachments:
+              - deepseek-linux-arm64
+              - deepseek-tui-linux-arm64
+
+        - name: generate checksum and release notes
+          script: |
+            mkdir -p target/cnb-release
+            mv deepseek-linux-x64 deepseek-tui-linux-x64 deepseek-linux-arm64 deepseek-tui-linux-arm64 target/cnb-release/
             (
               cd target/cnb-release
-              sha256sum deepseek-linux-x64 deepseek-tui-linux-x64 \
+              sha256sum deepseek-linux-x64 deepseek-tui-linux-x64 deepseek-linux-arm64 deepseek-tui-linux-arm64 \
                 > deepseek-artifacts-sha256.txt
             )
 
@@ -67,10 +173,14 @@ $:
               echo
               echo "Built by CNB from ${commit_sha}."
               echo
-              echo "Assets:"
-              echo "- deepseek-linux-x64"
-              echo "- deepseek-tui-linux-x64"
-              echo "- deepseek-artifacts-sha256.txt"
+              echo "## Linux Assets"
+              echo
+              echo "| Platform | Dispatcher | TUI runtime |"
+              echo "|---|---|---|"
+              echo "| Linux x64 | deepseek-linux-x64 | deepseek-tui-linux-x64 |"
+              echo "| Linux ARM64 | deepseek-linux-arm64 | deepseek-tui-linux-arm64 |"
+              echo
+              echo "Verify: \`sha256sum -c deepseek-artifacts-sha256.txt\`"
             } > target/cnb-release/CNB_RELEASE.md
 
         - name: create cnb release
@@ -79,10 +189,12 @@ $:
             descriptionFromFile: target/cnb-release/CNB_RELEASE.md
             latest: true
 
-        - name: upload linux x64 release assets
+        - name: upload release assets
           image: cnbcool/attachments:latest
           settings:
             attachments:
               - target/cnb-release/deepseek-linux-x64
               - target/cnb-release/deepseek-tui-linux-x64
+              - target/cnb-release/deepseek-linux-arm64
+              - target/cnb-release/deepseek-tui-linux-arm64
               - target/cnb-release/deepseek-artifacts-sha256.txt
