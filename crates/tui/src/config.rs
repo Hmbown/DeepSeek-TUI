@@ -60,6 +60,7 @@ pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4-flash",
 ];
+pub const OFFICIAL_DEEPSEEK_MODELS: &[&str] = &["deepseek-v4-pro", "deepseek-v4-flash"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -351,6 +352,60 @@ pub fn normalize_model_name(model: &str) -> Option<String> {
     None
 }
 
+fn canonical_official_deepseek_model_id(model: &str) -> Option<&'static str> {
+    match model.trim().to_ascii_lowercase().as_str() {
+        "deepseek-v4-pro"
+        | "deepseek-v4pro"
+        | "deepseek-ai/deepseek-v4-pro"
+        | "deepseek-ai/deepseek-v4pro"
+        | "deepseek/deepseek-v4-pro"
+        | "deepseek/deepseek-v4pro" => Some("deepseek-v4-pro"),
+        "deepseek-v4-flash"
+        | "deepseek-v4flash"
+        | "deepseek-ai/deepseek-v4-flash"
+        | "deepseek-ai/deepseek-v4flash"
+        | "deepseek/deepseek-v4-flash"
+        | "deepseek/deepseek-v4flash" => Some("deepseek-v4-flash"),
+        _ => None,
+    }
+}
+
+/// Normalize a model selected through the TUI for the active provider.
+///
+/// Official DeepSeek endpoints require bare model IDs. Provider-prefixed
+/// aliases are valid for some compatible backends, but sending them to
+/// DeepSeek's own API causes a 400. Keep the generic normalizer permissive for
+/// config/back-compat, and canonicalize only when the active provider is known.
+#[must_use]
+pub fn normalize_model_name_for_provider(provider: ApiProvider, model: &str) -> Option<String> {
+    let normalized = normalize_model_name(model)?;
+    if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
+        && let Some(canonical) = canonical_official_deepseek_model_id(&normalized)
+    {
+        return Some(canonical.to_string());
+    }
+    if let Some(canonical) = canonical_official_deepseek_model_id(&normalized) {
+        return Some(model_for_provider(provider, canonical.to_string()));
+    }
+    Some(normalized)
+}
+
+#[must_use]
+pub fn model_completion_names_for_provider(provider: ApiProvider) -> Vec<&'static str> {
+    match provider {
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN => OFFICIAL_DEEPSEEK_MODELS.to_vec(),
+        ApiProvider::NvidiaNim => vec![DEFAULT_NVIDIA_NIM_MODEL, DEFAULT_NVIDIA_NIM_FLASH_MODEL],
+        ApiProvider::Openrouter => vec![DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENROUTER_FLASH_MODEL],
+        ApiProvider::Novita => vec![DEFAULT_NOVITA_MODEL, DEFAULT_NOVITA_FLASH_MODEL],
+        ApiProvider::Fireworks => vec![DEFAULT_FIREWORKS_MODEL],
+        ApiProvider::Sglang => vec![DEFAULT_SGLANG_MODEL, DEFAULT_SGLANG_FLASH_MODEL],
+        ApiProvider::Vllm => vec![DEFAULT_VLLM_MODEL, DEFAULT_VLLM_FLASH_MODEL],
+        ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {
+            OFFICIAL_DEEPSEEK_MODELS.to_vec()
+        }
+    }
+}
+
 // === Types ===
 
 /// Raw retry configuration loaded from config files.
@@ -418,20 +473,17 @@ pub enum NotificationCondition {
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum NotificationMethod {
-    /// Auto-detect: OSC 9 for iTerm / WezTerm / Cmux;
-    /// Ghostty-specific protocol for Ghostty; Kitty-specific for Kitty;
-    /// native OS notification on macOS / Linux otherwise; on Windows
-    /// the fallback is `Off` because BEL maps to the system error
-    /// chime there (#583).
+    /// Auto-detect: picks the best protocol for the current terminal
+    /// (OSC 9, Kitty OSC 99, Ghostty OSC 777, or Bel).
     #[default]
     Auto,
     /// OSC 9 escape.
     Osc9,
-    /// Native OS notification (osascript / notify-send).
-    Native,
     /// Plain BEL character.
     Bel,
-    /// Kitty notification protocol (OSC 99 with ST terminator, no beep).
+    /// Native OS notification (osascript / notify-send).
+    Native,
+    /// Kitty notification protocol (OSC 99).
     Kitty,
     /// Ghostty notification protocol (OSC 777).
     Ghostty,
@@ -443,30 +495,21 @@ fn default_threshold_secs() -> u64 {
     30
 }
 
-fn default_idle_threshold_secs() -> u64 {
-    6
-}
-
 /// Desktop-notification configuration (OSC 9 / BEL on turn completion).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct NotificationsConfig {
-    /// Delivery method: `auto` | `osc9` | `kitty` | `ghostty` | `bel` | `native` | `off`.
-    /// Default: `auto`.
-    /// `auto` resolves to the best protocol for the current terminal;
-    /// on unknown terminals falls back to BEL (no AppleScript injection risk);
-    /// on Windows falls back to `Off` (#583).
+    /// Delivery method: `auto` | `osc9` | `bel` | `off`. Default: `auto`.
+    /// `auto` resolves to OSC 9 for iTerm.app / Ghostty / WezTerm / Cmux
+    /// (detected via `$TERM_PROGRAM` then `$LC_TERMINAL`); on macOS / Linux
+    /// it falls back to BEL, and on Windows it falls back to `Off` so the
+    /// post-turn notification doesn't ring the system error chime (#583).
+    /// Use `method = "osc9"` explicitly when your terminal is OSC-9 capable
+    /// but sets neither env var (e.g. Cmux without `LC_TERMINAL`).
     #[serde(default)]
     pub method: NotificationMethod,
     /// Only notify when the turn took at least this many seconds. Default: 30.
-    /// Used as a fallback when `idle_threshold_secs` is 0.
     #[serde(default = "default_threshold_secs")]
     pub threshold_secs: u64,
-    /// Idle threshold in seconds. When > 0, notifications fire after the user
-    /// has been idle (no keyboard input) for this many seconds after a turn
-    /// completes, rather than using the fixed elapsed-time threshold.
-    /// Default: 6. Set to 0 to disable idle detection and use `threshold_secs`.
-    #[serde(default = "default_idle_threshold_secs")]
-    pub idle_threshold_secs: u64,
     /// Include a short summary (elapsed time + cost) in the notification body.
     /// Default: `false`.
     #[serde(default)]
@@ -539,8 +582,10 @@ impl SnapshotsConfig {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchProvider {
-    /// DuckDuckGo HTML scraping with Bing fallback. No API key needed.
+    /// Bing HTML scraping. No API key needed.
     #[default]
+    Bing,
+    /// DuckDuckGo HTML scraping with Bing fallback. No API key needed.
     #[serde(alias = "duckduckgo")]
     DuckDuckGo,
     /// Tavily AI Search API (<https://tavily.com>). Requires api_key.
@@ -553,6 +598,7 @@ impl SearchProvider {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Bing => "bing",
             Self::DuckDuckGo => "duckduckgo",
             Self::Tavily => "tavily",
             Self::Bocha => "bocha",
@@ -563,10 +609,10 @@ impl SearchProvider {
 /// Web search provider configuration (`[search]` table in config.toml).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SearchConfig {
-    /// Search provider: `duckduckgo` | `tavily` | `bocha`. Default: `duckduckgo`.
+    /// Search provider: `bing` | `duckduckgo` | `tavily` | `bocha`. Default: `bing`.
     #[serde(default)]
     pub provider: Option<SearchProvider>,
-    /// API key for Tavily or Bocha. Not required for DuckDuckGo.
+    /// API key for Tavily or Bocha. Not required for Bing or DuckDuckGo.
     #[serde(default)]
     pub api_key: Option<String>,
 }
@@ -575,12 +621,13 @@ pub struct SearchConfig {
 ///
 /// Order in the user's `Vec<StatusItem>` is preserved: items in the left
 /// cluster (`Mode`, `Model`, `Cost`, `Status`) render in the order given;
-/// right-cluster chips (`Coherence`, `Agents`, `ReasoningReplay`, `Cache`,
-/// `ContextPercent`, `GitBranch`, `LastToolElapsed`, `RateLimit`) likewise
-/// honour ordering inside their cluster. The split between left and right is
-/// deliberate — left holds steady identity (mode/model/cost), right holds
-/// transient signals — so we route each variant to the correct side rather
-/// than letting users reorder across the spacer.
+/// right-cluster chips (`Coherence`, `Agents`, `ReasoningReplay`,
+/// `PrefixStability`, `Cache`, `ContextPercent`, `GitBranch`,
+/// `LastToolElapsed`, `RateLimit`) likewise honour ordering inside their
+/// cluster. The split between left and right is deliberate — left holds steady
+/// identity (mode/model/cost), right holds transient signals — so we route
+/// each variant to the correct side rather than letting users reorder across
+/// the spacer.
 ///
 /// Variants without a current data source (`RateLimit`, `LastToolElapsed`)
 /// are intentionally exposed today so the picker is forward-compatible; they
@@ -603,6 +650,8 @@ pub enum StatusItem {
     Agents,
     /// Reasoning-replay token count ("rsn 12.3k").
     ReasoningReplay,
+    /// Prefix stability ("cache prefix 100%").
+    PrefixStability,
     /// Cache hit rate ("cache 73%").
     Cache,
     /// Context-window utilisation percent ("48%").
@@ -616,9 +665,10 @@ pub enum StatusItem {
 }
 
 impl StatusItem {
-    /// Default footer composition matching v0.6.6 behaviour exactly. Used when
-    /// `tui.status_items` is missing from `config.toml` so upgraders see the
-    /// same footer they had before.
+    /// Default footer composition for the always-on status line. Used when
+    /// `tui.status_items` is missing from `config.toml` so upgraders see a
+    /// concise footer by default; diagnostic chips remain available via
+    /// `/statusline` without crowding the main UI.
     #[must_use]
     pub fn default_footer() -> Vec<StatusItem> {
         vec![
@@ -644,6 +694,7 @@ impl StatusItem {
             StatusItem::Coherence => "coherence",
             StatusItem::Agents => "agents",
             StatusItem::ReasoningReplay => "reasoning_replay",
+            StatusItem::PrefixStability => "prefix_stability",
             StatusItem::Cache => "cache",
             StatusItem::ContextPercent => "context_percent",
             StatusItem::GitBranch => "git_branch",
@@ -663,6 +714,7 @@ impl StatusItem {
             StatusItem::Coherence => "Coherence interventions",
             StatusItem::Agents => "Sub-agents in flight",
             StatusItem::ReasoningReplay => "Reasoning replay tokens",
+            StatusItem::PrefixStability => "Prefix stability",
             StatusItem::Cache => "Prompt cache hit rate",
             StatusItem::ContextPercent => "Context window %",
             StatusItem::GitBranch => "Git branch",
@@ -683,6 +735,7 @@ impl StatusItem {
             StatusItem::Coherence => "shown only when the engine intervenes",
             StatusItem::Agents => "agents or RLM work in progress",
             StatusItem::ReasoningReplay => "thinking tokens replayed each turn",
+            StatusItem::PrefixStability => "whether system/tools stayed cacheable",
             StatusItem::Cache => "% of prompt served from cache",
             StatusItem::ContextPercent => "tokens used / model context window",
             StatusItem::GitBranch => "current workspace branch",
@@ -702,6 +755,7 @@ impl StatusItem {
             StatusItem::Coherence,
             StatusItem::Agents,
             StatusItem::ReasoningReplay,
+            StatusItem::PrefixStability,
             StatusItem::Cache,
             StatusItem::ContextPercent,
             StatusItem::GitBranch,
@@ -818,6 +872,18 @@ pub struct SubagentsConfig {
     pub max_concurrent: Option<usize>,
 }
 
+/// `[auto]` table — knobs for the `--model auto` / `/model auto` router.
+///
+/// `cost_saving` (#1207): when `true`, the auto-mode router prefers
+/// `deepseek-v4-flash` for ambiguous requests, only escalating to
+/// `deepseek-v4-pro` when the task clearly benefits from deeper reasoning.
+/// Default is `false` (balanced — match the existing routing voice).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct AutoConfig {
+    #[serde(default)]
+    pub cost_saving: Option<bool>,
+}
+
 /// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
@@ -899,9 +965,9 @@ pub struct Config {
     #[serde(default)]
     pub snapshots: Option<SnapshotsConfig>,
 
-    /// Web search provider configuration. When absent, defaults to DuckDuckGo
-    /// with Bing fallback. Set `provider` to `tavily` or `bocha` and provide
-    /// an `api_key` to use those services instead.
+    /// Web search provider configuration. When absent, defaults to Bing.
+    /// Set `provider` to `duckduckgo`, `tavily`, or `bocha` to use those
+    /// services instead; Tavily and Bocha also require an `api_key`.
     #[serde(default)]
     pub search: Option<SearchConfig>,
 
@@ -910,6 +976,11 @@ pub struct Config {
     /// `DEEPSEEK_MEMORY=on` is set.
     #[serde(default)]
     pub memory: Option<MemoryConfig>,
+
+    /// Tunables for `--model auto` (#1207). When absent, the auto router
+    /// keeps its existing balanced behaviour.
+    #[serde(default)]
+    pub auto: Option<AutoConfig>,
 
     /// Post-edit LSP diagnostics injection (#136). When absent, the engine
     /// applies the defaults documented in [`LspConfigToml`].
@@ -1156,6 +1227,18 @@ struct RequirementsFile {
 // === Config Loading ===
 
 impl Config {
+    /// Return `true` if the `[auto] cost_saving = true` opt-in is set
+    /// (#1207). When true, the auto-mode router biases toward
+    /// `deepseek-v4-flash` for ambiguous requests instead of escalating to
+    /// `deepseek-v4-pro`. Default: `false` (balanced behaviour).
+    #[must_use]
+    pub fn auto_cost_saving(&self) -> bool {
+        self.auto
+            .as_ref()
+            .and_then(|a| a.cost_saving)
+            .unwrap_or(false)
+    }
+
     /// Load configuration from disk and merge with environment overrides.
     ///
     /// # Examples
@@ -1540,6 +1623,10 @@ impl Config {
             && !value.trim().is_empty()
         {
             return Ok(value);
+        }
+
+        if base_url_uses_local_host(&self.deepseek_base_url()) {
+            return Ok(String::new());
         }
 
         match provider {
@@ -2562,6 +2649,29 @@ fn provider_preserves_custom_base_url_model(provider: ApiProvider, base_url: &st
     base_url_is_custom_for_provider(provider, base_url)
 }
 
+fn base_url_uses_local_host(base_url: &str) -> bool {
+    let Some(host) = base_url_host(base_url) else {
+        return false;
+    };
+    let host = host.trim_matches(['[', ']']).to_ascii_lowercase();
+    if matches!(host.as_str(), "localhost" | "0.0.0.0") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|addr| addr.is_loopback() || addr.is_unspecified())
+}
+
+fn base_url_host(base_url: &str) -> Option<&str> {
+    let without_scheme = base_url
+        .split_once("://")
+        .map_or(base_url, |(_, rest)| rest);
+    let authority = without_scheme.split('/').next()?.rsplit('@').next()?;
+    if let Some(rest) = authority.strip_prefix('[') {
+        return rest.split_once(']').map(|(host, _)| host);
+    }
+    authority.split(':').next().filter(|host| !host.is_empty())
+}
+
 fn model_for_provider(provider: ApiProvider, normalized: String) -> String {
     let lowered = normalized.to_ascii_lowercase();
     match (provider, lowered.as_str()) {
@@ -2692,6 +2802,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         snapshots: override_cfg.snapshots.or(base.snapshots),
         search: override_cfg.search.or(base.search),
         memory: override_cfg.memory.or(base.memory),
+        auto: override_cfg.auto.or(base.auto),
         lsp: override_cfg.lsp.or(base.lsp),
         context: ContextConfig {
             enabled: override_cfg.context.enabled.or(base.context.enabled),
@@ -3208,6 +3319,10 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         return true;
     }
 
+    if provider == config.api_provider() && base_url_uses_local_host(&config.deepseek_base_url()) {
+        return true;
+    }
+
     if config
         .provider_config_for(provider)
         .and_then(|entry| entry.api_key.as_ref())
@@ -3411,6 +3526,27 @@ mod tests {
         assert_eq!(runtime.proxy, ["github.com", ".githubusercontent.com"]);
         assert!(runtime.trusts_proxy_fakeip_host("github.com"));
         assert!(runtime.trusts_proxy_fakeip_host("raw.githubusercontent.com"));
+    }
+
+    #[test]
+    fn search_provider_defaults_to_bing() {
+        assert_eq!(SearchProvider::default(), SearchProvider::Bing);
+    }
+
+    #[test]
+    fn explicit_duckduckgo_search_provider_is_preserved() {
+        let config: Config = toml::from_str(
+            r#"
+            [search]
+            provider = "duckduckgo"
+            "#,
+        )
+        .expect("search config");
+
+        assert_eq!(
+            config.search.and_then(|search| search.provider),
+            Some(SearchProvider::DuckDuckGo)
+        );
     }
 
     struct EnvGuard {
@@ -4421,6 +4557,41 @@ api_key = "old-openrouter-key"
     }
 
     #[test]
+    fn normalize_model_name_for_provider_canonicalizes_deepseek_api_variants() {
+        assert_eq!(
+            normalize_model_name_for_provider(ApiProvider::Deepseek, "deepseek-ai/DeepSeek-V4-Pro")
+                .as_deref(),
+            Some("deepseek-v4-pro")
+        );
+        assert_eq!(
+            normalize_model_name_for_provider(ApiProvider::Deepseek, "deepseek/deepseek-v4-flash")
+                .as_deref(),
+            Some("deepseek-v4-flash")
+        );
+    }
+
+    #[test]
+    fn normalize_model_name_for_provider_keeps_provider_specific_ids() {
+        assert_eq!(
+            normalize_model_name_for_provider(ApiProvider::NvidiaNim, "deepseek-v4-pro").as_deref(),
+            Some(DEFAULT_NVIDIA_NIM_MODEL)
+        );
+        assert_eq!(
+            normalize_model_name_for_provider(ApiProvider::Openrouter, "deepseek-v4-flash")
+                .as_deref(),
+            Some(DEFAULT_OPENROUTER_FLASH_MODEL)
+        );
+    }
+
+    #[test]
+    fn model_completion_names_for_deepseek_api_are_deduplicated_bare_ids() {
+        assert_eq!(
+            model_completion_names_for_provider(ApiProvider::Deepseek),
+            vec!["deepseek-v4-pro", "deepseek-v4-flash"]
+        );
+    }
+
+    #[test]
     fn normalize_model_name_rejects_invalid_or_non_deepseek_ids() {
         assert!(normalize_model_name("gpt-4o").is_none());
         assert!(normalize_model_name("deepseek v4").is_none());
@@ -4540,6 +4711,20 @@ api_key = "old-openrouter-key"
 
         assert_eq!(config.api_provider(), ApiProvider::Deepseek);
         assert_eq!(config.deepseek_base_url(), "https://api.deepseek.com");
+    }
+
+    #[test]
+    fn loopback_deepseek_base_url_runs_without_api_key() -> Result<()> {
+        let _lock = lock_test_env();
+        let config = Config {
+            base_url: Some("http://127.0.0.1:8000/v1".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(config.api_provider(), ApiProvider::Deepseek);
+        assert!(has_api_key(&config));
+        assert_eq!(config.deepseek_api_key()?, "");
+        Ok(())
     }
 
     #[test]
