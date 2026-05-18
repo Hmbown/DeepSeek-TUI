@@ -928,8 +928,14 @@ impl ShellManager {
         // Disable raw mode before spawning so the child process gets a clean
         // terminal. Re-enable on drop regardless of success/failure/timeout.
         let _ = crossterm::terminal::disable_raw_mode();
+        crate::shell_dispatcher::log_raw_mode("disabled (interactive)");
         struct RawModeGuard;
-        impl Drop for RawModeGuard { fn drop(&mut self) { let _ = crossterm::terminal::enable_raw_mode(); } }
+        impl Drop for RawModeGuard {
+            fn drop(&mut self) {
+                crate::shell_dispatcher::log_raw_mode("enabled (interactive)");
+                let _ = crossterm::terminal::enable_raw_mode();
+            }
+        }
         let _guard = RawModeGuard;
 
         child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));

@@ -136,7 +136,7 @@ pub(crate) fn log_exec(kind: &ShellKind, command: &str) {
     log_dispatcher!("exec via {:?}: {}", kind, command);
 }
 
-fn log_raw_mode(phase: &str) {
+pub(crate) fn log_raw_mode(phase: &str) {
     log_dispatcher!("raw_mode: {}", phase);
 }
 
