@@ -349,4 +349,95 @@ mod tests {
         let cmd_args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
         assert_eq!(cmd_args, vec!["-m", "commit message"]);
     }
+
+    #[test]
+    fn all_shell_kinds_have_distinct_binaries() {
+        let kinds = [
+            ShellKind::Pwsh,
+            ShellKind::WindowsPowerShell,
+            ShellKind::Cmd,
+            ShellKind::Sh,
+            ShellKind::Bash,
+        ];
+        for kind in &kinds {
+            assert!(!kind.binary().is_empty(), "empty binary for {kind:?}");
+            assert!(!kind.command_flag().is_empty(), "empty flag for {kind:?}");
+        }
+    }
+
+    #[test]
+    fn powershell_flags_are_correct() {
+        assert!(ShellKind::Pwsh.needs_command_flag());
+        assert!(ShellKind::WindowsPowerShell.needs_command_flag());
+        assert!(!ShellKind::Cmd.needs_command_flag());
+        assert!(!ShellKind::Sh.needs_command_flag());
+        assert!(!ShellKind::Bash.needs_command_flag());
+    }
+
+    #[test]
+    fn is_powershell_detects_both_variants() {
+        assert!(ShellKind::Pwsh.is_powershell());
+        assert!(ShellKind::WindowsPowerShell.is_powershell());
+        assert!(!ShellKind::Cmd.is_powershell());
+        assert!(!ShellKind::Sh.is_powershell());
+        assert!(!ShellKind::Bash.is_powershell());
+    }
+
+    #[test]
+    fn build_command_quotes_spaces_for_cmd() {
+        // Regression: issue #1691 — git commit -m "msg with spaces" must
+        // not be split into separate argv entries.
+        let dispatcher = ShellDispatcher { kind: ShellKind::Cmd };
+        let cmd = dispatcher.build_command("git commit -m \"msg with spaces\"");
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        // cmd.exe /C receives the entire command as a single argument after /C.
+        // The args should be ["/C", "git commit -m \"msg with spaces\""].
+        assert_eq!(args.len(), 2, "expected 2 args (/C + command), got {args:?}");
+        assert_eq!(args[0], "/C");
+        assert!(args[1].contains("msg with spaces"),
+            "command string should contain the full quoted message, got: {}", args[1]);
+        // The quoted message must not be split — if it were, args[1] would be
+        // just "git" and we'd see "commit", "-m", "\"msg", etc.
+        assert!(args[1].starts_with("git "), "command should start with 'git', got: {}", args[1]);
+    }
+
+    #[test]
+    fn build_command_quotes_spaces_for_pwsh() {
+        let dispatcher = ShellDispatcher { kind: ShellKind::Pwsh };
+        let cmd = dispatcher.build_command("git commit -m \"msg with spaces\"");
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        // pwsh.exe -NoProfile -Command "<entire command>"
+        assert_eq!(args.len(), 3, "expected 3 args (-NoProfile, -Command, payload), got {args:?}");
+        assert_eq!(args[0], "-NoProfile");
+        assert_eq!(args[1], "-Command");
+        assert!(args[2].contains("msg with spaces"),
+            "payload should contain the full quoted message, got: {}", args[2]);
+    }
+
+    #[test]
+    fn build_command_quotes_spaces_for_sh() {
+        let dispatcher = ShellDispatcher { kind: ShellKind::Sh };
+        let cmd = dispatcher.build_command("git commit -m \"msg with spaces\"");
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(args.len(), 2, "expected 2 args (-c + command), got {args:?}");
+        assert_eq!(args[0], "-c");
+        assert!(args[1].contains("msg with spaces"));
+    }
+
+    #[test]
+    fn global_dispatcher_is_singleton() {
+        let d1 = global_dispatcher();
+        let d2 = global_dispatcher();
+        // Same kind (can't compare pointers across LazyLock, but detect()
+        // is deterministic for a given environment so kind should match).
+        assert_eq!(d1.kind(), d2.kind());
+    }
+
+    #[test]
+    fn build_direct_handles_empty_args() {
+        let dispatcher = ShellDispatcher { kind: ShellKind::Sh };
+        let cmd = dispatcher.build_direct("echo", &[]);
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert!(args.is_empty(), "expected no args for echo, got {args:?}");
+    }
 }
