@@ -102,7 +102,10 @@ pub fn init() -> Result<TuiLogGuard> {
         .with_context(|| format!("failed to create {}", log_dir.display()))?;
 
     let date = chrono::Local::now().format("%Y-%m-%d");
-    let log_path = log_dir.join(format!("tui-{date}.log"));
+    // Per-run suffix avoids multiple concurrent TUI instances writing to the
+    // same file. Process ID is unique enough per boot; timestamp would also
+    // work but adds more noise.
+    let log_path = log_dir.join(format!("tui-{date}-{}.log", std::process::id()));
 
     let file = OpenOptions::new()
         .create(true)
