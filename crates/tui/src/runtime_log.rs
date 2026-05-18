@@ -41,6 +41,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
@@ -100,6 +101,10 @@ pub fn init() -> Result<TuiLogGuard> {
     let log_dir = log_directory().context("could not resolve TUI log directory")?;
     fs::create_dir_all(&log_dir)
         .with_context(|| format!("failed to create {}", log_dir.display()))?;
+
+    // Prune logs older than retention (default 7 days, configurable via env).
+    let retention_days = retention_days_from_env();
+    prune_old_logs(&log_dir, Duration::from_secs(retention_days.saturating_mul(86_400)));
 
     let date = chrono::Local::now().format("%Y-%m-%d");
     let log_path = log_dir.join(format!("tui-{date}.log"));
@@ -164,6 +169,35 @@ fn log_directory() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".deepseek").join("logs"))
 }
 
+/// Retention period in days from `DEEPSEEK_LOG_RETENTION_DAYS`, default 7.
+fn retention_days_from_env() -> u64 {
+    std::env::var("DEEPSEEK_LOG_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(7)
+}
+
+/// Delete log files in `log_dir` whose modification time is older than
+/// `max_age`. Only files matching `tui-*.log` are considered.
+fn prune_old_logs(log_dir: &std::path::Path, max_age: Duration) {
+    let now = SystemTime::now();
+    let Ok(entries) = fs::read_dir(log_dir) else { return };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        if !name.starts_with("tui-") || !name.ends_with(".log") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        let Ok(modified) = meta.modified() else { continue };
+        let Ok(age) = now.duration_since(modified) else { continue };
+        if age > max_age {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
 #[cfg(unix)]
 fn redirect_stderr_to(file: &File) -> Result<libc::c_int> {
     use std::os::fd::AsRawFd;
@@ -217,5 +251,50 @@ mod tests {
                 None => std::env::remove_var("USERPROFILE"),
             }
         }
+    }
+
+    #[test]
+    fn prune_old_logs_deletes_old_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Create a fake log file.
+        let old = tmp.path().join("tui-2026-01-01.log");
+        fs::write(&old, b"old").unwrap();
+        // Prune with zero age — everything is older than 0s.
+        prune_old_logs(tmp.path(), Duration::ZERO);
+        assert!(!old.exists(), "old file should be deleted");
+    }
+
+    #[test]
+    fn prune_old_logs_keeps_recent_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let recent = tmp.path().join("tui-2026-05-19.log");
+        fs::write(&recent, b"recent").unwrap();
+        // Prune with huge age — nothing is older than 1000 days.
+        prune_old_logs(tmp.path(), Duration::from_secs(1000 * 86_400));
+        assert!(recent.exists(), "recent file should be kept");
+    }
+
+    #[test]
+    fn prune_old_logs_ignores_non_log_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let other = tmp.path().join("other.txt");
+        fs::write(&other, b"other").unwrap();
+        // Prune with zero age — non-log files should survive.
+        prune_old_logs(tmp.path(), Duration::ZERO);
+        assert!(other.exists(), "non-log file should be kept");
+    }
+
+    #[test]
+    fn retention_days_defaults_to_seven() {
+        assert_eq!(retention_days_from_env(), 7);
+    }
+
+    #[test]
+    fn prune_old_logs_tolerates_missing_directory() {
+        // Should not panic.
+        prune_old_logs(
+            std::path::Path::new("/nonexistent/path/for/testing"),
+            Duration::ZERO,
+        );
     }
 }
