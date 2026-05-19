@@ -375,7 +375,7 @@ mod tests {
                     }]
                 );
             }
-            other => panic!("expected approval with proposed amendment, got {other:?}"),
+            other => unreachable!("expected approval with proposed amendment, got {other:?}"),
         }
     }
 
@@ -395,7 +395,7 @@ mod tests {
                 proposed_execpolicy_amendment,
                 ..
             } => assert_eq!(proposed_execpolicy_amendment, None),
-            other => panic!("expected approval without amendment, got {other:?}"),
+            other => unreachable!("expected approval without amendment, got {other:?}"),
         }
     }
 

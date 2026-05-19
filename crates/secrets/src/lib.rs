@@ -581,9 +581,9 @@ mod tests {
             "ATLASCLOUD_API_KEY",
             SECRET_BACKEND_ENV,
         ] {
-            // Safety: tests serialise on env_lock(); the broader
-            // workspace has the same pattern in `crates/config`.
-            unsafe { std::env::remove_var(var) };
+            // Tests serialise on env_lock(); the broader workspace has the same
+            // pattern in `crates/config`.
+            std::env::remove_var(var);
         }
     }
 
@@ -630,14 +630,15 @@ mod tests {
     fn auto_detect_honors_explicit_file_backend() {
         let _lock = env_lock();
         clear_known_envs();
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::set_var(SECRET_BACKEND_ENV, "local") };
+        // Tests serialise on env_lock(); the broader workspace has the same
+        // pattern in `crates/config`.
+        std::env::set_var(SECRET_BACKEND_ENV, "local");
 
         let secrets = Secrets::auto_detect();
 
         assert_eq!(secrets.backend_name(), "file-based (~/.deepseek/secrets/)");
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::remove_var(SECRET_BACKEND_ENV) };
+        // Tests serialise on env_lock().
+        std::env::remove_var(SECRET_BACKEND_ENV);
     }
 
     #[test]
@@ -661,8 +662,8 @@ mod tests {
     fn resolve_prefers_keyring_over_env() {
         let _lock = env_lock();
         clear_known_envs();
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-key") };
+        // Tests serialise on env_lock().
+        std::env::set_var("DEEPSEEK_API_KEY", "env-key");
 
         let store = Arc::new(InMemoryKeyringStore::new());
         store.set("deepseek", "ring-key").unwrap();
@@ -673,16 +674,16 @@ mod tests {
             secrets.resolve_with_source("deepseek"),
             Some(("ring-key".to_string(), SecretSource::Keyring))
         );
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+        // Tests serialise on env_lock().
+        std::env::remove_var("DEEPSEEK_API_KEY");
     }
 
     #[test]
     fn resolve_falls_back_to_env_when_keyring_empty() {
         let _lock = env_lock();
         clear_known_envs();
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-fallback") };
+        // Tests serialise on env_lock().
+        std::env::set_var("DEEPSEEK_API_KEY", "env-fallback");
 
         let secrets = Secrets::new(Arc::new(InMemoryKeyringStore::new()));
         assert_eq!(secrets.resolve("deepseek").as_deref(), Some("env-fallback"));
@@ -690,8 +691,8 @@ mod tests {
             secrets.resolve_with_source("deepseek"),
             Some(("env-fallback".to_string(), SecretSource::Env))
         );
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+        // Tests serialise on env_lock().
+        std::env::remove_var("DEEPSEEK_API_KEY");
     }
 
     #[test]
@@ -706,35 +707,35 @@ mod tests {
     fn resolve_treats_blank_keyring_value_as_unset() {
         let _lock = env_lock();
         clear_known_envs();
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-real") };
+        // Tests serialise on env_lock().
+        std::env::set_var("DEEPSEEK_API_KEY", "env-real");
 
         let store = Arc::new(InMemoryKeyringStore::new());
         store.set("deepseek", "   ").unwrap();
         let secrets = Secrets::new(store);
         assert_eq!(secrets.resolve("deepseek").as_deref(), Some("env-real"));
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+        // Tests serialise on env_lock().
+        std::env::remove_var("DEEPSEEK_API_KEY");
     }
 
     #[test]
     fn nvidia_env_aliases_resolve() {
         let _lock = env_lock();
         clear_known_envs();
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::set_var("NVIDIA_NIM_API_KEY", "nim-key") };
+        // Tests serialise on env_lock().
+        std::env::set_var("NVIDIA_NIM_API_KEY", "nim-key");
         let secrets = Secrets::new(Arc::new(InMemoryKeyringStore::new()));
         assert_eq!(secrets.resolve("nvidia-nim").as_deref(), Some("nim-key"));
         assert_eq!(secrets.resolve("nvidia").as_deref(), Some("nim-key"));
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::remove_var("NVIDIA_NIM_API_KEY") };
+        // Tests serialise on env_lock().
+        std::env::remove_var("NVIDIA_NIM_API_KEY");
     }
 
     #[test]
     fn atlascloud_env_aliases_resolve() {
         let _guard = env_lock();
         clear_known_envs();
-        unsafe { std::env::set_var("ATLASCLOUD_API_KEY", "atlas-key") };
+        std::env::set_var("ATLASCLOUD_API_KEY", "atlas-key");
 
         assert_eq!(env_for("atlascloud").as_deref(), Some("atlas-key"));
         assert_eq!(env_for("atlas").as_deref(), Some("atlas-key"));
@@ -747,52 +748,52 @@ mod tests {
     fn fireworks_env_aliases_resolve() {
         let _lock = env_lock();
         clear_known_envs();
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::set_var("FIREWORKS_API_KEY", "fw-key") };
+        // Tests serialise on env_lock().
+        std::env::set_var("FIREWORKS_API_KEY", "fw-key");
 
         assert_eq!(env_for("fireworks").as_deref(), Some("fw-key"));
         assert_eq!(env_for("fireworks-ai").as_deref(), Some("fw-key"));
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::remove_var("FIREWORKS_API_KEY") };
+        // Tests serialise on env_lock().
+        std::env::remove_var("FIREWORKS_API_KEY");
     }
 
     #[test]
     fn sglang_env_aliases_resolve() {
         let _lock = env_lock();
         clear_known_envs();
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::set_var("SGLANG_API_KEY", "sglang-key") };
+        // Tests serialise on env_lock().
+        std::env::set_var("SGLANG_API_KEY", "sglang-key");
 
         assert_eq!(env_for("sglang").as_deref(), Some("sglang-key"));
         assert_eq!(env_for("sg-lang").as_deref(), Some("sglang-key"));
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::remove_var("SGLANG_API_KEY") };
+        // Tests serialise on env_lock().
+        std::env::remove_var("SGLANG_API_KEY");
     }
 
     #[test]
     fn vllm_env_aliases_resolve() {
         let _lock = env_lock();
         clear_known_envs();
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::set_var("VLLM_API_KEY", "vllm-key") };
+        // Tests serialise on env_lock().
+        std::env::set_var("VLLM_API_KEY", "vllm-key");
 
         assert_eq!(env_for("vllm").as_deref(), Some("vllm-key"));
         assert_eq!(env_for("v-llm").as_deref(), Some("vllm-key"));
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::remove_var("VLLM_API_KEY") };
+        // Tests serialise on env_lock().
+        std::env::remove_var("VLLM_API_KEY");
     }
 
     #[test]
     fn ollama_env_aliases_resolve() {
         let _lock = env_lock();
         clear_known_envs();
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::set_var("OLLAMA_API_KEY", "ollama-key") };
+        // Tests serialise on env_lock().
+        std::env::set_var("OLLAMA_API_KEY", "ollama-key");
 
         assert_eq!(env_for("ollama").as_deref(), Some("ollama-key"));
         assert_eq!(env_for("ollama-local").as_deref(), Some("ollama-key"));
-        // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::remove_var("OLLAMA_API_KEY") };
+        // Tests serialise on env_lock().
+        std::env::remove_var("OLLAMA_API_KEY");
     }
 
     #[cfg(unix)]
