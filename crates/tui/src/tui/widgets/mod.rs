@@ -19,8 +19,6 @@ pub use footer::{
 };
 pub use header::{HeaderData, HeaderWidget, header_status_indicator_frame};
 pub use renderable::Renderable;
-pub use crate::tui::history::HistoryCell;
-
 use std::time::Duration;
 
 use crate::localization::Locale;
@@ -83,7 +81,7 @@ struct TranscriptScrollbar {
 }
 
 impl ChatWidget {
-    pub fn new(app: &mut App, area: Rect) -> Self {
+    pub fn new(app: &mut App, area: Rect, region: ChatRegion) -> Self {
         let content_area = area;
         let background = app.ui_theme.surface_bg;
         let scroll_track = app.ui_theme.border;
@@ -111,6 +109,7 @@ impl ChatWidget {
                 scroll_thumb,
                 jump_border,
                 jump_arrow,
+                region,
             };
         }
 
@@ -324,6 +323,7 @@ impl ChatWidget {
             scroll_thumb,
             jump_border,
             jump_arrow,
+            region,
         }
     }
 }
