@@ -409,16 +409,17 @@ fn load_project_context_with_parents_and_home(
         let mut current = workspace.parent();
 
         while let Some(parent) = current {
-            if let Some(home) = home_boundary.as_ref()
-                && fs::canonicalize(parent).ok().as_ref() == Some(home)
-            {
-                break;
-            }
+            let reached_home_boundary = home_boundary
+                .as_ref()
+                .is_some_and(|home| fs::canonicalize(parent).ok().as_ref() == Some(home));
             let parent_ctx = load_project_context(parent);
             ctx.warnings.extend(parent_ctx.warnings.iter().cloned());
             if parent_ctx.has_instructions() {
                 ctx.instructions = parent_ctx.instructions;
                 ctx.source_path = parent_ctx.source_path;
+                break;
+            }
+            if reached_home_boundary {
                 break;
             }
 
@@ -875,6 +876,48 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .contains("Organization instructions")
+        );
+    }
+
+    #[test]
+    fn test_load_with_parents_includes_home_level_agents() {
+        let home = tempdir().expect("home tempdir");
+        fs::write(home.path().join("AGENTS.md"), "Home instructions").expect("write home agents");
+
+        let workspace = home.path().join("workspace").join("project");
+        fs::create_dir_all(&workspace).expect("mkdir workspace");
+
+        let ctx = load_project_context_with_parents_and_home(&workspace, Some(home.path()));
+
+        assert!(ctx.has_instructions());
+        assert!(
+            ctx.instructions
+                .as_ref()
+                .unwrap()
+                .contains("Home instructions")
+        );
+        assert_eq!(ctx.source_path, Some(home.path().join("AGENTS.md")));
+    }
+
+    #[test]
+    fn test_load_with_parents_does_not_search_above_home_boundary() {
+        let tmp = tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        fs::create_dir(&home).expect("mkdir home");
+        fs::write(tmp.path().join("AGENTS.md"), "Above home instructions")
+            .expect("write above-home agents");
+
+        let workspace = home.join("workspace");
+        fs::create_dir(&workspace).expect("mkdir workspace");
+
+        let ctx = load_project_context_with_parents_and_home(&workspace, Some(&home));
+
+        assert!(
+            !ctx.instructions
+                .as_ref()
+                .unwrap()
+                .contains("Above home instructions"),
+            "parent search should stop after checking the home directory"
         );
     }
 
