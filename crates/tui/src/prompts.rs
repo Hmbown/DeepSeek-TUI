@@ -17,6 +17,11 @@ use std::path::{Path, PathBuf};
 pub struct PromptSessionContext<'a> {
     pub user_memory_block: Option<&'a str>,
     pub goal_objective: Option<&'a str>,
+    /// When `true` AND `goal_objective` is set, append the auto-
+    /// continue sentinel contract to the session goal block so the
+    /// model knows it'll be called turn-over-turn and how to declare
+    /// completion. Defaults to `false` — passive goal display only.
+    pub goal_auto_continue: bool,
     pub project_context_pack_enabled: bool,
     /// Resolved BCP-47 locale tag for the `## Environment` block in
     /// the system prompt (e.g. `"en"`, `"zh-Hans"`, `"ja"`). The
@@ -549,6 +554,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
             project_context_pack_enabled: true,
             locale_tag: "en",
             translation_enabled: false,
+            goal_auto_continue: false,
         },
     )
 }
@@ -712,6 +718,13 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
     // 6c. Current session goal. Also volatile: users set / change goals
     // during a session via `/goal`. Placed below the boundary for the
     // same reason as memory.
+    //
+    // When `goal_auto_continue` is on (#891), append the sentinel
+    // contract so the model knows it'll be re-invoked turn-over-turn
+    // and how to declare completion. The contract text is verbatim
+    // per work-order §二 to keep the prefix cache stable across
+    // turns (any wording drift here invalidates the post-`<session_goal>`
+    // tail).
     if let Some(goal_objective) = session_context.goal_objective
         && !goal_objective.trim().is_empty()
     {
@@ -719,6 +732,16 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
             "{full_prompt}\n\n## Current Session Goal\n\n<session_goal>\n{}\n</session_goal>",
             goal_objective.trim()
         );
+        if session_context.goal_auto_continue {
+            full_prompt = format!(
+                "{full_prompt}\n\n\
+                 Stay focused on this goal. After each turn, you will receive an \
+                 automatic continuation. When the goal is achieved, emit the literal \
+                 token `GOAL_ACHIEVED` on its own line. Do not emit it prematurely — \
+                 only when all acceptance criteria are demonstrably met (tests green, \
+                 files exist, behavior verified)."
+            );
+        }
     }
 
     // 7. Previous-session relay (file-backed, rewritten by `/compact`).
@@ -881,6 +904,7 @@ mod tests {
                 project_context_pack_enabled: false,
                 locale_tag: "zh-Hans",
                 translation_enabled: false,
+                goal_auto_continue: false,
             },
             ApprovalMode::Suggest,
         ) {
@@ -950,6 +974,7 @@ mod tests {
                 project_context_pack_enabled: false,
                 locale_tag: "zh-Hans",
                 translation_enabled: false,
+                goal_auto_continue: false,
             },
             ApprovalMode::Suggest,
         ) {
@@ -994,6 +1019,7 @@ mod tests {
                 project_context_pack_enabled: false,
                 locale_tag: "en",
                 translation_enabled: false,
+                goal_auto_continue: false,
             },
             ApprovalMode::Suggest,
         ) {
@@ -1083,6 +1109,7 @@ mod tests {
                 project_context_pack_enabled: true,
                 locale_tag: "ja",
                 translation_enabled: false,
+                goal_auto_continue: false,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -1118,6 +1145,7 @@ mod tests {
                 project_context_pack_enabled: false,
                 locale_tag: "en",
                 translation_enabled: false,
+                goal_auto_continue: false,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -1145,6 +1173,7 @@ mod tests {
                 project_context_pack_enabled: false,
                 locale_tag: "en",
                 translation_enabled: false,
+                goal_auto_continue: false,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -1174,6 +1203,7 @@ mod tests {
                 project_context_pack_enabled: false,
                 locale_tag: "en",
                 translation_enabled: false,
+                goal_auto_continue: false,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -1201,6 +1231,7 @@ mod tests {
                 project_context_pack_enabled: true,
                 locale_tag: "en",
                 translation_enabled: false,
+                goal_auto_continue: false,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -1395,6 +1426,7 @@ mod tests {
                 project_context_pack_enabled: true,
                 locale_tag: "en",
                 translation_enabled: false,
+                goal_auto_continue: false,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -1428,6 +1460,7 @@ mod tests {
                 project_context_pack_enabled: true,
                 locale_tag: "en",
                 translation_enabled: false,
+                goal_auto_continue: false,
             },
         ) {
             SystemPrompt::Text(text) => text,

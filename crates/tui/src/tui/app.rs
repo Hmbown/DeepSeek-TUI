@@ -702,12 +702,51 @@ impl Default for ViewportState {
     }
 }
 
-/// Goal mode state (#397).
+/// Goal mode state (#397, extended for #891 auto-continue).
+///
+/// The first three fields are the original "passive bookkeeping"
+/// (objective + budget + elapsed timer). Everything below is the
+/// auto-continue machinery added for #891: when `auto_continue_enabled`
+/// is true, the `TurnComplete` handler in `ui.rs` consults
+/// [`crate::commands::goal::decide_continuation`] and either queues a
+/// continuation user-message or stops the chain with one of the four
+/// safety-net reasons.
 #[derive(Debug, Clone, Default)]
 pub struct GoalState {
     pub goal_objective: Option<String>,
     pub goal_token_budget: Option<u32>,
     pub goal_started_at: Option<Instant>,
+    /// Wall-clock start time, kept in parallel with the monotonic
+    /// `goal_started_at` solely for persistence (Instant can't
+    /// serialize across process boundaries).
+    pub goal_started_at_utc: Option<chrono::DateTime<chrono::Utc>>,
+    /// When `true`, every `TurnComplete` event runs the goal
+    /// continuation decision. Defaults to true on `/goal <text>`;
+    /// flipped off by `/goal stop`, by any safety net, or by the
+    /// model emitting `GOAL_ACHIEVED`.
+    pub auto_continue_enabled: bool,
+    /// Number of continuation turns the model has been pushed
+    /// through for the current objective. Resets when the
+    /// objective is cleared.
+    pub iterations: u32,
+    /// Snapshot of pending-todo count at the end of the previous
+    /// turn — used by the `Stuck` safety net.
+    pub last_pending_count: Option<usize>,
+    /// Snapshot of `session.total_conversation_tokens` at the end of
+    /// the last turn that made *progress* (pending-count changed,
+    /// or token usage jumped). Used by the `Stuck` double-condition
+    /// check (see [`crate::commands::goal::decide_continuation`]).
+    pub last_progress_total_tokens: u32,
+    /// Consecutive turns where neither pending count nor token
+    /// usage moved enough to count as progress.
+    pub consecutive_no_progress_turns: u32,
+    /// Consecutive turns where the model spoke without calling
+    /// any tool — used by the `Idle` safety net.
+    pub consecutive_no_tool_turns: u32,
+    /// Session id captured the moment the goal was set, mirrored
+    /// to the persisted file so a different session resuming on
+    /// the same machine can detect cross-session contamination.
+    pub session_id_for_persist: Option<String>,
 }
 
 /// Session cost and token telemetry state.
@@ -934,6 +973,15 @@ pub struct App {
     pub backtrack: crate::tui::backtrack::BacktrackState,
     /// Current session ID for auto-save updates
     pub current_session_id: Option<String>,
+    /// Config-derived default for the `/goal` auto-continue toggle
+    /// (#891). `true` means setting `/goal <text>` immediately starts
+    /// auto-continuation; users who prefer the old passive bookkeeping
+    /// flip `[goal] auto_continue_default = false` in config.toml.
+    pub goal_auto_continue_default: bool,
+    /// Hard ceiling on auto-continue iterations per goal — the
+    /// `MaxIterations` safety net. Overridable via
+    /// `[goal] max_iterations` in config.toml.
+    pub goal_max_iterations: u32,
     /// Metadata-only registry of large tool outputs produced in this session.
     pub session_artifacts: Vec<ArtifactRecord>,
     /// Trust mode - allow access outside workspace
@@ -1241,6 +1289,81 @@ fn default_composer_arrows_scroll_for_platform(use_mouse_capture: bool, is_windo
     is_windows || !use_mouse_capture
 }
 
+// === goal auto-continue support helpers (#891) ===
+
+/// Concatenate every text block of the most recent `assistant`
+/// message into a single string. Used by the goal sentinel matcher
+/// and other "what did the model just say?" callers. Returns
+/// `String::new()` when there is no assistant message yet.
+fn extract_last_assistant_text(api_messages: &[Message]) -> String {
+    let Some(msg) = api_messages.iter().rev().find(|m| m.role == "assistant") else {
+        return String::new();
+    };
+    let mut buf = String::new();
+    for block in &msg.content {
+        if let crate::models::ContentBlock::Text { text, .. } = block {
+            if !buf.is_empty() {
+                buf.push('\n');
+            }
+            buf.push_str(text);
+        }
+    }
+    buf
+}
+
+/// `true` when the most recent `assistant` message contains at least
+/// one `tool_use` content block — i.e. the model actually called a
+/// tool this turn rather than just talking.
+fn last_assistant_made_tool_call(api_messages: &[Message]) -> bool {
+    api_messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant")
+        .map(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, crate::models::ContentBlock::ToolUse { .. }))
+        })
+        .unwrap_or(false)
+}
+
+/// Count todo items that are not yet `Completed`. Used by the
+/// `Stuck` safety net. Returns `0` if the lock can't be taken — we
+/// deliberately fail open here: a transient lock contention should
+/// not cause spurious "stuck" stops.
+fn pending_todo_count(todos: &crate::tools::todo::SharedTodoList) -> usize {
+    todos
+        .try_lock()
+        .map(|list| {
+            list.snapshot()
+                .items
+                .iter()
+                .filter(|i| !matches!(i.status, crate::tools::todo::TodoStatus::Completed))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Persist the App's current `goal` state to disk. Wraps the
+/// builder dance so the trigger method stays readable.
+fn persist_active_goal(app: &App) {
+    if app.goal.goal_objective.is_none() {
+        return;
+    }
+    let envelope = crate::goal_state::GoalFile {
+        schema_version: 1,
+        current: Some(crate::goal_state::PersistedGoal {
+            objective: app.goal.goal_objective.clone().unwrap_or_default(),
+            token_budget: app.goal.goal_token_budget,
+            auto_continue_enabled: app.goal.auto_continue_enabled,
+            started_at: app.goal.goal_started_at_utc,
+            iterations: app.goal.iterations,
+            session_id: app.goal.session_id_for_persist.clone(),
+        }),
+    };
+    crate::goal_state::save_goal(&envelope);
+}
+
 impl App {
     /// Cap on the session turn-cache history. Holds enough turns to debug a long
     /// session without being so large the on-screen `/cache` table wraps.
@@ -1270,6 +1393,49 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     pub fn new(options: TuiOptions, config: &Config) -> Self {
+        let mut app = Self::new_inner(options, config);
+        app.restore_persisted_goal();
+        app
+    }
+
+    /// Re-hydrate `self.goal` from `~/.deepseek/goals.v1.json` if a
+    /// previous session left a goal active (#891 lifecycle step 6).
+    /// One-way restore: never writes back. Failure to read is silent
+    /// (the file may simply not exist on first launch).
+    fn restore_persisted_goal(&mut self) {
+        let envelope = crate::goal_state::load_goal();
+        let Some(persisted) = envelope.current else {
+            return;
+        };
+        // Derive a monotonic Instant that, when displayed via
+        // `humanize_duration(t.elapsed())`, shows the wall-clock
+        // elapsed since the goal was originally set. If the wall
+        // clock went backwards we fall back to "now" — the elapsed
+        // display drifts to zero rather than reporting a negative.
+        let elapsed_dur = persisted
+            .started_at
+            .and_then(|started| {
+                chrono::Utc::now()
+                    .signed_duration_since(started)
+                    .to_std()
+                    .ok()
+            })
+            .unwrap_or(Duration::ZERO);
+        let started_instant = Instant::now().checked_sub(elapsed_dur);
+
+        self.goal.goal_objective = Some(persisted.objective);
+        self.goal.goal_token_budget = persisted.token_budget;
+        self.goal.goal_started_at = started_instant.or_else(|| Some(Instant::now()));
+        self.goal.goal_started_at_utc = persisted.started_at;
+        self.goal.auto_continue_enabled = persisted.auto_continue_enabled;
+        self.goal.iterations = persisted.iterations;
+        self.goal.session_id_for_persist = persisted.session_id;
+        // Streak counters are intentionally NOT persisted — a fresh
+        // session starts fresh and earns its own "stuck" / "idle"
+        // judgement based on this session's behaviour.
+    }
+
+    fn new_inner(options: TuiOptions, config: &Config) -> Self {
         let TuiOptions {
             model,
             workspace,
@@ -1552,6 +1718,16 @@ impl App {
             view_stack: ViewStack::new(),
             backtrack: crate::tui::backtrack::BacktrackState::new(),
             current_session_id: None,
+            goal_auto_continue_default: config
+                .goal
+                .as_ref()
+                .and_then(|g| g.auto_continue_default)
+                .unwrap_or(true),
+            goal_max_iterations: config
+                .goal
+                .as_ref()
+                .and_then(|g| g.max_iterations)
+                .unwrap_or(crate::commands::goal::DEFAULT_MAX_ITERATIONS),
             session_artifacts: Vec::new(),
             trust_mode: initial_mode == AppMode::Yolo,
             translation_enabled: false,
@@ -3805,6 +3981,114 @@ impl App {
 
     pub fn queued_message_count(&self) -> usize {
         self.queued_messages.len()
+    }
+
+    /// Goal auto-continue post-turn hook (#891).
+    ///
+    /// Called by the `EngineEvent::TurnComplete` handler in `ui.rs`
+    /// immediately after the turn's bookkeeping settles. Reads the
+    /// just-finished turn's state (last assistant text, tool-call
+    /// presence, pending-todo count, token usage), updates the
+    /// goal streak counters, then asks
+    /// [`crate::commands::goal::decide_continuation`] what to do.
+    ///
+    /// One of three outcomes:
+    /// - `Inactive` — no active goal / auto-continue off: noop.
+    /// - `Enqueue(body)` — push the synthetic continuation user
+    ///   message to `self.queued_messages`; the existing post-turn
+    ///   drain loop picks it up on the next iteration.
+    /// - `Stop(reason)` — flip `auto_continue_enabled` off, persist,
+    ///   and post a `⏹ [goal] stopped: <reason>` system cell so the
+    ///   user sees why the chain ended. If the reason is `Achieved`,
+    ///   also clear the objective entirely.
+    ///
+    /// Returns the decision so callers / tests can inspect it without
+    /// re-deriving the inputs.
+    pub fn maybe_trigger_goal_continuation(
+        &mut self,
+        turn_was_interrupted: bool,
+        turn_was_failed: bool,
+    ) -> crate::commands::goal::GoalDecision {
+        use crate::commands::goal::{
+            GoalDecision, GoalStopReason, decide_continuation, update_streaks,
+        };
+        // Nothing to do when no goal is set — short-circuit so we
+        // don't pay the locks / iteration overhead on every turn.
+        if self.goal.goal_objective.is_none() {
+            return GoalDecision::Inactive;
+        }
+
+        let last_assistant_text = extract_last_assistant_text(&self.api_messages);
+        let last_turn_had_tool_call = last_assistant_made_tool_call(&self.api_messages);
+        let pending_todo_count = pending_todo_count(&self.todos);
+        let total_tokens = self.session.total_conversation_tokens;
+
+        // Skip streak updates when the previous turn never really
+        // ran (interrupted by user, or transport-failed). A stalled
+        // API call shouldn't count as "model was idle" for the Idle
+        // safety net — the model was never given a chance to be idle.
+        if !turn_was_interrupted && !turn_was_failed {
+            update_streaks(
+                &mut self.goal,
+                pending_todo_count,
+                total_tokens,
+                last_turn_had_tool_call,
+            );
+        }
+
+        let inputs = crate::commands::goal::GoalDecisionInputs {
+            objective: self.goal.goal_objective.as_deref(),
+            auto_continue_enabled: self.goal.auto_continue_enabled,
+            last_assistant_text: &last_assistant_text,
+            total_conversation_tokens: total_tokens,
+            token_budget: self.goal.goal_token_budget,
+            iterations: self.goal.iterations,
+            max_iterations: self.goal_max_iterations,
+            consecutive_no_progress_turns: self.goal.consecutive_no_progress_turns,
+            consecutive_no_tool_turns: self.goal.consecutive_no_tool_turns,
+            turn_was_interrupted,
+            turn_was_failed,
+        };
+        let decision = decide_continuation(&inputs);
+        match &decision {
+            GoalDecision::Inactive => {}
+            GoalDecision::Enqueue(body) => {
+                self.goal.iterations = self.goal.iterations.saturating_add(1);
+                self.queue_message(QueuedMessage::new(body.clone(), None));
+                let cell = HistoryCell::System {
+                    content: format!(
+                        "[goal] continuation #{} queued ({} todo(s) pending)",
+                        self.goal.iterations, pending_todo_count
+                    ),
+                };
+                self.add_message(cell);
+                persist_active_goal(self);
+            }
+            GoalDecision::Stop(reason) => {
+                let cell = HistoryCell::System {
+                    content: format!("⏹ [goal] stopped: {}", reason.describe()),
+                };
+                self.add_message(cell);
+                self.goal.auto_continue_enabled = false;
+                if matches!(reason, GoalStopReason::Achieved) {
+                    // Goal achievement also clears the objective —
+                    // user can /goal <new text> to start the next.
+                    self.goal.goal_objective = None;
+                    self.goal.goal_token_budget = None;
+                    self.goal.goal_started_at = None;
+                    self.goal.goal_started_at_utc = None;
+                    self.goal.iterations = 0;
+                    self.goal.last_pending_count = None;
+                    self.goal.consecutive_no_progress_turns = 0;
+                    self.goal.consecutive_no_tool_turns = 0;
+                    self.goal.session_id_for_persist = None;
+                    crate::goal_state::clear_goal();
+                } else {
+                    persist_active_goal(self);
+                }
+            }
+        }
+        decision
     }
 
     /// Pop the most-recently queued message back into the composer for editing

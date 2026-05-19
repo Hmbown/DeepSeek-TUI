@@ -431,6 +431,13 @@ impl Engine {
                 prompts::PromptSessionContext {
                     user_memory_block: user_memory_block.as_deref(),
                     goal_objective: config.goal_objective.as_deref(),
+                    // Engine config does not yet carry the auto-continue
+                    // flag (#891 follow-up). The sentinel instructions are
+                    // injected via each continuation user-message instead;
+                    // wiring this through Op::SendMessage → engine config
+                    // is tracked as a follow-up so the cache-friendly
+                    // engine startup path doesn't churn on toggle.
+                    goal_auto_continue: false,
                     project_context_pack_enabled: config.project_context_pack_enabled,
                     locale_tag: &config.locale_tag,
                     translation_enabled: config.translation_enabled,
@@ -1789,6 +1796,10 @@ impl Engine {
             prompts::PromptSessionContext {
                 user_memory_block: user_memory_block.as_deref(),
                 goal_objective: self.config.goal_objective.as_deref(),
+                // See engine.rs's startup site for the carve-out note
+                // (#891 follow-up). Sentinel instructions land via the
+                // per-turn continuation message, not via system prompt.
+                goal_auto_continue: false,
                 project_context_pack_enabled: self.config.project_context_pack_enabled,
                 locale_tag: &self.config.locale_tag,
                 translation_enabled: self.config.translation_enabled,
