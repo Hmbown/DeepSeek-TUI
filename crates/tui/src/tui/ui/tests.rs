@@ -1367,6 +1367,27 @@ fn apply_loaded_session_resets_unpersisted_telemetry() {
     assert!(app.session.turn_cache_history.is_empty());
 }
 
+#[test]
+fn apply_loaded_session_restores_auto_model_mode() {
+    let mut app = create_test_app();
+    app.auto_model = false;
+    app.model = crate::config::DEFAULT_TEXT_MODEL.to_string();
+    let mut session = saved_session_with_messages(vec![text_message("assistant", "ready")]);
+    session.metadata.model = "auto".to_string();
+
+    let recovered = apply_loaded_session(&mut app, &Config::default(), &session);
+
+    assert!(!recovered);
+    assert_eq!(app.model, "auto");
+    assert!(app.auto_model);
+    assert_eq!(app.last_effective_model, None);
+    assert_eq!(app.reasoning_effort, crate::tui::app::ReasoningEffort::Auto);
+    assert_eq!(
+        app.effective_model_for_budget(),
+        crate::config::DEFAULT_TEXT_MODEL
+    );
+}
+
 #[tokio::test]
 async fn apply_loaded_session_resets_workspace_runtime_state() {
     let mut app = create_test_app();

@@ -3991,6 +3991,18 @@ impl App {
             compaction_threshold_for_model_and_effort(&model, self.reasoning_effort.api_value());
     }
 
+    pub fn restore_model_selection(&mut self, model: String) {
+        let auto_model = model.trim().eq_ignore_ascii_case("auto");
+        self.model = model;
+        self.auto_model = auto_model;
+        self.last_effective_model = None;
+        self.last_effective_reasoning_effort = None;
+        if auto_model {
+            self.reasoning_effort = ReasoningEffort::Auto;
+        }
+        self.update_model_compaction_budget();
+    }
+
     pub fn effective_model_for_budget(&self) -> &str {
         if self.auto_model {
             return self

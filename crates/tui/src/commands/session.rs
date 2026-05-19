@@ -94,8 +94,7 @@ pub fn load(app: &mut App, path: Option<&str>) -> CommandResult {
     app.extend_history(cells_to_add);
     app.mark_history_updated();
     app.viewport.transcript_selection.clear();
-    app.model.clone_from(&session.metadata.model);
-    app.update_model_compaction_budget();
+    app.restore_model_selection(session.metadata.model.clone());
     app.workspace.clone_from(&session.metadata.workspace);
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
@@ -446,6 +445,44 @@ mod tests {
         assert_eq!(app2.session.total_tokens, 500);
         assert!(app2.current_session_id.is_some());
         assert!(matches!(result.action, Some(AppAction::SyncSession { .. })));
+    }
+
+    #[test]
+    fn load_auto_model_session_restores_auto_mode() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut saved_app = create_test_app_with_tmpdir(&tmpdir);
+        saved_app.model = "auto".to_string();
+        saved_app.auto_model = true;
+        saved_app.reasoning_effort = crate::tui::app::ReasoningEffort::Auto;
+        saved_app.api_messages.push(crate::models::Message {
+            role: "user".to_string(),
+            content: vec![crate::models::ContentBlock::Text {
+                text: "Hello".to_string(),
+                cache_control: None,
+            }],
+        });
+        let save_path = tmpdir.path().join("auto_model.json");
+        save(&mut saved_app, Some(save_path.to_str().unwrap()));
+
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        app.auto_model = false;
+        app.model = crate::config::DEFAULT_TEXT_MODEL.to_string();
+
+        let result = load(&mut app, Some(save_path.to_str().unwrap()));
+
+        assert!(!result.is_error);
+        assert_eq!(app.model, "auto");
+        assert!(app.auto_model);
+        assert_eq!(app.last_effective_model, None);
+        assert_eq!(app.reasoning_effort, crate::tui::app::ReasoningEffort::Auto);
+        assert_eq!(
+            app.effective_model_for_budget(),
+            crate::config::DEFAULT_TEXT_MODEL
+        );
+        match result.action {
+            Some(AppAction::SyncSession { model, .. }) => assert_eq!(model, "auto"),
+            other => panic!("expected SyncSession action, got {other:?}"),
+        }
     }
 
     #[test]

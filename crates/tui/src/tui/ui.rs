@@ -6202,8 +6202,7 @@ fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSession) 
     app.sync_context_references_from_session(&session.context_references, &message_to_cell);
     app.mark_history_updated();
     app.viewport.transcript_selection.clear();
-    app.model.clone_from(&session.metadata.model);
-    app.update_model_compaction_budget();
+    app.restore_model_selection(session.metadata.model.clone());
     apply_workspace_runtime_state(app, config, session.metadata.workspace.clone());
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
