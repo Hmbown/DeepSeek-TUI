@@ -870,7 +870,8 @@ pub struct SubagentsConfig {
     /// setting. Clamped to [1, MAX_SUBAGENTS].
     #[serde(default)]
     pub max_concurrent: Option<usize>,
-    /// Per-step model API timeout for sub-agents, in seconds. Values above
+    /// Per-step model API timeout for sub-agents, in seconds. Lower values
+    /// are honored as configured; only values above
     /// MAX_SUBAGENT_API_TIMEOUT_SECS are clamped.
     #[serde(default)]
     pub api_timeout_secs: Option<u64>,
@@ -3835,7 +3836,7 @@ mod tests {
     }
 
     #[test]
-    fn subagent_api_timeout_only_clamps_to_maximum() {
+    fn subagent_api_timeout_honors_configured_values_and_clamps_only_maximum() {
         let low = Config {
             subagents: Some(SubagentsConfig {
                 api_timeout_secs: Some(0),
@@ -3843,6 +3844,8 @@ mod tests {
             }),
             ..Config::default()
         };
+        // Do not impose a floor: callers may intentionally configure an
+        // aggressive timeout for tests or fail-fast sessions.
         assert_eq!(low.subagent_api_timeout_secs(), 0);
 
         let configured = Config {

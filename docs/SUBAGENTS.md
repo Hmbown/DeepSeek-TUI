@@ -113,7 +113,7 @@ restart) also don't count against the cap.
 Each sub-agent model step keeps the legacy 120-second API timeout by
 default. Long-running assignments can raise this with
 `[subagents] api_timeout_secs = N` in `~/.deepseek/config.toml`. Values above
-1800 seconds are clamped.
+1800 seconds are clamped; lower values are honored as configured.
 
 ## Lifecycle
 

@@ -443,10 +443,10 @@ If you are upgrading from older releases:
   `[subagents] max_concurrent` value overrides top-level `max_subagents` and is
   also clamped to `1..=20`. `[subagents] api_timeout_secs` controls the
   per-step model API timeout for sub-agents; it defaults to `120` and values
-  above `1800` are clamped. `[subagents.models]` accepts lower-case role or
-  type keys such as `worker`, `explorer`, `general`, `explore`, `plan`, and
-  `review`. Values must normalize to a supported DeepSeek model id before an
-  agent is spawned.
+  above `1800` are clamped. Lower timeout values are honored as configured.
+  `[subagents.models]` accepts lower-case role or type keys such as `worker`,
+  `explorer`, `general`, `explore`, `plan`, and `review`. Values must normalize
+  to a supported DeepSeek model id before an agent is spawned.
 - `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is
   a directory containing `SKILL.md`). Workspace-local `.agents/skills` or
   `./skills` are preferred when present; the runtime also discovers global
