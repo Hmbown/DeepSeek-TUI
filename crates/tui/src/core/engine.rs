@@ -1155,7 +1155,12 @@ impl Engine {
             let post_seq = self.turn_counter;
             let post_cap = self.config.snapshots_max_workspace_bytes;
             crate::utils::spawn_blocking_supervised("post-turn-snapshot", move || {
-                post_turn_snapshot(&post_workspace, post_seq, post_cap, Some(&snapshot_prompt_post));
+                post_turn_snapshot(
+                    &post_workspace,
+                    post_seq,
+                    post_cap,
+                    Some(&snapshot_prompt_post),
+                );
             });
         }
     }

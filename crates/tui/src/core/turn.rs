@@ -165,8 +165,17 @@ fn format_snapshot_label(prefix: &str, turn_seq: u64, user_prompt: Option<&str>)
 ///
 /// Returns the snapshot SHA on success, `None` on any error. Errors are
 /// logged at WARN; the turn loop must not block on this.
-pub fn pre_turn_snapshot(workspace: &Path, turn_seq: u64, cap_bytes: u64, user_prompt: Option<&str>) -> Option<String> {
-    snapshot_with_label(workspace, &format_snapshot_label("pre-turn", turn_seq, user_prompt), cap_bytes)
+pub fn pre_turn_snapshot(
+    workspace: &Path,
+    turn_seq: u64,
+    cap_bytes: u64,
+    user_prompt: Option<&str>,
+) -> Option<String> {
+    snapshot_with_label(
+        workspace,
+        &format_snapshot_label("pre-turn", turn_seq, user_prompt),
+        cap_bytes,
+    )
 }
 
 /// Take a `tool:<call_id>` workspace snapshot, taken before executing a
@@ -183,8 +192,17 @@ pub fn pre_tool_snapshot(workspace: &Path, call_id: &str, cap_bytes: u64) -> Opt
 
 /// Take a `post-turn:<seq>` workspace snapshot. Same failure model as
 /// [`pre_turn_snapshot`].
-pub fn post_turn_snapshot(workspace: &Path, turn_seq: u64, cap_bytes: u64, user_prompt: Option<&str>) -> Option<String> {
-    snapshot_with_label(workspace, &format_snapshot_label("post-turn", turn_seq, user_prompt), cap_bytes)
+pub fn post_turn_snapshot(
+    workspace: &Path,
+    turn_seq: u64,
+    cap_bytes: u64,
+    user_prompt: Option<&str>,
+) -> Option<String> {
+    snapshot_with_label(
+        workspace,
+        &format_snapshot_label("post-turn", turn_seq, user_prompt),
+        cap_bytes,
+    )
 }
 
 fn snapshot_with_label(workspace: &Path, label: &str, cap_bytes: u64) -> Option<String> {
