@@ -1104,6 +1104,34 @@ fn subagent_runtime_default_max_depth_is_three() {
 }
 
 #[test]
+fn subagent_runtime_default_api_timeout_is_legacy_120s() {
+    assert_eq!(DEFAULT_SUBAGENT_API_TIMEOUT_SECS, 120);
+    assert_eq!(
+        SubAgentRuntime::new(
+            stub_client(),
+            "deepseek-v4-flash".to_string(),
+            ToolContext::new("."),
+            true,
+            None,
+            new_shared_subagent_manager(PathBuf::from("."), 5),
+        )
+        .api_timeout,
+        Duration::from_secs(120)
+    );
+}
+
+#[test]
+fn child_runtime_preserves_api_timeout() {
+    let parent = stub_runtime().with_api_timeout(Duration::from_secs(600));
+
+    let child = parent.child_runtime();
+    let background = parent.background_runtime();
+
+    assert_eq!(child.api_timeout, Duration::from_secs(600));
+    assert_eq!(background.api_timeout, Duration::from_secs(600));
+}
+
+#[test]
 fn would_exceed_depth_at_boundary() {
     // depth=2, max=3 → next spawn (depth 3) is allowed (allow-equal).
     // depth=3, max=3 → next spawn (depth 4) exceeds.
@@ -1398,6 +1426,7 @@ fn stub_runtime() -> SubAgentRuntime {
         manager: new_shared_subagent_manager(workspace, 5),
         spawn_depth: 0,
         max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
+        api_timeout: Duration::from_secs(DEFAULT_SUBAGENT_API_TIMEOUT_SECS),
         cancel_token: CancellationToken::new(),
         mailbox: None,
         parent_completion_tx: None,

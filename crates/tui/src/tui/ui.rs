@@ -693,6 +693,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         todos: app.todos.clone(),
         plan_state: app.plan_state.clone(),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
+        subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
         network_policy: config.network.clone().map(|toml_cfg| {
             crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
         }),

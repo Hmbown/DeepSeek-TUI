@@ -4645,6 +4645,7 @@ async fn run_exec_agent(
         todos: new_shared_todo_list(),
         plan_state: new_shared_plan_state(),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
+        subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
         network_policy,
         snapshots_enabled: config.snapshots_config().enabled,
         snapshots_max_workspace_bytes: config

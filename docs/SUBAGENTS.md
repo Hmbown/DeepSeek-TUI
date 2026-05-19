@@ -108,6 +108,13 @@ cancelled records persist for inspection but don't occupy a slot.
 Agents that lost their `task_handle` (e.g. across a process
 restart) also don't count against the cap.
 
+## API timeout
+
+Each sub-agent model step keeps the legacy 120-second API timeout by
+default. Long-running assignments can raise this with
+`[subagents] api_timeout_secs = N` in `~/.deepseek/config.toml`. Values above
+1800 seconds are clamped.
+
 ## Lifecycle
 
 Each opened session produces a record that progresses through:

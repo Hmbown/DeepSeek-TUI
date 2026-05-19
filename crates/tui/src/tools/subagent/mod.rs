@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::client::DeepSeekClient;
-use crate::config::MAX_SUBAGENTS;
+use crate::config::{DEFAULT_SUBAGENT_API_TIMEOUT_SECS, MAX_SUBAGENTS};
 use crate::core::events::Event;
 use crate::llm_client::LlmClient;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
@@ -64,10 +64,6 @@ fn release_resident_leases_for(agent_id: &str) {
 
 const DEFAULT_MAX_STEPS: u32 = 100;
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
-/// Per-step LLM API call timeout. Each `create_message` request must complete
-/// within this window or the step is treated as timed out. Prevents a single
-/// stuck API call from blocking the sub-agent indefinitely.
-const STEP_API_TIMEOUT: Duration = Duration::from_secs(120);
 const RESULT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const DEFAULT_RESULT_TIMEOUT_MS: u64 = 30_000;
 #[allow(dead_code)] // Legacy agent_wait clamp; new agent_eval uses DEFAULT/MAX.
@@ -625,6 +621,9 @@ pub struct SubAgentRuntime {
     /// exceed this is rejected at the spawn entry. Use `>` (strictly
     /// greater than) so equality is allowed — matches codex's pattern.
     pub max_spawn_depth: u32,
+    /// Per-step model API timeout. Configured through
+    /// `[subagents] api_timeout_secs`.
+    pub api_timeout: Duration,
     /// Cooperative cancellation token. Children derive a child_token() from
     /// the parent so cancelling the root cascades down.
     pub cancel_token: CancellationToken,
@@ -669,6 +668,7 @@ impl SubAgentRuntime {
             manager,
             spawn_depth: 0,
             max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
+            api_timeout: Duration::from_secs(DEFAULT_SUBAGENT_API_TIMEOUT_SECS),
             cancel_token: CancellationToken::new(),
             mailbox: None,
             parent_completion_tx: None,
@@ -722,6 +722,13 @@ impl SubAgentRuntime {
     #[allow(dead_code)]
     pub fn with_max_spawn_depth(mut self, max: u32) -> Self {
         self.max_spawn_depth = max;
+        self
+    }
+
+    /// Override the per-step model API timeout.
+    #[must_use]
+    pub fn with_api_timeout(mut self, timeout: Duration) -> Self {
+        self.api_timeout = timeout;
         self
     }
 
@@ -792,6 +799,7 @@ impl SubAgentRuntime {
             manager: self.manager.clone(),
             spawn_depth: self.spawn_depth + 1,
             max_spawn_depth: self.max_spawn_depth,
+            api_timeout: self.api_timeout,
             cancel_token: self.cancel_token.child_token(),
             mailbox: self.mailbox.clone(),
             parent_completion_tx: self.parent_completion_tx.clone(),
@@ -3460,8 +3468,8 @@ async fn run_subagent(
                     from_prior_session: false,
                 });
             }
-            api = tokio::time::timeout(STEP_API_TIMEOUT, runtime.client.create_message(request)) => {
-                api.map_err(|_| anyhow!("API call timed out after {}s", STEP_API_TIMEOUT.as_secs()))??
+            api = tokio::time::timeout(runtime.api_timeout, runtime.client.create_message(request)) => {
+                api.map_err(|_| anyhow!("API call timed out after {}s", runtime.api_timeout.as_secs()))??
             }
         };
 

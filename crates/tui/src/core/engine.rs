@@ -25,7 +25,10 @@ use crate::client::DeepSeekClient;
 use crate::compaction::{
     CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact,
 };
-use crate::config::{ApiProvider, Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL};
+use crate::config::{
+    ApiProvider, Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_SUBAGENT_API_TIMEOUT_SECS,
+    DEFAULT_TEXT_MODEL,
+};
 use crate::cycle_manager::{
     CycleBriefing, CycleConfig, StructuredState, archive_cycle, build_seed_messages,
     estimate_briefing_tokens, produce_briefing, should_advance_cycle,
@@ -126,6 +129,8 @@ pub struct EngineConfig {
     /// `SubAgentRuntime::max_spawn_depth`. Override via
     /// `[runtime] max_spawn_depth = N` in `~/.deepseek/config.toml`.
     pub max_spawn_depth: u32,
+    /// Per-step model API timeout for sub-agents.
+    pub subagent_api_timeout: Duration,
     /// Per-domain network policy decider (#135). Shared across the session so
     /// session-scoped approvals (`/network allow <host>`) persist for the
     /// remainder of the run.
@@ -190,6 +195,7 @@ impl Default for EngineConfig {
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
+            subagent_api_timeout: Duration::from_secs(DEFAULT_SUBAGENT_API_TIMEOUT_SECS),
             network_policy: None,
             snapshots_enabled: true,
             snapshots_max_workspace_bytes:
@@ -655,6 +661,7 @@ impl Engine {
                         self.session.reasoning_effort_auto,
                     )
                     .with_max_spawn_depth(self.config.max_spawn_depth)
+                    .with_api_timeout(self.config.subagent_api_timeout)
                     .background_runtime();
                     let route = resolve_subagent_assignment_route(&runtime, None, &prompt).await;
                     runtime.model = route.model;
@@ -1062,6 +1069,7 @@ impl Engine {
                             self.session.reasoning_effort_auto,
                         )
                         .with_max_spawn_depth(self.config.max_spawn_depth)
+                        .with_api_timeout(self.config.subagent_api_timeout)
                         .with_parent_completion_tx(self.tx_subagent_completion.clone());
                         if let Some(context) = fork_context_for_runtime.clone() {
                             rt = rt.with_fork_context(context);

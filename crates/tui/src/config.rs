@@ -19,6 +19,8 @@ use crate::hooks::HooksConfig;
 
 pub const DEFAULT_MAX_SUBAGENTS: usize = 10;
 pub const MAX_SUBAGENTS: usize = 20;
+pub const DEFAULT_SUBAGENT_API_TIMEOUT_SECS: u64 = 120;
+pub const MAX_SUBAGENT_API_TIMEOUT_SECS: u64 = 1800;
 pub const DEFAULT_TEXT_MODEL: &str = "deepseek-v4-pro";
 pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/beta";
 pub const DEFAULT_NVIDIA_NIM_MODEL: &str = "deepseek-ai/deepseek-v4-pro";
@@ -868,6 +870,10 @@ pub struct SubagentsConfig {
     /// setting. Clamped to [1, MAX_SUBAGENTS].
     #[serde(default)]
     pub max_concurrent: Option<usize>,
+    /// Per-step model API timeout for sub-agents, in seconds. Values above
+    /// MAX_SUBAGENT_API_TIMEOUT_SECS are clamped.
+    #[serde(default)]
+    pub api_timeout_secs: Option<u64>,
 }
 
 /// `[auto]` table — knobs for the `--model auto` / `/model auto` router.
@@ -1778,6 +1784,16 @@ impl Config {
         self.max_subagents
             .unwrap_or(DEFAULT_MAX_SUBAGENTS)
             .clamp(1, MAX_SUBAGENTS)
+    }
+
+    /// Return the per-step sub-agent model API timeout in seconds.
+    #[must_use]
+    pub fn subagent_api_timeout_secs(&self) -> u64 {
+        self.subagents
+            .as_ref()
+            .and_then(|cfg| cfg.api_timeout_secs)
+            .unwrap_or(DEFAULT_SUBAGENT_API_TIMEOUT_SECS)
+            .min(MAX_SUBAGENT_API_TIMEOUT_SECS)
     }
 
     /// Raw sub-agent model override map. Values are validated at spawn time
@@ -3807,6 +3823,48 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(high.max_subagents(), MAX_SUBAGENTS);
+    }
+
+    #[test]
+    fn subagent_api_timeout_defaults_to_legacy_120s() {
+        assert_eq!(
+            Config::default().subagent_api_timeout_secs(),
+            DEFAULT_SUBAGENT_API_TIMEOUT_SECS
+        );
+        assert_eq!(DEFAULT_SUBAGENT_API_TIMEOUT_SECS, 120);
+    }
+
+    #[test]
+    fn subagent_api_timeout_only_clamps_to_maximum() {
+        let low = Config {
+            subagents: Some(SubagentsConfig {
+                api_timeout_secs: Some(0),
+                ..SubagentsConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert_eq!(low.subagent_api_timeout_secs(), 0);
+
+        let configured = Config {
+            subagents: Some(SubagentsConfig {
+                api_timeout_secs: Some(600),
+                ..SubagentsConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert_eq!(configured.subagent_api_timeout_secs(), 600);
+
+        let high = Config {
+            subagents: Some(SubagentsConfig {
+                api_timeout_secs: Some(MAX_SUBAGENT_API_TIMEOUT_SECS + 1),
+                ..SubagentsConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert_eq!(
+            high.subagent_api_timeout_secs(),
+            MAX_SUBAGENT_API_TIMEOUT_SECS
+        );
     }
 
     #[test]
