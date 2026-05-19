@@ -36,6 +36,7 @@ pub(super) fn ensure_active_entry(app: &mut App) -> usize {
         content: String::new(),
         streaming: true,
         duration_secs: None,
+        expanded: false,
     });
     app.streaming_thinking_active_entry = Some(entry_idx);
     app.bump_active_cell_revision();
@@ -157,6 +158,43 @@ pub(super) fn replace_pending_translation(
             && content.starts_with(placeholder)
         {
             *content = translated_text;
+            app.bump_history_cell(idx);
+            return;
+        }
+    }
+}
+
+/// Replace a translation placeholder with progressively accumulated text.
+/// This is the streaming counterpart of [`replace_pending_translation`] —
+/// called on each delta so the user sees translated text appear chunk by
+/// chunk instead of all at once.
+///
+/// `tracking` is set to the entry index on the first call so subsequent
+/// deltas can find the entry directly without content-based search.
+pub(super) fn replace_or_append_translation(
+    app: &mut App,
+    placeholder: &str,
+    accumulated_text: &str,
+) {
+    if let Some(active) = app.active_cell.as_mut() {
+        for idx in (0..active.entry_count()).rev() {
+            if let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(idx)
+                && content.starts_with(placeholder)
+            {
+                *content = accumulated_text.to_string();
+                app.streaming_translation_target = Some(idx);
+                app.bump_active_cell_revision();
+                return;
+            }
+        }
+    }
+
+    for idx in (0..app.history.len()).rev() {
+        if let Some(HistoryCell::Thinking { content, .. }) = app.history.get_mut(idx)
+            && content.starts_with(placeholder)
+        {
+            *content = accumulated_text.to_string();
+            app.streaming_translation_target = Some(idx);
             app.bump_history_cell(idx);
             return;
         }

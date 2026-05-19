@@ -1,0 +1,20 @@
+# ─────────────────────────────────────────────────────────────────────────────────
+# User memory — opt-in. Enables the `remember` tool and `# foo` composer
+# interception, writing to `~/.deepseek/memory.md`.
+# ─────────────────────────────────────────────────────────────────────────────────
+[memory]
+enabled = true
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Vector Memory — semantic search over conversation history and user memories.
+# Stores summaries and memories in LanceDB for retrieval-augmented context.
+# ─────────────────────────────────────────────────────────────────────────────────
+[vector_memory]
+enabled = true
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Provider: defaults to DEEPSEEK_API_KEY env var
+# ─────────────────────────────────────────────────────────────────────────────────
+# api_key is read from the DEEPSEEK_API_KEY environment variable by default.
+# Uncomment and set below to override:
+# api_key = "sk-your-key-here"

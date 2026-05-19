@@ -23,7 +23,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::client::DeepSeekClient;
 use crate::compaction::{
-    CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact,
+    CompactionConfig, KEEP_RECENT_MESSAGES, MIN_SUMMARIZE_MESSAGES, compact_messages_safe,
+    merge_system_prompts, should_compact, summarize_range,
 };
 use crate::config::{ApiProvider, Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL};
 use crate::cycle_manager::{
@@ -38,7 +39,7 @@ use crate::mcp::McpPool;
 use crate::models::ToolCaller;
 use crate::models::{
     ContentBlock, ContentBlockStart, Delta, LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS, Message,
-    MessageRequest, StreamEvent, SystemPrompt, Tool, Usage,
+    MessageRequest, StreamEvent, SystemBlock, SystemPrompt, Tool, Usage,
 };
 use crate::prompts;
 use crate::seam_manager::{SeamConfig, SeamManager};
@@ -166,6 +167,23 @@ pub struct EngineConfig {
     pub search_provider: crate::config::SearchProvider,
     /// API key for Tavily or Bocha. `None` for Bing or DuckDuckGo.
     pub search_api_key: Option<String>,
+
+    /// Verbatim window size: last N turns are always sent in full to the API.
+    /// Older messages may be omitted/replaced with semantic context. Default: 16.
+    pub verbatim_window_turns: usize,
+    /// Whether vector memory (semantic search) is enabled.
+    pub vector_memory_enabled: bool,
+    /// Path to the LanceDB vector database directory.
+    pub vector_memory_path: PathBuf,
+    /// Embedding dimension for vector memory.
+    pub vector_memory_dim: usize,
+    /// Maximum number of items in the in-memory cache before eviction.
+    pub max_memory_items: usize,
+    /// Minimum similarity score (0-1) for retrieved memories/summaries.
+    pub min_similarity_score: f64,
+    /// Whether code_index (Tier 4) is enabled. Requires `vector-memory` feature.
+    #[allow(dead_code)]
+    pub code_index_enabled: bool,
 }
 
 impl Default for EngineConfig {
@@ -206,6 +224,13 @@ impl Default for EngineConfig {
             workshop: None,
             search_provider: crate::config::SearchProvider::default(),
             search_api_key: None,
+            verbatim_window_turns: 16,
+            vector_memory_enabled: cfg!(feature = "vector-memory"),
+            vector_memory_path: PathBuf::from("/tmp/lancedb"),
+            vector_memory_dim: 384,
+            max_memory_items: 1000,
+            min_similarity_score: 0.4,
+            code_index_enabled: false,
         }
     }
 }
@@ -307,6 +332,12 @@ pub struct Engine {
     seam_manager: Option<SeamManager>,
     coherence_state: CoherenceState,
     turn_counter: u64,
+    /// Counter for turn-based mini-compaction (Tier 2 phase summarisation).
+    /// Resets after each mini-compaction or when disabled.
+    compaction_turn_counter: u64,
+    /// Message index after the last mini-compaction. Incremental summaries
+    /// only process messages in `[last_compaction_message_index, current)`.
+    last_compaction_message_index: usize,
     /// Post-edit LSP diagnostics injection (#136). Populated unconditionally
     /// — when LSP is disabled in config, this is an inert manager that
     /// always returns `None` from `diagnostics_for`.
@@ -323,6 +354,13 @@ pub struct Engine {
     /// Diagnostics collected during the current step's tool calls. Drained
     /// and forwarded as a synthetic user message before the next API call.
     pending_lsp_blocks: Vec<crate::lsp::DiagnosticBlock>,
+
+    /// Vector database service for semantic memory (#vector-memory).
+    /// `None` when vector memory is disabled or initialization failed.
+    vector_db: Option<crate::vector_db::VectorDbService>,
+    /// Retrieved context from the most recent request, cached so sub-agent
+    /// forks can inherit the parent's semantic context.
+    last_retrieved_context: Option<crate::vector_db::RetrievedContext>,
 }
 
 // === Internal tool helpers ===
@@ -419,8 +457,13 @@ impl Engine {
         // Set up stable system prompt with project context (default to agent mode).
         // Per-turn working-set metadata is injected into the latest user
         // message at request time so file churn does not rewrite this prefix.
-        let user_memory_block =
-            crate::memory::compose_block(config.memory_enabled, &config.memory_path);
+        let user_memory_block = if config.vector_memory_enabled {
+            // vector_db is not yet initialized (init happens in engine.run()).
+            // Pass healthy=false to inline flat file content as initial fallback.
+            crate::memory::compose_vector_managed_block(config.memory_enabled, &config.memory_path, false)
+        } else {
+            crate::memory::compose_block(config.memory_enabled, &config.memory_path)
+        };
         let system_prompt =
             prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
                 AppMode::Agent,
@@ -551,10 +594,14 @@ impl Engine {
             seam_manager,
             coherence_state: CoherenceState::default(),
             turn_counter: 0,
+            compaction_turn_counter: 0,
+            last_compaction_message_index: 0,
             lsp_manager,
             pending_lsp_blocks: Vec::new(),
             workshop_vars,
             sandbox_backend,
+            vector_db: None,
+            last_retrieved_context: None,
         };
         engine.rehydrate_latest_canonical_state();
 
@@ -574,6 +621,11 @@ impl Engine {
     /// Run the engine event loop
     #[allow(clippy::too_many_lines)]
     pub async fn run(mut self) {
+        // Initialize vector database on first engine run.
+        // Best-effort: if this fails the engine continues with
+        // vector_db = None and semantic retrieval is unavailable.
+        self.init_vector_db().await;
+
         while let Some(op) = self.rx_op.recv().await {
             match op {
                 Op::SendMessage {
@@ -805,6 +857,21 @@ impl Engine {
                     )
                     .await;
                 }
+                Op::StoreMemory(content) => {
+                    // # foo quick-add: store in vector DB (primary).
+                    if let Some(ref vdb) = self.vector_db {
+                        let item = crate::vector_db::NewMemoryItem {
+                            content,
+                            source: "quick_add".to_string(),
+                            session_id: self.session.id.clone(),
+                            tags: Some("user_memory".to_string()),
+                            ttl: None,
+                        };
+                        if let Err(e) = vdb.store_memory(item).await {
+                            tracing::warn!("failed to store memory from quick-add: {e}");
+                        }
+                    }
+                }
                 Op::Shutdown => {
                     break;
                 }
@@ -1006,6 +1073,10 @@ impl Engine {
                 system: self.session.system_prompt.clone(),
                 messages: self.messages_with_turn_metadata(),
                 structured_state_block: state.to_system_block(),
+                parent_retrieved_block: self
+                    .last_retrieved_context
+                    .as_ref()
+                    .and_then(|ctx| ctx.to_system_block()),
             })
         } else {
             None
@@ -1400,6 +1471,13 @@ impl Engine {
             ctx.memory_path = Some(self.config.memory_path.clone());
         }
 
+        // Share the semantic memory service with tools. `remember` writes
+        // durable memories; file tools use the same service for Tier 4 when
+        // code indexing is enabled.
+        ctx.vector_db = self.vector_db.clone();
+        ctx.code_index_enabled = self.config.code_index_enabled;
+        ctx.project_id = crate::tools::spec::project_id_for_workspace(&self.session.workspace);
+
         if let Some(decider) = self.config.network_policy.as_ref() {
             ctx = ctx.with_network_policy(decider.clone());
         }
@@ -1778,8 +1856,16 @@ impl Engine {
 
     /// Refresh the system prompt based on current mode and context.
     fn refresh_system_prompt(&mut self, mode: AppMode) {
-        let user_memory_block =
-            crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path);
+        let healthy = self.vector_db.is_some();
+        let user_memory_block = if self.config.vector_memory_enabled {
+            crate::memory::compose_vector_managed_block(
+                self.config.memory_enabled,
+                &self.config.memory_path,
+                healthy,
+            )
+        } else {
+            crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path)
+        };
         let base = prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
             mode,
             &self.config.workspace,
@@ -1819,6 +1905,565 @@ impl Engine {
         let merged = merge_system_prompts(self.session.system_prompt.as_ref(), summary_prompt);
         self.session.last_system_prompt_hash = Some(system_prompt_hash(merged.as_ref()));
         self.session.system_prompt = merged;
+    }
+
+    /// Store a compaction summary into the vector database (Tier 2).
+    ///
+    /// Extracts the summary text from the `SystemPrompt` and writes it
+    /// as a `HistorySummary` record in the LanceDB `history_summaries`
+    /// table. Best-effort: errors are logged but never propagated.
+    pub(super) async fn store_compaction_summary_to_vector_db(
+        &self,
+        summary_prompt: &Option<SystemPrompt>,
+    ) {
+        let Some(ref vdb) = self.vector_db else {
+            return;
+        };
+        let Some(prompt) = summary_prompt else {
+            return;
+        };
+        let raw = match prompt {
+            SystemPrompt::Text(text) => text.clone(),
+            SystemPrompt::Blocks(blocks) => blocks
+                .iter()
+                .map(|b| b.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
+        // Extract the LLM-generated summary text, stripping boilerplate
+        // scaffolding that would otherwise pollute the embedding space
+        // (audit #2). The compaction summary follows this structure:
+        //
+        //   ## 📋 Conversation Summary (Auto-Generated)
+        //   {summary}          ← keep only this
+        //   ---
+        //   ## 🔍 Workflow Context
+        //   {workflow_context}
+        //   ---
+        //   ## 💡 What to Do Next
+        //   {rest}
+        //
+        // We extract the body between the "## 📋" heading and the first
+        // "---" separator, then strip the heading line itself so the
+        // embedding space carries only the model's actual summary.
+        let summary_text = if let Some(start) = raw.find("## ") {
+            let from_heading = &raw[start..];
+            if let Some(end) = from_heading.find("\n---") {
+                let section = &from_heading[..end];
+                // Drop the heading line (e.g. "## 📋 Conversation Summary
+                // (Auto-Generated)") and keep the body.
+                section
+                    .find('\n')
+                    .map(|nl| section[nl..].trim().to_string())
+                    .unwrap_or_else(|| section.trim().to_string())
+            } else {
+                from_heading.trim().to_string()
+            }
+        } else {
+            raw
+        };
+        if summary_text.is_empty() {
+            return;
+        }
+        let summary = crate::vector_db::HistorySummary {
+            id: uuid::Uuid::new_v4().to_string(),
+            turn_range: "auto".to_string(),
+            summary: summary_text,
+            key_files: None,
+            session_id: self.session.id.clone(),
+            created_at: chrono::Utc::now(),
+            score: 0.0,
+            phase: 0,
+        };
+        if let Err(e) = vdb.store_summary(summary).await {
+            tracing::warn!("failed to store compaction summary in vector db: {e}");
+        }
+    }
+
+    /// Compute the effective mini-compaction interval.
+    ///
+    /// Returns the configured `turns_interval`, preparing for future
+    /// token-density-based dynamic adjustment. When `None`, turn-based
+    /// mini-compaction is disabled.
+    fn dynamic_mini_compaction_interval(&self) -> Option<usize> {
+        // Mini-compaction produces vector DB summaries (Tier 2). When the
+        // vector DB is not available there is nowhere to store them and the
+        // compaction cost (LLM summarisation + cache rewrite) yields no
+        // retrieval benefit — disable turn-interval mode in that case
+        // (audit #4).
+        if self.vector_db.is_none() {
+            return None;
+        }
+        self.config.compaction.turns_interval
+    }
+
+    /// Merge the oldest 5 Phase 0 summaries into a single Phase 1 summary.
+    ///
+    /// Best-effort: the merged summary replaces the consumed Phase 0 summaries
+    /// in the vector DB so retrieval sees progressively higher-level context.
+    /// Called after each incremental mini-compaction store.
+    async fn try_merge_phase0_summaries(
+        &self,
+        vdb: &crate::vector_db::VectorDbService,
+        client: &DeepSeekClient,
+    ) {
+        const MERGE_THRESHOLD: usize = 5;
+        let session_id = &self.session.id;
+
+        let count = vdb.count_phase0_summaries(session_id).await;
+        if count < MERGE_THRESHOLD {
+            return;
+        }
+
+        // Collect the oldest Phase 0 summaries
+        let candidates = vdb
+            .oldest_phase0_for_merge(session_id, MERGE_THRESHOLD)
+            .await;
+        if candidates.len() < MERGE_THRESHOLD {
+            return;
+        }
+
+        let removed_ids: Vec<String> = candidates.iter().map(|(id, _)| id.clone()).collect();
+        let combined_text: String = candidates
+            .iter()
+            .enumerate()
+            .map(|(i, (_, text))| format!("Summary {}:\n{}\n", i + 1, text))
+            .collect::<Vec<_>>()
+            .join("\n---\n");
+
+        // Build synthetic messages for the merge summary call
+        let merge_msg = crate::models::Message {
+            role: "user".to_string(),
+            content: vec![crate::models::ContentBlock::Text {
+                text: format!(
+                    "Combine these conversation summaries into one concise summary. \
+                     Retain key decisions, file changes, and open work items:\n\n{}",
+                    combined_text
+                ),
+                cache_control: None,
+            }],
+        };
+
+        match summarize_range(client, &[merge_msg], &self.config.compaction.model).await {
+            Ok(merged_text) if !merged_text.trim().is_empty() => {
+                let merged = crate::vector_db::HistorySummary {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    turn_range: "merged".to_string(),
+                    summary: merged_text,
+                    key_files: None,
+                    session_id: session_id.clone(),
+                    created_at: chrono::Utc::now(),
+                    score: 0.0,
+                    phase: 1,
+                };
+                if let Err(e) = vdb.store_summary(merged).await {
+                    tracing::warn!("phase merge: store failed: {e}");
+                } else {
+                    // Remove the consumed Phase 0 summaries.
+                    vdb.remove_summaries(&removed_ids).await;
+                    tracing::debug!(
+                        removed = removed_ids.len(),
+                        "phase merge: merged Phase 0 → Phase 1"
+                    );
+                }
+            }
+            Ok(_) => {
+                tracing::debug!("phase merge: empty merge result, skipping");
+            }
+            Err(e) => {
+                tracing::warn!("phase merge failed: {e}");
+            }
+        }
+    }
+
+    /// Initialize the vector database service from engine config.
+    pub(crate) async fn init_vector_db(&mut self) {
+        if !self.config.vector_memory_enabled {
+            return;
+        }
+        let path = &self.config.vector_memory_path;
+        let dim = self.config.vector_memory_dim;
+        let max_items = self.config.max_memory_items;
+        let min_score = self.config.min_similarity_score;
+        match crate::vector_db::VectorDbService::connect(path, dim, max_items, min_score).await {
+            Ok(svc) => {
+                tracing::info!(
+                    "Vector memory initialized at {} (dim={})",
+                    path.display(),
+                    dim
+                );
+                svc.warmup_embedder().await;
+
+                // Sync existing memory.md content into LanceDB so the vector
+                // memory system has access to the same structured knowledge
+                // that the flat-file fallback provides.
+                if self.config.memory_enabled {
+                    let mem_path = self.config.memory_path.clone();
+                    let session_id = self.session.id.clone();
+                    let imported = crate::memory::sync_memory_file_to_vector_db(
+                        &mem_path, &svc, &session_id,
+                    )
+                    .await;
+                    if imported > 0 {
+                        tracing::info!(
+                            "sync_memory_file: imported {imported} memories from {} into LanceDB",
+                            mem_path.display(),
+                        );
+                    }
+                }
+
+                self.vector_db = Some(svc);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize vector database: {e}");
+            }
+        }
+    }
+
+    /// Build a `RetrievedContext` for the current session state.
+    ///
+    /// Computes the verbatim window, then retrieves relevant memories and
+    /// history summaries from the vector database for injection into the
+    /// system prompt. When vector DB is unavailable, returns a context where
+    /// all messages are verbatim.
+    pub(super) async fn build_verbatim_window_for_request(
+        &mut self,
+        messages: &[Message],
+    ) -> crate::vector_db::RetrievedContext {
+        let total = messages.len();
+        if total == 0 || self.vector_db.is_none() {
+            let verbatim = (0..total).collect();
+            let mut context = crate::vector_db::RetrievedContext {
+                verbatim_messages: verbatim,
+                window_extended: false,
+                memory_blocks: Vec::new(),
+                summary_blocks: Vec::new(),
+            };
+            // Third tier (emergency): flat file memory when vector DB is unavailable.
+            if self.vector_db.is_none() && self.config.memory_enabled {
+                if let Some(block) = crate::memory::compose_block(true, &self.config.memory_path) {
+                    context.memory_blocks.push(block);
+                }
+            }
+            return context;
+        }
+
+        // Collect tool call/result indices from message history.
+        let mut tool_call_indices: Vec<(String, usize)> = Vec::new();
+        let mut tool_result_indices: Vec<(String, usize)> = Vec::new();
+        for (i, msg) in messages.iter().enumerate() {
+            for block in &msg.content {
+                match block {
+                    ContentBlock::ToolUse { id, .. } => {
+                        tool_call_indices.push((id.clone(), i));
+                    }
+                    ContentBlock::ToolResult { tool_use_id, .. } => {
+                        tool_result_indices.push((tool_use_id.clone(), i));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Compute a dynamic verbatim window: we keep at least
+        // `verbatim_window_turns * 2` messages, but we cap the total
+        // token budget of verbatim messages at ~4K tokens per turn
+        // to prevent massive tool-call rounds from blowing the budget.
+        let min_window = self.config.verbatim_window_turns.max(1) * 2;
+        let max_tokens = self.config.verbatim_window_turns * 4_000;
+        let vw = crate::vector_db::VerbatimWindow::build(
+            total,
+            min_window,
+            &[],
+            &tool_call_indices,
+            &tool_result_indices,
+        );
+
+        // Walk backwards from the last message in the window and stop
+        // when the accumulated token estimate exceeds max_tokens.
+        // This keeps the verbatim window bounded by both turn count
+        // AND token budget.
+        let mut capped_indices: Vec<usize> = Vec::new();
+        let mut token_budget_used = 0usize;
+        for &idx in vw.indices.iter().rev() {
+            let msg_tokens = messages
+                .get(idx)
+                .map(|m| {
+                    m.content
+                        .iter()
+                        .map(|c| match c {
+                            ContentBlock::Text { text, .. } => text.len() / 4,
+                            ContentBlock::Thinking { .. } => 0, // not sent verbatim
+                            ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
+                                .map(|s| s.len() / 4)
+                                .unwrap_or(100),
+                            ContentBlock::ToolResult { content, .. } => content.len() / 4,
+                            _ => 0,
+                        })
+                        .sum::<usize>()
+                })
+                .unwrap_or(0);
+            if token_budget_used + msg_tokens > max_tokens && !capped_indices.is_empty() {
+                break; // budget exhausted
+            }
+            token_budget_used = token_budget_used.saturating_add(msg_tokens);
+            capped_indices.push(idx);
+        }
+        capped_indices.reverse(); // restore chronological order
+
+        // The token cap must not invalidate the API's required tool
+        // call/result pairing. Re-close the capped set over the known pairs
+        // after truncation, even if that pushes the window slightly above the
+        // soft token budget.
+        let mut changed = true;
+        while changed {
+            changed = false;
+            let snapshot = capped_indices.clone();
+            for idx in snapshot {
+                for (tool_id, call_idx) in &tool_call_indices {
+                    if *call_idx == idx {
+                        if let Some((_, result_idx)) =
+                            tool_result_indices.iter().find(|(id, _)| id == tool_id)
+                        {
+                            if !capped_indices.contains(result_idx) {
+                                capped_indices.push(*result_idx);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+                for (tool_id, result_idx) in &tool_result_indices {
+                    if *result_idx == idx {
+                        if let Some((_, call_idx)) =
+                            tool_call_indices.iter().find(|(id, _)| id == tool_id)
+                        {
+                            if !capped_indices.contains(call_idx) {
+                                capped_indices.push(*call_idx);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        capped_indices.sort_unstable();
+        capped_indices.dedup();
+        let verbatim_count = capped_indices.len();
+        let history_count = total.saturating_sub(verbatim_count);
+
+        let mut memory_blocks: Vec<String> = Vec::new();
+        let mut summary_blocks: Vec<String> = Vec::new();
+
+        if history_count > 0 {
+            // Build a retrieval query from recent context.
+            //
+            // Strategy (dynamic, not fixed to "last 3 user messages"):
+            // 1. Collect recent user text blocks until >= 100 chars (max 5).
+            // 2. If still < 50 chars, pull in the most recent assistant text.
+            // 3. Append recent tool_use names for additional context signal.
+            let mut query_parts: Vec<String> = Vec::new();
+            let mut user_chars = 0usize;
+            let mut user_count = 0usize;
+            let mut assistant_text: Option<String> = None;
+
+            for m in messages.iter().rev() {
+                let text = m.content.iter().find_map(|block| {
+                    if let ContentBlock::Text { text, .. } = block {
+                        (!text.starts_with("<turn_meta>")).then(|| text.clone())
+                    } else {
+                        None
+                    }
+                });
+
+                if m.role == "user" {
+                    if let Some(t) = text {
+                        user_chars += t.len();
+                        user_count += 1;
+                        query_parts.push(t);
+                        if user_chars >= 100 || user_count >= 5 {
+                            break;
+                        }
+                    }
+                } else if m.role == "assistant" && assistant_text.is_none() {
+                    if let Some(t) = text {
+                        assistant_text = Some(t);
+                    }
+                }
+            }
+
+            // If the user query is too short, pull in the assistant text
+            if user_chars < 50 {
+                if let Some(t) = assistant_text {
+                    // Take the first ~100 chars of the assistant reply
+                    let short: String = t.chars().take(100).collect();
+                    query_parts.push(short);
+                }
+            }
+
+            // Append recent tool_use names as context hints
+            let mut tool_names: Vec<String> = Vec::new();
+            for m in messages.iter().rev().take(8) {
+                if m.role == "assistant" {
+                    for block in &m.content {
+                        if let ContentBlock::ToolUse { name, .. } = block {
+                            if !tool_names.contains(name) {
+                                tool_names.push(name.clone());
+                            }
+                            if tool_names.len() >= 3 {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if !tool_names.is_empty() {
+                query_parts.push(tool_names.join(" "));
+            }
+
+            let query = query_parts.join(" ");
+
+            if !query.is_empty() {
+                if let Some(ref vdb) = self.vector_db {
+                    // Retrieve relevant memories (Tier 3)
+                    match vdb.search_memories(&query, 3, None).await {
+                        Ok(results) if !results.is_empty() => {
+                            tracing::debug!(
+                                memory_count = results.len(),
+                                "found relevant memories from vector store"
+                            );
+                            for r in &results {
+                                let tag = r
+                                    .tags
+                                    .as_ref()
+                                    .and_then(|t| t.split(',').next())
+                                    .unwrap_or("memory");
+                                memory_blocks.push(format!("[{tag}] {}", r.content));
+                            }
+                        }
+                        Ok(_) => {
+                            tracing::debug!("vector memory search returned no results");
+                        }
+                        Err(e) => {
+                            tracing::warn!("vector memory search failed: {e}");
+                        }
+                    }
+
+                    // Always supplement with flat file memory as a safety net,
+                    // regardless of whether vector search returned results.
+                    // The vector search may return only partial matches; the
+                    // flat file provides the full context the AI may need.
+                    if self.config.memory_enabled {
+                        if let Some(block) = crate::memory::compose_block(
+                            true,
+                            &self.config.memory_path,
+                        ) {
+                            memory_blocks.push(block);
+                        }
+                    }
+
+                    // Retrieve relevant history summaries (Tier 2)
+                    match vdb
+                        .search_summaries(&query, 2, Some(&self.session.id))
+                        .await
+                    {
+                        Ok(results) if !results.is_empty() => {
+                            tracing::debug!(
+                                summary_count = results.len(),
+                                "found relevant history summaries from vector store"
+                            );
+                            for s in &results {
+                                summary_blocks.push(s.summary.clone());
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!("vector summary search failed: {e}");
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- Always-on supplement: flat file memory safety net ----
+        // This runs even when history_count == 0 (first message / all
+        // messages in verbatim window) so the system prompt never loses
+        // the user's durable memory just because nothing was pushed into
+        // the history tier yet.
+        if self.config.memory_enabled {
+            if let Some(block) = crate::memory::compose_block(true, &self.config.memory_path) {
+                memory_blocks.push(block);
+            }
+        }
+
+        crate::vector_db::RetrievedContext {
+            verbatim_messages: capped_indices,
+            window_extended: vw.extended,
+            memory_blocks,
+            summary_blocks,
+        }
+    }
+
+    /// Augment the system prompt with vector-retrieved context blocks.
+    ///
+    /// Appends a `<retrieved_context>` text block to the existing system
+    /// prompt. Returns the original prompt unchanged when the retrieved
+    /// context is empty.
+    fn augment_system_prompt_with_context(
+        system: Option<SystemPrompt>,
+        retrieved: &crate::vector_db::RetrievedContext,
+    ) -> Option<SystemPrompt> {
+        let context_block = retrieved.to_system_block()?;
+        let Some(existing) = system else {
+            return Some(SystemPrompt::Text(context_block));
+        };
+        let augmented = match existing {
+            SystemPrompt::Text(base) => SystemPrompt::Text(format!("{base}\n\n{context_block}")),
+            SystemPrompt::Blocks(mut blocks) => {
+                blocks.push(SystemBlock {
+                    block_type: "text".to_string(),
+                    text: context_block,
+                    cache_control: None,
+                });
+                SystemPrompt::Blocks(blocks)
+            }
+        };
+        Some(augmented)
+    }
+
+    /// Prepare the final message list and system prompt for the API request.
+    ///
+    /// Applies the verbatim window to filter messages and augments the
+    /// system prompt with retrieved semantic context from the vector DB.
+    /// Returns `(filtered_messages, augmented_system_prompt)`.
+    pub(super) async fn prepare_request_context(&mut self) -> (Vec<Message>, Option<SystemPrompt>) {
+        let all_messages = self.messages_with_turn_metadata();
+        let retrieved = self.build_verbatim_window_for_request(&all_messages).await;
+
+        // Cache the retrieved context so sub-agents can inherit the
+        // parent's semantic retrieval results (#12).
+        self.last_retrieved_context = Some(retrieved.clone());
+
+        // Filter messages to only the verbatim window
+        let filtered: Vec<Message> = retrieved
+            .verbatim_messages
+            .iter()
+            .filter_map(|&idx| all_messages.get(idx).cloned())
+            .collect();
+
+        let augmented_system = Self::augment_system_prompt_with_context(
+            self.session.system_prompt.clone(),
+            &retrieved,
+        );
+
+        tracing::debug!(
+            verbatim = retrieved.verbatim_messages.len(),
+            total = all_messages.len(),
+            memories = retrieved.memory_blocks.len(),
+            summaries = retrieved.summary_blocks.len(),
+            "prepared request context"
+        );
+
+        (filtered, augmented_system)
     }
 }
 

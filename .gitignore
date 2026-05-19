@@ -8,6 +8,9 @@
 *.rlib
 *.o
 
+# fastembed ONNX model cache
+.fastembed_cache/
+
 # Development
 .env
 .env.*

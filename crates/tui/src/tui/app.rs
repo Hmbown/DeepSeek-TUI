@@ -1025,6 +1025,10 @@ pub struct App {
     pub streaming_thinking_active_entry: Option<usize>,
     /// Newline-gated streaming collector state.
     pub streaming_state: StreamingState,
+    /// Index into `active_cell.entries` of the thinking entry currently
+    /// receiving streaming translation deltas. Set by the first
+    /// `ThinkingDelta` event and cleared by the final `Thinking` event.
+    pub streaming_translation_target: Option<usize>,
     /// Accumulated reasoning text
     pub reasoning_buffer: String,
     /// Live reasoning header extracted from bold text
@@ -1597,6 +1601,7 @@ impl App {
             streaming_message_index: None,
             streaming_thinking_active_entry: None,
             streaming_state: StreamingState::new(),
+            streaming_translation_target: None,
             reasoning_buffer: String::new(),
             reasoning_header: None,
             last_reasoning: None,
@@ -2389,6 +2394,7 @@ impl App {
             self.active_tool_details.clear();
             self.active_tool_entry_completed_at.clear();
             self.streaming_thinking_active_entry = None;
+            self.streaming_translation_target = None;
             self.bump_active_cell_revision();
             return;
         }
@@ -2398,6 +2404,7 @@ impl App {
         {
             *streaming = false;
         }
+        self.streaming_translation_target = None;
 
         let drained = active.drain();
         let base_index = self.history.len();

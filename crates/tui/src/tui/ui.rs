@@ -184,9 +184,17 @@ enum TranslationEvent {
         thinking: Option<String>,
         tool_uses: PendingToolUses,
     },
+    AssistantMessageDelta {
+        history_index: Option<usize>,
+        accumulated_text: String,
+    },
     Thinking {
         placeholder: String,
         translated: anyhow::Result<String>,
+    },
+    ThinkingDelta {
+        placeholder: String,
+        accumulated_text: String,
     },
 }
 // Reset scroll region (`\x1b[r`), origin mode (`\x1b[?6l`), and home the cursor
@@ -645,10 +653,24 @@ fn is_memory_quick_add(input: &str) -> bool {
     !trimmed.trim_start_matches('#').trim().is_empty()
 }
 
-/// Persist a `# foo` quick-add to the memory file and surface a status
-/// note to the user. Errors land in the same status channel so a missing
-/// memory directory becomes visible without crashing the composer.
-fn handle_memory_quick_add(app: &mut App, input: &str, config: &Config) {
+/// Persist a `# foo` quick-add to both vector DB (primary) and flat file
+/// (fallback/audit log). Surfaces a status note to the user on completion.
+/// Errors land in the same status channel so a missing memory directory
+/// becomes visible without crashing the composer.
+async fn handle_memory_quick_add(
+    app: &mut App,
+    input: &str,
+    config: &Config,
+    engine_handle: &crate::core::engine::EngineHandle,
+) {
+    // 1. Store in vector DB via engine (primary, unbounded).
+    engine_handle
+        .tx_op
+        .send(crate::core::ops::Op::StoreMemory(input.to_string()))
+        .await
+        .ok();
+
+    // 2. Mirror to flat file (fallback/audit log for emergency read).
     let path = config.memory_path();
     match crate::memory::append_entry(&path, input) {
         Ok(()) => {
@@ -709,6 +731,16 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         subagent_model_overrides: config.subagent_model_overrides(),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
+        verbatim_window_turns: config
+            .context
+            .verbatim_window_turns
+            .unwrap_or(crate::vector_db::DEFAULT_VERBATIM_WINDOW_TURNS),
+        vector_memory_enabled: config.vector_memory_enabled(),
+        vector_memory_path: config.vector_memory_path(),
+        vector_memory_dim: config.vector_memory_dim(),
+        max_memory_items: config.vector_memory_max_items(),
+        min_similarity_score: config.vector_memory_min_similarity_score(),
+        code_index_enabled: config.vector_memory_code_index_enabled(),
         vision_config: config.vision_model_config(),
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: app.goal.goal_objective.clone(),
@@ -837,6 +869,44 @@ async fn run_event_loop(
 
         while let Ok(event) = translation_rx.try_recv() {
             match event {
+                TranslationEvent::AssistantMessageDelta {
+                    history_index,
+                    accumulated_text,
+                } => {
+                    if let Some(index) = history_index
+                        && let Some(HistoryCell::Assistant { content, .. }) =
+                            app.history.get_mut(index)
+                    {
+                        *content = accumulated_text;
+                        app.bump_history_cell(index);
+                    }
+                    app.needs_redraw = true;
+                }
+                TranslationEvent::ThinkingDelta {
+                    placeholder,
+                    accumulated_text,
+                } => {
+                    // First delta: search by placeholder and store entry index.
+                    // Subsequent deltas: use the stored index directly.
+                    if let Some(target) = app.streaming_translation_target {
+                        if let Some(active) = app.active_cell.as_mut() {
+                            if let Some(HistoryCell::Thinking { content, .. }) =
+                                active.entry_mut(target)
+                            {
+                                *content = accumulated_text;
+                                app.bump_active_cell_revision();
+                                app.needs_redraw = true;
+                            }
+                        }
+                    } else {
+                        streaming_thinking::replace_or_append_translation(
+                            app,
+                            &placeholder,
+                            &accumulated_text,
+                        );
+                        app.needs_redraw = true;
+                    }
+                }
                 TranslationEvent::AssistantMessage {
                     history_index,
                     original_text,
@@ -893,6 +963,7 @@ async fn run_event_loop(
                     translated,
                 } => {
                     pending_translations = pending_translations.saturating_sub(1);
+                    app.streaming_translation_target = None;
                     let text = match translated {
                         Ok(text) => {
                             app.status_message = Some(
@@ -1036,20 +1107,73 @@ async fn run_event_loop(
                             let target_language =
                                 app.ui_locale.translation_target_name().to_string();
                             tokio::spawn(async move {
-                                let translated = crate::tui::translation::translate_text(
+                                use futures_util::StreamExt;
+                                match crate::tui::translation::translate_text_stream(
                                     &original_text,
                                     &client,
                                     &translation_model,
                                     &target_language,
                                 )
-                                .await;
-                                let _ = tx.send(TranslationEvent::AssistantMessage {
-                                    history_index,
-                                    original_text,
-                                    translated,
-                                    thinking,
-                                    tool_uses,
-                                });
+                                .await
+                                {
+                                    Ok(stream) => {
+                                        let mut accumulated = String::new();
+                                        tokio::pin!(stream);
+                                        while let Some(delta) = stream.next().await {
+                                            match delta {
+                                                Ok(chunk) => {
+                                                    accumulated.push_str(&chunk);
+                                                    let _ = tx.send(
+                                                        TranslationEvent::AssistantMessageDelta {
+                                                            history_index,
+                                                            accumulated_text: accumulated
+                                                                .clone(),
+                                                        },
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    let _ = tx.send(
+                                                        TranslationEvent::AssistantMessage {
+                                                            history_index,
+                                                            original_text,
+                                                            translated: Err(e),
+                                                            thinking,
+                                                            tool_uses,
+                                                        },
+                                                    );
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                        // Stream complete
+                                        let _ = tx.send(
+                                            TranslationEvent::AssistantMessageDelta {
+                                                history_index,
+                                                accumulated_text: accumulated.clone(),
+                                            },
+                                        );
+                                        let _ = tx.send(
+                                            TranslationEvent::AssistantMessage {
+                                                history_index,
+                                                original_text,
+                                                translated: Ok(accumulated),
+                                                thinking,
+                                                tool_uses,
+                                            },
+                                        );
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(
+                                            TranslationEvent::AssistantMessage {
+                                                history_index,
+                                                original_text,
+                                                translated: Err(e),
+                                                thinking,
+                                                tool_uses,
+                                            },
+                                        );
+                                    }
+                                }
                             });
                         } else {
                             push_assistant_message(
@@ -1134,17 +1258,64 @@ async fn run_event_loop(
                                 let target_language =
                                     app.ui_locale.translation_target_name().to_string();
                                 tokio::spawn(async move {
-                                    let translated = crate::tui::translation::translate_text(
+                                    use futures_util::StreamExt;
+                                    match crate::tui::translation::translate_text_stream(
                                         &original_thinking,
                                         &client,
                                         &translation_model,
                                         &target_language,
                                     )
-                                    .await;
-                                    let _ = tx.send(TranslationEvent::Thinking {
-                                        placeholder,
-                                        translated,
-                                    });
+                                    .await
+                                    {
+                                        Ok(stream) => {
+                                            let mut accumulated = String::new();
+                                            tokio::pin!(stream);
+                                            while let Some(delta) = stream.next().await {
+                                                match delta {
+                                                    Ok(chunk) => {
+                                                        accumulated.push_str(&chunk);
+                                                        let _ = tx.send(
+                                                            TranslationEvent::ThinkingDelta {
+                                                                placeholder: placeholder.clone(),
+                                                                accumulated_text: accumulated
+                                                                    .clone(),
+                                                            },
+                                                        );
+                                                    }
+                                                    Err(e) => {
+                                                        let _ = tx.send(
+                                                            TranslationEvent::Thinking {
+                                                                placeholder,
+                                                                translated: Err(e),
+                                                            },
+                                                        );
+                                                        return;
+                                                    }
+                                                }
+                                            }
+                                            // Stream complete
+                                            let _ = tx.send(
+                                                TranslationEvent::ThinkingDelta {
+                                                    placeholder: placeholder.clone(),
+                                                    accumulated_text: accumulated.clone(),
+                                                },
+                                            );
+                                            let _ = tx.send(
+                                                TranslationEvent::Thinking {
+                                                    placeholder,
+                                                    translated: Ok(accumulated),
+                                                },
+                                            );
+                                        }
+                                        Err(e) => {
+                                            let _ = tx.send(
+                                                TranslationEvent::Thinking {
+                                                    placeholder,
+                                                    translated: Err(e),
+                                                },
+                                            );
+                                        }
+                                    }
                                 });
                             } else {
                                 let placeholder =
@@ -3143,7 +3314,7 @@ async fn run_event_loop(
                         // is consumed without firing a turn. Disabled
                         // behaviour falls through to normal turn submit.
                         if config.memory_enabled() && is_memory_quick_add(&input) {
-                            handle_memory_quick_add(app, &input, config);
+                            handle_memory_quick_add(app, &input, config, &engine_handle).await;
                             continue;
                         }
                         if looks_like_slash_command_input(&input) {
@@ -7094,6 +7265,7 @@ fn reasoning_timeline_text(app: &App, selected_cell_index: usize) -> Option<Stri
             content,
             streaming,
             duration_secs,
+            ..
         }) = app.cell_at_virtual_index(cell_index)
         else {
             continue;

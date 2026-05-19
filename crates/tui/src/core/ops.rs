@@ -83,4 +83,7 @@ pub enum Op {
 
     /// Shutdown the engine
     Shutdown,
+
+    /// Store a memory entry via vector DB (used by `# foo` quick-add).
+    StoreMemory(String),
 }

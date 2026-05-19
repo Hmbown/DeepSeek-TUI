@@ -16,6 +16,8 @@
 //!   translation — no tool calls, no conversation history.
 //! - `TranslationStatus` — tracks per-message translation status in the UI.
 
+use std::pin::Pin;
+
 use anyhow::Result;
 
 use crate::client::DeepSeekClient;
@@ -91,6 +93,7 @@ fn is_cjk(ch: char) -> bool {
 /// # Errors
 ///
 /// Returns an error if the API call fails or the response is malformed.
+#[allow(dead_code)]
 pub async fn translate_text(
     text: &str,
     client: &DeepSeekClient,
@@ -98,6 +101,22 @@ pub async fn translate_text(
     target_language: &str,
 ) -> Result<String> {
     client.translate(text, model, target_language).await
+}
+
+/// Translate text using streaming SSE output.
+///
+/// Returns a stream of text deltas so the caller can display
+/// progressive translation results instead of waiting for the
+/// full response.
+pub async fn translate_text_stream(
+    text: &str,
+    client: &DeepSeekClient,
+    model: &str,
+    target_language: &str,
+) -> Result<
+    Pin<Box<dyn futures_util::Stream<Item = Result<String>> + Send>>,
+> {
+    client.translate_stream(text, model, target_language).await
 }
 
 /// Status of a translation operation for a single message.

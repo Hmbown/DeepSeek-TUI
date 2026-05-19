@@ -404,6 +404,7 @@ impl Engine {
                 Some(&self.session.workspace),
                 Some(&compaction_pins),
                 Some(&compaction_paths),
+                self.vector_db.is_some(),
             );
         if should_run_summary_compaction && let Some(client) = client {
             match compact_messages_safe(
@@ -419,6 +420,7 @@ impl Engine {
                 Ok(result) => {
                     if !result.messages.is_empty() || self.session.messages.is_empty() {
                         self.session.messages = result.messages;
+                        self.store_compaction_summary_to_vector_db(&result.summary_prompt).await;
                         self.merge_compaction_summary(result.summary_prompt);
                         refreshed = true;
                     }

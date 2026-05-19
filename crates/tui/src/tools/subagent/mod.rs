@@ -597,6 +597,10 @@ pub struct SubAgentForkContext {
     pub system: Option<SystemPrompt>,
     pub messages: Vec<Message>,
     pub structured_state_block: Option<String>,
+    /// Pre-built retrieved-context block from the parent agent's
+    /// vector DB search. Injected into the sub-agent's system
+    /// prompt as background knowledge for the task (#12).
+    pub parent_retrieved_block: Option<String>,
 }
 
 /// Runtime configuration for spawning sub-agents.
@@ -3098,9 +3102,34 @@ fn subagent_request_system_prompt(
     subagent_system_prompt: &str,
     fork_context: Option<&SubAgentForkContext>,
 ) -> SystemPrompt {
-    fork_context
+    let base = fork_context
         .and_then(|context| context.system.clone())
-        .unwrap_or_else(|| SystemPrompt::Text(subagent_system_prompt.to_string()))
+        .unwrap_or_else(|| SystemPrompt::Text(subagent_system_prompt.to_string()));
+
+    // #12: inject parent-retrieved context as background knowledge.
+    // Sub-agents inherit the parent's vector DB search results so they
+    // don't start blind — they already know relevant memories, history
+    // summaries, and (eventually) code chunks the parent found.
+    let Some(block) = fork_context
+        .and_then(|cx| cx.parent_retrieved_block.clone())
+        .filter(|b| !b.is_empty())
+    else {
+        return base;
+    };
+
+    match base {
+        SystemPrompt::Text(text) => {
+            SystemPrompt::Text(format!("{text}\n\n{block}"))
+        }
+        SystemPrompt::Blocks(mut blocks) => {
+            blocks.push(crate::models::SystemBlock {
+                block_type: "text".to_string(),
+                text: block,
+                cache_control: None,
+            });
+            SystemPrompt::Blocks(blocks)
+        }
+    }
 }
 
 fn build_initial_subagent_messages(
@@ -3317,6 +3346,7 @@ async fn run_subagent(
         system: Some(request_system.clone()),
         messages: messages.clone(),
         structured_state_block: None,
+        parent_retrieved_block: None,
     });
     let tool_registry = SubAgentToolRegistry::new(
         runtime_for_tools,

@@ -76,6 +76,10 @@ pub enum ContextMenuAction {
     },
     /// Show all currently hidden cells.
     ShowAllHidden,
+    /// Toggle inline expand/collapse of a reasoning (thinking) cell body.
+    ToggleExpandThinking {
+        cell_index: usize,
+    },
 }
 
 #[derive(Debug, Clone)]

@@ -87,13 +87,109 @@ impl Engine {
                 .pinned_message_indices(&self.session.messages, &self.session.workspace);
             let compaction_paths = self.session.working_set.top_paths(24);
 
+            // Turn-based mini-compaction (Tier 2 phase summarisation).
+            // When `turns_interval` is set (e.g. 10), a compaction runs
+            // every N turns regardless of token threshold, producing
+            // vector-memory summaries for semantic retrieval.
+            let effective_interval = self.dynamic_mini_compaction_interval();
+            let mut trigger_turn_compaction = false;
+            if let Some(interval) = effective_interval {
+                self.compaction_turn_counter += 1;
+                if self.compaction_turn_counter >= interval as u64 {
+                    trigger_turn_compaction = true;
+                    self.compaction_turn_counter = 0;
+                }
+            }
+
+            // --- Incremental mini-compaction (Phase 0) ---
+            // Only process messages added since the last compaction; the result
+            // is stored as a Phase 0 summary in the vector DB for semantic retrieval.
+            let mut mini_compaction_ran = false;
+            if self.config.compaction.enabled && trigger_turn_compaction {
+                let total_msgs = self.session.messages.len();
+                let keep_recent = KEEP_RECENT_MESSAGES.min(total_msgs);
+                let start_idx = self.last_compaction_message_index;
+                let end_idx = total_msgs.saturating_sub(keep_recent);
+
+                if end_idx > start_idx + MIN_SUMMARIZE_MESSAGES {
+                    // Extract the incremental message range (user + assistant).
+                    let range: Vec<Message> = self.session.messages[start_idx..end_idx]
+                        .iter()
+                        .filter(|m| m.role == "user" || m.role == "assistant")
+                        .cloned()
+                        .collect();
+
+                    if !range.is_empty() {
+                        let turn_range = format!("{}-{}", start_idx, end_idx.saturating_sub(1));
+                        let _ = self
+                            .tx_event
+                            .send(Event::status(format!(
+                                "Mini-compacting messages {turn_range}..."
+                            )))
+                            .await;
+
+                        match summarize_range(
+                            &client,
+                            &range,
+                            &self.config.compaction.model,
+                        )
+                        .await
+                        {
+                            Ok(summary_text) if !summary_text.trim().is_empty() => {
+                                let summary = crate::vector_db::HistorySummary {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    turn_range,
+                                    summary: summary_text,
+                                    key_files: None,
+                                    session_id: self.session.id.clone(),
+                                    created_at: chrono::Utc::now(),
+                                    score: 0.0,
+                                    phase: 0,
+                                };
+                                if let Some(ref vdb) = self.vector_db {
+                                    if let Err(e) = vdb.store_summary(summary).await {
+                                        tracing::warn!(
+                                            "mini-compaction: store failed: {e}"
+                                        );
+                                    } else {
+                                        tracing::debug!(
+                                            start = start_idx,
+                                            end = end_idx,
+                                            "mini-compaction: stored Phase 0 summary"
+                                        );
+                                    }
+
+                                    // Phase 0→1 merging: when ≥5 Phase 0 summaries
+                                    // accumulate for this session, merge the oldest
+                                    // 5 into a single Phase 1 summary.
+                                    self.try_merge_phase0_summaries(vdb, &client).await;
+                                }
+                            }
+                            Ok(_) => {
+                                tracing::debug!("mini-compaction: empty summary");
+                            }
+                            Err(e) => {
+                                tracing::warn!("mini-compaction failed: {e}");
+                            }
+                        }
+                    }
+
+                    self.last_compaction_message_index = end_idx;
+                }
+                mini_compaction_ran = true;
+            }
+
+            // --- Token-threshold full compaction ---
+            // Skip if mini-compaction already ran and freed enough budget.
             if self.config.compaction.enabled
+                && !mini_compaction_ran
                 && should_compact(
                     &self.session.messages,
                     &self.config.compaction,
                     Some(&self.session.workspace),
                     Some(&compaction_pins),
                     Some(&compaction_paths),
+                    self.vector_db.is_some(),
                 )
             {
                 let compaction_id = format!("compact_{}", &uuid::Uuid::new_v4().to_string()[..8]);
@@ -119,11 +215,16 @@ impl Engine {
                 .await
                 {
                     Ok(result) => {
-                        // Only update if we got valid messages (never corrupt state)
                         if !result.messages.is_empty() || self.session.messages.is_empty() {
                             let auto_messages_after = result.messages.len();
                             self.session.messages = result.messages;
+                            let summary = result.summary_prompt.clone();
                             self.merge_compaction_summary(result.summary_prompt);
+                            self.store_compaction_summary_to_vector_db(&summary).await;
+                            // Full compaction rewrites all messages, so reset the
+                            // incremental window to current end.
+                            self.last_compaction_message_index =
+                                self.session.messages.len().saturating_sub(KEEP_RECENT_MESSAGES);
                             self.emit_session_updated().await;
                             let removed = auto_messages_before.saturating_sub(auto_messages_after);
                             let status = if result.retries_used > 0 {
@@ -157,7 +258,6 @@ impl Engine {
                         }
                     }
                     Err(err) => {
-                        // Log error but continue with original messages (never corrupt)
                         let message = format!("Auto-compaction failed: {err}");
                         self.emit_compaction_failed(compaction_id, true, message.clone())
                             .await;
@@ -282,11 +382,17 @@ impl Engine {
                 }
             }
 
+            // Prepare request context: filter messages via verbatim window and
+            // augment system prompt with retrieved semantic context from
+            // the vector database (Tier 2 memory + Tier 3 summaries).
+            let (filtered_messages, augmented_system) =
+                self.prepare_request_context().await;
+
             let request = MessageRequest {
                 model: self.session.model.clone(),
-                messages: self.messages_with_turn_metadata(),
+                messages: filtered_messages,
                 max_tokens: effective_max_output_tokens(&self.session.model),
-                system: self.session.system_prompt.clone(),
+                system: augmented_system,
                 tools: active_tools.clone(),
                 tool_choice: if active_tools.is_some() {
                     if self.config.strict_tool_mode {

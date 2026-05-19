@@ -69,9 +69,48 @@ impl ToolSpec for RememberTool {
             )
         })?;
 
+        // Write to flat memory.md (primary storage, backward compatible).
         crate::memory::append_entry(path, note).map_err(|err| {
             ToolError::execution_failed(format!("failed to append to {}: {err}", path.display()))
         })?;
+
+        // Write to vector DB for semantic retrieval (best-effort).
+        if let Some(ref vdb) = context.vector_db {
+            // #5: memory dedup — check for existing similar memories
+            // before writing. If an existing memory matches the new note
+            // with score > 0.85, skip the write to avoid polluting the
+            // vector store with near-duplicates.
+            let existing = vdb
+                .search_memories(note, 3, None)
+                .await
+                .unwrap_or_default();
+            // #5: dedup by vector similarity score alone — cosine >= 0.85
+            // signals near-duplicate semantic content regardless of exact
+            // wording. The `contains` substring check was removed because it
+            // misses inversions (old content broader than new), a common case
+            // when the model progressively refines its understanding.
+            let too_similar = existing.iter().any(|m| m.score > 0.85);
+
+            if too_similar {
+                tracing::debug!(
+                    note = %note,
+                    "remember tool: skipping duplicate memory (score > 0.85)"
+                );
+            } else {
+                let item = crate::vector_db::NewMemoryItem {
+                    content: note.to_string(),
+                    source: "model".to_string(),
+                    session_id: context.state_namespace.clone(),
+                    tags: Some("remembered".to_string()),
+                    ttl: None,
+                };
+                if let Err(e) = vdb.store_memory(item).await {
+                    tracing::warn!(
+                        "remember tool: failed to store memory in vector db: {e}"
+                    );
+                }
+            }
+        }
 
         Ok(ToolResult::success(format!(
             "remembered: {}",

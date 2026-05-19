@@ -184,6 +184,31 @@ impl ToolSpec for ReadFileTool {
         }
         output.push_str("</file>");
 
+        // Append related code chunks from the vector DB code_index (Tier 4)
+        // when available. Best-effort: if the search fails we still return
+        // the file contents as-is.
+        if context.code_index_enabled
+            && let Some(ref vdb) = context.vector_db
+        {
+            let preview: String = contents.chars().take(200).collect();
+            let query = format!("{path_str} {preview}");
+            if let Ok(chunks) = vdb.search_code(&query, 3, &context.project_id, None).await {
+                if !chunks.is_empty() {
+                    let related: Vec<String> = chunks
+                        .into_iter()
+                        .map(|(fp, content, score)| {
+                            format!("--- related: {fp} (score={score:.2}) ---\n{content}",)
+                        })
+                        .collect();
+                    if !related.is_empty() {
+                        output.push_str("\n\n<related_code>\n");
+                        output.push_str(&related.join("\n\n"));
+                        output.push_str("\n</related_code>");
+                    }
+                }
+            }
+        }
+
         Ok(ToolResult::success(output))
     }
 }
@@ -436,6 +461,15 @@ impl ToolSpec for WriteFileTool {
             ToolError::execution_failed(format!("Failed to write {}: {}", file_path.display(), e))
         })?;
 
+        // Index the file for code search (Tier 4). Best-effort: a failed
+        // index write does not affect the tool result.
+        if context.code_index_enabled
+            && let Some(ref vdb) = context.vector_db
+        {
+            let fp = file_path.to_string_lossy();
+            vdb.index_file(&fp, file_content, &context.project_id).await;
+        }
+
         let display = file_path.display().to_string();
         let diff = make_unified_diff(&display, &prior_contents, file_content);
         let summary = if existed_before {
@@ -589,6 +623,14 @@ impl ToolSpec for EditFileTool {
         fs::write(&file_path, &updated).map_err(|e| {
             ToolError::execution_failed(format!("Failed to write {}: {}", file_path.display(), e))
         })?;
+
+        // Index the file for code search (Tier 4). Best-effort.
+        if context.code_index_enabled
+            && let Some(ref vdb) = context.vector_db
+        {
+            let fp = file_path.to_string_lossy();
+            vdb.index_file(&fp, &updated, &context.project_id).await;
+        }
 
         let display = file_path.display().to_string();
         let diff = make_unified_diff(&display, &contents, &updated);

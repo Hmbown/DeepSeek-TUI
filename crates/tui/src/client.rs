@@ -4,6 +4,7 @@
 //! client now routes all normal traffic through that surface.
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -18,7 +19,9 @@ use crate::llm_client::{
     LlmClient, LlmError, RetryConfig as LlmRetryConfig, extract_retry_after, with_retry,
 };
 use crate::logging;
-use crate::models::{MessageRequest, MessageResponse, ServerToolUsage, SystemPrompt, Usage};
+use crate::models::{
+    Delta, MessageRequest, MessageResponse, ServerToolUsage, StreamEvent, SystemPrompt, Usage,
+};
 
 pub(super) fn to_api_tool_name(name: &str) -> String {
     let mut out = String::new();
@@ -610,7 +613,7 @@ impl DeepSeekClient {
             ],
             "max_tokens": 4096,
             "temperature": 0.1,
-            "stream": false
+            "stream": true
         });
         apply_reasoning_effort(&mut body, Some("off"), self.api_provider);
 
@@ -628,6 +631,152 @@ impl DeepSeekClient {
         Ok(translated)
     }
 
+    /// Translate text using streaming SSE output.
+    ///
+    /// Like [`translate`], but yields text deltas through a returned stream
+    /// so the UI can display progress rather than waiting for the full result.
+    /// No tool calls, no thinking — just progressive text deltas.
+    pub async fn translate_stream(
+        &self,
+        text: &str,
+        model: &str,
+        target_language: &str,
+    ) -> Result<
+        Pin<Box<dyn futures_util::Stream<Item = Result<String>> + Send>>,
+    > {
+        use futures_util::StreamExt;
+
+        let url = api_url(&self.base_url, "chat/completions");
+        let mut body = serde_json::json!({
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": format!(
+                        "You are a professional translator. Your ONLY task is to translate text to {target_language}. \
+                         Rules:\n\
+                         1. Output ONLY the translation, nothing else — no explanations, no notes, no quotes.\n\
+                         2. Preserve all code blocks (```...```), URLs, file paths, command names, \
+                         and technical terms like API names, function names, and library names untranslated.\n\
+                         3. Keep Markdown formatting (headings, lists, bold, italics, links) intact.\n\
+                         4. Translate all natural-language prose naturally and professionally.\n\
+                         5. Do NOT add any prefix, suffix, or commentary.\n\
+                         6. If the input is already in {target_language} or contains no prose to translate, \
+                         return it as-is."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": text
+                }
+            ],
+            "max_tokens": 4096,
+            "temperature": 0.1,
+            "stream": true,
+            "stream_options": {
+                "include_usage": true
+            },
+        });
+        apply_reasoning_effort(&mut body, Some("off"), self.api_provider);
+
+        let response = self
+            .send_with_retry(|| self.http_client.post(&url).json(&body))
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
+            anyhow::bail!("Translate API error: HTTP {status}: {error_text}");
+        }
+
+        let byte_stream = response.bytes_stream();
+
+        let stream = async_stream::stream! {
+            let mut byte_stream = std::pin::pin!(byte_stream);
+            let mut byte_buf: Vec<u8> = Vec::with_capacity(8192);
+            let mut content_index: u32 = 0;
+            let mut text_started = false;
+            let mut thinking_started = false;
+            let mut tool_indices: std::collections::HashMap<u32, u32> =
+                std::collections::HashMap::new();
+            let mut line_buf = String::new();
+            const MAX_SSE_BUF: usize = 10 * 1024 * 1024;
+
+            loop {
+                let chunk = match byte_stream.next().await {
+                    Some(Ok(bytes)) => bytes,
+                    Some(Err(e)) => {
+                        yield Err(anyhow::anyhow!("Stream read error: {e}"));
+                        break;
+                    }
+                    None => break,
+                };
+
+                byte_buf.extend_from_slice(&chunk);
+
+                if byte_buf.len() > MAX_SSE_BUF {
+                    yield Err(anyhow::anyhow!(
+                        "SSE buffer exceeded {MAX_SSE_BUF} bytes — aborting stream"
+                    ));
+                    break;
+                }
+
+                // Process complete SSE lines from the buffer
+                while let Some(newline_pos) = byte_buf.iter().position(|&b| b == b'\n') {
+                    let mut end = newline_pos;
+                    if end > 0 && byte_buf[end - 1] == b'\r' {
+                        end -= 1;
+                    }
+                    let line =
+                        String::from_utf8_lossy(&byte_buf[..end]).into_owned();
+                    byte_buf.drain(..newline_pos + 1);
+
+                    if line.is_empty() {
+                        // Empty line = event boundary, process accumulated data
+                        if !line_buf.is_empty() {
+                            let data = std::mem::take(&mut line_buf);
+                            if data.trim() == "[DONE]" {
+                                // Stream complete
+                            } else if let Ok(chunk_json) =
+                                serde_json::from_str::<serde_json::Value>(&data)
+                            {
+                                let events = chat::parse_sse_chunk(
+                                    &chunk_json,
+                                    &mut content_index,
+                                    &mut text_started,
+                                    &mut thinking_started,
+                                    &mut tool_indices,
+                                    false,
+                                );
+                                for event in events {
+                                    if let StreamEvent::ContentBlockDelta {
+                                        delta: Delta::TextDelta { text: delta_text },
+                                        ..
+                                    } = event
+                                    {
+                                        yield Ok(delta_text);
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        line_buf.push_str(data);
+                    }
+                }
+            }
+        };
+
+        Ok(Pin::from(Box::new(stream)
+            as Box<
+                dyn futures_util::Stream<Item = Result<String>> + Send,
+            >))
+    }
+}
+
+impl DeepSeekClient {
     /// List available models from the provider.
     pub async fn list_models(&self) -> Result<Vec<AvailableModel>> {
         let url = api_url(&self.base_url, "models");

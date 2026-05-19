@@ -113,6 +113,44 @@ pub fn compose_block(enabled: bool, path: &Path) -> Option<String> {
     as_system_block(&content, path)
 }
 
+/// Compose a memory marker for vector-memory mode.
+///
+/// When `healthy` is `true` (LanceDB connected), outputs a lightweight marker
+/// telling the AI that memories are available through semantic retrieval.
+/// When `healthy` is `false` (LanceDB unavailable), inlines the full flat file
+/// content as an emergency fallback so memory is never lost.
+#[must_use]
+pub fn compose_vector_managed_block(enabled: bool, path: &Path, healthy: bool) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+    let _ = load(path)?;
+    let display = path.display();
+
+    if healthy {
+        let content = load(path)?;
+        let catalog = extract_headings(&content);
+        Some(format!(
+            "<user_memory storage=\"lancedb\" healthy=\"true\"/>\n\
+             <user_memory_catalog>\n\
+             {catalog}\n\
+             </user_memory_catalog>\n\
+             <retrieval_note>\n\
+             Durable memory is available through vector search; \
+             relevant entries are injected per turn.\n\
+             </retrieval_note>"
+        ))
+    } else {
+        // Fallback: inline flat file content when vector DB is unavailable.
+        let content = load(path)?;
+        Some(format!(
+            "<user_memory storage=\"flat_file\" healthy=\"false\" source=\"{display}\">\n\
+             {content}\n\
+             </user_memory>"
+        ))
+    }
+}
+
 /// Append `entry` to the memory file at `path`, creating it (and its
 /// parent directory) if needed. The entry is timestamped so the user can
 /// later see when each note was added. The leading `#` from a `# foo`
@@ -141,6 +179,140 @@ pub fn append_entry(path: &Path, entry: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Parse memory.md content into logical sections by Markdown headings.
+///
+/// Each section is a (heading, body) pair. Non-heading preamble at the start
+/// of the file becomes a section with an empty heading.
+fn split_into_sections(content: &str) -> Vec<(String, String)> {
+    if content.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let mut sections: Vec<(String, Vec<String>)> = Vec::new();
+    let mut current_heading = String::new();
+    let mut current_lines: Vec<String> = Vec::new();
+
+    for line in content.lines() {
+        if line.starts_with("# ") || line.starts_with("## ") {
+            // Save previous section
+            if !current_lines.is_empty() || !current_heading.is_empty() {
+                sections.push((current_heading.clone(), current_lines.clone()));
+            }
+            current_heading = line.to_string();
+            current_lines.clear();
+        } else {
+            current_lines.push(line.to_string());
+        }
+    }
+    // Last section
+    sections.push((current_heading, current_lines));
+
+    // Filter out empty sections and format
+    sections
+        .into_iter()
+        .filter(|(heading, lines)| {
+            !heading.is_empty() || lines.iter().any(|l| !l.trim().is_empty())
+        })
+        .map(|(heading, lines)| {
+            let body = lines.join("\n").trim().to_string();
+            (heading, body)
+        })
+        .filter(|(heading, body)| {
+            !heading.is_empty() || !body.is_empty()
+        })
+        .collect()
+}
+
+/// Sync existing memory.md content into the vector DB.
+///
+/// Reads the flat file at `memory_path`, splits it into sections by
+/// Markdown heading, and stores each section as a `NewMemoryItem` in
+/// the vector DB via `vdb.store_memory()`. Uses cosine-similarity dedup
+/// (>0.85 score) to avoid importing near-duplicates.
+///
+/// Returns the number of sections successfully imported.
+pub async fn sync_memory_file_to_vector_db(
+    memory_path: &Path,
+    vdb: &crate::vector_db::VectorDbService,
+    session_id: &str,
+) -> usize {
+    let Some(content) = load(memory_path) else {
+        return 0;
+    };
+
+    let sections = split_into_sections(&content);
+    if sections.is_empty() {
+        return 0;
+    }
+
+    let mut imported = 0;
+    for (heading, body) in &sections {
+        let section_text = if heading.is_empty() {
+            body.clone()
+        } else {
+            format!("{heading}\n{body}")
+        };
+        let section_text = section_text.trim().to_string();
+        if section_text.is_empty() {
+            continue;
+        }
+
+        // Dedup: check if a semantically similar memory already exists.
+        let existing = vdb
+            .search_memories(&section_text, 3, None)
+            .await
+            .unwrap_or_default();
+        let too_similar = existing.iter().any(|m| m.score > 0.85);
+        if too_similar {
+            continue;
+        }
+
+        let item = crate::vector_db::NewMemoryItem {
+            content: section_text,
+            source: "memory_md_sync".to_string(),
+            session_id: session_id.to_string(),
+            tags: Some("imported".to_string()),
+            ttl: None,
+        };
+
+        match vdb.store_memory(item).await {
+            Ok(_) => imported += 1,
+            Err(e) => {
+                tracing::warn!(
+                    "sync_memory_file: failed to store section '{}': {e}",
+                    heading,
+                );
+            }
+        }
+    }
+
+    if imported > 0 {
+        tracing::info!(
+            "sync_memory_file: imported {imported}/{} sections from {}",
+            sections.len(),
+            memory_path.display(),
+        );
+    }
+    imported
+}
+
+/// Extract a condensed table-of-contents from memory.md content.
+///
+/// Collects all `# ` and `## ` heading lines, preserving hierarchy,
+/// so the AI gets a lightweight overview of available memory topics
+/// and can craft targeted queries for vector search to retrieve them.
+fn extract_headings(content: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("# ") {
+            lines.push(format!("- {}", trimmed));
+        } else if trimmed.starts_with("## ") {
+            lines.push(format!("  - {}", trimmed));
+        }
+    }
+    lines.join("\n")
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +352,28 @@ mod tests {
     #[test]
     fn as_system_block_returns_none_for_empty_content() {
         assert!(as_system_block("   ", Path::new("/tmp/m.md")).is_none());
+    }
+
+    #[test]
+    fn vector_managed_block_omits_content_when_healthy() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("memory.md");
+        fs::write(&path, "very large durable note").unwrap();
+
+        let block = compose_vector_managed_block(true, &path, true).unwrap();
+        assert!(block.contains("healthy=\"true\""));
+        assert!(!block.contains("very large durable note"));
+    }
+
+    #[test]
+    fn vector_managed_block_inlines_content_when_unhealthy() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("memory.md");
+        fs::write(&path, "emergency memory content").unwrap();
+
+        let block = compose_vector_managed_block(true, &path, false).unwrap();
+        assert!(block.contains("healthy=\"false\""));
+        assert!(block.contains("emergency memory content"));
     }
 
     #[test]
@@ -243,6 +437,41 @@ mod tests {
             .unwrap()
             .strip_suffix("\n</user_memory>")
             .unwrap()
+    }
+
+    /// Verify that `compose_vector_managed_block` with `healthy=true` returns
+    /// a `<user_memory_catalog>` block with extracted headings when pointed at
+    /// the real production memory.md file.
+    #[ignore = "requires real ~/.deepseek/memory.md file"]
+    #[test]
+    fn vector_managed_block_real_file_produces_catalog() {
+        let real_path = dirs::home_dir()
+            .map(|p| p.join(".deepseek/memory.md"))
+            .expect("home dir must exist for this test");
+        if !real_path.exists() {
+            eprintln!("SKIP: real memory.md not found at {}", real_path.display());
+            return;
+        }
+        let block = compose_vector_managed_block(true, &real_path, true);
+        assert!(block.is_some(), "should return Some for real file");
+        let output = block.unwrap();
+        eprintln!("=== compose_vector_managed_block(healthy=true) OUTPUT ===");
+        eprintln!("{output}");
+        eprintln!("=== END ===");
+        assert!(output.contains("<user_memory storage=\"lancedb\" healthy=\"true\"/>"),
+            "should contain healthy marker");
+        assert!(output.contains("<user_memory_catalog>"),
+            "should contain catalog opening tag");
+        assert!(output.contains("</user_memory_catalog>"),
+            "should contain catalog closing tag");
+        assert!(output.contains("- #"),
+            "should contain at least one extracted heading");
+        let headings: Vec<&str> = output.lines()
+            .filter(|l| l.trim().starts_with("- "))
+            .collect();
+        assert!(!headings.is_empty(),
+            "should have at least one heading line, got: {output:?}");
+        eprintln!("✓ Found {} extracted heading lines", headings.len());
     }
 
     #[test]
