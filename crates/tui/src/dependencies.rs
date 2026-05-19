@@ -200,7 +200,7 @@ pub fn resolve_node() -> Option<String> {
 
 /// Extract the simple type name from `std::any::type_name` output.
 /// e.g. turns `deepseek_tui::dependencies::Git` into `Git`.
-fn simple_type_name<T>() -> &'static str {
+fn simple_type_name<T: ?Sized>() -> &'static str {
     let full = std::any::type_name::<T>();
     full.rsplit("::")
         .next()

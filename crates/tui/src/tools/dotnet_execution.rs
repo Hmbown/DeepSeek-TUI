@@ -63,7 +63,7 @@ pub fn dotnet_execution_tool_definition() -> Tool {
 /// `dotnet run file.cs` creates an implicit console project.
 pub async fn execute_dotnet_execution_tool(
     input: &Value,
-    workspace: &Path,
+    _workspace: &Path,
 ) -> Result<ToolResult, ToolError> {
     let code = required_str(input, "code")?;
 
