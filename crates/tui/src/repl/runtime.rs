@@ -167,6 +167,20 @@ pub struct PythonRuntime {
     round_timeout: Option<Duration>,
 }
 
+async fn read_stdout_line_lossy(
+    stdout: &mut BufReader<ChildStdout>,
+) -> Result<Option<String>, String> {
+    let mut buf = Vec::new();
+    let n = stdout
+        .read_until(b'\n', &mut buf)
+        .await
+        .map_err(|e| format!("stdout read: {e}"))?;
+    if n == 0 {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+}
+
 impl PythonRuntime {
     /// Spawn a REPL with no `context` variable and no LLM helpers wired up.
     /// Used by the agent loop for inline `repl` blocks the model emits in
@@ -288,15 +302,9 @@ impl PythonRuntime {
 
     async fn read_until_ready(&mut self, ready_sentinel: &str) -> Result<(), String> {
         loop {
-            let mut line = String::new();
-            let n = self
-                .stdout
-                .read_line(&mut line)
-                .await
-                .map_err(|e| format!("stdout read: {e}"))?;
-            if n == 0 {
+            let Some(line) = read_stdout_line_lossy(&mut self.stdout).await? else {
                 return Err("Python interpreter closed stdout before ready signal".to_string());
-            }
+            };
             let trimmed = line.trim_end_matches(['\n', '\r']);
             if trimmed == ready_sentinel {
                 return Ok(());
@@ -352,15 +360,9 @@ impl PythonRuntime {
 
         let read_loop = async {
             loop {
-                let mut line = String::new();
-                let n = self
-                    .stdout
-                    .read_line(&mut line)
-                    .await
-                    .map_err(|e| format!("stdout read: {e}"))?;
-                if n == 0 {
+                let Some(line) = read_stdout_line_lossy(&mut self.stdout).await? else {
                     return Err("Python interpreter closed stdout mid-round".to_string());
-                }
+                };
                 let trimmed = line.trim_end_matches(['\n', '\r']);
 
                 if let Some(rest) = trimmed.strip_prefix(&done_prefix) {
@@ -1296,6 +1298,27 @@ mod tests {
         // The runtime is still alive — next round should work.
         let r2 = rt.execute("print('still here')").await.expect("r2");
         assert!(r2.stdout.contains("still here"));
+        rt.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn non_utf8_stdout_decodes_lossy_and_runtime_survives() {
+        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let round = rt
+            .execute(
+                r#"import os, sys
+os.write(sys.stdout.fileno(), b"before\xffafter\n")
+"#,
+            )
+            .await
+            .expect("execute");
+
+        assert!(round.stdout.contains("before"), "{}", round.stdout);
+        assert!(round.stdout.contains("after"), "{}", round.stdout);
+        assert!(round.stdout.contains('\u{fffd}'), "{}", round.stdout);
+
+        let next = rt.execute("print('still here')").await.expect("next");
+        assert!(next.stdout.contains("still here"), "{}", next.stdout);
         rt.shutdown().await;
     }
 
