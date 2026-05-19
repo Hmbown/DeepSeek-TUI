@@ -1467,6 +1467,8 @@ pub fn is_sensitive_config_key(key: &str) -> bool {
 }
 
 fn normalize_config_file_path(path: PathBuf) -> Result<PathBuf> {
+    use std::path::Component;
+
     if path.as_os_str().is_empty() {
         bail!("config path cannot be empty");
     }
@@ -1479,12 +1481,29 @@ fn normalize_config_file_path(path: PathBuf) -> Result<PathBuf> {
     if path.file_name().is_none() {
         bail!("config path must include a file name");
     }
-    if path.is_absolute() {
-        return Ok(path);
+
+    // Resolve to absolute path
+    let abs_path = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .context("failed to resolve current directory for config path")?
+            .join(&path)
+    };
+
+    // Canonicalize to resolve symlinks and normalize the path
+    let canonical_path = abs_path.canonicalize().unwrap_or(abs_path);
+
+    // On Windows, check for UNC paths which could be used for path traversal
+    #[cfg(windows)]
+    {
+        let path_str = canonical_path.to_string_lossy();
+        if path_str.starts_with(r"\\") {
+            bail!("config path cannot use UNC paths");
+        }
     }
-    Ok(std::env::current_dir()
-        .context("failed to resolve current directory for config path")?
-        .join(path))
+
+    Ok(canonical_path)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1698,41 +1717,41 @@ mod tests {
 
         unsafe fn restore_var(key: &str, value: Option<OsString>) {
             if let Some(value) = value {
-                unsafe { env::set_var(key, value) };
+                // env::set_var is safe here because EnvGuard uses a module-level mutex
+                // to serialize all environment variable modifications in tests.
+                env::set_var(key, value);
             } else {
-                unsafe { env::remove_var(key) };
+                env::remove_var(key);
             }
         }
     }
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
-            // Safety: test-only environment mutation guarded by a module mutex.
-            unsafe {
-                Self::restore_var("DEEPSEEK_API_KEY", self.deepseek_api_key.take());
-                Self::restore_var("DEEPSEEK_BASE_URL", self.deepseek_base_url.take());
-                Self::restore_var("DEEPSEEK_HTTP_HEADERS", self.deepseek_http_headers.take());
-                Self::restore_var("DEEPSEEK_MODEL", self.deepseek_model.take());
-                Self::restore_var("DEEPSEEK_PROVIDER", self.deepseek_provider.take());
-                Self::restore_var("DEEPSEEK_AUTH_MODE", self.deepseek_auth_mode.take());
-                Self::restore_var("NVIDIA_API_KEY", self.nvidia_api_key.take());
-                Self::restore_var("NVIDIA_NIM_API_KEY", self.nvidia_nim_api_key.take());
-                Self::restore_var("NIM_BASE_URL", self.nim_base_url.take());
-                Self::restore_var("NVIDIA_BASE_URL", self.nvidia_base_url.take());
-                Self::restore_var("NVIDIA_NIM_BASE_URL", self.nvidia_nim_base_url.take());
-                Self::restore_var("OPENROUTER_API_KEY", self.openrouter_api_key.take());
-                Self::restore_var("OPENROUTER_BASE_URL", self.openrouter_base_url.take());
-                Self::restore_var("NOVITA_API_KEY", self.novita_api_key.take());
-                Self::restore_var("NOVITA_BASE_URL", self.novita_base_url.take());
-                Self::restore_var("FIREWORKS_API_KEY", self.fireworks_api_key.take());
-                Self::restore_var("FIREWORKS_BASE_URL", self.fireworks_base_url.take());
-                Self::restore_var("SGLANG_API_KEY", self.sglang_api_key.take());
-                Self::restore_var("SGLANG_BASE_URL", self.sglang_base_url.take());
-                Self::restore_var("VLLM_API_KEY", self.vllm_api_key.take());
-                Self::restore_var("VLLM_BASE_URL", self.vllm_base_url.take());
-                Self::restore_var("OLLAMA_API_KEY", self.ollama_api_key.take());
-                Self::restore_var("OLLAMA_BASE_URL", self.ollama_base_url.take());
-            }
+            // Environment mutations are guarded by the module-level mutex in EnvGuard::new().
+            Self::restore_var("DEEPSEEK_API_KEY", self.deepseek_api_key.take());
+            Self::restore_var("DEEPSEEK_BASE_URL", self.deepseek_base_url.take());
+            Self::restore_var("DEEPSEEK_HTTP_HEADERS", self.deepseek_http_headers.take());
+            Self::restore_var("DEEPSEEK_MODEL", self.deepseek_model.take());
+            Self::restore_var("DEEPSEEK_PROVIDER", self.deepseek_provider.take());
+            Self::restore_var("DEEPSEEK_AUTH_MODE", self.deepseek_auth_mode.take());
+            Self::restore_var("NVIDIA_API_KEY", self.nvidia_api_key.take());
+            Self::restore_var("NVIDIA_NIM_API_KEY", self.nvidia_nim_api_key.take());
+            Self::restore_var("NIM_BASE_URL", self.nim_base_url.take());
+            Self::restore_var("NVIDIA_BASE_URL", self.nvidia_base_url.take());
+            Self::restore_var("NVIDIA_NIM_BASE_URL", self.nvidia_nim_base_url.take());
+            Self::restore_var("OPENROUTER_API_KEY", self.openrouter_api_key.take());
+            Self::restore_var("OPENROUTER_BASE_URL", self.openrouter_base_url.take());
+            Self::restore_var("NOVITA_API_KEY", self.novita_api_key.take());
+            Self::restore_var("NOVITA_BASE_URL", self.novita_base_url.take());
+            Self::restore_var("FIREWORKS_API_KEY", self.fireworks_api_key.take());
+            Self::restore_var("FIREWORKS_BASE_URL", self.fireworks_base_url.take());
+            Self::restore_var("SGLANG_API_KEY", self.sglang_api_key.take());
+            Self::restore_var("SGLANG_BASE_URL", self.sglang_base_url.take());
+            Self::restore_var("VLLM_API_KEY", self.vllm_api_key.take());
+            Self::restore_var("VLLM_BASE_URL", self.vllm_base_url.take());
+            Self::restore_var("OLLAMA_API_KEY", self.ollama_api_key.take());
+            Self::restore_var("OLLAMA_BASE_URL", self.ollama_base_url.take());
         }
     }
 
@@ -2536,7 +2555,7 @@ mod tests {
         let _lock = env_lock();
         let _env = EnvGuard::without_deepseek_runtime_overrides();
         // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-key") };
+        std::env::set_var("DEEPSEEK_API_KEY", "env-key");
 
         let store = std::sync::Arc::new(deepseek_secrets::InMemoryKeyringStore::new());
         store.set("deepseek", "ring-key").unwrap();
@@ -2554,7 +2573,7 @@ mod tests {
         );
 
         // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+        std::env::remove_var("DEEPSEEK_API_KEY");
     }
 
     #[test]
@@ -2562,7 +2581,7 @@ mod tests {
         let _lock = env_lock();
         let _env = EnvGuard::without_deepseek_runtime_overrides();
         // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-key") };
+        std::env::set_var("DEEPSEEK_API_KEY", "env-key");
 
         let secrets = Secrets::new(std::sync::Arc::new(
             deepseek_secrets::InMemoryKeyringStore::new(),
@@ -2575,7 +2594,7 @@ mod tests {
         assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Env));
 
         // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+        std::env::remove_var("DEEPSEEK_API_KEY");
     }
 
     #[test]
@@ -2604,7 +2623,7 @@ mod tests {
         let _lock = env_lock();
         let _env = EnvGuard::without_deepseek_runtime_overrides();
         // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "stale-env-key") };
+        std::env::set_var("DEEPSEEK_API_KEY", "stale-env-key");
 
         let store = std::sync::Arc::new(deepseek_secrets::InMemoryKeyringStore::new());
         store.set("deepseek", "ring-key").unwrap();
@@ -2616,7 +2635,7 @@ mod tests {
         assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Keyring));
 
         // Safety: env mutation guarded by env_lock().
-        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+        std::env::remove_var("DEEPSEEK_API_KEY");
     }
 
     #[test]

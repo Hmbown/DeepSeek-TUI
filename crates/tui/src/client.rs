@@ -638,7 +638,14 @@ impl DeepSeekClient {
             let error_text = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
             anyhow::bail!("Failed to list models: HTTP {status}: {error_text}");
         }
-        let response_text = response.text().await.unwrap_or_default();
+        let response_text = response
+            .text()
+            .await
+            .map_err(|e| {
+                tracing::warn!("Failed to read models response body: {}", e);
+                e
+            })
+            .unwrap_or_default();
 
         parse_models_response(&response_text)
     }
@@ -1062,7 +1069,14 @@ impl DeepSeekClient {
             let error_text = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
             anyhow::bail!("FIM API error: HTTP {status}: {error_text}");
         }
-        let response_text = response.text().await.unwrap_or_default();
+        let response_text = response
+            .text()
+            .await
+            .map_err(|e| {
+                tracing::warn!("Failed to read FIM response body: {}", e);
+                e
+            })
+            .unwrap_or_default();
         let value: serde_json::Value =
             serde_json::from_str(&response_text).context("Failed to parse FIM API response")?;
         let text = value
