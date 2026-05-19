@@ -600,10 +600,6 @@ pub fn parse_document(value: Value) -> Result<ConfigUiDocument> {
     serde_json::from_value(value).context("failed to decode config ui document")
 }
 
-pub fn open_browser(url: &str) -> Result<()> {
-    crate::utils::open_url(url)
-}
-
 fn validate_document(doc: &ConfigUiDocument) -> Result<()> {
     if !doc.runtime.model.trim().eq_ignore_ascii_case("auto")
         && normalize_model_name(&doc.runtime.model).is_none()
