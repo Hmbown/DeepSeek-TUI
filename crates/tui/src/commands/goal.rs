@@ -345,11 +345,11 @@ fn stop_auto_continue(app: &mut App) -> CommandResult {
 }
 
 fn resume_auto_continue(app: &mut App) -> CommandResult {
-    if app.goal.goal_objective.is_none() {
+    let Some(objective) = app.goal.goal_objective.clone() else {
         return CommandResult::message(
             "No goal is set. Use /goal <objective> to start a new goal.",
         );
-    }
+    };
     if app.goal.auto_continue_enabled {
         return CommandResult::message("Auto-continue is already on.");
     }
@@ -359,7 +359,19 @@ fn resume_auto_continue(app: &mut App) -> CommandResult {
     app.goal.consecutive_no_tool_turns = 0;
     app.goal.consecutive_no_progress_turns = 0;
     persist_current_goal(app);
-    CommandResult::message("Auto-continue resumed.")
+    // Kick the chain back into motion — same dispatcher path as
+    // `set_goal` uses for its first-turn kickstart. Without this
+    // the user has to type a placeholder message after `/goal resume`
+    // before anything happens, which mirrors the original `/goal X`
+    // friction we already fixed (regression spotted by user testing).
+    // Use `continuation_prompt` (not `kickstart_prompt`) because the
+    // objective is *already* known to the model from the system prompt
+    // and the prior conversation — "still active" framing is more
+    // accurate than "new goal just set" here.
+    CommandResult::with_message_and_action(
+        "Auto-continue resumed — pushing the next turn now.",
+        crate::tui::app::AppAction::SendMessage(continuation_prompt(&objective)),
+    )
 }
 
 fn set_goal(app: &mut App, text: &str) -> CommandResult {
@@ -665,13 +677,62 @@ mod tests {
         app.goal.consecutive_no_tool_turns = 4;
         app.goal.consecutive_no_progress_turns = 4;
         let r = goal(&mut app, Some("resume"));
-        assert!(r.message.unwrap().contains("resumed"));
+        assert!(r.message.as_ref().unwrap().contains("resumed"));
         assert!(app.goal.auto_continue_enabled);
         assert_eq!(
             app.goal.consecutive_no_tool_turns, 0,
             "streaks must reset on resume so we don't immediately trip a safety net"
         );
         assert_eq!(app.goal.consecutive_no_progress_turns, 0);
+        let _ = goal(&mut app, Some("clear"));
+    }
+
+    #[test]
+    fn slash_goal_resume_kickstarts_next_turn_via_send_message_action() {
+        // Regression (post-PR #1809 review): /goal resume used to
+        // only flip the flag, so after Esc-recovery the user had to
+        // type a placeholder message before auto-continue actually
+        // pushed forward. Resume now mirrors set_goal — returns an
+        // AppAction::SendMessage so the dispatcher submits the next
+        // turn immediately. Uses `continuation_prompt` (not
+        // `kickstart_prompt`) because the objective is already known.
+        let mut app = create_test_app();
+        let _ = goal(&mut app, Some("Wire up X"));
+        let _ = goal(&mut app, Some("stop"));
+        let r = goal(&mut app, Some("resume"));
+        match r.action {
+            Some(crate::tui::app::AppAction::SendMessage(body)) => {
+                assert!(body.contains("Wire up X"));
+                assert!(body.contains("Goal still active"));
+                assert!(body.contains("GOAL_ACHIEVED"));
+            }
+            other => panic!("expected SendMessage action on resume, got {other:?}"),
+        }
+        let _ = goal(&mut app, Some("clear"));
+    }
+
+    #[test]
+    fn slash_goal_resume_with_no_goal_returns_no_action() {
+        let mut app = create_test_app();
+        let r = goal(&mut app, Some("resume"));
+        assert!(r.action.is_none());
+        assert!(r.message.as_ref().unwrap().contains("No goal"));
+    }
+
+    #[test]
+    fn slash_goal_resume_when_already_on_returns_no_action() {
+        // Idempotent guard: re-running /goal resume while
+        // auto-continue is already on shouldn't double-fire a turn.
+        let mut app = create_test_app();
+        let _ = goal(&mut app, Some("Wire up X"));
+        // /goal X already enabled auto-continue. Calling resume
+        // here must be a noop (no SendMessage action).
+        let r = goal(&mut app, Some("resume"));
+        assert!(
+            r.action.is_none(),
+            "resume must not kickstart when already on"
+        );
+        assert!(r.message.as_ref().unwrap().contains("already on"));
         let _ = goal(&mut app, Some("clear"));
     }
 
