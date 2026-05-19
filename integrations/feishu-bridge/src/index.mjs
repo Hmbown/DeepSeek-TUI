@@ -57,6 +57,10 @@ class ThreadStore {
     return this.data.chats[chatId] || null;
   }
 
+  listChats() {
+    return Object.entries(this.data.chats || {});
+  }
+
   async setChat(chatId, state) {
     this.data.chats[chatId] = state;
     await this.save();
@@ -133,6 +137,60 @@ if (!config.allowlist.length && !config.allowUnlisted) {
 }
 
 wsClient.start({ eventDispatcher: dispatcher });
+
+void reattachActiveTurns().catch((error) => {
+  console.error("failed to reattach active turns after restart", error);
+});
+
+async function reattachActiveTurns() {
+  const pending = threadStore.listChats().filter(([, state]) => state?.activeTurnId);
+  if (!pending.length) return;
+  console.log(`Reattaching ${pending.length} active turn(s) after bridge restart`);
+  await Promise.all(
+    pending.map(async ([chatId, state]) => {
+      try {
+        const detail = await runtimeJson(
+          `/v1/threads/${encodeURIComponent(state.threadId)}`
+        );
+        const runningTurn = latestRunningTurn(detail);
+        if (runningTurn && (runningTurn.id === state.activeTurnId || !state.activeTurnId)) {
+          await sendText(
+            chatId,
+            `Bridge restarted. Reattaching to turn ${runningTurn.id || state.activeTurnId}.`
+          );
+          try {
+            await streamTurnEvents(
+              chatId,
+              state.threadId,
+              runningTurn.id || state.activeTurnId,
+              Number(state.lastSeq || 0)
+            );
+          } finally {
+            await threadStore.patchChat(chatId, {
+              activeTurnId: null,
+              updatedAt: new Date().toISOString()
+            });
+          }
+          return;
+        }
+        const finished = (detail.turns || []).find(
+          (turn) => turn?.id === state.activeTurnId
+        );
+        const status = finished?.status || "completed";
+        await threadStore.patchChat(chatId, {
+          activeTurnId: null,
+          updatedAt: new Date().toISOString()
+        });
+        await sendText(
+          chatId,
+          `Turn ${state.activeTurnId} ${status} while the bridge was offline. Send /status or a new prompt.`
+        );
+      } catch (error) {
+        console.error(`reattach failed for chat ${chatId}`, error);
+      }
+    })
+  );
+}
 
 async function handleIncomingMessage(event) {
   const identity = incomingIdentity(event);
