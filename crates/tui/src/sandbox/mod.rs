@@ -79,20 +79,22 @@ pub struct CommandSpec {
 impl CommandSpec {
     /// Create a `CommandSpec` for running a shell command via the platform shell.
     pub fn shell(command: &str, cwd: PathBuf, timeout: Duration) -> Self {
+        let dispatcher = crate::shell_dispatcher::global_dispatcher();
+        let kind = dispatcher.kind();
+
         #[cfg(windows)]
         let (program, args) = {
-            // Force UTF-8 output on Windows by running `chcp 65001` before the
-            // actual command. Without this, subprocesses output in the system's
-            // ANSI code page (e.g. GBK for Chinese locales), causing garbled
-            // text in the shell output panel. See issue #982.
-            let cmd = format!("chcp 65001 >NUL & {command}");
-            ("cmd".to_string(), vec!["/C".to_string(), cmd])
+            // Force UTF-8 output. cmd.exe uses chcp; PowerShell sets the
+            // console output encoding directly. See issue #982.
+            let cmd = if kind.is_powershell() {
+                format!("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {command}")
+            } else {
+                format!("chcp 65001 >NUL & {command}")
+            };
+            dispatcher.build_command_parts(&cmd)
         };
         #[cfg(not(windows))]
-        let (program, args) = (
-            "sh".to_string(),
-            vec!["-c".to_string(), command.to_string()],
-        );
+        let (program, args) = dispatcher.build_command_parts(command);
 
         Self {
             program,
@@ -155,6 +157,17 @@ impl CommandSpec {
             // UTF-8 output (issue #982).
             let raw = &self.args[1];
             raw.strip_prefix("chcp 65001 >NUL & ")
+                .unwrap_or(raw)
+                .to_string()
+        } else if (self.program.eq_ignore_ascii_case("pwsh")
+            || self.program.eq_ignore_ascii_case("powershell"))
+            && self.args.len() >= 3
+            && self.args[0].eq_ignore_ascii_case("-NoProfile")
+            && self.args[1].eq_ignore_ascii_case("-Command")
+        {
+            // Strip the PowerShell encoding prefix.
+            let raw = &self.args[2];
+            raw.strip_prefix("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ")
                 .unwrap_or(raw)
                 .to_string()
         } else {
@@ -562,16 +575,9 @@ mod tests {
     fn test_command_spec_shell() {
         let spec = CommandSpec::shell("echo hello", PathBuf::from("/tmp"), Duration::from_secs(30));
 
-        #[cfg(windows)]
-        {
-            assert_eq!(spec.program, "cmd");
-            assert_eq!(spec.args, vec!["/C", "chcp 65001 >NUL & echo hello"]);
-        }
-        #[cfg(not(windows))]
-        {
-            assert_eq!(spec.program, "sh");
-            assert_eq!(spec.args, vec!["-c", "echo hello"]);
-        }
+        // Program and args depend on the detected shell (pwsh, cmd, sh, …).
+        assert!(!spec.program.is_empty(), "program must not be empty");
+        assert!(!spec.args.is_empty(), "args must not be empty");
         assert_eq!(spec.display_command(), "echo hello");
     }
 

@@ -681,6 +681,9 @@ impl ShellManager {
         policy_override: Option<ExecutionSandboxPolicy>,
         extra_env: HashMap<String, String>,
     ) -> Result<ShellResult> {
+        // Log execution via ShellDispatcher when SHELL_DISPATCHER_LOG is set.
+        crate::shell_dispatcher::ShellDispatcher::log_exec(command);
+
         let work_dir = working_dir.map_or_else(|| self.default_workspace.clone(), PathBuf::from);
 
         // Clamp timeout to max 10 minutes (600000ms)
@@ -744,6 +747,8 @@ impl ShellManager {
         policy_override: Option<ExecutionSandboxPolicy>,
         extra_env: HashMap<String, String>,
     ) -> Result<ShellResult> {
+        crate::shell_dispatcher::ShellDispatcher::log_exec(command);
+
         let work_dir = working_dir.map_or_else(|| self.default_workspace.clone(), PathBuf::from);
 
         let timeout_ms = timeout_ms.clamp(1000, 600_000);
@@ -790,6 +795,13 @@ impl ShellManager {
         }
 
         child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
+
+        // Disable raw mode before spawn; restore on drop regardless of
+        // success/failure/timeout (issue #1690).
+        let _ = crossterm::terminal::disable_raw_mode();
+        struct SyncRawModeGuard;
+        impl Drop for SyncRawModeGuard { fn drop(&mut self) { let _ = crossterm::terminal::enable_raw_mode(); } }
+        let _guard = SyncRawModeGuard;
 
         let mut child = cmd
             .spawn()
@@ -924,6 +936,12 @@ impl ShellManager {
             cmd.process_group(0);
         }
         install_parent_death_signal(&mut cmd);
+
+        // Disable raw mode before spawn; restore on drop (issue #1690).
+        let _ = crossterm::terminal::disable_raw_mode();
+        struct InteractiveRawModeGuard;
+        impl Drop for InteractiveRawModeGuard { fn drop(&mut self) { let _ = crossterm::terminal::enable_raw_mode(); } }
+        let _guard = InteractiveRawModeGuard;
 
         child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
 
