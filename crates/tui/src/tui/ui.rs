@@ -31,6 +31,7 @@ use crate::core::events::Event as EngineEvent;
 use crate::core::ops::Op;
 use crate::hooks::{HookEvent, HookExecutor};
 use crate::llm_client::LlmClient;
+use crate::localization::MessageId;
 use crate::models::{
     ContentBlock, Message, MessageRequest, SystemPrompt, Usage, context_window_for_model,
 };
@@ -144,7 +145,7 @@ const DISPATCH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
 // the per-tool spinner pulse — keep this fast enough that the whale reads as
 // motion (~12 fps) instead of teleport-frames.
 const UI_STATUS_ANIMATION_MS: u64 = 80;
-const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 240;
+const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 160;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 const PERIODIC_FULL_REPAINT_EVERY_N: u64 = 50;
 const TURN_META_PREFIX: &str = "<turn_meta>";
@@ -169,6 +170,14 @@ fn sidebar_width_for_chat_area(app: &App, chat_width: u16) -> Option<u16> {
     let sidebar_width = preferred_sidebar.max(24).min(chat_width.saturating_sub(40));
 
     (sidebar_width >= 20).then_some(sidebar_width)
+}
+
+fn localized_template(app: &App, id: MessageId, replacements: &[(&str, String)]) -> String {
+    let mut text = app.tr(id).to_string();
+    for (placeholder, value) in replacements {
+        text = text.replace(placeholder, value);
+    }
+    text
 }
 
 type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
@@ -1445,7 +1454,7 @@ async fn run_event_loop(
                             if status == crate::core::events::TurnOutcomeStatus::Interrupted {
                                 app.goal.auto_continue = false;
                                 app.status_message = Some(
-                                    "Auto-continue stopped (turn interrupted). Use /goal auto to re-enable."
+                                    app.tr(MessageId::AutoContinueStoppedInterrupted)
                                         .to_string(),
                                 );
                             } else {
@@ -1530,7 +1539,7 @@ async fn run_event_loop(
                                         // to add more todos and
                                         // didn't — goal is done.
                                         Some(
-                                            "Goal achieved — all todos completed and confirmed"
+                                            app.tr(MessageId::AutoContinueReasonGoalAchieved)
                                                 .to_string(),
                                         )
                                     } else {
@@ -1550,24 +1559,38 @@ async fn run_event_loop(
                                 {
                                     Some(reason)
                                 } else if budget_exceeded {
-                                    Some("Token budget exhausted".to_string())
+                                    Some(
+                                        app.tr(MessageId::AutoContinueReasonTokenBudget)
+                                            .to_string(),
+                                    )
                                 } else if stuck {
-                                    Some(format!("No progress after {STUCK_THRESHOLD} turns"))
+                                    Some(localized_template(
+                                        app,
+                                        MessageId::AutoContinueReasonStalled,
+                                        &[("{turns}", STUCK_THRESHOLD.to_string())],
+                                    ))
                                 } else if app.goal.idle_streak >= IDLE_TURN_THRESHOLD {
-                                    Some(format!(
-                                        "{} consecutive idle turns (no tool calls)",
-                                        app.goal.idle_streak
+                                    Some(localized_template(
+                                        app,
+                                        MessageId::AutoContinueReasonIdle,
+                                        &[("{turns}", app.goal.idle_streak.to_string())],
                                     ))
                                 } else if turn_limit {
-                                    Some(format!(
-                                        "Reached max auto-continue turns ({MAX_AUTO_CONTINUE_TURNS})"
+                                    Some(localized_template(
+                                        app,
+                                        MessageId::AutoContinueReasonTurnLimit,
+                                        &[("{turns}", MAX_AUTO_CONTINUE_TURNS.to_string())],
                                     ))
                                 } else {
                                     None
                                 };
 
                                 if let Some(reason) = stop_reason {
-                                    let status = format!("Auto-continue finished: {reason}.",);
+                                    let status = localized_template(
+                                        app,
+                                        MessageId::AutoContinueFinished,
+                                        &[("{reason}", reason)],
+                                    );
                                     app.status_message = Some(status.clone());
                                     // Also push the stop reason into the
                                     // transcript so the user can see why.
@@ -1586,20 +1609,20 @@ async fn run_event_loop(
                                     //   3. Any remaining TODO/FIXME?
                                     // Only reply GOAL_COMPLETE if all three
                                     // pass. Otherwise add checklist items.
-                                    let msg = format!(
-                                        "You've marked all checklist items as completed. \
-                                         Before confirming, verify with objective evidence:\n\n\
-                                         1. Run relevant tests/build — do they pass?\n\
-                                         2. Review the conversation — are ALL issues resolved?\n\
-                                         3. Search for remaining TODO/FIXME/hack markers.\n\n\
-                                         If ALL three pass, reply \"GOAL_COMPLETE\". \
-                                         If ANY issue remains, add new items with checklist_add.\n\n{recap}"
+                                    let msg = localized_template(
+                                        app,
+                                        MessageId::AutoContinueVerifyPrompt,
+                                        &[("{recap}", recap)],
                                     );
                                     app.queued_messages.push_back(QueuedMessage::new(msg, None));
                                     app.goal.auto_continue_turn_count += 1;
-                                    app.status_message = Some(format!(
-                                        "Auto-continue turn #{} — verifying goal completion",
-                                        app.goal.auto_continue_turn_count
+                                    app.status_message = Some(localized_template(
+                                        app,
+                                        MessageId::AutoContinueVerifyStatus,
+                                        &[(
+                                            "{turn}",
+                                            app.goal.auto_continue_turn_count.to_string(),
+                                        )],
                                     ));
                                 } else {
                                     // Include the goal context so the model
@@ -1609,8 +1632,10 @@ async fn run_event_loop(
                                         .goal_context
                                         .as_deref()
                                         .map(|ctx| {
-                                            format!(
-                                                "\n\n## Goal Context (from /goal set time)\n\n{ctx}"
+                                            localized_template(
+                                                app,
+                                                MessageId::AutoContinueGoalContextBlock,
+                                                &[("{context}", ctx.to_string())],
                                             )
                                         })
                                         .unwrap_or_default();
@@ -1620,20 +1645,34 @@ async fn run_event_loop(
                                     {
                                         // Todo was just completed:
                                         // prompt to split next tasks.
-                                        "\n\nProgress made. Review the Goal Context above and split the \
-                                             next set of tasks from the remaining goal. \
-                                             Add them with checklist_add."
+                                        app.tr(MessageId::AutoContinueDecompositionHint)
                                     } else {
                                         ""
                                     };
-                                    let msg = format!(
-                                        "Continue working on the remaining todo items.\n\n{recap}{goal_context_block}{decomposition_hint}"
+                                    let msg = localized_template(
+                                        app,
+                                        MessageId::AutoContinueContinuePrompt,
+                                        &[
+                                            ("{recap}", recap),
+                                            ("{goal_context}", goal_context_block),
+                                            (
+                                                "{decomposition_hint}",
+                                                decomposition_hint.to_string(),
+                                            ),
+                                        ],
                                     );
                                     app.queued_messages.push_back(QueuedMessage::new(msg, None));
                                     app.goal.auto_continue_turn_count += 1;
-                                    app.status_message = Some(format!(
-                                        "Auto-continue turn #{} ({incomplete} todo(s) remaining)",
-                                        app.goal.auto_continue_turn_count
+                                    app.status_message = Some(localized_template(
+                                        app,
+                                        MessageId::AutoContinueProgressStatus,
+                                        &[
+                                            (
+                                                "{turn}",
+                                                app.goal.auto_continue_turn_count.to_string(),
+                                            ),
+                                            ("{remaining}", incomplete.to_string()),
+                                        ],
                                     ));
                                 }
                             }
@@ -6508,15 +6547,33 @@ fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSession) 
             .goal
             .goal_objective
             .as_deref()
-            .map(|obj| format!(" for \"{obj}\""))
+            .map(|obj| {
+                localized_template(
+                    app,
+                    MessageId::AutoContinueObjectiveHint,
+                    &[("{objective}", obj.to_string())],
+                )
+            })
             .unwrap_or_default();
-        app.status_message = Some(format!(
-            "Session restored — resuming auto-continue{obj_hint} (turn #{}, {} todo(s) remaining).",
-            app.goal.auto_continue_turn_count,
-            app.pending_todo_count()
+        app.status_message = Some(localized_template(
+            app,
+            MessageId::AutoContinueRestoredStatus,
+            &[
+                ("{objective_hint}", obj_hint),
+                ("{turn}", app.goal.auto_continue_turn_count.to_string()),
+                ("{remaining}", app.pending_todo_count().to_string()),
+            ],
         ));
         let recap = app.recap_text();
-        let msg = format!("Continue working on the remaining todo items.\n\n{recap}");
+        let msg = localized_template(
+            app,
+            MessageId::AutoContinueContinuePrompt,
+            &[
+                ("{recap}", recap),
+                ("{goal_context}", String::new()),
+                ("{decomposition_hint}", String::new()),
+            ],
+        );
         app.queued_messages.push_back(QueuedMessage::new(msg, None));
     }
 

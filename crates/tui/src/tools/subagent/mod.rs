@@ -186,12 +186,17 @@ fn slugify_agent_name(objective: &str, id: &str) -> String {
     let compact = compact.trim_matches('-');
     if compact.is_empty() {
         id.to_string()
-    } else if compact.len() <= 50 {
+    } else if compact.chars().count() <= 50 {
         compact.to_string()
     } else {
-        // Cut at word boundary within limit
-        let end = compact[..50].rfind('-').unwrap_or(49);
-        compact[..=end].trim_end_matches('-').to_string()
+        let end = compact
+            .char_indices()
+            .map(|(idx, _)| idx)
+            .nth(50)
+            .unwrap_or(compact.len());
+        let prefix = &compact[..end];
+        let end = prefix.rfind('-').filter(|idx| *idx > 0).unwrap_or(end);
+        prefix[..end].trim_end_matches('-').to_string()
     }
 }
 
@@ -4791,7 +4796,6 @@ fn is_read_only_tool(name: &str) -> bool {
             | "todo_list"
             | "task_list"
             | "agent_list"
-            | "run_tests"
     )
 }
 

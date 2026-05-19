@@ -1331,7 +1331,6 @@ pub struct SidebarSubagentSummary {
 
 #[derive(Debug, Clone)]
 pub struct SidebarAgentRow {
-    pub id: String,
     pub name: String,
     pub role: String,
     pub status: String,
@@ -1372,7 +1371,6 @@ fn sidebar_agent_rows(app: &App) -> Vec<SidebarAgentRow> {
                         .filter(|summary| !summary.trim().is_empty())
                 });
             SidebarAgentRow {
-                id: agent.agent_id.clone(),
                 name: agent.nickname.clone().unwrap_or_else(|| agent.name.clone()),
                 role: agent.agent_type.as_str().to_string(),
                 status: subagent_status_text(&agent.status).to_string(),
@@ -1392,8 +1390,7 @@ fn sidebar_agent_rows(app: &App) -> Vec<SidebarAgentRow> {
         app.agent_progress
             .iter()
             .filter(|(id, _)| !cached_ids.contains(id.as_str()))
-            .map(|(id, progress)| SidebarAgentRow {
-                id: id.clone(),
+            .map(|(_, progress)| SidebarAgentRow {
                 name: progress.clone(),
                 role: "agent".to_string(),
                 status: "running".to_string(),
@@ -1688,7 +1685,7 @@ const TODOS_PANEL_MAX_ITEMS: usize = 6;
 // Cached todos panel height so a transient lock failure doesn't collapse
 // the panel for a single frame. Per-thread, zero means "uninitialised".
 thread_local! {
-    static LAST_TODOS_HEIGHT: std::cell::Cell<u16> = std::cell::Cell::new(0);
+    static LAST_TODOS_HEIGHT: std::cell::Cell<u16> = const { std::cell::Cell::new(0) };
 }
 
 /// Compute the height needed for the todos area above the composer.
@@ -1903,7 +1900,7 @@ mod tests {
     use crate::config::Config;
     use crate::palette::PaletteMode;
     use crate::tools::plan::StepStatus;
-    use crate::tools::todo::{TodoItem, TodoStatus};
+    use crate::tools::todo::TodoStatus;
     use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{App, TaskPanelEntry, TuiOptions};
     use crate::tui::history::{
@@ -2534,7 +2531,6 @@ mod tests {
         };
         let rows = vec![
             SidebarAgentRow {
-                id: "agent_a5e674dc".to_string(),
                 name: "check-docs-mcp".to_string(),
                 role: "explore".to_string(),
                 status: "running".to_string(),
@@ -2543,7 +2539,6 @@ mod tests {
                 duration_ms: Some(22_000),
             },
             SidebarAgentRow {
-                id: "agent_850aa63f".to_string(),
                 name: "check-install-docs".to_string(),
                 role: "general".to_string(),
                 status: "done".to_string(),

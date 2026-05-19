@@ -269,6 +269,21 @@ pub enum MessageId {
     CmdHooksDescription,
     CmdAgentDescription,
     CmdGoalDescription,
+    AutoContinueStoppedInterrupted,
+    AutoContinueReasonGoalAchieved,
+    AutoContinueReasonTokenBudget,
+    AutoContinueReasonStalled,
+    AutoContinueReasonIdle,
+    AutoContinueReasonTurnLimit,
+    AutoContinueFinished,
+    AutoContinueVerifyPrompt,
+    AutoContinueVerifyStatus,
+    AutoContinueGoalContextBlock,
+    AutoContinueDecompositionHint,
+    AutoContinueContinuePrompt,
+    AutoContinueProgressStatus,
+    AutoContinueObjectiveHint,
+    AutoContinueRestoredStatus,
     CmdRecapDescription,
     CmdInitDescription,
     CmdJobsDescription,
@@ -502,6 +517,22 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdHomeDescription,
     MessageId::CmdHooksDescription,
     MessageId::CmdAgentDescription,
+    MessageId::CmdGoalDescription,
+    MessageId::AutoContinueStoppedInterrupted,
+    MessageId::AutoContinueReasonGoalAchieved,
+    MessageId::AutoContinueReasonTokenBudget,
+    MessageId::AutoContinueReasonStalled,
+    MessageId::AutoContinueReasonIdle,
+    MessageId::AutoContinueReasonTurnLimit,
+    MessageId::AutoContinueFinished,
+    MessageId::AutoContinueVerifyPrompt,
+    MessageId::AutoContinueVerifyStatus,
+    MessageId::AutoContinueGoalContextBlock,
+    MessageId::AutoContinueDecompositionHint,
+    MessageId::AutoContinueContinuePrompt,
+    MessageId::AutoContinueProgressStatus,
+    MessageId::AutoContinueObjectiveHint,
+    MessageId::AutoContinueRestoredStatus,
     MessageId::CmdInitDescription,
     MessageId::CmdJobsDescription,
     MessageId::CmdLinksDescription,
@@ -934,6 +965,47 @@ fn english(id: MessageId) -> &'static str {
             "Open a persistent sub-agent session: /agent [0-3] <task>"
         }
         MessageId::CmdGoalDescription => "Set a session goal with optional token budget",
+        MessageId::AutoContinueStoppedInterrupted => {
+            "Auto-continue stopped (turn interrupted). Use /goal auto to re-enable."
+        }
+        MessageId::AutoContinueReasonGoalAchieved => {
+            "Goal achieved - all todos completed and confirmed"
+        }
+        MessageId::AutoContinueReasonTokenBudget => "Token budget exhausted",
+        MessageId::AutoContinueReasonStalled => "No progress after {turns} turns",
+        MessageId::AutoContinueReasonIdle => "{turns} consecutive idle turns (no tool calls)",
+        MessageId::AutoContinueReasonTurnLimit => "Reached max auto-continue turns ({turns})",
+        MessageId::AutoContinueFinished => "Auto-continue finished: {reason}.",
+        MessageId::AutoContinueVerifyPrompt => {
+            "You've marked all checklist items as completed. \
+             Before confirming, verify with objective evidence:\n\n\
+             1. Run relevant tests/build - do they pass?\n\
+             2. Review the conversation - are ALL issues resolved?\n\
+             3. Search for remaining TODO/FIXME/hack markers.\n\n\
+             If ALL three pass, reply \"GOAL_COMPLETE\". \
+             If ANY issue remains, add new items with checklist_add.\n\n{recap}"
+        }
+        MessageId::AutoContinueVerifyStatus => {
+            "Auto-continue turn #{turn} - verifying goal completion"
+        }
+        MessageId::AutoContinueGoalContextBlock => {
+            "\n\n## Goal Context (from /goal set time)\n\n{context}"
+        }
+        MessageId::AutoContinueDecompositionHint => {
+            "\n\nProgress made. Review the Goal Context above and split the \
+             next set of tasks from the remaining goal. Add them with checklist_add."
+        }
+        MessageId::AutoContinueContinuePrompt => {
+            "Continue working on the remaining todo items.\n\n{recap}{goal_context}{decomposition_hint}"
+        }
+        MessageId::AutoContinueProgressStatus => {
+            "Auto-continue turn #{turn} ({remaining} todo(s) remaining)"
+        }
+        MessageId::AutoContinueObjectiveHint => " for \"{objective}\"",
+        MessageId::AutoContinueRestoredStatus => {
+            "Session restored - resuming auto-continue{objective_hint} \
+             (turn #{turn}, {remaining} todo(s) remaining)."
+        }
         MessageId::CmdRecapDescription => "Print a structured session state summary",
         MessageId::CmdInitDescription => "Generate AGENTS.md for project",
         MessageId::CmdLspDescription => "Toggle LSP diagnostics on or off",
@@ -1316,6 +1388,44 @@ fn japanese(id: MessageId) -> Option<&'static str> {
             "永続サブエージェントセッションを開く: /agent [0-3] <task>"
         }
         MessageId::CmdGoalDescription => "トークンバジェット付きのセッション目標を設定",
+        MessageId::AutoContinueStoppedInterrupted => {
+            "自動継続を停止しました（ターンが中断されました）。/goal auto で再開できます。"
+        }
+        MessageId::AutoContinueReasonGoalAchieved => {
+            "目標達成 - すべての Todo が完了し確認済みです"
+        }
+        MessageId::AutoContinueReasonTokenBudget => "トークン予算を使い切りました",
+        MessageId::AutoContinueReasonStalled => "{turns} ターン進捗がありません",
+        MessageId::AutoContinueReasonIdle => "{turns} ターン連続でアイドル（ツール呼び出しなし）",
+        MessageId::AutoContinueReasonTurnLimit => "自動継続の最大ターン数に到達（{turns}）",
+        MessageId::AutoContinueFinished => "自動継続が終了しました: {reason}。",
+        MessageId::AutoContinueVerifyPrompt => {
+            "すべてのチェックリスト項目が完了済みとしてマークされています。\
+             確認前に客観的な証拠で検証してください:\n\n\
+             1. 関連するテスト/ビルドを実行し、通るか確認する。\n\
+             2. 会話を見直し、すべての問題が解決済みか確認する。\n\
+             3. 残っている TODO/FIXME/hack マーカーを検索する。\n\n\
+             3 つすべて通った場合は \"GOAL_COMPLETE\" と返信してください。\
+             問題が残る場合は checklist_add で新しい項目を追加してください。\n\n{recap}"
+        }
+        MessageId::AutoContinueVerifyStatus => "自動継続ターン #{turn} - 目標完了を確認中",
+        MessageId::AutoContinueGoalContextBlock => {
+            "\n\n## 目標コンテキスト（/goal set より）\n\n{context}"
+        }
+        MessageId::AutoContinueDecompositionHint => {
+            "\n\n進捗がありました。上の目標コンテキストを見直し、残りの目標から次のタスク群を分解して checklist_add で追加してください。"
+        }
+        MessageId::AutoContinueContinuePrompt => {
+            "残りの Todo 項目を進めてください。\n\n{recap}{goal_context}{decomposition_hint}"
+        }
+        MessageId::AutoContinueProgressStatus => {
+            "自動継続ターン #{turn}（残り Todo {remaining} 件）"
+        }
+        MessageId::AutoContinueObjectiveHint => "（目標: \"{objective}\"）",
+        MessageId::AutoContinueRestoredStatus => {
+            "セッションを復元しました - 自動継続を再開します{objective_hint} \
+             （ターン #{turn}, 残り Todo {remaining} 件）。"
+        }
         MessageId::CmdRecapDescription => "構造化されたセッション状態のサマリーを表示",
         MessageId::CmdInitDescription => "プロジェクト用に AGENTS.md を生成",
         MessageId::CmdLspDescription => "LSP 診断のオン・オフを切り替え",
@@ -1663,6 +1773,38 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdHooksDescription => "列出已配置的生命周期钩子（只读）",
         MessageId::CmdAgentDescription => "打开持久子代理会话：/agent [0-3] <task>",
         MessageId::CmdGoalDescription => "设置带有可选令牌预算的会话目标",
+        MessageId::AutoContinueStoppedInterrupted => {
+            "自动继续已停止（本轮被中断）。使用 /goal auto 重新开启。"
+        }
+        MessageId::AutoContinueReasonGoalAchieved => "目标已完成：全部待办已完成并确认",
+        MessageId::AutoContinueReasonTokenBudget => "Token 预算已用尽",
+        MessageId::AutoContinueReasonStalled => "连续 {turns} 轮无进展",
+        MessageId::AutoContinueReasonIdle => "连续 {turns} 轮空转（没有工具调用）",
+        MessageId::AutoContinueReasonTurnLimit => "达到自动继续最大轮数（{turns}）",
+        MessageId::AutoContinueFinished => "自动继续结束：{reason}。",
+        MessageId::AutoContinueVerifyPrompt => {
+            "你已将所有检查项标记为完成。确认前请用客观证据验证：\n\n\
+             1. 运行相关测试/构建，确认是否通过。\n\
+             2. 回看本次对话，确认所有问题是否解决。\n\
+             3. 搜索剩余 TODO/FIXME/hack 标记。\n\n\
+             三项全部通过时回复 \"GOAL_COMPLETE\"。\
+             任何一项仍有问题，就用 checklist_add 添加新任务。\n\n{recap}"
+        }
+        MessageId::AutoContinueVerifyStatus => "自动继续第 {turn} 轮：验证目标完成状态",
+        MessageId::AutoContinueGoalContextBlock => {
+            "\n\n## 目标上下文（来自 /goal set）\n\n{context}"
+        }
+        MessageId::AutoContinueDecompositionHint => {
+            "\n\n已有进展。请根据上面的目标上下文，把剩余目标拆成下一组任务，并用 checklist_add 添加。"
+        }
+        MessageId::AutoContinueContinuePrompt => {
+            "继续处理剩余待办。\n\n{recap}{goal_context}{decomposition_hint}"
+        }
+        MessageId::AutoContinueProgressStatus => "自动继续第 {turn} 轮（剩余 {remaining} 个待办）",
+        MessageId::AutoContinueObjectiveHint => "，目标“{objective}”",
+        MessageId::AutoContinueRestoredStatus => {
+            "会话已恢复：继续自动推进{objective_hint}（第 {turn} 轮，剩余 {remaining} 个待办）。"
+        }
         MessageId::CmdRecapDescription => "输出结构化的会话状态摘要",
         MessageId::CmdInitDescription => "为项目生成 AGENTS.md",
         MessageId::CmdLspDescription => "切换 LSP 诊断的开启或关闭",
@@ -1985,6 +2127,50 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdGoalDescription => {
             "Definir uma meta de sessão com orçamento de tokens opcional"
+        }
+        MessageId::AutoContinueStoppedInterrupted => {
+            "Auto-continuação interrompida (turno interrompido). Use /goal auto para reativar."
+        }
+        MessageId::AutoContinueReasonGoalAchieved => {
+            "Meta atingida - todos os todos concluídos e confirmados"
+        }
+        MessageId::AutoContinueReasonTokenBudget => "Orçamento de tokens esgotado",
+        MessageId::AutoContinueReasonStalled => "Sem progresso por {turns} turnos",
+        MessageId::AutoContinueReasonIdle => {
+            "{turns} turnos ociosos seguidos (sem chamadas de ferramenta)"
+        }
+        MessageId::AutoContinueReasonTurnLimit => {
+            "Limite máximo de auto-continuação atingido ({turns})"
+        }
+        MessageId::AutoContinueFinished => "Auto-continuação finalizada: {reason}.",
+        MessageId::AutoContinueVerifyPrompt => {
+            "Você marcou todos os itens do checklist como concluídos. \
+             Antes de confirmar, valide com evidência objetiva:\n\n\
+             1. Execute testes/build relevantes - eles passam?\n\
+             2. Revise a conversa - TODOS os problemas foram resolvidos?\n\
+             3. Procure marcadores TODO/FIXME/hack restantes.\n\n\
+             Se os três passarem, responda \"GOAL_COMPLETE\". \
+             Se restar qualquer problema, adicione itens com checklist_add.\n\n{recap}"
+        }
+        MessageId::AutoContinueVerifyStatus => {
+            "Auto-continuação turno #{turn} - verificando conclusão da meta"
+        }
+        MessageId::AutoContinueGoalContextBlock => {
+            "\n\n## Contexto da meta (de /goal set)\n\n{context}"
+        }
+        MessageId::AutoContinueDecompositionHint => {
+            "\n\nHouve progresso. Revise o contexto da meta acima, divida o próximo conjunto de tarefas a partir da meta restante e adicione com checklist_add."
+        }
+        MessageId::AutoContinueContinuePrompt => {
+            "Continue trabalhando nos todos restantes.\n\n{recap}{goal_context}{decomposition_hint}"
+        }
+        MessageId::AutoContinueProgressStatus => {
+            "Auto-continuação turno #{turn} ({remaining} todo(s) restantes)"
+        }
+        MessageId::AutoContinueObjectiveHint => " para \"{objective}\"",
+        MessageId::AutoContinueRestoredStatus => {
+            "Sessão restaurada - retomando auto-continuação{objective_hint} \
+             (turno #{turn}, {remaining} todo(s) restantes)."
         }
         MessageId::CmdRecapDescription => "Exibir um resumo estruturado do estado da sessão",
         MessageId::CmdInitDescription => "Gerar AGENTS.md para o projeto",
@@ -2370,6 +2556,50 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdGoalDescription => {
             "Definir una meta de sesión con presupuesto de tokens opcional"
+        }
+        MessageId::AutoContinueStoppedInterrupted => {
+            "Auto-continuación detenida (turno interrumpido). Usa /goal auto para reactivarla."
+        }
+        MessageId::AutoContinueReasonGoalAchieved => {
+            "Meta alcanzada - todos los todos fueron completados y confirmados"
+        }
+        MessageId::AutoContinueReasonTokenBudget => "Presupuesto de tokens agotado",
+        MessageId::AutoContinueReasonStalled => "Sin progreso por {turns} turnos",
+        MessageId::AutoContinueReasonIdle => {
+            "{turns} turnos inactivos seguidos (sin llamadas a herramientas)"
+        }
+        MessageId::AutoContinueReasonTurnLimit => {
+            "Se alcanzó el máximo de turnos de auto-continuación ({turns})"
+        }
+        MessageId::AutoContinueFinished => "Auto-continuación finalizada: {reason}.",
+        MessageId::AutoContinueVerifyPrompt => {
+            "Marcaste todos los elementos del checklist como completados. \
+             Antes de confirmar, verifica con evidencia objetiva:\n\n\
+             1. Ejecuta pruebas/build relevantes - ¿pasan?\n\
+             2. Revisa la conversación - ¿TODOS los problemas están resueltos?\n\
+             3. Busca marcadores TODO/FIXME/hack restantes.\n\n\
+             Si las tres verificaciones pasan, responde \"GOAL_COMPLETE\". \
+             Si queda cualquier problema, agrega elementos con checklist_add.\n\n{recap}"
+        }
+        MessageId::AutoContinueVerifyStatus => {
+            "Auto-continuación turno #{turn} - verificando la meta"
+        }
+        MessageId::AutoContinueGoalContextBlock => {
+            "\n\n## Contexto de la meta (de /goal set)\n\n{context}"
+        }
+        MessageId::AutoContinueDecompositionHint => {
+            "\n\nHubo progreso. Revisa el contexto de la meta arriba, divide el siguiente conjunto de tareas desde la meta restante y agrégalas con checklist_add."
+        }
+        MessageId::AutoContinueContinuePrompt => {
+            "Continúa trabajando en los todos restantes.\n\n{recap}{goal_context}{decomposition_hint}"
+        }
+        MessageId::AutoContinueProgressStatus => {
+            "Auto-continuación turno #{turn} ({remaining} todo(s) restantes)"
+        }
+        MessageId::AutoContinueObjectiveHint => " para \"{objective}\"",
+        MessageId::AutoContinueRestoredStatus => {
+            "Sesión restaurada - retomando auto-continuación{objective_hint} \
+             (turno #{turn}, {remaining} todo(s) restantes)."
         }
         MessageId::CmdInitDescription => "Generar AGENTS.md para el proyecto",
         MessageId::CmdLspDescription => "Alternar diagnóstico LSP encendido o apagado",

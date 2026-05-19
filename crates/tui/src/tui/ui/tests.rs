@@ -2046,10 +2046,10 @@ fn hidden_sidebar_focus_suppresses_sidebar_split_even_when_wide() {
     app.sidebar_width_percent = 28;
 
     app.sidebar_focus = SidebarFocus::Auto;
-    assert_eq!(sidebar_width_for_chat_area(&app, 240), Some(67));
+    assert_eq!(sidebar_width_for_chat_area(&app, 160), Some(44));
 
     app.sidebar_focus = SidebarFocus::Hidden;
-    assert_eq!(sidebar_width_for_chat_area(&app, 240), None);
+    assert_eq!(sidebar_width_for_chat_area(&app, 160), None);
 }
 
 fn make_subagent(

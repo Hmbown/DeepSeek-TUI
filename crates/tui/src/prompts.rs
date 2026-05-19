@@ -1597,7 +1597,7 @@ mod tests {
     #[test]
     fn legacy_constants_still_available() {
         // Verify the legacy .txt constant still compiles and contains expected content
-        assert!(!AGENT_PROMPT.is_empty());
+        assert!(AGENT_PROMPT.contains("Mode: agent"));
     }
 
     // ── Cache-prefix stability harness (#263 step 2) ───────────────────────

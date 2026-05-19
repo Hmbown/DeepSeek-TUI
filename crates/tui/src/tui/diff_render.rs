@@ -8,6 +8,17 @@ use crate::palette;
 
 const MIN_LINE_NUMBER_WIDTH: usize = 4;
 
+#[derive(Debug, Clone, Copy)]
+struct DiffLineRenderOptions {
+    old_line: Option<usize>,
+    new_line: Option<usize>,
+    marker: char,
+    prefix_style: Style,
+    content_style: Style,
+    fill_to_width: bool,
+    line_number_width: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffFileSummary {
     pub path: String,
@@ -58,15 +69,17 @@ pub fn render_diff(diff: &str, width: u16) -> Vec<Line<'static>> {
             lines.extend(render_diff_line(
                 content,
                 width,
-                old_line,
-                new_line,
-                '+',
-                Style::default()
-                    .fg(palette::DIFF_ADDED)
-                    .bg(palette::DIFF_ADDED_BG),
-                Style::default().fg(Color::White).bg(palette::DIFF_ADDED_BG),
-                true,
-                line_number_width,
+                DiffLineRenderOptions {
+                    old_line,
+                    new_line,
+                    marker: '+',
+                    prefix_style: Style::default()
+                        .fg(palette::DIFF_ADDED)
+                        .bg(palette::DIFF_ADDED_BG),
+                    content_style: Style::default().fg(Color::White).bg(palette::DIFF_ADDED_BG),
+                    fill_to_width: true,
+                    line_number_width,
+                },
             ));
             if let Some(line) = new_line.as_mut() {
                 *line = line.saturating_add(1);
@@ -78,17 +91,19 @@ pub fn render_diff(diff: &str, width: u16) -> Vec<Line<'static>> {
             lines.extend(render_diff_line(
                 content,
                 width,
-                old_line,
-                new_line,
-                '-',
-                Style::default()
-                    .fg(palette::DIFF_DELETED)
-                    .bg(palette::DIFF_DELETED_BG),
-                Style::default()
-                    .fg(Color::White)
-                    .bg(palette::DIFF_DELETED_BG),
-                true,
-                line_number_width,
+                DiffLineRenderOptions {
+                    old_line,
+                    new_line,
+                    marker: '-',
+                    prefix_style: Style::default()
+                        .fg(palette::DIFF_DELETED)
+                        .bg(palette::DIFF_DELETED_BG),
+                    content_style: Style::default()
+                        .fg(Color::White)
+                        .bg(palette::DIFF_DELETED_BG),
+                    fill_to_width: true,
+                    line_number_width,
+                },
             ));
             if let Some(line) = old_line.as_mut() {
                 *line = line.saturating_add(1);
@@ -100,13 +115,15 @@ pub fn render_diff(diff: &str, width: u16) -> Vec<Line<'static>> {
             lines.extend(render_diff_line(
                 content,
                 width,
-                old_line,
-                new_line,
-                ' ',
-                Style::default().fg(palette::TEXT_TOOL_SUMMARY_DIM),
-                Style::default().fg(Color::White),
-                false,
-                line_number_width,
+                DiffLineRenderOptions {
+                    old_line,
+                    new_line,
+                    marker: ' ',
+                    prefix_style: Style::default().fg(palette::TEXT_TOOL_SUMMARY_DIM),
+                    content_style: Style::default().fg(Color::White),
+                    fill_to_width: false,
+                    line_number_width,
+                },
             ));
             if let Some(line) = old_line.as_mut() {
                 *line = line.saturating_add(1);
@@ -324,42 +341,42 @@ fn render_hunk_header(line: &str, width: u16) -> Vec<Line<'static>> {
 fn render_diff_line(
     content: &str,
     width: u16,
-    old_line: Option<usize>,
-    new_line: Option<usize>,
-    marker: char,
-    prefix_style: Style,
-    content_style: Style,
-    fill_to_width: bool,
-    line_number_width: usize,
+    options: DiffLineRenderOptions,
 ) -> Vec<Line<'static>> {
-    let prefix = format_line_number(old_line, new_line, marker, line_number_width);
-    let continuation_prefix = format_line_number(None, None, marker, line_number_width);
+    let prefix = format_line_number(
+        options.old_line,
+        options.new_line,
+        options.marker,
+        options.line_number_width,
+    );
+    let continuation_prefix =
+        format_line_number(None, None, options.marker, options.line_number_width);
     let prefix_width = prefix.width();
     let available = width.saturating_sub(prefix_width as u16).max(1) as usize;
     let wrapped = wrap_code_text(content, available);
 
     let mut out = Vec::new();
     for (idx, chunk) in wrapped.into_iter().enumerate() {
-        let chunk = if fill_to_width {
+        let chunk = if options.fill_to_width {
             pad_to_width(&chunk, available)
         } else {
             chunk
         };
         if idx == 0 {
             out.push(Line::from(vec![
-                Span::styled(prefix.clone(), prefix_style),
-                Span::styled(chunk, content_style),
+                Span::styled(prefix.clone(), options.prefix_style),
+                Span::styled(chunk, options.content_style),
             ]));
         } else {
             out.push(Line::from(vec![
-                Span::styled(continuation_prefix.clone(), prefix_style),
-                Span::styled(chunk, content_style),
+                Span::styled(continuation_prefix.clone(), options.prefix_style),
+                Span::styled(chunk, options.content_style),
             ]));
         }
     }
 
     if out.is_empty() {
-        out.push(Line::from(vec![Span::styled(prefix, prefix_style)]));
+        out.push(Line::from(vec![Span::styled(prefix, options.prefix_style)]));
     }
 
     out
