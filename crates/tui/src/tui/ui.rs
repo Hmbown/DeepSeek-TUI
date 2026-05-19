@@ -2081,6 +2081,7 @@ async fn run_event_loop(
                         app.use_mouse_capture,
                         app.use_bracketed_paste,
                     );
+                    reset_terminal_viewport(terminal, true)?;
                     last_focus_recovery = now;
                 }
                 force_terminal_repaint = true;
