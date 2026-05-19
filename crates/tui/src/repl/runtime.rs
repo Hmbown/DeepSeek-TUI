@@ -178,7 +178,10 @@ async fn read_stdout_line_lossy(
     if n == 0 {
         return Ok(None);
     }
-    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+    match String::from_utf8(buf) {
+        Ok(line) => Ok(Some(line)),
+        Err(err) => Ok(Some(String::from_utf8_lossy(err.as_bytes()).into_owned())),
+    }
 }
 
 impl PythonRuntime {
