@@ -12,6 +12,7 @@ use crate::tui::footer_ui::{
     active_tool_status_label, footer_auxiliary_spans, footer_cache_spans, footer_coherence_spans,
     footer_state_label, footer_status_line_spans, format_context_budget,
     format_token_count_compact, friendly_subagent_progress, render_footer_from,
+    subagent_display_label,
 };
 use crate::tui::history::{
     ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolStatus,
@@ -378,6 +379,8 @@ fn selection_to_text_handles_multiline_and_reversed_endpoints() {
 #[test]
 fn selection_to_text_copies_rendered_transcript_block() {
     let mut app = create_test_app();
+    app.show_thinking = true;
+    app.show_tool_details = true;
     app.history = vec![
         HistoryCell::System {
             content: "copy system".to_string(),
@@ -439,9 +442,8 @@ fn selection_to_text_copies_rendered_transcript_block() {
     );
     assert!(selected.contains("tool output line"), "{selected:?}");
     assert!(selected.contains("copy assistant"), "{selected:?}");
-    // #1163: tool-card middle lines are rendered with a `│ ` left rail
-    // glyph, but that decoration must not leak into copied text. Assert
-    // no isolated rail glyph survives at the start of any line.
+    // #1163: legacy tool-card box rails must not leak into copied text.
+    // Assert no isolated rail glyph survives at the start of any line.
     for (idx, line) in selected.lines().enumerate() {
         assert!(
             !line.starts_with("\u{2502} "),
@@ -1284,6 +1286,8 @@ fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
         messages,
         system_prompt: None,
         context_references: Vec::new(),
+        goal_state_json: None,
+        todos_json: None,
         artifacts: Vec::new(),
     }
 }
@@ -2042,10 +2046,10 @@ fn hidden_sidebar_focus_suppresses_sidebar_split_even_when_wide() {
     app.sidebar_width_percent = 28;
 
     app.sidebar_focus = SidebarFocus::Auto;
-    assert_eq!(sidebar_width_for_chat_area(&app, 120), Some(33));
+    assert_eq!(sidebar_width_for_chat_area(&app, 160), Some(44));
 
     app.sidebar_focus = SidebarFocus::Hidden;
-    assert_eq!(sidebar_width_for_chat_area(&app, 120), None);
+    assert_eq!(sidebar_width_for_chat_area(&app, 160), None);
 }
 
 fn make_subagent(
@@ -2170,6 +2174,283 @@ fn subagent_token_usage_is_deduped_by_mailbox_sequence() {
 }
 
 #[test]
+fn subagent_spawn_tool_row_collapses_into_live_card() {
+    let mut app = create_test_app();
+    handle_tool_call_started(
+        &mut app,
+        "task-call",
+        "Task",
+        &serde_json::json!({
+            "description": "Review parser",
+            "prompt": "Inspect parser call sites"
+        }),
+    );
+    assert!(
+        app.active_cell
+            .as_ref()
+            .is_some_and(|active| active.entries().is_empty()),
+        "Task spawn starts a turn but does not render a duplicate tool row"
+    );
+
+    handle_subagent_mailbox(
+        &mut app,
+        1,
+        &crate::tools::subagent::MailboxMessage::started(
+            "agent_live",
+            crate::tools::subagent::SubAgentType::General,
+            "Review parser",
+        ),
+    );
+
+    assert!(
+        app.active_cell.is_some(),
+        "sub-agent card insertion stays inside the active turn"
+    );
+    assert!(
+        app.history.is_empty(),
+        "sub-agent Started must not flush or append committed history mid-turn"
+    );
+    let active = app.active_cell.as_ref().expect("active cell exists");
+    assert_eq!(active.entries().len(), 1);
+    assert!(matches!(
+        active.entries().first(),
+        Some(HistoryCell::SubAgent(
+            crate::tui::history::SubAgentCell::Delegate(_)
+        ))
+    ));
+
+    handle_tool_call_complete(&mut app, "task-call", "Task", &ok_result("spawned"));
+    let active = app.active_cell.as_ref().expect("active cell remains");
+    assert_eq!(
+        active.entries().len(),
+        1,
+        "successful Task result stays folded into the live sub-agent card"
+    );
+    assert!(
+        app.collapsed_subagent_tool_calls.is_empty(),
+        "collapsed Task call is cleared on completion"
+    );
+}
+
+#[test]
+fn subagent_started_uses_mailbox_display_name_when_objective_only_has_role() {
+    let mut app = create_test_app();
+    handle_tool_call_started(
+        &mut app,
+        "task-call",
+        "Task",
+        &serde_json::json!({
+            "description": "extend-js-function-runtime",
+            "subagent_type": "implementer",
+            "prompt": "Extend the JS runtime implementation"
+        }),
+    );
+
+    handle_subagent_mailbox(
+        &mut app,
+        1,
+        &crate::tools::subagent::MailboxMessage::started_with_metadata(
+            "agent_live",
+            crate::tools::subagent::SubAgentType::Implementer,
+            "implementer",
+            Some("extend-js-function-runtime".to_string()),
+            Some("extend-js-function-runtime".to_string()),
+            Some("task-call".to_string()),
+            None,
+        ),
+    );
+
+    let active = app.active_cell.as_ref().expect("active cell exists");
+    let Some(HistoryCell::SubAgent(crate::tui::history::SubAgentCell::Delegate(card))) =
+        active.entries().first()
+    else {
+        panic!("expected delegate card");
+    };
+    assert_eq!(card.display_label(), "extend-js-function-runtime");
+}
+
+#[test]
+fn sibling_subagents_render_as_claude_style_group() {
+    let mut app = create_test_app();
+    handle_tool_call_started(
+        &mut app,
+        "task-a",
+        "Task",
+        &serde_json::json!({
+            "description": "Explore backend driver linker issue",
+            "subagent_type": "explore",
+            "prompt": "Inspect linker issue"
+        }),
+    );
+    handle_subagent_mailbox(
+        &mut app,
+        1,
+        &crate::tools::subagent::MailboxMessage::started_with_metadata(
+            "agent_a",
+            crate::tools::subagent::SubAgentType::Explore,
+            "explore",
+            Some("explore-backend-driver-linker-issue".to_string()),
+            Some("Explore backend driver linker issue".to_string()),
+            Some("task-a".to_string()),
+            None,
+        ),
+    );
+    handle_tool_call_started(
+        &mut app,
+        "task-b",
+        "Task",
+        &serde_json::json!({
+            "description": "Explore DOM reconcile key-diffing",
+            "subagent_type": "explore",
+            "prompt": "Inspect DOM reconcile key-diffing"
+        }),
+    );
+    handle_subagent_mailbox(
+        &mut app,
+        2,
+        &crate::tools::subagent::MailboxMessage::started_with_metadata(
+            "agent_b",
+            crate::tools::subagent::SubAgentType::Explore,
+            "explore",
+            Some("explore-dom-reconcile-key-diffing".to_string()),
+            Some("Explore DOM reconcile key-diffing".to_string()),
+            Some("task-b".to_string()),
+            None,
+        ),
+    );
+    handle_subagent_mailbox(
+        &mut app,
+        3,
+        &crate::tools::subagent::MailboxMessage::ToolCallStarted {
+            agent_id: "agent_a".to_string(),
+            tool_name: "exec_shell".to_string(),
+            step: 1,
+        },
+    );
+    handle_subagent_mailbox(
+        &mut app,
+        4,
+        &crate::tools::subagent::MailboxMessage::token_usage(
+            "agent_a",
+            "deepseek-v4-flash",
+            crate::models::Usage {
+                input_tokens: 27_000,
+                output_tokens: 1_000,
+                ..Default::default()
+            },
+        ),
+    );
+
+    let active = app.active_cell.as_ref().expect("active cell exists");
+    assert_eq!(active.entries().len(), 1);
+    let Some(HistoryCell::SubAgent(crate::tui::history::SubAgentCell::DelegateGroup(card))) =
+        active.entries().first()
+    else {
+        panic!("expected delegate group card");
+    };
+
+    let rendered = card
+        .render_lines(120)
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Running 2 agents"), "{rendered}");
+    assert!(
+        rendered.contains("Explore backend driver linker issue"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("1 tool use"), "{rendered}");
+    assert!(rendered.contains("28.0k tokens"), "{rendered}");
+    assert!(
+        !rendered.contains("Task("),
+        "Claude-style group should not repeat Task headers: {rendered}"
+    );
+
+    handle_subagent_mailbox(
+        &mut app,
+        5,
+        &crate::tools::subagent::MailboxMessage::Completed {
+            agent_id: "agent_a".to_string(),
+            summary: "Done".to_string(),
+        },
+    );
+    handle_subagent_mailbox(
+        &mut app,
+        6,
+        &crate::tools::subagent::MailboxMessage::Completed {
+            agent_id: "agent_b".to_string(),
+            summary: "Done".to_string(),
+        },
+    );
+
+    let active = app.active_cell.as_ref().expect("active cell exists");
+    let Some(HistoryCell::SubAgent(crate::tui::history::SubAgentCell::DelegateGroup(card))) =
+        active.entries().first()
+    else {
+        panic!("expected delegate group card");
+    };
+    let rendered = card
+        .render_lines(120)
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("2 Explore agents finished"), "{rendered}");
+    assert!(rendered.contains("Done"), "{rendered}");
+}
+
+#[test]
+fn agent_eval_started_uses_existing_subagent_label_not_agent_id() {
+    let mut app = create_test_app();
+    handle_tool_call_started(
+        &mut app,
+        "spawn-call",
+        "Task",
+        &serde_json::json!({
+            "description": "audit gui impl",
+            "prompt": "Audit GUI implementation"
+        }),
+    );
+    handle_subagent_mailbox(
+        &mut app,
+        1,
+        &crate::tools::subagent::MailboxMessage::started_with_metadata(
+            "agent_live",
+            crate::tools::subagent::SubAgentType::General,
+            "audit gui impl",
+            Some("audit-gui-impl".to_string()),
+            Some("audit gui impl".to_string()),
+            Some("spawn-call".to_string()),
+            None,
+        ),
+    );
+
+    handle_tool_call_started(
+        &mut app,
+        "eval-call",
+        "agent_eval",
+        &serde_json::json!({ "agent_id": "agent_live" }),
+    );
+
+    let active = app.active_cell.as_ref().expect("active cell exists");
+    let Some(HistoryCell::Tool(ToolCell::Generic(cell))) = active.entries().last() else {
+        panic!("expected agent_eval generic cell");
+    };
+    assert_eq!(cell.input_summary.as_deref(), Some("name: audit gui impl"));
+}
+
+#[test]
 fn format_token_count_compact_formats_units() {
     assert_eq!(format_token_count_compact(999), "999");
     assert_eq!(format_token_count_compact(1_200), "1.2k");
@@ -2221,6 +2502,7 @@ fn event_poll_timeout_has_nonzero_floor() {
 #[test]
 fn footer_status_line_spans_show_mode_and_model_idle_and_active() {
     let mut app = create_test_app();
+    app.set_mode(AppMode::Agent);
     app.model = "deepseek-v4-flash".to_string();
     // Pin Agent mode regardless of user settings on the host machine.
     let _ = app.set_mode(crate::tui::app::AppMode::Agent);
@@ -2318,6 +2600,22 @@ fn footer_auxiliary_spans_show_cache_unavailable_when_provider_omits_cache_field
     let roomy = spans_text(&footer_auxiliary_spans(&app, 72));
 
     assert!(roomy.contains("Cache: unavailable"));
+}
+
+#[test]
+fn footer_auxiliary_spans_distinguish_api_round_cache_from_turn_cache() {
+    let mut app = create_test_app();
+    app.session.last_prompt_tokens = Some(1_246_923);
+    app.session.last_prompt_cache_hit_tokens = Some(447_360);
+    app.session.last_prompt_cache_miss_tokens = Some(799_563);
+    app.session.last_api_prompt_tokens = Some(100_000);
+    app.session.last_api_prompt_cache_hit_tokens = Some(90_000);
+    app.session.last_api_prompt_cache_miss_tokens = Some(10_000);
+
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 104));
+
+    assert!(roomy.contains("Cache: api 90.0% | turn 35.9%"));
+    assert!(roomy.contains("hit 447360 | miss 799563"));
 }
 
 #[test]
@@ -3221,6 +3519,7 @@ fn detail_target_prefers_visible_tool_card() {
 #[test]
 fn activity_footer_hint_surfaces_visible_thinking_without_raw_tool_hint() {
     let mut app = create_test_app();
+    app.show_thinking = true;
     app.history = vec![HistoryCell::Thinking {
         content: "visible reasoning".to_string(),
         streaming: false,
@@ -4029,6 +4328,44 @@ fn orphan_tool_complete_with_unknown_id_pushes_separate_cell() {
 }
 
 #[test]
+fn collapsed_subagent_spawn_failure_renders_tool_error() {
+    let mut app = create_test_app();
+
+    handle_tool_call_started(
+        &mut app,
+        "task-call",
+        "Task",
+        &serde_json::json!({
+            "description": "bad delegate",
+            "prompt": "Start a sub-agent"
+        }),
+    );
+    assert!(
+        app.active_cell
+            .as_ref()
+            .is_some_and(|active| active.entries().is_empty())
+    );
+
+    let result = Err(crate::tools::spec::ToolError::execution_failed(
+        "spawn failed",
+    ));
+    handle_tool_call_complete(&mut app, "task-call", "Task", &result);
+
+    assert_eq!(app.history.len(), 1, "failed spawn is still visible");
+    let HistoryCell::Tool(ToolCell::Generic(generic)) = &app.history[0] else {
+        panic!("failed spawn should render as a Generic tool cell")
+    };
+    assert_eq!(generic.name, "Task");
+    assert_eq!(generic.status, ToolStatus::Failed);
+    assert!(
+        generic
+            .output
+            .as_deref()
+            .is_some_and(|output| output.contains("spawn failed"))
+    );
+}
+
+#[test]
 fn turn_complete_flushes_active_cell_into_history() {
     // The full path through the public flush helper. Verifies that a
     // mid-turn snapshot (exec running, exploring complete) becomes a stable
@@ -4447,6 +4784,7 @@ fn open_thinking_pager_finds_thinking_in_active_cell() {
 #[test]
 fn activity_detail_opens_reasoning_timeline_for_selected_thinking() {
     let mut app = create_test_app();
+    app.show_thinking = true;
     app.history = vec![
         HistoryCell::Thinking {
             content: "first chunk reasoning".to_string(),
@@ -4526,7 +4864,56 @@ fn activity_detail_fallback_prefers_live_activity_context() {
     assert!(body.contains("Turn: turn_live_123456789"));
     assert!(body.contains("Activity: tool agent_eval"));
     assert!(body.contains("Status: running"));
-    assert!(body.contains("agent_id: agent_af58ba3a"));
+    assert!(body.contains("Task"), "{body}");
+    assert!(
+        !body.contains("agent_af58ba3a"),
+        "activity detail should not surface bare internal agent ids: {body}"
+    );
+}
+
+#[test]
+fn activity_detail_uses_structured_subagent_group_detail() {
+    let mut app = create_test_app();
+    let mut first = crate::tui::widgets::agent_card::DelegateCard::new(
+        "agent_a",
+        "explore",
+        "Explore linker issue",
+    );
+    first.status = crate::tui::widgets::agent_card::AgentLifecycle::Running;
+    first.record_tool_use();
+    first.record_token_usage(&crate::models::Usage {
+        input_tokens: 27_000,
+        output_tokens: 1_000,
+        ..Default::default()
+    });
+    first.push_action("exec_shell running");
+
+    let mut second =
+        crate::tui::widgets::agent_card::DelegateCard::new("agent_b", "review", "Review patch");
+    second.status = crate::tui::widgets::agent_card::AgentLifecycle::Completed;
+    second.push_action("read_file ok");
+    second.summary = Some("review complete".to_string());
+
+    let mut group = crate::tui::widgets::agent_card::DelegateGroupCard::new();
+    group.push_card(first);
+    group.push_card(second);
+    app.history.push(HistoryCell::SubAgent(
+        crate::tui::history::SubAgentCell::DelegateGroup(group),
+    ));
+
+    assert!(open_activity_detail_pager(&mut app));
+    let body = pop_pager_body(&mut app);
+
+    assert!(body.contains("Activity: sub-agent"), "{body}");
+    assert!(body.contains("Sub-agent group: 2 agents"), "{body}");
+    assert!(body.contains("Name: Explore linker issue"), "{body}");
+    assert!(body.contains("Status: running"), "{body}");
+    assert!(body.contains("Tool uses: 1"), "{body}");
+    assert!(body.contains("Tokens: 28.0k"), "{body}");
+    assert!(body.contains("Last action: exec_shell running"), "{body}");
+    assert!(body.contains("Name: Review patch"), "{body}");
+    assert!(body.contains("Summary: review complete"), "{body}");
+    assert!(!body.contains("Task("), "{body}");
 }
 
 #[test]
@@ -4764,6 +5151,33 @@ fn noisy_subagent_progress_keeps_existing_objective_summary() {
         friendly_subagent_progress(&app, "agent_live", "step 1/8: requesting model response");
 
     assert_eq!(display, "starting: inspect release state");
+}
+
+#[test]
+fn started_subagent_progress_keeps_existing_objective_summary() {
+    let mut app = create_test_app();
+    app.agent_progress.insert(
+        "agent_live".to_string(),
+        "starting: compile core deps".to_string(),
+    );
+
+    let display = friendly_subagent_progress(&app, "agent_live", "started (implementer)");
+
+    assert_eq!(display, "starting: compile core deps");
+}
+
+#[test]
+fn subagent_display_label_uses_existing_task_summary_not_agent_id() {
+    let mut app = create_test_app();
+    app.agent_progress.insert(
+        "agent_live".to_string(),
+        "starting: inspect release state".to_string(),
+    );
+
+    assert_eq!(
+        subagent_display_label(&app, "agent_live").as_deref(),
+        Some("inspect release state")
+    );
 }
 
 /// Regression for issue #65: `truncate_line_to_width` with a tiny budget
@@ -5075,6 +5489,7 @@ fn render_footer_from_with_default_items_renders_mode_and_model() {
     // Default footer composition should show the mode chip and model
     // identifier — whatever the configured default model is.
     let mut app = create_test_app();
+    app.set_mode(AppMode::Agent);
     app.session.session_cost = 0.00005;
     let items = crate::config::StatusItem::default_footer();
     let props = render_footer_from(&app, &items, None);
@@ -5150,6 +5565,7 @@ fn render_footer_from_with_empty_items_blanks_every_segment() {
 fn render_footer_from_drops_only_unselected_clusters() {
     // Toggling Cost off but keeping the rest should hide cost only.
     let mut app = create_test_app();
+    app.set_mode(AppMode::Agent);
     app.session.session_cost = 0.42;
     let items: Vec<crate::config::StatusItem> = crate::config::StatusItem::default_footer()
         .into_iter()
@@ -5318,6 +5734,7 @@ fn history_arrow_handles_whitespace_input() {
     app.cursor_position = app.input.chars().count();
     app.input_history.push("previous prompt".to_string());
 
+    // Whitespace-only composer follows the default history behavior.
     assert!(handle_composer_history_arrow(
         &mut app,
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
@@ -5337,6 +5754,7 @@ fn history_arrow_handles_nonempty_input() {
     app.cursor_position = app.input.chars().count();
     app.input_history.push("previous prompt".to_string());
 
+    // Non-empty composer: Up navigates input history.
     assert!(handle_composer_history_arrow(
         &mut app,
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),

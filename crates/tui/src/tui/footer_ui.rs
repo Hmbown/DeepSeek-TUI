@@ -8,7 +8,7 @@ use crate::palette;
 use crate::tools::subagent::SubAgentStatus;
 use crate::tui::app::App;
 use crate::tui::format_helpers;
-use crate::tui::history::{HistoryCell, ToolCell, ToolStatus, summarize_tool_output};
+use crate::tui::history::{HistoryCell, SubAgentCell, ToolCell, ToolStatus, summarize_tool_output};
 use crate::tui::key_shortcuts;
 use crate::tui::subagent_routing::{active_fanout_counts, running_agent_count};
 use crate::tui::ui::{
@@ -116,7 +116,7 @@ pub(crate) fn footer_working_strip_active(app: &App) -> bool {
 
 pub(crate) fn is_noisy_subagent_progress(status: &str) -> bool {
     let status = status.trim().to_ascii_lowercase();
-    status.contains("requesting model response")
+    status.contains("requesting model response") || status.starts_with("started (")
 }
 
 pub(crate) fn subagent_objective_summary(app: &App, id: &str) -> Option<String> {
@@ -127,12 +127,48 @@ pub(crate) fn subagent_objective_summary(app: &App, id: &str) -> Option<String> 
         .filter(|summary| !summary.is_empty())
 }
 
+pub(crate) fn subagent_display_label(app: &App, id: &str) -> Option<String> {
+    subagent_objective_summary(app, id)
+        .or_else(|| subagent_card_display_label(app, id))
+        .or_else(|| {
+            app.agent_progress
+                .get(id)
+                .and_then(|progress| progress_embedded_subagent_label(progress))
+        })
+}
+
+fn subagent_card_display_label(app: &App, id: &str) -> Option<String> {
+    let idx = app.subagent_card_index.get(id).copied()?;
+    match app.cell_at_virtual_index(idx)? {
+        HistoryCell::SubAgent(SubAgentCell::Delegate(card)) if card.agent_id == id => {
+            let label = card.display_label();
+            (label.trim() != id).then_some(label)
+        }
+        HistoryCell::SubAgent(SubAgentCell::DelegateGroup(card)) => card
+            .display_label_for(id)
+            .filter(|label| label.trim() != id),
+        _ => None,
+    }
+}
+
+fn progress_embedded_subagent_label(progress: &str) -> Option<String> {
+    let trimmed = progress.trim();
+    ["starting: ", "working on "]
+        .into_iter()
+        .find_map(|prefix| trimmed.strip_prefix(prefix))
+        .map(str::trim)
+        .filter(|label| !label.is_empty() && *label != "working")
+        .map(ToString::to_string)
+}
+
 pub(crate) fn friendly_subagent_progress(app: &App, id: &str, status: &str) -> String {
     if !is_noisy_subagent_progress(status) {
         return summarize_tool_output(status);
     }
 
-    if let Some(summary) = subagent_objective_summary(app, id) {
+    if let Some(summary) =
+        subagent_objective_summary(app, id).or_else(|| subagent_card_display_label(app, id))
+    {
         return format!("working on {summary}");
     }
     if let Some(existing) = app.agent_progress.get(id)
@@ -311,7 +347,7 @@ fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatu
             // status. RLM is different today: it is a foreground tool call,
             // so keep it in the live tool footer until the async RLM
             // workbench lands (#513).
-            if matches!(generic.name.as_str(), "agent_open" | "agent_spawn") {
+            if matches!(generic.name.as_str(), "Task" | "agent_open" | "agent_spawn") {
                 return;
             }
             snapshot.record(format!("tool {}", generic.name), generic.status, None);
@@ -599,6 +635,25 @@ pub(crate) fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
     let prefix_is_stable = app
         .prefix_stability_pct
         .is_some_and(|pct| pct >= 95 && app.prefix_change_count == 0);
+    let api_cache_label = app.session.last_api_prompt_cache_hit_tokens.map(|api_hit| {
+        let api_miss = app
+            .session
+            .last_api_prompt_cache_miss_tokens
+            .unwrap_or_else(|| {
+                app.session
+                    .last_api_prompt_tokens
+                    .unwrap_or(0)
+                    .saturating_sub(api_hit)
+            });
+        let api_total = api_hit.saturating_add(api_miss);
+        let api_percent = if api_total == 0 {
+            0.0
+        } else {
+            (f64::from(api_hit) / f64::from(api_total) * 100.0).clamp(0.0, 100.0)
+        };
+        format!("api {api_percent:.1}% | turn {percent:.1}%")
+    });
+
     let color = if percent > 80.0 {
         palette::STATUS_SUCCESS
     } else if percent >= 40.0 {
@@ -608,13 +663,13 @@ pub(crate) fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
     } else {
         palette::STATUS_ERROR
     };
-    vec![Span::styled(
-        format!(
-            "Cache: {:.1}% hit | hit {hit_tokens} | miss {miss_tokens}",
-            percent
-        ),
-        Style::default().fg(color),
-    )]
+    let label = if let Some(api_cache_label) = api_cache_label {
+        format!("Cache: {api_cache_label} | hit {hit_tokens} | miss {miss_tokens}")
+    } else {
+        format!("Cache: {percent:.1}% hit | hit {hit_tokens} | miss {miss_tokens}")
+    };
+
+    vec![Span::styled(label, Style::default().fg(color))]
 }
 
 /// Render a footer chip showing the size of the `reasoning_content` block

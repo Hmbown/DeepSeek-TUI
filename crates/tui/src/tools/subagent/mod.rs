@@ -32,6 +32,7 @@ use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
 use crate::tools::handle::VarHandle;
 use crate::tools::plan::{PlanState, SharedPlanState};
 use crate::tools::registry::{ToolRegistry, ToolRegistryBuilder};
+use crate::tools::shell::new_shared_shell_manager;
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_u64, required_str,
@@ -62,7 +63,10 @@ fn release_resident_leases_for(agent_id: &str) {
     }
 }
 
-const DEFAULT_MAX_STEPS: u32 = 100;
+/// Circuit-breaker: maximum tool-call turns before a sub-agent is forcibly
+/// stopped. The model is expected to finish naturally; this only catches
+/// infinite loops. Not exposed to the model — it should not pace itself.
+const DEFAULT_MAX_STEPS: u32 = 200;
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-step LLM API call timeout. Each `create_message` request must complete
 /// within this window or the step is treated as timed out. Prevents a single
@@ -145,6 +149,54 @@ pub fn whale_nickname_for_index(index: usize) -> String {
         base.to_string()
     } else {
         format!("{base} {}", index / WHALE_NICKNAMES.len() + 1)
+    }
+}
+
+/// Derive a readable agent `session_name` from the objective. Caps at 50 chars,
+/// strips non-alphanumeric characters (replacing runs with a single dash), and
+/// falls back to the agent id when the objective is empty.
+fn slugify_agent_name(objective: &str, id: &str) -> String {
+    let slug: String = objective
+        .chars()
+        .filter_map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                Some(c.to_ascii_lowercase())
+            } else if c.is_whitespace() || c == '.' || c == ',' || c == ':' || c == ';' {
+                Some('-')
+            } else {
+                None
+            }
+        })
+        .collect();
+    let slug = slug.trim_matches('-');
+    // Collapse consecutive dashes
+    let mut compact = String::with_capacity(slug.len());
+    let mut prev_dash = false;
+    for c in slug.chars() {
+        if c == '-' {
+            if !prev_dash {
+                compact.push(c);
+            }
+            prev_dash = true;
+        } else {
+            compact.push(c);
+            prev_dash = false;
+        }
+    }
+    let compact = compact.trim_matches('-');
+    if compact.is_empty() {
+        id.to_string()
+    } else if compact.chars().count() <= 50 {
+        compact.to_string()
+    } else {
+        let end = compact
+            .char_indices()
+            .map(|(idx, _)| idx)
+            .nth(50)
+            .unwrap_or(compact.len());
+        let prefix = &compact[..end];
+        let end = prefix.rfind('-').filter(|idx| *idx > 0).unwrap_or(end);
+        prefix[..end].trim_end_matches('-').to_string()
     }
 }
 
@@ -446,6 +498,8 @@ pub(crate) struct SubAgentSpawnOptions {
     pub model: Option<String>,
     pub nickname: Option<String>,
     pub fork_context: bool,
+    pub parent_tool_call_id: Option<String>,
+    pub group_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -492,6 +546,7 @@ struct SubAgentInput {
 #[derive(Debug, Clone)]
 struct SpawnRequest {
     session_name: Option<String>,
+    display_name: Option<String>,
     prompt: String,
     agent_type: SubAgentType,
     assignment: SubAgentAssignment,
@@ -510,6 +565,8 @@ struct SpawnRequest {
     /// When true, seed the child with the parent's system prompt and message
     /// prefix before appending the child task.
     fork_context: bool,
+    /// When true, allow this spawn to exceed the soft sub-agent cap.
+    force: bool,
     /// Optional recursion budget for descendants opened by this child.
     /// `0` means the child may not call `agent_open` recursively.
     max_depth: Option<u32>,
@@ -625,6 +682,14 @@ pub struct SubAgentRuntime {
     /// exceed this is rejected at the spawn entry. Use `>` (strictly
     /// greater than) so equality is allowed — matches codex's pattern.
     pub max_spawn_depth: u32,
+    /// Soft cap on concurrent sub-agents. The model can request more
+    /// sub-agents than this, but each spawn above the soft cap must
+    /// pass an explicit `force` flag. Defaults to the same value as
+    /// the manager's `max_agents`.
+    pub soft_max_subagents: usize,
+    /// When true, the model is allowed to exceed `soft_max_subagents`
+    /// by setting `force=true` in the spawn request.
+    pub auto_scale: bool,
     /// Cooperative cancellation token. Children derive a child_token() from
     /// the parent so cancelling the root cascades down.
     pub cancel_token: CancellationToken,
@@ -639,7 +704,7 @@ pub struct SubAgentRuntime {
     /// orchestrate. `None` when no consumer is wired (tests / legacy paths).
     pub parent_completion_tx: Option<mpsc::UnboundedSender<SubAgentCompletion>>,
     /// Snapshot of the request prefix visible to an opt-in forked child.
-    pub fork_context: Option<SubAgentForkContext>,
+    pub fork_context: Option<Arc<SubAgentForkContext>>,
 }
 
 impl SubAgentRuntime {
@@ -669,6 +734,8 @@ impl SubAgentRuntime {
             manager,
             spawn_depth: 0,
             max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
+            soft_max_subagents: crate::config::MAX_SUBAGENTS,
+            auto_scale: false,
             cancel_token: CancellationToken::new(),
             mailbox: None,
             parent_completion_tx: None,
@@ -691,7 +758,7 @@ impl SubAgentRuntime {
 
     /// Attach the current parent request prefix for `fork_context` spawns.
     #[must_use]
-    pub fn with_fork_context(mut self, context: SubAgentForkContext) -> Self {
+    pub fn with_fork_context(mut self, context: Arc<SubAgentForkContext>) -> Self {
         self.fork_context = Some(context);
         self
     }
@@ -722,6 +789,20 @@ impl SubAgentRuntime {
     #[allow(dead_code)]
     pub fn with_max_spawn_depth(mut self, max: u32) -> Self {
         self.max_spawn_depth = max;
+        self
+    }
+
+    /// Override the soft cap on concurrent sub-agents.
+    #[must_use]
+    pub fn with_soft_max_subagents(mut self, max: usize) -> Self {
+        self.soft_max_subagents = max.clamp(1, crate::config::MAX_SUBAGENTS);
+        self
+    }
+
+    /// Enable or disable auto-scaling above the soft cap.
+    #[must_use]
+    pub fn with_auto_scale(mut self, auto_scale: bool) -> Self {
+        self.auto_scale = auto_scale;
         self
     }
 
@@ -779,6 +860,7 @@ impl SubAgentRuntime {
     pub fn child_runtime(&self) -> Self {
         let mut child_context = self.context.clone();
         child_context.auto_approve = self.context.auto_approve;
+        isolate_subagent_shell_manager(&mut child_context);
         Self {
             client: self.client.clone(),
             model: self.model.clone(),
@@ -792,6 +874,8 @@ impl SubAgentRuntime {
             manager: self.manager.clone(),
             spawn_depth: self.spawn_depth + 1,
             max_spawn_depth: self.max_spawn_depth,
+            soft_max_subagents: self.soft_max_subagents,
+            auto_scale: self.auto_scale,
             cancel_token: self.cancel_token.child_token(),
             mailbox: self.mailbox.clone(),
             parent_completion_tx: self.parent_completion_tx.clone(),
@@ -804,6 +888,12 @@ impl SubAgentRuntime {
     pub fn would_exceed_depth(&self) -> bool {
         self.spawn_depth + 1 > self.max_spawn_depth
     }
+}
+
+fn isolate_subagent_shell_manager(context: &mut ToolContext) {
+    let shell_manager = new_shared_shell_manager(context.workspace.clone());
+    context.shell_manager = shell_manager.clone();
+    context.runtime.shell_manager = Some(shell_manager);
 }
 
 /// A running sub-agent instance.
@@ -846,7 +936,7 @@ impl SubAgent {
         session_boot_id: String,
     ) -> Self {
         let id = format!("agent_{}", &Uuid::new_v4().to_string()[..8]);
-        let session_name = id.clone();
+        let session_name = slugify_agent_name(&assignment.objective, &id);
 
         Self {
             id,
@@ -908,6 +998,12 @@ pub struct SubAgentManager {
     /// agents whose `session_boot_id` doesn't match this value as
     /// "from prior session" so `agent_list` can hide them by default.
     current_session_boot_id: String,
+    /// Shared read-only tool result cache. Before executing a read-only tool,
+    /// sub-agents consult this cache to avoid duplicating I/O and API calls.
+    /// Keyed by (tool_name, canonical_hash_of_input). Cache entries auto-expire
+    /// after the sub-agent turn completes.
+    #[allow(dead_code)] // Ready for integration into tool execution path (next PR)
+    read_cache: HashMap<(String, u64), ToolResult>,
 }
 
 impl SubAgentManager {
@@ -923,6 +1019,7 @@ impl SubAgentManager {
             // Fresh boot id per manager. Used by #405 to classify
             // re-loaded persisted agents as "prior session".
             current_session_boot_id: format!("boot_{}", &Uuid::new_v4().to_string()[..12]),
+            read_cache: HashMap::new(),
         }
     }
 
@@ -1146,6 +1243,7 @@ impl SubAgentManager {
             runtime.model = model.to_string();
         }
         let effective_model = runtime.model.clone();
+        let requested_display_name = options.nickname.clone();
         let nickname = options
             .nickname
             .or_else(|| Some(whale_nickname_for_index(self.agents.len())));
@@ -1175,16 +1273,32 @@ impl SubAgentManager {
                 return Err(anyhow!("Sub-agent session name '{name}' is already in use"));
             }
             agent.session_name = name.to_string();
+        } else {
+            // Auto-generated session_name (from objective). If a previous
+            // agent already has the same slug, append "-2", "-3", etc.
+            let base = agent.session_name.clone();
+            let mut unique = base.clone();
+            let mut n = 2u32;
+            while self
+                .agents
+                .values()
+                .any(|existing| existing.session_name == unique)
+            {
+                unique = format!("{base}-{n}");
+                n = n.saturating_add(1);
+            }
+            agent.session_name = unique;
         }
         agent.fork_context = options.fork_context;
         let agent_id = agent.id.clone();
+        let session_name = agent.session_name.clone();
         let started_at = agent.started_at;
         let max_steps = self.max_steps;
 
         if let Some(event_tx) = runtime.event_tx.clone() {
             let _ = event_tx.try_send(Event::AgentSpawned {
                 id: agent_id.clone(),
-                prompt: prompt.clone(),
+                prompt: assignment.objective.clone(),
             });
         }
 
@@ -1192,11 +1306,15 @@ impl SubAgentManager {
             manager_handle,
             runtime,
             agent_id: agent_id.clone(),
+            session_name,
             agent_type,
             prompt,
             assignment,
             allowed_tools: tools,
             fork_context: options.fork_context,
+            display_name: requested_display_name,
+            parent_tool_call_id: options.parent_tool_call_id,
+            group_id: options.group_id,
             started_at,
             max_steps,
             input_rx,
@@ -1322,11 +1440,15 @@ impl SubAgentManager {
                 manager_handle,
                 runtime: restart_runtime,
                 agent_id: agent.id.clone(),
+                session_name: agent.session_name.clone(),
                 agent_type: agent.agent_type.clone(),
                 prompt: agent.prompt.clone(),
                 assignment: agent.assignment.clone(),
                 allowed_tools: agent.allowed_tools.clone(),
                 fork_context: false,
+                display_name: None,
+                parent_tool_call_id: None,
+                group_id: None,
                 started_at: restarted_at,
                 max_steps: self.max_steps,
                 input_rx,
@@ -1575,6 +1697,27 @@ impl SubAgentManager {
             self.persist_state_best_effort();
         }
     }
+
+    /// Try to serve a tool result from the shared read cache.
+    #[allow(dead_code)] // Ready for integration into tool execution path (next PR)
+    pub fn read_cache_get(&self, tool_name: &str, input_hash: u64) -> Option<ToolResult> {
+        self.read_cache
+            .get(&(tool_name.to_string(), input_hash))
+            .cloned()
+    }
+
+    /// Store a tool result in the shared read cache.
+    #[allow(dead_code)] // Ready for integration into tool execution path (next PR)
+    pub fn read_cache_put(&mut self, tool_name: &str, input_hash: u64, result: ToolResult) {
+        self.read_cache
+            .insert((tool_name.to_string(), input_hash), result);
+    }
+
+    /// Clear the read cache (called at turn boundaries).
+    #[allow(dead_code)] // Ready for integration into tool execution path (next PR)
+    pub fn clear_read_cache(&mut self) {
+        self.read_cache.clear();
+    }
 }
 
 /// Thread-safe wrapper for `SubAgentManager`.
@@ -1680,6 +1823,14 @@ fn instant_from_duration(duration: Duration) -> Instant {
         .unwrap_or_else(Instant::now)
 }
 
+#[allow(dead_code)] // Ready for integration into tool execution path (next PR)
+fn hash_tool_input(input: &serde_json::Value) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    input.to_string().hash(&mut hasher);
+    hasher.finish()
+}
+
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -1750,6 +1901,14 @@ impl ToolSpec for AgentOpenTool {
                     "type": "string",
                     "description": "Alias for name"
                 },
+                "description": {
+                    "type": "string",
+                    "description": "Short human-readable label for this child session. Used for display and for the auto-generated session name when name is omitted."
+                },
+                "display_name": {
+                    "type": "string",
+                    "description": "Alias for description"
+                },
                 "prompt": {
                     "type": "string",
                     "description": "Initial task description for the child session"
@@ -1774,6 +1933,10 @@ impl ToolSpec for AgentOpenTool {
                 "agent_type": {
                     "type": "string",
                     "description": "Alias for type"
+                },
+                "subagent_type": {
+                    "type": "string",
+                    "description": "Claude Code-compatible alias for type/role. Built-ins include general, explore, plan, review, implementer, verifier; custom names are treated as role overlays."
                 },
                 "role": {
                     "type": "string",
@@ -1841,6 +2004,96 @@ impl ToolSpec for AgentOpenTool {
             "prefix_cache": projection.prefix_cache,
         }));
         Ok(tool_result)
+    }
+}
+
+/// Claude Code-compatible delegate tool.
+///
+/// Claude exposes sub-agents through a capitalized `Task` tool with
+/// `description`, `prompt`, and `subagent_type`. Internally it is the same
+/// durable background session as `agent_spawn`, but it preserves the short
+/// description as the display name so the transcript reads like Claude Code's
+/// named sub-agent cards.
+pub struct ClaudeTaskTool {
+    manager: SharedSubAgentManager,
+    runtime: SubAgentRuntime,
+}
+
+impl ClaudeTaskTool {
+    #[must_use]
+    pub fn new(manager: SharedSubAgentManager, runtime: SubAgentRuntime) -> Self {
+        Self { manager, runtime }
+    }
+}
+
+#[async_trait]
+impl ToolSpec for ClaudeTaskTool {
+    fn name(&self) -> &'static str {
+        "Task"
+    }
+
+    fn description(&self) -> &'static str {
+        "Start a named Claude Code-style sub-agent for focused background work. Use description as the short UI label, prompt as the full assignment, and subagent_type for a built-in type or custom role name. Returns immediately with the child session snapshot; use agent_eval to read or wait on it."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": "Short human-readable task label shown in the transcript, e.g. \"Review parser\"."
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Full assignment for the sub-agent."
+                },
+                "subagent_type": {
+                    "type": "string",
+                    "description": "Built-in type (general, explore, plan, review, implementer, verifier) or custom role name."
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional stable session name. Defaults to a slug derived from description."
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional DeepSeek model id for this child"
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Optional working directory for the child; must be inside the parent workspace"
+                },
+                "fork_context": {
+                    "type": "boolean",
+                    "description": "When true, inherit the parent's system prompt and conversation prefix before appending this task. Defaults to false."
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3,
+                    "description": "Recursive child-agent budget for this session. 0 blocks agent_open from the child; 1-3 allow that many descendant levels."
+                }
+            },
+            "required": ["description", "prompt"]
+        })
+    }
+
+    fn capabilities(&self) -> Vec<ToolCapability> {
+        vec![
+            ToolCapability::ExecutesCode,
+            ToolCapability::RequiresApproval,
+        ]
+    }
+
+    fn approval_requirement(&self) -> ApprovalRequirement {
+        ApprovalRequirement::Required
+    }
+
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+        AgentSpawnTool::with_name(self.manager.clone(), self.runtime.clone(), "Task")
+            .execute(input, context)
+            .await
     }
 }
 
@@ -1924,6 +2177,18 @@ impl ToolSpec for AgentSpawnTool {
                     "type": "string",
                     "description": "Alias for type"
                 },
+                "description": {
+                    "type": "string",
+                    "description": "Short human-readable label for this sub-agent. Used for display and for the auto-generated session name when name is omitted."
+                },
+                "display_name": {
+                    "type": "string",
+                    "description": "Alias for description"
+                },
+                "subagent_type": {
+                    "type": "string",
+                    "description": "Claude Code-compatible alias for type/role. Built-ins include general, explore, plan, review, implementer, verifier; custom names are treated as role overlays."
+                },
                 "role": {
                     "type": "string",
                     "description": "Role alias: worker, explorer, awaiter, default"
@@ -1952,6 +2217,10 @@ impl ToolSpec for AgentSpawnTool {
                 "fork_context": {
                     "type": "boolean",
                     "description": "When true, inherit the parent's system prompt and conversation prefix before appending this task. This preserves DeepSeek prefix-cache reuse and gives the child full parent context. Defaults to false for independent exploration."
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "When true, allow this spawn to exceed the soft sub-agent cap. Only has an effect when auto_scale is enabled. Defaults to false."
                 }
             }
         })
@@ -1968,8 +2237,24 @@ impl ToolSpec for AgentSpawnTool {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let spawn_request = parse_spawn_request(&input)?;
+
+        // Soft cap check: read current count before locking the manager.
+        // When auto_scale is enabled and force=true, the spawn is allowed
+        // to exceed the soft limit (the hard cap in the manager still applies).
+        if self.runtime.auto_scale {
+            let current_count = {
+                let manager = self.manager.read().await;
+                manager.running_count()
+            };
+            if current_count >= self.runtime.soft_max_subagents && !spawn_request.force {
+                return Err(ToolError::invalid_input(format!(
+                    "soft sub-agent limit reached ({}/{}). Set force=true to override.",
+                    current_count, self.runtime.soft_max_subagents
+                )));
+            }
+        }
 
         // Depth cap: reject before locking the manager so we don't introduce
         // unnecessary contention. Mirrors codex's pattern (allow-equal at the
@@ -2022,6 +2307,7 @@ impl ToolSpec for AgentSpawnTool {
         }
         if let Some(cwd) = validated_cwd {
             child_runtime.context.workspace = cwd;
+            isolate_subagent_shell_manager(&mut child_runtime.context);
         }
         let configured_model = match spawn_request.model.clone() {
             Some(model) => Some(model),
@@ -2087,8 +2373,10 @@ impl ToolSpec for AgentSpawnTool {
                 SubAgentSpawnOptions {
                     name: spawn_request.session_name.clone(),
                     model: Some(effective_model),
-                    nickname: None,
+                    nickname: spawn_request.display_name.clone(),
                     fork_context: spawn_request.fork_context,
+                    parent_tool_call_id: context.current_tool_call_id.clone(),
+                    group_id: None,
                 },
             )
             .map_err(|e| ToolError::execution_failed(format!("Failed to spawn sub-agent: {e}")))?;
@@ -3096,7 +3384,7 @@ fn build_subagent_system_prompt(
 
 fn subagent_request_system_prompt(
     subagent_system_prompt: &str,
-    fork_context: Option<&SubAgentForkContext>,
+    fork_context: Option<&Arc<SubAgentForkContext>>,
 ) -> SystemPrompt {
     fork_context
         .and_then(|context| context.system.clone())
@@ -3107,7 +3395,7 @@ fn build_initial_subagent_messages(
     prompt: &str,
     assignment: &SubAgentAssignment,
     agent_type: &SubAgentType,
-    fork_context: Option<&SubAgentForkContext>,
+    fork_context: Option<&Arc<SubAgentForkContext>>,
 ) -> Vec<Message> {
     let mut messages = fork_context
         .map(|context| context.messages.clone())
@@ -3156,6 +3444,7 @@ struct SubAgentTask {
     manager_handle: SharedSubAgentManager,
     runtime: SubAgentRuntime,
     agent_id: String,
+    session_name: String,
     agent_type: SubAgentType,
     prompt: String,
     assignment: SubAgentAssignment,
@@ -3163,6 +3452,9 @@ struct SubAgentTask {
     /// Approval-gated tools still require an auto-approved parent runtime.
     allowed_tools: Option<Vec<String>>,
     fork_context: bool,
+    display_name: Option<String>,
+    parent_tool_call_id: Option<String>,
+    group_id: Option<String>,
     started_at: Instant,
     max_steps: u32,
     input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
@@ -3173,11 +3465,15 @@ async fn run_subagent_task(task: SubAgentTask) {
     let result = run_subagent(
         &task.runtime,
         task.agent_id.clone(),
+        task.session_name,
         task.agent_type,
         task.prompt,
         task.assignment,
         task.allowed_tools,
         task.fork_context,
+        task.display_name,
+        task.parent_tool_call_id,
+        task.group_id,
         task.started_at,
         task.max_steps,
         task.input_rx,
@@ -3273,6 +3569,8 @@ pub(crate) fn emit_parent_completion(
 fn subagent_done_sentinel(agent_id: &str, res: &SubAgentResult) -> String {
     let payload = json!({
         "agent_id": agent_id,
+        "name": res.name.as_str(),
+        "display_name": res.nickname.as_deref().unwrap_or(res.name.as_str()),
         "agent_type": res.agent_type.as_str(),
         "status": subagent_status_name(&res.status),
         "summary_location": "previous_line",
@@ -3296,11 +3594,15 @@ fn subagent_failed_sentinel(agent_id: &str, _err: &str) -> String {
 async fn run_subagent(
     runtime: &SubAgentRuntime,
     agent_id: String,
+    session_name: String,
     agent_type: SubAgentType,
     prompt: String,
     assignment: SubAgentAssignment,
     allowed_tools: Option<Vec<String>>,
     fork_context: bool,
+    display_name: Option<String>,
+    parent_tool_call_id: Option<String>,
+    group_id: Option<String>,
     started_at: Instant,
     max_steps: u32,
     mut input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
@@ -3313,11 +3615,13 @@ async fn run_subagent(
     let request_system = subagent_request_system_prompt(&system_prompt, fork_context);
     let mut messages =
         build_initial_subagent_messages(&prompt, &assignment, &agent_type, fork_context);
-    let runtime_for_tools = runtime.clone().with_fork_context(SubAgentForkContext {
-        system: Some(request_system.clone()),
-        messages: messages.clone(),
-        structured_state_block: None,
-    });
+    let runtime_for_tools = runtime
+        .clone()
+        .with_fork_context(Arc::new(SubAgentForkContext {
+            system: Some(request_system.clone()),
+            messages: messages.clone(),
+            structured_state_block: None,
+        }));
     let tool_registry = SubAgentToolRegistry::new(
         runtime_for_tools,
         allowed_tools.clone(),
@@ -3333,7 +3637,15 @@ async fn run_subagent(
     }
     let tools = tool_registry.tools_for_model(&agent_type);
     if let Some(mb) = runtime.mailbox.as_ref() {
-        let _ = mb.send(MailboxMessage::started(&agent_id, agent_type.clone()));
+        let _ = mb.send(MailboxMessage::started_with_metadata(
+            &agent_id,
+            agent_type.clone(),
+            &assignment.objective,
+            Some(session_name.clone()),
+            display_name.clone(),
+            parent_tool_call_id.clone(),
+            group_id.clone(),
+        ));
     }
     emit_agent_progress(
         runtime.event_tx.as_ref(),
@@ -3514,17 +3826,99 @@ async fn run_subagent(
             continue;
         }
 
+        // Partition tool calls: read-only tools can execute in parallel;
+        // side-effectful tools must run sequentially.
+        let (parallel, sequential): (Vec<_>, Vec<_>) = tool_uses
+            .into_iter()
+            .partition(|(_, name, _)| is_read_only_tool(name));
+
         emit_agent_progress(
             runtime.event_tx.as_ref(),
             runtime.mailbox.as_ref(),
             &agent_id,
             format!(
                 "step {steps}/{max_steps}: executing {} tool call(s)",
-                tool_uses.len()
+                parallel.len() + sequential.len()
             ),
         );
+
         let mut tool_results: Vec<ContentBlock> = Vec::new();
-        for (tool_id, tool_name, tool_input) in tool_uses {
+
+        // Execute parallel (read-only) tools concurrently.
+        if !parallel.is_empty() {
+            emit_agent_progress(
+                runtime.event_tx.as_ref(),
+                runtime.mailbox.as_ref(),
+                &agent_id,
+                format!(
+                    "step {steps}/{max_steps}: running {} parallel read-only tool(s)",
+                    parallel.len()
+                ),
+            );
+
+            let registry = &tool_registry;
+            let parallel_futures: Vec<_> = parallel
+                .into_iter()
+                .map(|(tool_id, tool_name, tool_input)| {
+                    let agent_id = agent_id.clone();
+                    let mb = runtime.mailbox.clone();
+                    let event_tx = runtime.event_tx.clone();
+                    async move {
+                        let result = tokio::time::timeout(TOOL_TIMEOUT, async {
+                            registry.execute(&agent_id, &tool_name, tool_input).await
+                        })
+                        .await;
+                        let output = match result {
+                            Ok(Ok(output)) => output,
+                            Ok(Err(e)) => format!("Error: {e}"),
+                            Err(_) => format!("Error: Tool {tool_name} timed out"),
+                        };
+                        let tool_ok = !output.starts_with("Error:");
+                        if !tool_ok {
+                            emit_agent_progress(
+                                event_tx.as_ref(),
+                                mb.as_ref(),
+                                &agent_id,
+                                format!(
+                                    "tool '{tool_name}' failed: {}",
+                                    summarize_subagent_tool_failure(&output)
+                                ),
+                            );
+                        }
+                        if let Some(mb) = mb.as_ref() {
+                            let _ = mb.send(MailboxMessage::ToolCallCompleted {
+                                agent_id: agent_id.clone(),
+                                tool_name: tool_name.clone(),
+                                step: steps,
+                                ok: tool_ok,
+                            });
+                        }
+                        if tool_ok && let Some(event_tx) = event_tx.as_ref() {
+                            let _ = event_tx.try_send(Event::AgentProgress {
+                                id: agent_id.clone(),
+                                status: format!(
+                                    "step {steps}/{max_steps}: finished tool '{tool_name}'"
+                                ),
+                            });
+                        }
+                        (tool_id, output)
+                    }
+                })
+                .collect();
+
+            let results = futures_util::future::join_all(parallel_futures).await;
+            for (tool_id, output) in results {
+                tool_results.push(ContentBlock::ToolResult {
+                    tool_use_id: tool_id,
+                    content: output,
+                    is_error: None,
+                    content_blocks: None,
+                });
+            }
+        }
+
+        // Execute sequential (side-effectful) tools one at a time.
+        for (tool_id, tool_name, tool_input) in sequential {
             emit_agent_progress(
                 runtime.event_tx.as_ref(),
                 runtime.mailbox.as_ref(),
@@ -3550,11 +3944,19 @@ async fn run_subagent(
                 Err(_) => format!("Error: Tool {tool_name} timed out"),
             };
             let tool_ok = !result.starts_with("Error:");
+            let tool_progress = if tool_ok {
+                format!("step {steps}/{max_steps}: finished tool '{tool_name}'")
+            } else {
+                format!(
+                    "tool '{tool_name}' failed: {}",
+                    summarize_subagent_tool_failure(&result)
+                )
+            };
             emit_agent_progress(
                 runtime.event_tx.as_ref(),
                 runtime.mailbox.as_ref(),
                 &agent_id,
-                format!("step {steps}/{max_steps}: finished tool '{tool_name}'"),
+                tool_progress,
             );
             if let Some(mb) = runtime.mailbox.as_ref() {
                 let _ = mb.send(MailboxMessage::ToolCallCompleted {
@@ -3577,6 +3979,15 @@ async fn run_subagent(
             messages.push(Message {
                 role: "user".to_string(),
                 content: tool_results,
+            });
+        }
+
+        // Send incremental progress after each completed step so the
+        // parent's mailbox consumers can render live state.
+        if let Some(ref mailbox) = runtime.mailbox {
+            let _ = mailbox.send(MailboxMessage::Progress {
+                agent_id: agent_id.clone(),
+                status: format!("step {steps}/{max_steps}: completed"),
             });
         }
     }
@@ -3841,32 +4252,32 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
         "items",
         "prompt",
     )?;
+    let type_input = optional_input_str(
+        input,
+        &["type", "agent_type", "agent_name", "subagent_type"],
+    );
+    let role_input = optional_input_str(input, &["role", "agent_role"]);
+    let display_name = optional_input_str(input, &["description", "display_name"])
+        .map(compact_subagent_display_name)
+        .or_else(|| {
+            Some(derive_subagent_display_name(
+                &prompt, type_input, role_input,
+            ))
+        })
+        .filter(|name| !name.trim().is_empty());
     let session_name = optional_input_str(input, &["name", "session_name"])
         .map(validate_session_name)
-        .transpose()?;
+        .transpose()?
+        .or_else(|| {
+            display_name
+                .as_deref()
+                .map(|name| slugify_agent_name(name, "agent"))
+                .filter(|name| !name.trim().is_empty())
+        });
 
-    let type_input = optional_input_str(input, &["type", "agent_type", "agent_name"]);
-    let role_input = optional_input_str(input, &["role", "agent_role"]);
+    let parsed_type = type_input.and_then(SubAgentType::from_str);
 
-    let parsed_type = type_input
-        .map(|kind| {
-            SubAgentType::from_str(kind).ok_or_else(|| {
-                ToolError::invalid_input(format!(
-                    "Invalid sub-agent type '{kind}'. Use: {VALID_SUBAGENT_TYPES}"
-                ))
-            })
-        })
-        .transpose()?;
-
-    let parsed_role_type = role_input
-        .map(|role| {
-            SubAgentType::from_str(role).ok_or_else(|| {
-                ToolError::invalid_input(format!(
-                    "Invalid role alias '{role}'. Use: worker, explorer, awaiter, default"
-                ))
-            })
-        })
-        .transpose()?;
+    let parsed_role_type = role_input.and_then(SubAgentType::from_str);
 
     if let (Some(type_kind), Some(role_kind)) = (&parsed_type, &parsed_role_type)
         && type_kind != role_kind
@@ -3880,18 +4291,10 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
         .or(parsed_role_type)
         .unwrap_or(SubAgentType::General);
 
-    if let Some(role) = role_input
-        && normalize_role_alias(role).is_none()
-    {
-        return Err(ToolError::invalid_input(format!(
-            "Invalid role alias '{role}'. Use: worker, explorer, awaiter, default"
-        )));
-    }
-
-    let role = role_input
-        .and_then(normalize_role_alias)
-        .or_else(|| type_input.and_then(normalize_role_alias))
-        .map(str::to_string);
+    let role = match role_input {
+        Some(role) => Some(normalize_role_name(role)?),
+        None => type_input.map(normalize_role_name).transpose()?,
+    };
 
     let allowed_tools = input
         .get("allowed_tools")
@@ -3919,6 +4322,7 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
     let fork_context =
         parse_optional_bool(input, &["fork_context", "forkContext", "inherit_context"])
             .unwrap_or(false);
+    let force = parse_optional_bool(input, &["force"]).unwrap_or(false);
     let max_depth = input
         .get("max_depth")
         .or_else(|| input.get("maxDepth"))
@@ -3941,14 +4345,16 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
 
     Ok(SpawnRequest {
         session_name,
+        display_name: display_name.clone(),
         prompt: prompt.clone(),
         agent_type,
-        assignment: SubAgentAssignment::new(prompt, role),
+        assignment: SubAgentAssignment::new(display_name.unwrap_or_else(|| prompt.clone()), role),
         allowed_tools,
         model,
         cwd,
         resident_file,
         fork_context,
+        force,
         max_depth,
     })
 }
@@ -3972,6 +4378,33 @@ fn validate_session_name(name: &str) -> Result<String, ToolError> {
         ));
     }
     Ok(trimmed.to_string())
+}
+
+fn compact_subagent_display_name(name: &str) -> String {
+    const MAX_CHARS: usize = 64;
+    let one_line = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = one_line.trim();
+    if trimmed.chars().count() <= MAX_CHARS {
+        return trimmed.to_string();
+    }
+    let mut out = trimmed
+        .chars()
+        .take(MAX_CHARS.saturating_sub(3))
+        .collect::<String>();
+    out.push_str("...");
+    out
+}
+
+fn derive_subagent_display_name(
+    prompt: &str,
+    type_input: Option<&str>,
+    role_input: Option<&str>,
+) -> String {
+    role_input
+        .or(type_input)
+        .map(compact_subagent_display_name)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| compact_subagent_display_name(prompt))
 }
 
 fn parse_optional_bool(input: &Value, names: &[&str]) -> Option<bool> {
@@ -4225,15 +4658,9 @@ fn parse_assign_request(input: &Value) -> Result<AssignRequest, ToolError> {
         .to_string();
     let objective = optional_input_str(input, &["objective"]).map(str::to_string);
     let role = optional_input_str(input, &["role", "agent_role"])
-        .map(|role| {
-            normalize_role_alias(role).ok_or_else(|| {
-                ToolError::invalid_input(format!(
-                    "Invalid role alias '{role}'. Use: worker, explorer, awaiter, default"
-                ))
-            })
-        })
+        .map(normalize_role_name)
         .transpose()?
-        .map(str::to_string);
+        .map(|role| role.to_string());
     let message = parse_optional_text_or_items(input, &["message", "input"], "items")?;
     let interrupt = optional_bool(input, "interrupt", true);
 
@@ -4259,8 +4686,34 @@ fn normalize_role_alias(input: &str) -> Option<&'static str> {
         "worker" | "general" => Some("worker"),
         "explorer" | "explore" => Some("explorer"),
         "awaiter" | "plan" | "planner" => Some("awaiter"),
+        "review" | "reviewer" | "code-review" | "code_review" => Some("review"),
+        "implementer" | "implement" | "implementation" | "builder" => Some("implementer"),
+        "verifier" | "verify" | "verification" | "validator" | "tester" => Some("verifier"),
         _ => None,
     }
+}
+
+fn normalize_role_name(input: &str) -> Result<String, ToolError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(ToolError::invalid_input("role cannot be blank"));
+    }
+    if trimmed.chars().any(char::is_whitespace) {
+        return Err(ToolError::invalid_input(
+            "role must not contain whitespace; use letters, numbers, '-', '_', or '.'",
+        ));
+    }
+    if !trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        return Err(ToolError::invalid_input(
+            "role may only contain ASCII letters, numbers, '-', '_', or '.'",
+        ));
+    }
+    Ok(normalize_role_alias(trimmed)
+        .map(str::to_string)
+        .unwrap_or_else(|| trimmed.to_string()))
 }
 
 fn build_assignment_prompt(
@@ -4293,6 +4746,57 @@ fn emit_agent_progress(
             status,
         });
     }
+}
+
+fn summarize_subagent_tool_failure(output: &str) -> String {
+    const MAX_CHARS: usize = 160;
+    let mut out = String::new();
+    let mut last_was_space = false;
+
+    for ch in output.trim().chars() {
+        if ch.is_whitespace() {
+            if !last_was_space {
+                out.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            out.push(ch);
+            last_was_space = false;
+        }
+
+        if out.chars().count() >= MAX_CHARS {
+            break;
+        }
+    }
+
+    if out.is_empty() {
+        "tool failed".to_string()
+    } else if output.trim().chars().count() > MAX_CHARS {
+        let mut truncated: String = out.chars().take(MAX_CHARS.saturating_sub(1)).collect();
+        truncated.push('…');
+        truncated
+    } else {
+        out
+    }
+}
+
+/// Whether a tool is read-only and safe to execute in parallel with other
+/// read-only tools. Tools not in this list are assumed to have side effects
+/// and must be executed sequentially.
+fn is_read_only_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "read_file"
+            | "list_dir"
+            | "grep_files"
+            | "file_search"
+            | "web_search"
+            | "diagnostics"
+            | "checklist_list"
+            | "todo_list"
+            | "task_list"
+            | "agent_list"
+    )
 }
 
 // === Tool Registry Helpers ===
@@ -4358,7 +4862,7 @@ impl SubAgentToolRegistry {
     fn tools_for_model(&self, agent_type: &SubAgentType) -> Vec<Tool> {
         let disallowed = match agent_type {
             // Review agents should not spawn sub-agents (#1489).
-            SubAgentType::Review => &["agent_spawn"][..],
+            SubAgentType::Review => &["Task", "agent_open", "agent_spawn"][..],
             _ => &[][..],
         };
         let api_tools = self.registry.to_api_tools();

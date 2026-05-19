@@ -191,7 +191,7 @@ pub struct Settings {
     pub paste_burst_detection: bool,
     /// Show thinking blocks from the model
     pub show_thinking: bool,
-    /// Show detailed tool output
+    /// Legacy toggle retained for settings compatibility.
     pub show_tool_details: bool,
     /// UI locale: auto, en, ja, zh-Hans, pt-BR, es-419
     pub locale: String,
@@ -739,7 +739,10 @@ impl Settings {
                 "Fallback rapid-key paste detection: on/off",
             ),
             ("show_thinking", "Show model thinking: on/off"),
-            ("show_tool_details", "Show detailed tool output: on/off"),
+            (
+                "show_tool_details",
+                "Legacy toggle; Claude-style tool details stay visible",
+            ),
             (
                 "locale",
                 "UI locale and default model language: auto, en, ja, zh-Hans, pt-BR, es-419",

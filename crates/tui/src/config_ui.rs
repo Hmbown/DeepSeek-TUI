@@ -1070,7 +1070,7 @@ mod tests {
         let config = Config::default();
         let doc = build_document(&app, &config).expect("document");
         assert_eq!(doc.runtime.model, app.model);
-        assert_eq!(doc.runtime.approval_mode, ApprovalModeValue::Suggest);
+        assert_eq!(doc.runtime.approval_mode, app.approval_mode.into());
         assert_eq!(doc.config.reasoning_effort, ReasoningEffortValue::Max);
     }
 

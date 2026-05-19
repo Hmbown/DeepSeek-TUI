@@ -8,6 +8,7 @@ use crate::tools::ReviewOutput;
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::app::{App, ToolDetailRecord};
+use crate::tui::footer_ui::subagent_display_label;
 use crate::tui::history::{
     DiffPreviewCell, ExecCell, ExecSource, ExploringEntry, GenericToolCell, HistoryCell,
     McpToolCell, PatchSummaryCell, PlanStep, PlanUpdateCell, ReviewCell, ToolCell, ToolStatus,
@@ -249,7 +250,11 @@ pub(super) fn handle_tool_call_started(
         return;
     }
 
-    let input_summary = summarize_tool_args(input);
+    let input_summary = summarize_tool_args_for_tool(app, name, input);
+    if is_subagent_spawn_tool(name) {
+        app.collapsed_subagent_tool_calls.insert(id);
+        return;
+    }
     push_active_tool_cell(
         app,
         &id,
@@ -266,6 +271,60 @@ pub(super) fn handle_tool_call_started(
             is_diff: false,
         })),
     );
+}
+
+fn summarize_tool_args_for_tool(
+    app: &App,
+    name: &str,
+    input: &serde_json::Value,
+) -> Option<String> {
+    if is_subagent_lookup_tool(name)
+        && let Some(label) = subagent_tool_display_label(app, input)
+    {
+        return Some(format!("name: {label}"));
+    }
+    summarize_tool_args(input)
+}
+
+fn is_subagent_lookup_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "agent_eval" | "agent_close" | "agent_result" | "agent_wait" | "agent_status" | "wait"
+    )
+}
+
+fn is_subagent_spawn_tool(name: &str) -> bool {
+    matches!(name, "Task" | "agent_open" | "agent_spawn" | "spawn_agent")
+}
+
+fn subagent_tool_display_label(app: &App, input: &serde_json::Value) -> Option<String> {
+    let obj = input.as_object()?;
+    for key in ["description", "display_name", "name"] {
+        if let Some(value) = obj.get(key).and_then(serde_json::Value::as_str) {
+            let value = value.trim();
+            if value.is_empty() {
+                continue;
+            }
+            if let Some(label) = subagent_display_label(app, value) {
+                return Some(label);
+            }
+            return Some(value.to_string());
+        }
+    }
+    for key in ["agent_id", "id"] {
+        if let Some(value) = obj.get(key).and_then(serde_json::Value::as_str) {
+            let value = value.trim();
+            if value.is_empty() {
+                continue;
+            }
+            if let Some(label) = subagent_display_label(app, value)
+                && label.trim() != value
+            {
+                return Some(label);
+            }
+        }
+    }
+    None
 }
 
 /// Push a tool cell as a new entry in `active_cell`, register the tool id,
@@ -459,6 +518,15 @@ pub(super) fn handle_tool_call_complete(
     result: &Result<ToolResult, ToolError>,
 ) {
     if app.ignored_tool_calls.remove(id) {
+        return;
+    }
+    if app.collapsed_subagent_tool_calls.remove(id) {
+        accrue_child_token_cost_if_any(app, result);
+        record_spillover_artifact_if_any(app, id, name, result);
+        if tool_result_is_success(result) {
+            return;
+        }
+        push_orphan_tool_completion(app, id, name, result);
         return;
     }
     // Roll any child-LLM token usage the tool reports into the
@@ -670,6 +738,10 @@ pub(super) fn handle_tool_call_complete(
             .with_tool_result(&result_text, success, None);
         let _ = app.execute_hooks(HookEvent::ToolCallAfter, &context);
     }
+}
+
+fn tool_result_is_success(result: &Result<ToolResult, ToolError>) -> bool {
+    matches!(result, Ok(tool_result) if tool_result.success)
 }
 
 fn refresh_active_tool_completion_timestamp(app: &mut App, cell_index: usize) {

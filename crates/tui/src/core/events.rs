@@ -94,6 +94,13 @@ pub enum Event {
         error: Option<String>,
     },
 
+    /// Usage for one API request inside a turn.
+    ///
+    /// A single user turn can contain many model requests when tools are used.
+    /// Keep this separate from `TurnComplete.usage`, which is the aggregate for
+    /// the whole turn.
+    ApiRoundUsage { usage: Usage, round: u32 },
+
     /// Context compaction started.
     CompactionStarted {
         id: String,

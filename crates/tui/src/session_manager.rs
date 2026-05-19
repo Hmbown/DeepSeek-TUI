@@ -18,11 +18,6 @@ use uuid::Uuid;
 
 /// Maximum number of sessions to retain
 const MAX_SESSIONS: usize = 50;
-/// Maximum number of messages to persist per session (#402 P0).
-/// Beyond this limit, the oldest messages are dropped and a truncation
-/// note is prepended to the system prompt. Keeps session files bounded
-/// so save/load remains fast even for long-running conversations.
-const MAX_PERSISTED_MESSAGES: usize = 500;
 const CURRENT_SESSION_SCHEMA_VERSION: u32 = 1;
 const CURRENT_QUEUE_SCHEMA_VERSION: u32 = 1;
 
@@ -101,7 +96,7 @@ pub struct SessionContextReference {
 }
 
 /// Session metadata stored with each saved session
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SessionMetadata {
     /// Unique session identifier
     pub id: String,
@@ -120,10 +115,8 @@ pub struct SessionMetadata {
     /// Workspace directory
     pub workspace: PathBuf,
     /// Optional mode label (agent/plan/etc.)
-    #[serde(default)]
     pub mode: Option<String>,
     /// Accumulated cost data for persisted billing and high-water mark.
-    #[serde(default)]
     pub cost: SessionCostSnapshot,
 }
 
@@ -161,6 +154,15 @@ impl SessionCostSnapshot {
     pub fn total_cny(&self) -> f64 {
         self.session_cost_cny + self.subagent_cost_cny
     }
+
+    fn is_empty(&self) -> bool {
+        self.session_cost_usd == 0.0
+            && self.session_cost_cny == 0.0
+            && self.subagent_cost_usd == 0.0
+            && self.subagent_cost_cny == 0.0
+            && self.displayed_cost_high_water_usd == 0.0
+            && self.displayed_cost_high_water_cny == 0.0
+    }
 }
 
 impl SessionMetadata {
@@ -168,6 +170,65 @@ impl SessionMetadata {
     #[allow(dead_code)]
     pub fn copy_cost_from(&mut self, other: &SessionMetadata) {
         self.cost = other.cost;
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionMetadata {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawSessionMetadata {
+            id: String,
+            title: String,
+            created_at: DateTime<Utc>,
+            updated_at: DateTime<Utc>,
+            message_count: usize,
+            total_tokens: u64,
+            model: String,
+            workspace: PathBuf,
+            #[serde(default)]
+            mode: Option<String>,
+            #[serde(default)]
+            cost: SessionCostSnapshot,
+            #[serde(default)]
+            session_cost_usd: f64,
+            #[serde(default)]
+            session_cost_cny: f64,
+            #[serde(default)]
+            subagent_cost_usd: f64,
+            #[serde(default)]
+            subagent_cost_cny: f64,
+        }
+
+        let raw = RawSessionMetadata::deserialize(deserializer)?;
+        let legacy_cost = SessionCostSnapshot {
+            session_cost_usd: raw.session_cost_usd,
+            session_cost_cny: raw.session_cost_cny,
+            subagent_cost_usd: raw.subagent_cost_usd,
+            subagent_cost_cny: raw.subagent_cost_cny,
+            displayed_cost_high_water_usd: 0.0,
+            displayed_cost_high_water_cny: 0.0,
+        };
+        let cost = if raw.cost.is_empty() && !legacy_cost.is_empty() {
+            legacy_cost
+        } else {
+            raw.cost
+        };
+
+        Ok(Self {
+            id: raw.id,
+            title: raw.title,
+            created_at: raw.created_at,
+            updated_at: raw.updated_at,
+            message_count: raw.message_count,
+            total_tokens: raw.total_tokens,
+            model: raw.model,
+            workspace: raw.workspace,
+            mode: raw.mode,
+            cost,
+        })
     }
 }
 
@@ -187,6 +248,14 @@ pub struct SavedSession {
     /// `/attach` mentions. Optional for backward-compatible session loads.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_references: Vec<SessionContextReference>,
+    /// Serialized goal state (GoalState as JSON). Persisted so
+    /// auto-continue can resume after restart/crash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_state_json: Option<String>,
+    /// Serialized todo items (Vec<TodoItem> as JSON). Persisted so
+    /// incomplete work survives restart/crash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todos_json: Option<String>,
     /// Metadata registry of large outputs produced during this session.
     /// Artifact contents are stored in the session-owned artifact directory.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -687,8 +756,6 @@ pub fn create_saved_session_with_id_and_mode(
         })
         .unwrap_or_else(|| "New Session".to_string());
 
-    let (capped_messages, truncation_note) = cap_messages(messages);
-
     SavedSession {
         schema_version: CURRENT_SESSION_SCHEMA_VERSION,
         metadata: SessionMetadata {
@@ -703,12 +770,11 @@ pub fn create_saved_session_with_id_and_mode(
             mode: mode.map(str::to_string),
             cost: SessionCostSnapshot::default(),
         },
-        messages: capped_messages,
-        system_prompt: merge_truncation_note(
-            system_prompt_to_string(system_prompt),
-            truncation_note,
-        ),
+        messages: messages.to_vec(),
+        system_prompt: system_prompt_to_string(system_prompt),
         context_references: Vec::new(),
+        goal_state_json: None,
+        todos_json: None,
         artifacts: Vec::new(),
     }
 }
@@ -721,45 +787,12 @@ pub fn update_session(
     system_prompt: Option<&SystemPrompt>,
 ) -> SavedSession {
     session.schema_version = CURRENT_SESSION_SCHEMA_VERSION;
-    let (capped_messages, truncation_note) = cap_messages(messages);
-    session.messages = capped_messages;
+    session.messages = messages.to_vec();
     session.metadata.updated_at = Utc::now();
     session.metadata.message_count = messages.len();
     session.metadata.total_tokens = total_tokens;
-    session.system_prompt = merge_truncation_note(
-        system_prompt_to_string(system_prompt).or(session.system_prompt),
-        truncation_note,
-    );
+    session.system_prompt = system_prompt_to_string(system_prompt).or(session.system_prompt);
     session
-}
-
-/// Cap messages to [`MAX_PERSISTED_MESSAGES`], keeping the most recent.
-/// Returns the capped slice and an optional truncation note.
-fn cap_messages(messages: &[Message]) -> (Vec<Message>, Option<String>) {
-    let total = messages.len();
-    if total <= MAX_PERSISTED_MESSAGES {
-        return (messages.to_vec(), None);
-    }
-    let dropped = total - MAX_PERSISTED_MESSAGES;
-    let note = format!(
-        "Note: {dropped} older messages were dropped from the session file \
-         to keep persistence bounded. The full conversation history may \
-         still be recoverable from cycle archives."
-    );
-    (
-        messages[total - MAX_PERSISTED_MESSAGES..].to_vec(),
-        Some(note),
-    )
-}
-
-/// Merge an optional truncation note into the system prompt string.
-fn merge_truncation_note(system_prompt: Option<String>, note: Option<String>) -> Option<String> {
-    match (system_prompt, note) {
-        (None, None) => None,
-        (Some(sp), None) => Some(sp),
-        (None, Some(note)) => Some(format!("[Session note]\n{note}")),
-        (Some(sp), Some(note)) => Some(format!("[Session note]\n{note}\n\n---\n\n{sp}")),
-    }
 }
 
 /// String-scan a JSON byte buffer for the top-level `"metadata":{...}`
@@ -1019,6 +1052,8 @@ mod tests {
             },
             system_prompt: None,
             context_references: Vec::new(),
+            goal_state_json: None,
+            todos_json: None,
             artifacts: Vec::new(),
         };
         manager.save_session(&session).expect("save");
@@ -1047,6 +1082,8 @@ mod tests {
             },
             system_prompt: None,
             context_references: Vec::new(),
+            goal_state_json: None,
+            todos_json: None,
             artifacts: Vec::new(),
         };
         manager.save_session(&session).expect("save empty");
@@ -1362,6 +1399,32 @@ mod tests {
         let updated = update_session(session, &new_messages, 100, None);
         assert_eq!(updated.messages.len(), 2);
         assert_eq!(updated.metadata.total_tokens, 100);
+    }
+
+    #[test]
+    fn saved_session_preserves_all_messages_for_prefix_cache() {
+        let tmp = tempdir().expect("tempdir");
+        let messages = (0..550)
+            .map(|i| make_test_message("user", &format!("message {i}")))
+            .collect::<Vec<_>>();
+        let system_prompt = SystemPrompt::Text("stable system prompt".to_string());
+
+        let session = create_saved_session(
+            &messages,
+            "deepseek-v4-pro",
+            tmp.path(),
+            123,
+            Some(&system_prompt),
+        );
+
+        assert_eq!(session.metadata.message_count, messages.len());
+        assert_eq!(session.messages.len(), messages.len());
+        assert_eq!(session.messages.first(), messages.first());
+        assert_eq!(session.messages.last(), messages.last());
+        assert_eq!(
+            session.system_prompt.as_deref(),
+            Some("stable system prompt")
+        );
     }
 
     #[test]

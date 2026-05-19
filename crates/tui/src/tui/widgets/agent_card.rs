@@ -17,6 +17,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use crate::models::Usage;
 use crate::palette;
 use crate::tools::subagent::MailboxMessage;
 use crate::tui::widgets::tool_card::{ToolFamily, family_glyph, family_label};
@@ -24,6 +25,7 @@ use crate::tui::widgets::tool_card::{ToolFamily, family_glyph, family_label};
 /// Maximum number of recent actions kept on a `DelegateCard`. Older entries
 /// are dropped from the head; an ellipsis row signals truncation.
 pub const DELEGATE_MAX_ACTIONS: usize = 3;
+const DELEGATE_LIVE_ACTION_MAX_CHARS: usize = 180;
 
 /// Lifecycle of a delegated / fanned-out agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,25 +73,35 @@ pub struct DelegateCard {
     pub agent_type: String,
     pub status: AgentLifecycle,
     pub summary: Option<String>,
+    pub tool_uses: u32,
+    pub token_count: u64,
+    task_summary: String,
     actions: Vec<String>,
     truncated: bool,
 }
 
 impl DelegateCard {
     #[must_use]
-    pub fn new(agent_id: impl Into<String>, agent_type: impl Into<String>) -> Self {
+    pub fn new(
+        agent_id: impl Into<String>,
+        agent_type: impl Into<String>,
+        task_summary: impl Into<String>,
+    ) -> Self {
         Self {
             agent_id: agent_id.into(),
             agent_type: agent_type.into(),
             status: AgentLifecycle::Pending,
             summary: None,
+            tool_uses: 0,
+            token_count: 0,
+            task_summary: task_summary.into(),
             actions: Vec::new(),
             truncated: false,
         }
     }
 
     pub fn push_action(&mut self, action: impl Into<String>) {
-        self.actions.push(action.into());
+        self.actions.push(compact_live_action(&action.into()));
         if self.actions.len() > DELEGATE_MAX_ACTIONS {
             // Drop one head entry per overflow so steady-state is exactly
             // DELEGATE_MAX_ACTIONS lines; the ellipsis row signals the rest.
@@ -98,15 +110,28 @@ impl DelegateCard {
         }
     }
 
+    pub fn record_tool_use(&mut self) {
+        self.tool_uses = self.tool_uses.saturating_add(1);
+    }
+
+    pub fn record_token_usage(&mut self, usage: &Usage) {
+        self.token_count = self
+            .token_count
+            .saturating_add(u64::from(usage.input_tokens))
+            .saturating_add(u64::from(usage.output_tokens));
+    }
+
     #[must_use]
-    pub fn render_lines(&self, _width: u16) -> Vec<Line<'static>> {
+    pub fn render_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines = Vec::with_capacity(self.actions.len() + 3);
-        lines.push(card_header(
-            ToolFamily::Delegate,
+        lines.push(delegate_header(
             self.status,
+            &self.task_summary,
             &self.agent_type,
             &self.agent_id,
+            width,
         ));
+        let body_budget = usize::from(width).saturating_sub(4).max(24);
         if self.truncated {
             lines.push(Line::from(Span::styled(
                 "  \u{2026}".to_string(), // …
@@ -117,7 +142,7 @@ impl DelegateCard {
             lines.push(Line::from(vec![
                 Span::styled("  \u{2502} ", Style::default().fg(palette::TEXT_DIM)),
                 Span::styled(
-                    truncate_action(action, 200),
+                    truncate_action(action, body_budget),
                     Style::default().fg(palette::TEXT_TOOL_OUTPUT),
                 ),
             ]));
@@ -128,12 +153,35 @@ impl DelegateCard {
             lines.push(Line::from(vec![
                 Span::styled("  \u{2570} ", Style::default().fg(palette::TEXT_DIM)),
                 Span::styled(
-                    truncate_action(summary, 200),
+                    truncate_action(summary, body_budget),
                     Style::default().fg(self.status.color()),
                 ),
             ]));
         }
         lines
+    }
+
+    #[must_use]
+    pub fn detail_text(&self, width: u16) -> String {
+        let value_budget = detail_value_budget(width);
+        let mut lines = Vec::with_capacity(8);
+        lines.push("Sub-agent".to_string());
+        lines.push(format!(
+            "Name: {}",
+            truncate_action(&self.display_label(), value_budget)
+        ));
+        lines.push(format!("Status: {}", self.status.label()));
+        lines.push(format!("Tool uses: {}", self.tool_uses));
+        lines.push(format!("Tokens: {}", compact_token_count(self.token_count)));
+        lines.push(format!(
+            "Last action: {}",
+            truncate_action(self.last_action_text(), value_budget)
+        ));
+        lines.push(format!(
+            "Summary: {}",
+            truncate_action(self.summary_text(), value_budget)
+        ));
+        lines.join("\n")
     }
 
     /// Number of actions held — exposed for tests; bounded at
@@ -149,6 +197,151 @@ impl DelegateCard {
     #[cfg(test)]
     pub fn truncated(&self) -> bool {
         self.truncated
+    }
+
+    /// Claude Code-style short label for this delegated task.
+    #[must_use]
+    pub fn display_label(&self) -> String {
+        delegate_display_label(&self.task_summary, &self.agent_type, &self.agent_id)
+    }
+
+    fn status_line(&self) -> String {
+        match self.status {
+            AgentLifecycle::Completed => "Done".to_string(),
+            AgentLifecycle::Failed => self.summary.clone().unwrap_or_else(|| "Failed".to_string()),
+            AgentLifecycle::Cancelled => "Cancelled".to_string(),
+            AgentLifecycle::Pending => "Pending".to_string(),
+            AgentLifecycle::Running => self
+                .actions
+                .last()
+                .cloned()
+                .unwrap_or_else(|| "Working".to_string()),
+        }
+    }
+
+    fn last_action_text(&self) -> &str {
+        self.actions.last().map(String::as_str).unwrap_or("-")
+    }
+
+    fn summary_text(&self) -> &str {
+        self.summary.as_deref().unwrap_or("-")
+    }
+}
+
+/// Claude Code-style aggregate card for sibling `Task` / `agent_open` workers.
+#[derive(Debug, Clone, Default)]
+pub struct DelegateGroupCard {
+    pub agents: Vec<DelegateCard>,
+}
+
+impl DelegateGroupCard {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn contains_agent(&self, agent_id: &str) -> bool {
+        self.agents.iter().any(|agent| agent.agent_id == agent_id)
+    }
+
+    pub fn push_started(
+        &mut self,
+        agent_id: impl Into<String>,
+        agent_type: impl Into<String>,
+        task_summary: impl Into<String>,
+    ) {
+        let agent_id = agent_id.into();
+        if self.contains_agent(&agent_id) {
+            return;
+        }
+        let mut card = DelegateCard::new(agent_id, agent_type, task_summary);
+        card.status = AgentLifecycle::Running;
+        self.agents.push(card);
+    }
+
+    pub fn push_card(&mut self, card: DelegateCard) {
+        if !self.contains_agent(&card.agent_id) {
+            self.agents.push(card);
+        }
+    }
+
+    pub fn apply(&mut self, msg: &MailboxMessage) -> bool {
+        let agent_id = msg.agent_id();
+        let Some(card) = self
+            .agents
+            .iter_mut()
+            .find(|card| card.agent_id == agent_id)
+        else {
+            return false;
+        };
+        apply_to_delegate(card, msg)
+    }
+
+    #[must_use]
+    pub fn display_label_for(&self, agent_id: &str) -> Option<String> {
+        self.agents
+            .iter()
+            .find(|agent| agent.agent_id == agent_id)
+            .map(DelegateCard::display_label)
+    }
+
+    #[must_use]
+    pub fn has_live_motion(&self) -> bool {
+        self.agents.iter().any(|agent| {
+            matches!(
+                agent.status,
+                AgentLifecycle::Pending | AgentLifecycle::Running
+            )
+        })
+    }
+
+    #[must_use]
+    pub fn render_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if self.agents.is_empty() {
+            return vec![Line::from(Span::styled(
+                "Running 0 agents...",
+                Style::default().fg(palette::TEXT_MUTED),
+            ))];
+        }
+
+        let mut lines = Vec::new();
+        let finished: Vec<&DelegateCard> = self
+            .agents
+            .iter()
+            .filter(|agent| agent.status.is_terminal())
+            .collect();
+        let running: Vec<&DelegateCard> = self
+            .agents
+            .iter()
+            .filter(|agent| !agent.status.is_terminal())
+            .collect();
+
+        if !finished.is_empty() {
+            render_delegate_group_section(&mut lines, &finished, true, width);
+        }
+        if !finished.is_empty() && !running.is_empty() {
+            lines.push(Line::from(""));
+        }
+        if !running.is_empty() {
+            render_delegate_group_section(&mut lines, &running, false, width);
+        }
+
+        lines
+    }
+
+    #[must_use]
+    pub fn detail_text(&self, width: u16) -> String {
+        let mut lines = Vec::new();
+        lines.push(format!("Sub-agent group: {} agents", self.agents.len()));
+        for (idx, agent) in self.agents.iter().enumerate() {
+            if idx > 0 {
+                lines.push(String::new());
+            }
+            lines.push(format!("Agent {}", idx + 1));
+            lines.extend(agent.detail_text(width).lines().skip(1).map(str::to_string));
+        }
+        lines.join("\n")
     }
 }
 
@@ -365,6 +558,195 @@ fn card_header(
     ])
 }
 
+fn delegate_header(
+    status: AgentLifecycle,
+    task_summary: &str,
+    agent_type: &str,
+    agent_id: &str,
+    width: u16,
+) -> Line<'static> {
+    let glyph = family_glyph(ToolFamily::Delegate);
+    let header_color = status.color();
+    let label_budget = usize::from(width).saturating_sub(16).max(12);
+    let label = truncate_action(
+        &delegate_display_label(task_summary, agent_type, agent_id),
+        label_budget,
+    );
+    Line::from(vec![
+        Span::styled(
+            format!("{glyph} "),
+            Style::default()
+                .fg(header_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "Task(".to_string(),
+            Style::default()
+                .fg(header_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(label, Style::default().fg(palette::TEXT_PRIMARY)),
+        Span::styled(
+            ")".to_string(),
+            Style::default()
+                .fg(header_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("[{}]", status.label()),
+            Style::default().fg(header_color),
+        ),
+    ])
+}
+
+fn delegate_display_label(task_summary: &str, agent_type: &str, agent_id: &str) -> String {
+    for value in [task_summary, agent_type, agent_id] {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    "sub-agent".to_string()
+}
+
+fn render_delegate_group_section(
+    lines: &mut Vec<Line<'static>>,
+    agents: &[&DelegateCard],
+    finished: bool,
+    width: u16,
+) {
+    let status = if finished {
+        AgentLifecycle::Completed
+    } else {
+        AgentLifecycle::Running
+    };
+    let header_color = status.color();
+    let glyph = if finished { '\u{25CF}' } else { '\u{25D0}' };
+    let title = if finished {
+        let role = common_agent_type_label(agents);
+        format!(
+            "{}{} {} finished (Ctrl+O to expand)",
+            agents.len(),
+            role.as_ref()
+                .map(|role| format!(" {role}"))
+                .unwrap_or_default(),
+            plural_agent(agents.len())
+        )
+    } else {
+        format!(
+            "Running {} {}... (Ctrl+O to expand)",
+            agents.len(),
+            plural_agent(agents.len())
+        )
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{glyph} "),
+            Style::default()
+                .fg(header_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            title,
+            Style::default()
+                .fg(header_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    let body_budget = usize::from(width).saturating_sub(8).max(24);
+    for (idx, agent) in agents.iter().enumerate() {
+        let last = idx + 1 == agents.len();
+        let branch = if last { "  \u{2514} " } else { "  \u{251C} " };
+        let child_branch = if last {
+            "    \u{2514} "
+        } else {
+            "  \u{2502} \u{2514} "
+        };
+        lines.push(Line::from(vec![
+            Span::styled(branch.to_string(), Style::default().fg(palette::TEXT_DIM)),
+            Span::styled(
+                truncate_action(&agent_row_title(agent), body_budget),
+                Style::default()
+                    .fg(palette::TEXT_PRIMARY)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(
+                child_branch.to_string(),
+                Style::default().fg(palette::TEXT_DIM),
+            ),
+            Span::styled(
+                truncate_action(&agent.status_line(), body_budget),
+                Style::default().fg(agent.status.color()),
+            ),
+        ]));
+    }
+}
+
+fn agent_row_title(agent: &DelegateCard) -> String {
+    let mut row = agent.display_label();
+    row.push_str(&format!(
+        " \u{00B7} {} {}",
+        agent.tool_uses,
+        if agent.tool_uses == 1 {
+            "tool use"
+        } else {
+            "tool uses"
+        }
+    ));
+    if agent.token_count > 0 {
+        row.push_str(&format!(
+            " \u{00B7} {} tokens",
+            compact_token_count(agent.token_count)
+        ));
+    }
+    row
+}
+
+fn compact_token_count(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
+    }
+}
+
+fn detail_value_budget(width: u16) -> usize {
+    usize::from(width).saturating_sub(14).max(24)
+}
+
+fn common_agent_type_label(agents: &[&DelegateCard]) -> Option<String> {
+    let first = agents.first()?.agent_type.trim();
+    if first.is_empty()
+        || !agents
+            .iter()
+            .all(|agent| agent.agent_type.trim().eq_ignore_ascii_case(first))
+    {
+        return None;
+    }
+    Some(agent_type_label(first).to_string())
+}
+
+fn agent_type_label(agent_type: &str) -> &str {
+    match agent_type.trim().to_ascii_lowercase().as_str() {
+        "explore" | "explorer" => "Explore",
+        "implementer" | "implement" => "Implement",
+        "verifier" | "verify" => "Verify",
+        "review" | "reviewer" => "Review",
+        "planner" | "plan" => "Plan",
+        _ => "General",
+    }
+}
+
+fn plural_agent(count: usize) -> &'static str {
+    if count == 1 { "agent" } else { "agents" }
+}
+
 fn truncate_action(text: &str, max: usize) -> String {
     let trimmed = text.trim();
     if trimmed.chars().count() <= max {
@@ -374,6 +756,27 @@ fn truncate_action(text: &str, max: usize) -> String {
         out.push('\u{2026}');
         out
     }
+}
+
+fn compact_live_action(text: &str) -> String {
+    let mut out = String::new();
+    let mut last_was_space = false;
+    for ch in text.trim().chars() {
+        if ch.is_whitespace() {
+            if !last_was_space {
+                out.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            out.push(ch);
+            last_was_space = false;
+        }
+
+        if out.chars().count() >= DELEGATE_LIVE_ACTION_MAX_CHARS {
+            break;
+        }
+    }
+    truncate_action(&out, DELEGATE_LIVE_ACTION_MAX_CHARS)
 }
 
 /// Apply a mailbox envelope to a `DelegateCard`. Returns `true` if the
@@ -394,6 +797,7 @@ pub fn apply_to_delegate(card: &mut DelegateCard, msg: &MailboxMessage) -> bool 
             }
         }
         MailboxMessage::ToolCallStarted { tool_name, .. } => {
+            card.record_tool_use();
             card.push_action(format!("{tool_name} running"));
         }
         MailboxMessage::ToolCallCompleted { tool_name, ok, .. } => {
@@ -401,11 +805,11 @@ pub fn apply_to_delegate(card: &mut DelegateCard, msg: &MailboxMessage) -> bool 
         }
         MailboxMessage::Completed { summary, .. } => {
             card.status = AgentLifecycle::Completed;
-            card.summary = Some(summary.clone());
+            card.summary = Some(compact_live_action(summary));
         }
         MailboxMessage::Failed { error, .. } => {
             card.status = AgentLifecycle::Failed;
-            card.summary = Some(error.clone());
+            card.summary = Some(compact_live_action(error));
         }
         MailboxMessage::Cancelled { .. } => {
             card.status = AgentLifecycle::Cancelled;
@@ -416,10 +820,9 @@ pub fn apply_to_delegate(card: &mut DelegateCard, msg: &MailboxMessage) -> bool 
             return false;
         }
         MailboxMessage::TokenUsage { .. } => {
-            // Cost accumulation happens in handle_subagent_mailbox (ui.rs)
-            // before this apply function is called; TokenUsage never reaches
-            // this arm in practice.
-            return false;
+            if let MailboxMessage::TokenUsage { usage, .. } = msg {
+                card.record_token_usage(usage);
+            }
         }
     }
     true
@@ -489,7 +892,7 @@ mod tests {
 
     #[test]
     fn delegate_card_truncates_to_last_three_actions_with_ellipsis() {
-        let mut card = DelegateCard::new("agent_001", "general");
+        let mut card = DelegateCard::new("agent_001", "general", "test task");
         card.push_action("read README.md");
         card.push_action("grep TODO");
         card.push_action("edit src/lib.rs");
@@ -532,7 +935,7 @@ mod tests {
 
     #[test]
     fn delegate_card_terminal_status_renders_summary_row() {
-        let mut card = DelegateCard::new("agent_002", "explore");
+        let mut card = DelegateCard::new("agent_002", "explore", "search");
         card.push_action("listing files");
         let msg = MailboxMessage::Completed {
             agent_id: "agent_002".into(),
@@ -551,7 +954,7 @@ mod tests {
 
     #[test]
     fn delegate_card_ignores_low_signal_scheduler_progress() {
-        let mut card = DelegateCard::new("agent_003", "general");
+        let mut card = DelegateCard::new("agent_003", "general", "review");
         let msg = MailboxMessage::progress("agent_003", "step 1/100: requesting model response");
 
         assert!(apply_to_delegate(&mut card, &msg));
@@ -572,7 +975,7 @@ mod tests {
 
     #[test]
     fn delegate_tool_rows_omit_internal_step_numbers() {
-        let mut card = DelegateCard::new("agent_004", "general");
+        let mut card = DelegateCard::new("agent_004", "general", "check");
 
         assert!(apply_to_delegate(
             &mut card,
@@ -601,8 +1004,170 @@ mod tests {
     }
 
     #[test]
+    fn delegate_progress_is_compacted_before_live_storage() {
+        let mut card = DelegateCard::new("agent_long", "general", "long command");
+        let long_output = format!(
+            "cargo test failed\n{}\nstderr: {}",
+            "stdout line ".repeat(80),
+            "error details ".repeat(80)
+        );
+
+        assert!(apply_to_delegate(
+            &mut card,
+            &MailboxMessage::progress("agent_long", long_output.clone())
+        ));
+
+        assert_eq!(card.action_count(), 1);
+        let rendered = render_to_strings(&card.render_lines(240)).join("\n");
+        assert!(rendered.contains("cargo test failed"), "{rendered}");
+        assert!(
+            rendered.chars().count() < long_output.chars().count() / 4,
+            "live card should not retain long command output: {} vs {}",
+            rendered.chars().count(),
+            long_output.chars().count()
+        );
+    }
+
+    #[test]
+    fn delegate_failed_summary_is_short_but_visible() {
+        let mut card = DelegateCard::new("agent_fail", "verifier", "cargo test");
+        let long_error = format!(
+            "command failed: cargo test\n{}",
+            "thread panic backtrace frame ".repeat(80)
+        );
+
+        assert!(apply_to_delegate(
+            &mut card,
+            &MailboxMessage::Failed {
+                agent_id: "agent_fail".into(),
+                error: long_error.clone(),
+            }
+        ));
+
+        let rendered = render_to_strings(&card.render_lines(240)).join("\n");
+        assert!(
+            rendered.contains("command failed: cargo test"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.chars().count() < long_error.chars().count() / 4,
+            "failed live summary should be bounded: {} vs {}",
+            rendered.chars().count(),
+            long_error.chars().count()
+        );
+    }
+
+    #[test]
+    fn delegate_header_uses_claude_task_label_without_duplicate_role() {
+        let mut card = DelegateCard::new("agent_005", "implementer", "implementer");
+        assert!(apply_to_delegate(
+            &mut card,
+            &MailboxMessage::started(
+                "agent_005",
+                crate::tools::subagent::SubAgentType::Implementer,
+                "implementer",
+            )
+        ));
+
+        let header = render_to_strings(&card.render_lines(80))
+            .into_iter()
+            .next()
+            .expect("header");
+
+        assert!(header.contains("Task(implementer)"), "{header}");
+        assert!(header.contains("[running]"), "{header}");
+        assert_eq!(
+            header.matches("implementer").count(),
+            1,
+            "role must not be repeated as both role and summary: {header}"
+        );
+    }
+
+    #[test]
+    fn delegate_header_prefers_description_over_role() {
+        let card = DelegateCard::new("agent_006", "implementer", "gate_main exe 验证");
+        let header = render_to_strings(&card.render_lines(80))
+            .into_iter()
+            .next()
+            .expect("header");
+
+        assert!(header.contains("Task(gate_main exe 验证)"), "{header}");
+        assert!(
+            !header.contains("Task implementer"),
+            "Claude-style header should not lead with the role: {header}"
+        );
+    }
+
+    #[test]
+    fn delegate_body_lines_truncate_to_terminal_width() {
+        let mut card = DelegateCard::new("agent_007", "explore", "audit gui impl");
+        card.push_action("exec_shell ok");
+        card.status = AgentLifecycle::Completed;
+        card.summary = Some("A".repeat(180));
+
+        let rendered = render_to_strings(&card.render_lines(40));
+        let summary = rendered
+            .iter()
+            .find(|line| line.starts_with("  \u{2570} "))
+            .expect("summary row");
+
+        assert!(
+            summary.chars().count() <= 40,
+            "summary should fit terminal width: {summary:?}"
+        );
+        assert!(summary.ends_with('\u{2026}'), "{summary:?}");
+    }
+
+    #[test]
+    fn delegate_group_detail_includes_structured_fields_for_each_agent() {
+        let mut first = DelegateCard::new("agent_a", "explore", "Explore linker issue");
+        first.status = AgentLifecycle::Running;
+        first.record_tool_use();
+        first.record_token_usage(&Usage {
+            input_tokens: 27_000,
+            output_tokens: 1_000,
+            ..Default::default()
+        });
+        first.push_action("exec_shell running");
+
+        let mut second = DelegateCard::new("agent_b", "implementer", "Patch renderer");
+        second.status = AgentLifecycle::Completed;
+        second.record_tool_use();
+        second.push_action("apply_patch ok");
+        second.summary = Some("patched renderer tests".to_string());
+
+        let mut group = DelegateGroupCard::new();
+        group.push_card(first);
+        group.push_card(second);
+
+        let detail = group.detail_text(120);
+        assert!(detail.contains("Sub-agent group: 2 agents"), "{detail}");
+        assert!(detail.contains("Agent 1"), "{detail}");
+        assert!(detail.contains("Name: Explore linker issue"), "{detail}");
+        assert!(detail.contains("Status: running"), "{detail}");
+        assert!(detail.contains("Tool uses: 1"), "{detail}");
+        assert!(detail.contains("Tokens: 28.0k"), "{detail}");
+        assert!(
+            detail.contains("Last action: exec_shell running"),
+            "{detail}"
+        );
+        assert!(detail.contains("Agent 2"), "{detail}");
+        assert!(detail.contains("Name: Patch renderer"), "{detail}");
+        assert!(detail.contains("Status: done"), "{detail}");
+        assert!(detail.contains("Last action: apply_patch ok"), "{detail}");
+        assert!(
+            detail.contains("Summary: patched renderer tests"),
+            "{detail}"
+        );
+        assert!(
+            !detail.contains("Task("),
+            "detail should not reintroduce duplicate Task rows: {detail}"
+        );
+    }
+
+    #[test]
     fn delegate_card_ignores_envelopes_for_other_agents() {
-        let mut card = DelegateCard::new("agent_a", "general");
+        let mut card = DelegateCard::new("agent_a", "general", "test");
         let other = MailboxMessage::progress("agent_b", "noise");
         assert!(!apply_to_delegate(&mut card, &other));
         assert_eq!(card.action_count(), 0);
@@ -664,8 +1229,11 @@ mod tests {
     #[test]
     fn fanout_started_claims_seeded_pending_slot_without_growing_grid() {
         let mut card = FanoutCard::new("fanout").with_workers(["task:a", "task:b"]);
-        let started =
-            MailboxMessage::started("agent_live", crate::tools::subagent::SubAgentType::General);
+        let started = MailboxMessage::started(
+            "agent_live",
+            crate::tools::subagent::SubAgentType::General,
+            "test",
+        );
 
         assert!(apply_to_fanout(&mut card, &started));
 
@@ -679,7 +1247,8 @@ mod tests {
     #[test]
     fn fanout_apply_transitions_worker_through_lifecycle() {
         let mut card = FanoutCard::new("fanout").with_workers(["w_1"]);
-        let started = MailboxMessage::started("w_1", crate::tools::subagent::SubAgentType::General);
+        let started =
+            MailboxMessage::started("w_1", crate::tools::subagent::SubAgentType::General, "test");
         apply_to_fanout(&mut card, &started);
         assert_eq!(card.workers[0].status, AgentLifecycle::Running);
 

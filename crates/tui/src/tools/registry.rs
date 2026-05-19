@@ -243,6 +243,7 @@ impl ToolRegistry {
 
     /// Convert tools to API Tool format with optional cache control on the last tool.
     #[must_use]
+    #[allow(dead_code)]
     pub fn to_api_tools_with_cache(&self, enable_cache: bool) -> Vec<Tool> {
         let mut tools = self.to_api_tools();
         if enable_cache && let Some(last) = tools.last_mut() {
@@ -848,9 +849,13 @@ impl ToolRegistryBuilder {
         manager: super::subagent::SharedSubAgentManager,
         runtime: super::subagent::SubAgentRuntime,
     ) -> Self {
-        use super::subagent::{AgentCloseTool, AgentEvalTool, AgentOpenTool};
+        use super::subagent::{AgentCloseTool, AgentEvalTool, AgentOpenTool, ClaudeTaskTool};
 
         self.with_tool(Arc::new(AgentOpenTool::new(
+            manager.clone(),
+            runtime.clone(),
+        )))
+        .with_tool(Arc::new(ClaudeTaskTool::new(
             manager.clone(),
             runtime.clone(),
         )))

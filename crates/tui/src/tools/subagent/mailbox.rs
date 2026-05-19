@@ -35,6 +35,15 @@ pub enum MailboxMessage {
     Started {
         agent_id: String,
         agent_type: String,
+        objective: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_call_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group_id: Option<String>,
     },
     /// Free-form human-readable progress (mirrors `Event::AgentProgress`).
     Progress { agent_id: String, status: String },
@@ -89,10 +98,31 @@ impl MailboxMessage {
         }
     }
 
-    pub(crate) fn started(agent_id: impl Into<String>, agent_type: SubAgentType) -> Self {
+    pub(crate) fn started(
+        agent_id: impl Into<String>,
+        agent_type: SubAgentType,
+        objective: impl Into<String>,
+    ) -> Self {
+        Self::started_with_metadata(agent_id, agent_type, objective, None, None, None, None)
+    }
+
+    pub(crate) fn started_with_metadata(
+        agent_id: impl Into<String>,
+        agent_type: SubAgentType,
+        objective: impl Into<String>,
+        name: Option<String>,
+        display_name: Option<String>,
+        parent_tool_call_id: Option<String>,
+        group_id: Option<String>,
+    ) -> Self {
         Self::Started {
             agent_id: agent_id.into(),
             agent_type: agent_type.as_str().to_string(),
+            objective: objective.into(),
+            name,
+            display_name,
+            parent_tool_call_id,
+            group_id,
         }
     }
 
@@ -412,7 +442,10 @@ mod tests {
     #[tokio::test]
     async fn agent_id_is_extractable_from_every_variant() {
         let cases: Vec<(MailboxMessage, &str)> = vec![
-            (MailboxMessage::started("a1", SubAgentType::General), "a1"),
+            (
+                MailboxMessage::started("a1", SubAgentType::General, "test"),
+                "a1",
+            ),
             (MailboxMessage::progress("a2", "x"), "a2"),
             (
                 MailboxMessage::ToolCallStarted {
@@ -474,5 +507,24 @@ mod tests {
         for (msg, expected) in cases {
             assert_eq!(msg.agent_id(), expected, "extract failed for {msg:?}");
         }
+    }
+
+    #[test]
+    fn started_deserializes_legacy_payload_without_display_metadata() {
+        let msg: MailboxMessage = serde_json::from_str(
+            r#"{"kind":"started","agent_id":"a1","agent_type":"implementer","objective":"implementer"}"#,
+        )
+        .expect("legacy started payload should parse");
+
+        let MailboxMessage::Started {
+            display_name,
+            parent_tool_call_id,
+            ..
+        } = msg
+        else {
+            panic!("expected started message");
+        };
+        assert_eq!(display_name, None);
+        assert_eq!(parent_tool_call_id, None);
     }
 }

@@ -372,7 +372,7 @@ impl ModalView for ModelPickerView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::config::{ApiProvider, Config};
     use crate::tui::app::{App, TuiOptions};
     use std::path::PathBuf;
 
@@ -411,7 +411,7 @@ mod tests {
         app.model = "deepseek-v4-pro".to_string();
         app.auto_model = false;
         app.reasoning_effort = ReasoningEffort::Max;
-        app.api_provider = crate::config::ApiProvider::Deepseek;
+        app.api_provider = ApiProvider::Deepseek;
         (app, lock)
     }
 

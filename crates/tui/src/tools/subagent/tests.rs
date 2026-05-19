@@ -35,6 +35,25 @@ fn estimate_tool_description_tokens_conservative(text: &str) -> usize {
 }
 
 #[test]
+fn subagent_tool_failure_summary_is_single_line_and_bounded() {
+    let output = format!(
+        "Error: cargo test failed\n{}\nstderr: {}",
+        "stdout line ".repeat(80),
+        "panic frame ".repeat(80)
+    );
+
+    let summary = summarize_subagent_tool_failure(&output);
+
+    assert!(summary.starts_with("Error: cargo test failed"), "{summary}");
+    assert!(!summary.contains('\n'), "{summary:?}");
+    assert!(summary.chars().count() <= 160, "{summary}");
+    assert!(
+        summary.chars().count() < output.chars().count() / 4,
+        "summary should not mirror full output"
+    );
+}
+
+#[test]
 fn test_agent_type_from_str() {
     assert_eq!(
         SubAgentType::from_str("general"),
@@ -212,6 +231,10 @@ fn new_session_tools_use_open_eval_close_names() {
         AgentOpenTool::new(manager.clone(), stub_runtime()).name(),
         "agent_open"
     );
+    assert_eq!(
+        ClaudeTaskTool::new(manager.clone(), stub_runtime()).name(),
+        "Task"
+    );
     assert_eq!(AgentEvalTool::new(manager.clone()).name(), "agent_eval");
     assert_eq!(AgentCloseTool::new(manager).name(), "agent_close");
 }
@@ -313,6 +336,85 @@ fn test_parse_spawn_request_accepts_session_name_for_agent_open() {
 }
 
 #[test]
+fn parse_spawn_request_uses_description_for_name_and_display() {
+    let input = json!({
+        "description": "Review parser",
+        "prompt": "Inspect parser call sites and report risks"
+    });
+    let parsed = parse_spawn_request(&input).expect("spawn request should parse");
+    assert_eq!(parsed.prompt, "Inspect parser call sites and report risks");
+    assert_eq!(parsed.display_name.as_deref(), Some("Review parser"));
+    assert_eq!(parsed.session_name.as_deref(), Some("review-parser"));
+    assert_eq!(parsed.assignment.objective, "Review parser");
+}
+
+#[test]
+fn parse_spawn_request_accepts_custom_named_role() {
+    let input = json!({
+        "prompt": "Verify gate_main executable",
+        "role": "gate-main-exe-verify"
+    });
+    let parsed = parse_spawn_request(&input).expect("custom role should parse");
+    assert_eq!(parsed.agent_type, SubAgentType::General);
+    assert_eq!(
+        parsed.assignment.role.as_deref(),
+        Some("gate-main-exe-verify")
+    );
+}
+
+#[test]
+fn parse_spawn_request_accepts_subagent_type_alias() {
+    let input = json!({
+        "description": "Implement CLI fix",
+        "prompt": "Patch the CLI dispatcher",
+        "subagent_type": "implementer"
+    });
+    let parsed = parse_spawn_request(&input).expect("subagent_type should parse");
+    assert_eq!(parsed.agent_type, SubAgentType::Implementer);
+    assert_eq!(parsed.assignment.role.as_deref(), Some("implementer"));
+}
+
+#[test]
+fn parse_spawn_request_accepts_custom_subagent_type_as_role() {
+    let input = json!({
+        "description": "Verify gate",
+        "prompt": "Run the gate and summarize failures",
+        "subagent_type": "gate-main-exe-verify"
+    });
+    let parsed = parse_spawn_request(&input).expect("custom subagent_type should parse");
+    assert_eq!(parsed.agent_type, SubAgentType::General);
+    assert_eq!(
+        parsed.assignment.role.as_deref(),
+        Some("gate-main-exe-verify")
+    );
+}
+
+#[test]
+fn parse_spawn_request_derives_short_display_name_when_description_missing() {
+    let long_prompt = "x".repeat(1_477);
+    let input = json!({
+        "prompt": long_prompt,
+        "subagent_type": "implementer"
+    });
+    let parsed = parse_spawn_request(&input).expect("spawn request should parse");
+    assert_eq!(parsed.display_name.as_deref(), Some("implementer"));
+    assert_eq!(parsed.assignment.objective, "implementer");
+    assert_eq!(parsed.session_name.as_deref(), Some("implementer"));
+}
+
+#[test]
+fn parse_spawn_request_never_uses_full_long_prompt_as_display_name() {
+    let input = json!({
+        "prompt": "Verify gate_main executable end-to-end with all providers and summarize exact failures. ".repeat(20)
+    });
+    let parsed = parse_spawn_request(&input).expect("spawn request should parse");
+    let display = parsed.display_name.as_deref().expect("display name");
+    assert!(display.chars().count() <= 64, "{display}");
+    assert!(!display.contains("<"));
+    assert_eq!(parsed.assignment.objective, display);
+}
+
+#[test]
 fn test_parse_spawn_request_rejects_invalid_session_name() {
     let input = json!({
         "name": "bad name",
@@ -382,13 +484,13 @@ fn forked_subagent_messages_preserve_parent_prefix_then_append_task() {
             cache_control: None,
         }],
     };
-    let fork_context = SubAgentForkContext {
+    let fork_context = Arc::new(SubAgentForkContext {
         system: Some(parent_system.clone()),
         messages: vec![parent_message.clone()],
         structured_state_block: Some(
             "## Cycle State (Auto-Preserved)\n- Mode: `AGENT`".to_string(),
         ),
-    };
+    });
 
     let assignment = SubAgentAssignment::new("inspect parser".to_string(), Some("worker".into()));
     let messages = build_initial_subagent_messages(
@@ -437,10 +539,10 @@ fn test_parse_spawn_request_rejects_text_and_items_together() {
 fn test_parse_spawn_request_rejects_invalid_role() {
     let input = json!({
         "prompt": "do work",
-        "role": "unknown_role"
+        "role": "bad role"
     });
     let err = parse_spawn_request(&input).expect_err("invalid role should fail");
-    assert!(err.to_string().contains("Invalid role alias"));
+    assert!(err.to_string().contains("role must not contain whitespace"));
 }
 
 #[test]
@@ -475,13 +577,23 @@ fn test_parse_assign_request_accepts_aliases() {
 }
 
 #[test]
+fn test_parse_assign_request_accepts_custom_named_role() {
+    let input = json!({
+        "agent_id": "agent_1234",
+        "role": "gate-main-exe-verify"
+    });
+    let request = parse_assign_request(&input).expect("custom role should parse");
+    assert_eq!(request.role.as_deref(), Some("gate-main-exe-verify"));
+}
+
+#[test]
 fn test_parse_assign_request_rejects_invalid_role() {
     let input = json!({
         "agent_id": "agent_1234",
-        "role": "unknown"
+        "role": "bad role"
     });
     let err = parse_assign_request(&input).expect_err("invalid role should fail");
-    assert!(err.to_string().contains("Invalid role alias"));
+    assert!(err.to_string().contains("role must not contain whitespace"));
 }
 
 #[test]
@@ -705,6 +817,14 @@ fn test_review_agent_tools_exclude_agent_spawn() {
     );
     let tools = registry.tools_for_model(&SubAgentType::Review);
     let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(
+        !names.contains(&"Task"),
+        "Review agent must not have Task; tools: {names:?}"
+    );
+    assert!(
+        !names.contains(&"agent_open"),
+        "Review agent must not have agent_open; tools: {names:?}"
+    );
     assert!(
         !names.contains(&"agent_spawn"),
         "Review agent must not have agent_spawn; tools: {names:?}"
@@ -1146,6 +1266,47 @@ fn child_runtime_increments_depth_and_preserves_auto_approve() {
     );
 }
 
+#[test]
+fn child_runtime_uses_isolated_shell_manager() {
+    let parent = stub_runtime();
+    let child = parent.child_runtime();
+
+    assert!(
+        !std::sync::Arc::ptr_eq(&parent.context.shell_manager, &child.context.shell_manager),
+        "sub-agent shell jobs must not share the parent TUI job manager"
+    );
+    let runtime_shell = child
+        .context
+        .runtime
+        .shell_manager
+        .as_ref()
+        .expect("child runtime services should expose the isolated shell manager");
+    assert!(
+        std::sync::Arc::ptr_eq(&child.context.shell_manager, runtime_shell),
+        "child context and runtime services must point at the same isolated shell manager"
+    );
+}
+
+#[test]
+fn isolated_shell_manager_uses_current_child_workspace() {
+    let dir = tempdir().expect("tempdir");
+    let mut runtime = stub_runtime().background_runtime();
+    runtime.context.workspace = dir.path().to_path_buf();
+
+    isolate_subagent_shell_manager(&mut runtime.context);
+
+    let manager = runtime
+        .context
+        .shell_manager
+        .lock()
+        .expect("shell manager lock");
+    assert_eq!(
+        manager.default_workspace(),
+        dir.path(),
+        "cwd overrides must also reset the child shell manager workspace"
+    );
+}
+
 #[tokio::test]
 async fn subagent_registry_blocks_approval_tools_without_parent_auto_approve() {
     let mut runtime = stub_runtime();
@@ -1398,6 +1559,8 @@ fn stub_runtime() -> SubAgentRuntime {
         manager: new_shared_subagent_manager(workspace, 5),
         spawn_depth: 0,
         max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
+        soft_max_subagents: crate::config::MAX_SUBAGENTS,
+        auto_scale: false,
         cancel_token: CancellationToken::new(),
         mailbox: None,
         parent_completion_tx: None,

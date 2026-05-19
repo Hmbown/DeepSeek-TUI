@@ -43,6 +43,12 @@ pub struct TurnContext {
 
     /// Usage for this turn
     pub usage: Usage,
+
+    /// Number of model API requests completed inside this turn.
+    pub api_rounds: u32,
+
+    /// Provider usage for the latest completed model API request.
+    pub last_round_usage: Option<Usage>,
 }
 
 /// Record of a tool call within a turn.
@@ -71,6 +77,8 @@ impl TurnContext {
                 output_tokens: 0,
                 ..Usage::default()
             },
+            api_rounds: 0,
+            last_round_usage: None,
         }
     }
 
@@ -104,6 +112,8 @@ impl TurnContext {
 
     /// Add usage from an API response
     pub fn add_usage(&mut self, usage: &Usage) {
+        self.api_rounds = self.api_rounds.saturating_add(1);
+        self.last_round_usage = Some(usage.clone());
         self.usage.input_tokens += usage.input_tokens;
         self.usage.output_tokens += usage.output_tokens;
         self.usage.prompt_cache_hit_tokens = add_optional_usage(
@@ -116,6 +126,10 @@ impl TurnContext {
         );
         self.usage.reasoning_tokens =
             add_optional_usage(self.usage.reasoning_tokens, usage.reasoning_tokens);
+        self.usage.reasoning_replay_tokens = add_optional_usage(
+            self.usage.reasoning_replay_tokens,
+            usage.reasoning_replay_tokens,
+        );
     }
 }
 
@@ -204,5 +218,42 @@ impl TurnToolCall {
     pub fn set_error(&mut self, error: String, duration: Duration) {
         self.error = Some(error);
         self.duration = Some(duration);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_usage_aggregates_turn_usage_and_keeps_latest_api_round() {
+        let mut turn = TurnContext::new(10);
+        let first = Usage {
+            input_tokens: 100,
+            output_tokens: 10,
+            prompt_cache_hit_tokens: Some(60),
+            prompt_cache_miss_tokens: Some(40),
+            reasoning_replay_tokens: Some(7),
+            ..Usage::default()
+        };
+        let second = Usage {
+            input_tokens: 120,
+            output_tokens: 12,
+            prompt_cache_hit_tokens: Some(90),
+            prompt_cache_miss_tokens: Some(30),
+            reasoning_replay_tokens: Some(11),
+            ..Usage::default()
+        };
+
+        turn.add_usage(&first);
+        turn.add_usage(&second);
+
+        assert_eq!(turn.api_rounds, 2);
+        assert_eq!(turn.usage.input_tokens, 220);
+        assert_eq!(turn.usage.output_tokens, 22);
+        assert_eq!(turn.usage.prompt_cache_hit_tokens, Some(150));
+        assert_eq!(turn.usage.prompt_cache_miss_tokens, Some(70));
+        assert_eq!(turn.usage.reasoning_replay_tokens, Some(18));
+        assert_eq!(turn.last_round_usage, Some(second));
     }
 }

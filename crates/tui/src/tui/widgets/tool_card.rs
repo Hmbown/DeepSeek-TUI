@@ -27,21 +27,21 @@
 /// and label for the card header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolFamily {
-    /// Reads, listings, exploration. `▷ read`.
+    /// Reads, listings, exploration. `Read`.
     Read,
-    /// Edits, patches, writes. `◆ patch`.
+    /// Edits, patches, writes. `Edit`.
     Patch,
-    /// Shell, child processes. `▶ run`.
+    /// Shell, child processes. `Bash`.
     Run,
-    /// Grep, fuzzy file search, web search. `⌕ find`.
+    /// Grep, fuzzy file search, web search. `Search`.
     Find,
-    /// Single sub-agent dispatch. `◐ delegate`.
+    /// Single sub-agent dispatch. `Task`.
     Delegate,
-    /// Multi-agent fanout dispatch (rlm). `⋮⋮ fanout`.
+    /// Multi-agent fanout dispatch. `Fanout`.
     Fanout,
-    /// Recursive language model work. `⋮⋮ rlm`.
+    /// Recursive language model work. `RLM`.
     Rlm,
-    /// Reasoning / chain-of-thought. `… think`. Reasoning has its own
+    /// Reasoning / chain-of-thought. `Think`. Reasoning has its own
     /// render path (`render_thinking` in `history.rs`); the family is
     /// declared here for completeness so any future code that reaches for
     /// it has the matching glyph + label vocabulary.
@@ -79,7 +79,9 @@ pub fn tool_family_for_name(name: &str) -> ToolFamily {
         "edit_file" | "apply_patch" | "write_file" => ToolFamily::Patch,
         "exec_shell" | "exec_shell_wait" | "exec_shell_interact" => ToolFamily::Run,
         "grep_files" | "file_search" | "web_search" | "fetch_url" => ToolFamily::Find,
-        "agent_open" | "agent_eval" | "agent_close" | "agent_spawn" => ToolFamily::Delegate,
+        "Task" | "agent_open" | "agent_eval" | "agent_close" | "agent_spawn" => {
+            ToolFamily::Delegate
+        }
         "rlm_open" | "rlm_eval" | "rlm_configure" | "rlm_close" | "rlm" => ToolFamily::Rlm,
         _ => ToolFamily::Generic,
     }
@@ -98,21 +100,90 @@ pub fn tool_header_summary_for_name(name: &str, input_summary: Option<&str>) -> 
         ToolFamily::Read | ToolFamily::Patch => ["path", "file", "target", "content"].as_slice(),
         ToolFamily::Run => ["command", "cmd", "script"].as_slice(),
         ToolFamily::Find => ["query", "pattern", "path", "scope"].as_slice(),
-        ToolFamily::Delegate | ToolFamily::Fanout | ToolFamily::Rlm => {
-            ["prompt", "task", "model"].as_slice()
-        }
+        ToolFamily::Delegate | ToolFamily::Fanout | ToolFamily::Rlm => [
+            "description",
+            "display_name",
+            "name",
+            "subagent_type",
+            "agent_type",
+            "type",
+            "role",
+            "task",
+            "prompt",
+            "model",
+        ]
+        .as_slice(),
         ToolFamily::Think | ToolFamily::Generic => {
             ["query", "path", "command", "prompt"].as_slice()
         }
     };
 
+    let family = tool_family_for_name(name);
     for key in preferred_keys {
         if let Some(value) = summary_value(summary, key) {
+            if matches!(family, ToolFamily::Delegate) && value_is_char_count_placeholder(&value) {
+                continue;
+            }
             return Some(value);
         }
     }
 
+    if matches!(family, ToolFamily::Delegate) && summary_contains_only_long_placeholder(summary) {
+        return None;
+    }
+    if matches!(family, ToolFamily::Delegate) && summary_contains_only_internal_id(summary) {
+        return None;
+    }
+
     Some(summary.to_string())
+}
+
+fn value_is_char_count_placeholder(value: &str) -> bool {
+    let value = value.trim();
+    let Some(inner) = value.strip_prefix('<').and_then(|v| v.strip_suffix('>')) else {
+        return false;
+    };
+    let Some(number) = inner.strip_suffix(" chars") else {
+        return false;
+    };
+    !number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn summary_contains_only_long_placeholder(summary: &str) -> bool {
+    let mut saw_part = false;
+    for part in summary.split(", ") {
+        let value = part
+            .split_once(':')
+            .map(|(_, value)| value.trim())
+            .unwrap_or_else(|| part.trim());
+        if value.is_empty() {
+            continue;
+        }
+        saw_part = true;
+        if !value_is_char_count_placeholder(value) {
+            return false;
+        }
+    }
+    saw_part
+}
+
+fn summary_contains_only_internal_id(summary: &str) -> bool {
+    let mut saw_part = false;
+    for part in summary.split(", ") {
+        let Some((part_key, value)) = part.split_once(':') else {
+            return false;
+        };
+        let key = part_key.trim();
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        saw_part = true;
+        if !matches!(key, "agent_id" | "id") {
+            return false;
+        }
+    }
+    saw_part
 }
 
 fn summary_value(summary: &str, key: &str) -> Option<String> {
@@ -147,21 +218,19 @@ pub fn family_glyph(family: ToolFamily) -> &'static str {
     }
 }
 
-/// The short verb label for a family — appears in card headers next to the
-/// glyph. Lowercased on purpose; the verb-glyph + label is the new card
-/// title vocabulary.
+/// The short title for a family. Matches Claude Code's terse tool names.
 #[must_use]
 pub fn family_label(family: ToolFamily) -> &'static str {
     match family {
-        ToolFamily::Read => "read",
-        ToolFamily::Patch => "patch",
-        ToolFamily::Run => "run",
-        ToolFamily::Find => "find",
-        ToolFamily::Delegate => "delegate",
-        ToolFamily::Fanout => "fanout",
-        ToolFamily::Rlm => "rlm",
-        ToolFamily::Think => "think",
-        ToolFamily::Generic => "tool",
+        ToolFamily::Read => "Read",
+        ToolFamily::Patch => "Edit",
+        ToolFamily::Run => "Bash",
+        ToolFamily::Find => "Search",
+        ToolFamily::Delegate => "Task",
+        ToolFamily::Fanout => "Fanout",
+        ToolFamily::Rlm => "RLM",
+        ToolFamily::Think => "Think",
+        ToolFamily::Generic => "Tool",
     }
 }
 
@@ -245,6 +314,18 @@ mod tests {
         assert_eq!(
             tool_header_summary_for_name("unknown", Some("alpha: beta")).as_deref(),
             Some("alpha: beta")
+        );
+    }
+
+    #[test]
+    fn delegate_header_summary_hides_bare_internal_agent_id() {
+        assert_eq!(
+            tool_header_summary_for_name("agent_eval", Some("agent_id: agent_c339a5e40")),
+            None
+        );
+        assert_eq!(
+            tool_header_summary_for_name("agent_eval", Some("id: agent_01640bde")),
+            None
         );
     }
 
