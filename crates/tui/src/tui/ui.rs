@@ -1427,6 +1427,21 @@ async fn run_event_loop(
                         }
                         app.plan_tool_used_in_turn = false;
 
+                        // Goal auto-continue (#891): when a `/goal` is
+                        // active and auto-continue is on, decide
+                        // whether to queue a continuation user
+                        // message, stop with a safety-net reason, or
+                        // do nothing. Pure-decision logic lives in
+                        // `crate::commands::goal::decide_continuation`;
+                        // App method handles the streak update + queue
+                        // / system-cell side effects.
+                        let turn_was_interrupted =
+                            matches!(status, crate::core::events::TurnOutcomeStatus::Interrupted);
+                        let turn_was_failed =
+                            matches!(status, crate::core::events::TurnOutcomeStatus::Failed);
+                        let _ = app
+                            .maybe_trigger_goal_continuation(turn_was_interrupted, turn_was_failed);
+
                         // Legacy pending-steer recovery. Current keyboard
                         // handling keeps Esc as cancel-only, but older saved
                         // state may still carry pending steers.
@@ -3879,6 +3894,7 @@ async fn dispatch_user_message(
             prompts::PromptSessionContext {
                 user_memory_block: None,
                 goal_objective: app.goal.goal_objective.as_deref(),
+                goal_auto_continue: app.goal.auto_continue_enabled,
                 project_context_pack_enabled: config.project_context_pack_enabled(),
                 locale_tag: app.ui_locale.tag(),
                 translation_enabled: app.translation_enabled,

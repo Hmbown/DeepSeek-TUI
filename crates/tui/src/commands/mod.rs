@@ -11,7 +11,7 @@ mod core;
 mod cycle;
 mod debug;
 mod feedback;
-mod goal;
+pub mod goal;
 mod hooks;
 mod init;
 mod jobs;

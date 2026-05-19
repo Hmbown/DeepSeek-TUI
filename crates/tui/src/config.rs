@@ -882,6 +882,23 @@ pub struct AutoConfig {
     pub cost_saving: Option<bool>,
 }
 
+/// `[goal]` section — knobs for the `/goal` auto-continue machinery
+/// (#891). All fields are optional with code-side defaults so
+/// adding the section is purely opt-in tuning.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GoalConfig {
+    /// Whether `/goal <text>` immediately enables auto-continue.
+    /// Default `true` — set to `false` to preserve the v0.8.x
+    /// passive bookkeeping behavior.
+    #[serde(default)]
+    pub auto_continue_default: Option<bool>,
+    /// Hard ceiling on auto-continue iterations per goal. Default
+    /// is [`crate::commands::goal::DEFAULT_MAX_ITERATIONS`]. Set to
+    /// `0` to disable the cap (not recommended).
+    #[serde(default)]
+    pub max_iterations: Option<u32>,
+}
+
 /// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
@@ -945,6 +962,10 @@ pub struct Config {
     /// Desktop notification settings (OSC 9 / BEL on long turn completion).
     #[serde(default)]
     pub notifications: Option<NotificationsConfig>,
+
+    /// `/goal` auto-continue settings (#891).
+    #[serde(default)]
+    pub goal: Option<GoalConfig>,
 
     /// Per-domain network policy (#135). When absent, network tools fall back
     /// to a permissive default that mirrors pre-v0.7.0 behavior.
@@ -2795,6 +2816,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         providers: merge_providers(base.providers, override_cfg.providers),
         features: merge_features(base.features, override_cfg.features),
         notifications: override_cfg.notifications.or(base.notifications),
+        goal: override_cfg.goal.or(base.goal),
         network: override_cfg.network.or(base.network),
         skills: override_cfg.skills.or(base.skills),
         snapshots: override_cfg.snapshots.or(base.snapshots),
