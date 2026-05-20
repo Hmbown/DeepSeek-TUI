@@ -310,12 +310,13 @@ mod tests {
         let mut v = ThemePickerView::new("system".to_string());
         let action = v.handle_key(key(KeyCode::Down));
         assert!(matches!(action, ViewAction::Emit(_)));
-        assert_eq!(selected_name(&action), Some(ThemeId::Whale.name()));
+        assert_eq!(selected_name(&action), Some(ThemeId::Terminal.name()));
     }
 
     #[test]
     fn enter_commits_with_persist_true() {
         let mut v = ThemePickerView::new("system".to_string());
+        v.handle_key(key(KeyCode::Down));
         v.handle_key(key(KeyCode::Down));
         v.handle_key(key(KeyCode::Down));
         v.handle_key(key(KeyCode::Down));
@@ -358,8 +359,8 @@ mod tests {
     #[test]
     fn digit_jumps_to_row() {
         let mut v = ThemePickerView::new("system".to_string());
-        let action = v.handle_key(key(KeyCode::Char('5')));
-        // Row 5 (1-indexed) -> index 4 -> CatppuccinMocha
+        let action = v.handle_key(key(KeyCode::Char('6')));
+        // Row 6 (1-indexed) -> index 5 -> CatppuccinMocha
         assert_eq!(
             selected_name(&action),
             Some(ThemeId::CatppuccinMocha.name())

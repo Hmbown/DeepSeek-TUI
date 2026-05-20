@@ -489,6 +489,44 @@ pub const DRACULA_UI_THEME: UiTheme = UiTheme {
     border: Color::Rgb(0x44, 0x47, 0x5a),
 };
 
+/// "Terminal" theme: lets the host terminal's color scheme show through
+/// instead of painting any RGB surface. Backgrounds use `Color::Reset`
+/// (the terminal's own default bg) and most text uses `Color::Reset`
+/// (terminal's own default fg). Accents are ANSI named colors so they
+/// also inherit the user's terminal palette (Solarized, Nord, custom
+/// schemes, etc.) rather than DeepSeek brand RGB.
+pub const TERMINAL_UI_THEME: UiTheme = UiTheme {
+    name: "terminal",
+    // Mode is reported as Dark to avoid the dark→light cell remap kicking
+    // in; the terminal-theme cell remap already normalizes everything to
+    // `Color::Reset`, and we never want a second pass overwriting that.
+    mode: PaletteMode::Dark,
+    surface_bg: Color::Reset,
+    panel_bg: Color::Reset,
+    elevated_bg: Color::Reset,
+    composer_bg: Color::Reset,
+    selection_bg: Color::Reset,
+    header_bg: Color::Reset,
+    footer_bg: Color::Reset,
+    mode_agent: Color::Blue,
+    mode_yolo: Color::Red,
+    // Magenta keeps Plan visually distinct from `status_warning` (yellow)
+    // so the mode indicator and warning chip don't collide on themes that
+    // render both in the status row.
+    mode_plan: Color::Magenta,
+    // DarkGray gives "Ready" a low-contrast but still distinguishable hue
+    // versus default body text (which is `Color::Reset` on this theme).
+    status_ready: Color::DarkGray,
+    status_working: Color::Cyan,
+    status_warning: Color::Yellow,
+    text_dim: Color::Reset,
+    text_hint: Color::Reset,
+    text_muted: Color::Reset,
+    text_body: Color::Reset,
+    text_soft: Color::Reset,
+    border: Color::Reset,
+};
+
 pub const GRUVBOX_DARK_UI_THEME: UiTheme = UiTheme {
     name: "gruvbox-dark",
     mode: PaletteMode::Dark,
@@ -519,6 +557,7 @@ pub const GRUVBOX_DARK_UI_THEME: UiTheme = UiTheme {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeId {
     System,
+    Terminal,
     Whale,
     WhaleLight,
     Grayscale,
@@ -536,6 +575,7 @@ impl ThemeId {
     pub fn from_name(value: &str) -> Option<Self> {
         match normalize_theme_name(value)? {
             "system" => Some(Self::System),
+            "terminal" => Some(Self::Terminal),
             "dark" => Some(Self::Whale),
             "light" => Some(Self::WhaleLight),
             "grayscale" => Some(Self::Grayscale),
@@ -553,6 +593,7 @@ impl ThemeId {
     pub const fn name(self) -> &'static str {
         match self {
             Self::System => "system",
+            Self::Terminal => "terminal",
             Self::Whale => "dark",
             Self::WhaleLight => "light",
             Self::Grayscale => "grayscale",
@@ -568,6 +609,7 @@ impl ThemeId {
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::System => "System",
+            Self::Terminal => "Terminal",
             Self::Whale => "Whale (Dark)",
             Self::WhaleLight => "Whale Light",
             Self::Grayscale => "Grayscale",
@@ -583,6 +625,7 @@ impl ThemeId {
     pub const fn tagline(self) -> &'static str {
         match self {
             Self::System => "Follow terminal background (COLORFGBG / macOS appearance)",
+            Self::Terminal => "Inherit terminal colors fully (transparent surfaces, ANSI accents)",
             Self::Whale => "Default DeepSeek dark blue",
             Self::WhaleLight => "DeepSeek light, paper-ish",
             Self::Grayscale => "Color-minimal high contrast",
@@ -601,6 +644,7 @@ impl ThemeId {
     pub fn ui_theme(self) -> UiTheme {
         match self {
             Self::System => UiTheme::detect(),
+            Self::Terminal => TERMINAL_UI_THEME,
             Self::Whale => UI_THEME,
             Self::WhaleLight => LIGHT_UI_THEME,
             Self::Grayscale => GRAYSCALE_UI_THEME,
@@ -615,6 +659,7 @@ impl ThemeId {
 /// Themes shown in the `/theme` picker, in display order.
 pub const SELECTABLE_THEMES: &[ThemeId] = &[
     ThemeId::System,
+    ThemeId::Terminal,
     ThemeId::Whale,
     ThemeId::WhaleLight,
     ThemeId::Grayscale,
@@ -657,6 +702,7 @@ impl UiTheme {
 pub fn normalize_theme_name(value: &str) -> Option<&'static str> {
     match value.trim().to_ascii_lowercase().as_str() {
         "" | "auto" | "system" | "default" => Some("system"),
+        "terminal" | "term" | "transparent" | "follow-terminal" | "inherit" => Some("terminal"),
         "dark" | "whale" | "whale-dark" => Some("dark"),
         "light" | "whale-light" => Some("light"),
         "grayscale" | "greyscale" | "gray" | "grey" | "mono" | "monochrome" | "black-white"
@@ -806,6 +852,7 @@ fn adapt_bg_for_light_palette(color: Color) -> Color {
 #[must_use]
 const fn theme_green(theme: ThemeId) -> Color {
     match theme {
+        ThemeId::Terminal => Color::Green,
         ThemeId::CatppuccinMocha => Color::Rgb(0xa6, 0xe3, 0xa1),
         ThemeId::TokyoNight => Color::Rgb(0x9e, 0xce, 0x6a),
         ThemeId::Dracula => Color::Rgb(0x50, 0xfa, 0x7b),
@@ -818,6 +865,7 @@ const fn theme_green(theme: ThemeId) -> Color {
 #[must_use]
 const fn theme_red(theme: ThemeId) -> Color {
     match theme {
+        ThemeId::Terminal => Color::Red,
         ThemeId::CatppuccinMocha => Color::Rgb(0xf3, 0x8b, 0xa8),
         ThemeId::TokyoNight => Color::Rgb(0xf7, 0x76, 0x8e),
         ThemeId::Dracula => Color::Rgb(0xff, 0x55, 0x55),
@@ -830,6 +878,7 @@ const fn theme_red(theme: ThemeId) -> Color {
 #[must_use]
 const fn theme_diff_added_bg(theme: ThemeId) -> Color {
     match theme {
+        ThemeId::Terminal => Color::Reset,
         ThemeId::CatppuccinMocha => Color::Rgb(0x1f, 0x33, 0x29),
         ThemeId::TokyoNight => Color::Rgb(0x1b, 0x2b, 0x1f),
         ThemeId::Dracula => Color::Rgb(0x21, 0x3a, 0x2a),
@@ -842,6 +891,7 @@ const fn theme_diff_added_bg(theme: ThemeId) -> Color {
 #[must_use]
 const fn theme_diff_deleted_bg(theme: ThemeId) -> Color {
     match theme {
+        ThemeId::Terminal => Color::Reset,
         ThemeId::CatppuccinMocha => Color::Rgb(0x3a, 0x1f, 0x2a),
         ThemeId::TokyoNight => Color::Rgb(0x33, 0x1c, 0x24),
         ThemeId::Dracula => Color::Rgb(0x3a, 0x1f, 0x22),
@@ -858,7 +908,11 @@ const fn theme_diff_deleted_bg(theme: ThemeId) -> Color {
 pub const fn theme_remap_active(theme: ThemeId) -> bool {
     matches!(
         theme,
-        ThemeId::CatppuccinMocha | ThemeId::TokyoNight | ThemeId::Dracula | ThemeId::GruvboxDark
+        ThemeId::Terminal
+            | ThemeId::CatppuccinMocha
+            | ThemeId::TokyoNight
+            | ThemeId::Dracula
+            | ThemeId::GruvboxDark
     )
 }
 
@@ -1089,7 +1143,10 @@ fn grayscale_bg_from_luma(luma: u8) -> Color {
 }
 
 fn luma(r: u8, g: u8, b: u8) -> u8 {
-    (((u16::from(r) * 299) + (u16::from(g) * 587) + (u16::from(b) * 114)) / 1000) as u8
+    // Coefficients sum to 1000; an RGB triple of (255,255,255) yields
+    // 255 * 1000 = 255_000 which overflows u16 (max 65_535). Use u32 to
+    // hold the weighted sum, then divide back into the 0..=255 range.
+    (((u32::from(r) * 299) + (u32::from(g) * 587) + (u32::from(b) * 114)) / 1000) as u8
 }
 // === Color depth + brightness helpers (v0.6.6 UI redesign) ===
 
