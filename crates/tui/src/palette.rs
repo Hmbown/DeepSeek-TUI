@@ -1138,7 +1138,10 @@ fn grayscale_bg_from_luma(luma: u8) -> Color {
 }
 
 fn luma(r: u8, g: u8, b: u8) -> u8 {
-    (((u16::from(r) * 299) + (u16::from(g) * 587) + (u16::from(b) * 114)) / 1000) as u8
+    // Coefficients sum to 1000; an RGB triple of (255,255,255) yields
+    // 255 * 1000 = 255_000 which overflows u16 (max 65_535). Use u32 to
+    // hold the weighted sum, then divide back into the 0..=255 range.
+    (((u32::from(r) * 299) + (u32::from(g) * 587) + (u32::from(b) * 114)) / 1000) as u8
 }
 // === Color depth + brightness helpers (v0.6.6 UI redesign) ===
 
