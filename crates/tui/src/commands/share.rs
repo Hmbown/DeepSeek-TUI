@@ -12,6 +12,7 @@ use std::io::Write;
 use std::path::Path;
 
 use super::CommandResult;
+use crate::dependencies::ExternalTool;
 use crate::tui::app::{App, AppAction};
 
 /// Share the current session as a web URL.
@@ -155,12 +156,13 @@ fn write_temp_html(html: &str) -> Result<tempfile::NamedTempFile, String> {
 
 /// Upload a file as a GitHub Gist using the `gh` CLI.
 async fn upload_gist(path: &Path) -> Result<String, String> {
-    let output = tokio::process::Command::new("gh")
+    let output = crate::dependencies::Gh::tokio_command()
+        .ok_or_else(|| "gh not found on PATH".to_string())?
         .args([
             "gist",
             "create",
             "--public",
-            &path.to_string_lossy(),
+            &path.to_string_lossy().to_string(),
             "--filename",
             "session-export.html",
             "--desc",

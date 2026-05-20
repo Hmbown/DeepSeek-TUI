@@ -12,6 +12,8 @@ use dotenvy::dotenv;
 use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
+use crate::dependencies::ExternalTool;
+
 mod acp_server;
 mod artifacts;
 mod audit;
@@ -61,6 +63,7 @@ mod runtime_threads;
 mod sandbox;
 mod schema_migration;
 mod seam_manager;
+mod shell_dispatcher;
 mod session_manager;
 mod settings;
 mod skill_state;
@@ -1086,18 +1089,26 @@ fn init_skills_dir(skills_dir: &Path, force: bool) -> Result<(PathBuf, WriteStat
 
 fn tools_readme_template() -> &'static str {
     "# Local tools\n\n\
-     Drop self-describing scripts here so they can be discovered by\n\
-     `deepseek-tui setup --status` and surfaced in `deepseek-tui doctor`.\n\n\
-     Each script should start with a frontmatter-style header so the\n\
-     description is visible without executing the file:\n\n\
+     Drop self-describing scripts here — they are auto-discovered and\n\
+     registered as model-visible tools when `[tools.plugin_dir]` is set in\n\
+     config.toml (or when the default `~/.deepseek/tools/` directory exists).\n\n\
+     Each script must start with a frontmatter-style header so the agent\n\
+     knows the tool name, description, and input schema:\n\n\
      ```\n\
      # name: my-tool\n\
      # description: One-line summary of what this tool does\n\
-     # usage: my-tool [args...]\n\
+     # schema: {\"type\":\"object\",\"properties\":{\"input\":{\"type\":\"string\"}}}\n\
+     # approval: auto\n\
      ```\n\n\
-     The directory is intentionally not auto-loaded into the agent's tool\n\
-     catalog. Wire individual tools through MCP, hooks, or skills when you\n\
-     want them available inside a session.\n"
+     The script receives the tool's JSON input on **stdin** and must return\n\
+     a JSON `ToolResult` (`{\"content\": \"...\", \"success\": true}`) on stdout.\n\n\
+     To override a built-in tool (e.g. `exec_shell` with an audit wrapper),\n\
+     add an entry to the `[tools.overrides]` table in config.toml:\n\n\
+     ```toml\n\
+     [tools.overrides]\n\
+     \"exec_shell\" = { type = \"script\", path = \"audit-exec-shell.sh\" }\n\
+     ```\n\n\
+     See `config.example.toml` for the full [tools] reference.\n"
 }
 
 fn tools_example_script() -> &'static str {
@@ -2913,14 +2924,16 @@ async fn test_api_connectivity(config: &Config) -> Result<()> {
 }
 
 fn rustc_version() -> String {
-    // Try to get rustc version, fall back to "unknown"
-    std::process::Command::new("rustc")
-        .arg("--version")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map_or_else(|| "unknown".to_string(), |s| s.trim().to_string())
+    let Some(mut cmd) = crate::dependencies::RustC::command() else {
+        return "unknown".to_string();
+    };
+    let Ok(output) = cmd.arg("--version").output() else {
+        return "unknown".to_string();
+    };
+    String::from_utf8(output.stdout).map(|s| s.trim().to_string()).unwrap_or_else(|_| "unknown".to_string())
 }
+
+
 
 /// List saved sessions
 fn list_sessions(limit: usize, search: Option<String>) -> Result<()> {
@@ -3330,7 +3343,7 @@ struct GhPullRequest {
 }
 
 fn run_gh_pr_view(number: u32, repo: Option<&str>) -> Result<GhPullRequest> {
-    let mut cmd = Command::new("gh");
+    let mut cmd = crate::dependencies::Gh::command().ok_or_else(|| anyhow::anyhow!("gh not found"))?;
     cmd.arg("pr").arg("view").arg(number.to_string());
     if let Some(r) = repo {
         cmd.arg("--repo").arg(r);
@@ -3364,7 +3377,7 @@ fn run_gh_pr_view(number: u32, repo: Option<&str>) -> Result<GhPullRequest> {
 }
 
 fn run_gh_pr_diff(number: u32, repo: Option<&str>) -> Result<String> {
-    let mut cmd = Command::new("gh");
+    let mut cmd = crate::dependencies::Gh::command().ok_or_else(|| anyhow::anyhow!("gh not found"))?;
     cmd.arg("pr").arg("diff").arg(number.to_string());
     if let Some(r) = repo {
         cmd.arg("--repo").arg(r);
@@ -3380,7 +3393,7 @@ fn run_gh_pr_diff(number: u32, repo: Option<&str>) -> Result<String> {
 }
 
 fn run_gh_pr_checkout(number: u32, repo: Option<&str>) -> Result<()> {
-    let mut cmd = Command::new("gh");
+    let mut cmd = crate::dependencies::Gh::command().ok_or_else(|| anyhow::anyhow!("gh not found"))?;
     cmd.arg("pr").arg("checkout").arg(number.to_string());
     if let Some(r) = repo {
         cmd.arg("--repo").arg(r);
@@ -3454,7 +3467,7 @@ fn format_pr_prompt(number: u32, view: &GhPullRequest, diff: &str) -> String {
 }
 
 fn collect_diff(args: &ReviewArgs) -> Result<String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::dependencies::Git::command().ok_or_else(|| anyhow::anyhow!("git not found"))?;
     cmd.arg("diff");
     if args.staged {
         cmd.arg("--cached");
@@ -3495,7 +3508,7 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
     tmp.write_all(patch.as_bytes())?;
     let tmp_path = tmp.path().to_path_buf();
 
-    let output = Command::new("git")
+    let output = crate::dependencies::Git::command().ok_or_else(|| anyhow::anyhow!("git not found"))?
         .arg("apply")
         .arg("--whitespace=nowarn")
         .arg(&tmp_path)
@@ -4671,6 +4684,7 @@ async fn run_exec_agent(
             .and_then(|s| s.provider)
             .unwrap_or_default(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
+        tools: config.tools.clone(),
     };
 
     let engine_handle = spawn_engine(engine_config, config);

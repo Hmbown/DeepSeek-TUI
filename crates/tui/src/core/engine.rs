@@ -166,6 +166,11 @@ pub struct EngineConfig {
     pub search_provider: crate::config::SearchProvider,
     /// API key for Tavily or Bocha. `None` for Bing or DuckDuckGo.
     pub search_api_key: Option<String>,
+
+    /// Tool override and plugin configuration (`[tools]` table in config.toml).
+    /// Applied to the per-turn tool registry after built-in tools are registered.
+    /// When `None`, no overrides or plugin loading occurs.
+    pub tools: Option<crate::config::ToolsConfig>,
 }
 
 impl Default for EngineConfig {
@@ -206,6 +211,7 @@ impl Default for EngineConfig {
             workshop: None,
             search_provider: crate::config::SearchProvider::default(),
             search_api_key: None,
+            tools: None,
         }
     }
 }
@@ -1043,7 +1049,7 @@ impl Engine {
             None
         };
 
-        let tool_registry = match mode {
+        let mut tool_registry = match mode {
             AppMode::Agent | AppMode::Yolo => {
                 if self.config.features.enabled(Feature::Subagents) {
                     let runtime = if let Some(client) = self.deepseek_client.clone() {
@@ -1090,13 +1096,77 @@ impl Engine {
             _ => Some(builder.build(tool_context)),
         };
 
+        // Track names added by plugin loading so we never defer them.
+        let mut plugin_tool_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        // Load plugin tools from the user's tools directory and apply any
+        // config.toml overrides. Plugin scripts are auto-discovered and
+        // registered without requiring a `[tools]` config section —
+        // the default `~/.deepseek/tools/` directory is always checked.
+        if let Some(ref mut tool_registry) = tool_registry {
+            // Snapshot built-in tool names before any modifications.
+            let names_before: std::collections::HashSet<String> =
+                tool_registry.names().into_iter().map(|s| s.to_string()).collect();
+
+            // Resolve the plugin directory. Defaults to `~/.deepseek/tools/`.
+            let default_dir = {
+                let home = dirs::home_dir()
+                    .map(|h| h.join(".deepseek").join("tools"))
+                    .unwrap_or_else(|| PathBuf::from(".deepseek/tools"));
+                home
+            };
+            let plugin_dir = if let Some(ref tools_config) = self.config.tools
+                && let Some(ref custom_dir) = tools_config.plugin_dir
+            {
+                let p = PathBuf::from(shellexpand::tilde(custom_dir).as_ref());
+                if !p.exists() {
+                    tracing::warn!(
+                        "Configured plugin directory {} does not exist, falling back to default",
+                        p.display()
+                    );
+                    default_dir
+                } else {
+                    p
+                }
+            } else {
+                default_dir
+            };
+
+            // Apply per-tool overrides from config.toml (disable / replace).
+            if let Some(ref tools_config) = self.config.tools
+                && let Some(ref overrides) = tools_config.overrides
+            {
+                tool_registry.apply_overrides(overrides, &plugin_dir);
+            }
+
+            // Load auto-discovered plugin scripts from the tools directory.
+            tool_registry.load_plugins(&plugin_dir);
+
+            // Diff: any tool name that didn't exist before overrides/plugins
+            // is a user-registered tool. These should never be deferred.
+            let names_after: std::collections::HashSet<String> =
+                tool_registry.names().into_iter().map(|s| s.to_string()).collect();
+            plugin_tool_names = &names_after - &names_before;
+        }
+
         let mcp_tools = if self.config.features.enabled(Feature::Mcp) {
             self.mcp_tools().await
         } else {
             Vec::new()
         };
+
         let tools = tool_registry.as_ref().map(|registry| {
-            build_model_tool_catalog(registry.to_api_tools_with_cache(true), mcp_tools, mode)
+            let mut catalog =
+                build_model_tool_catalog(registry.to_api_tools_with_cache(true), mcp_tools, mode);
+            // Ensure plugin/override tools are NOT deferred — they should be
+            // immediately visible since the user explicitly opted into them.
+            for tool in &mut catalog {
+                if plugin_tool_names.contains(&tool.name) {
+                    tool.defer_loading = Some(false);
+                }
+            }
+            catalog
         });
 
         // Main turn loop
@@ -1971,9 +2041,12 @@ use self::streaming::{
     should_transparently_retry_stream, stream_chunk_timeout_secs,
 };
 use self::tool_catalog::{
-    CODE_EXECUTION_TOOL_NAME, JS_EXECUTION_TOOL_NAME, MULTI_TOOL_PARALLEL_NAME,
+    CODE_EXECUTION_TOOL_NAME, DOTNET_EXECUTION_TOOL_NAME, JS_EXECUTION_TOOL_NAME,
+    GO_EXECUTION_TOOL_NAME, MULTI_TOOL_PARALLEL_NAME,
+    RUST_EXECUTION_TOOL_NAME, TS_EXECUTION_TOOL_NAME,
     REQUEST_USER_INPUT_NAME, active_tools_for_step, build_model_tool_catalog,
-    ensure_advanced_tooling, execute_code_execution_tool, execute_tool_search,
+    ensure_advanced_tooling, execute_code_execution_tool, execute_runtime_tool,
+    execute_tool_search,
     initial_active_tools, is_tool_search_tool, maybe_hydrate_requested_deferred_tool,
     missing_tool_error_message,
 };
@@ -1984,6 +2057,7 @@ use self::tool_catalog::{
 };
 use self::tool_execution::emit_tool_audit;
 use self::tool_setup::sandbox_policy_for_mode;
+use crate::tools::dotnet_execution::execute_dotnet_execution_tool;
 use crate::tools::js_execution::execute_js_execution_tool;
 
 #[cfg(test)]
