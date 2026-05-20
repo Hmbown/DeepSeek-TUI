@@ -338,12 +338,16 @@ impl ExternalTool for Gh {
         static CACHE: OnceLock<Option<String>> = OnceLock::new();
         CACHE
             .get_or_init(|| {
-                if probe_executable("gh") {
-                    tracing::info!(target: "tool_dependencies", "Resolved gh binary");
-                    Some("gh".to_string())
-                } else {
-                    None
+                for candidate in Self::candidates() {
+                    if probe_executable(candidate) {
+                        tracing::info!(
+                            target: "tool_dependencies",
+                            "Resolved gh binary: {candidate}"
+                        );
+                        return Some((*candidate).to_string());
+                    }
                 }
+                None
             })
             .clone()
     }
@@ -361,12 +365,16 @@ impl ExternalTool for RustC {
         static CACHE: OnceLock<Option<String>> = OnceLock::new();
         CACHE
             .get_or_init(|| {
-                if probe_executable("rustc") {
-                    tracing::info!(target: "tool_dependencies", "Resolved rustc binary");
-                    Some("rustc".to_string())
-                } else {
-                    None
+                for candidate in Self::candidates() {
+                    if probe_executable(candidate) {
+                        tracing::info!(
+                            target: "tool_dependencies",
+                            "Resolved rustc binary: {candidate}"
+                        );
+                        return Some((*candidate).to_string());
+                    }
                 }
+                None
             })
             .clone()
     }
@@ -384,12 +392,16 @@ impl ExternalTool for Cargo {
         static CACHE: OnceLock<Option<String>> = OnceLock::new();
         CACHE
             .get_or_init(|| {
-                if probe_executable("cargo") {
-                    tracing::info!(target: "tool_dependencies", "Resolved cargo binary");
-                    Some("cargo".to_string())
-                } else {
-                    None
+                for candidate in Self::candidates() {
+                    if probe_executable(candidate) {
+                        tracing::info!(
+                            target: "tool_dependencies",
+                            "Resolved cargo binary: {candidate}"
+                        );
+                        return Some((*candidate).to_string());
+                    }
                 }
+                None
             })
             .clone()
     }
@@ -440,12 +452,16 @@ impl ExternalTool for DotNet {
         static CACHE: OnceLock<Option<String>> = OnceLock::new();
         CACHE
             .get_or_init(|| {
-                if probe_executable("dotnet") {
-                    tracing::info!(target: "tool_dependencies", "Resolved dotnet binary");
-                    Some("dotnet".to_string())
-                } else {
-                    None
+                for candidate in Self::candidates() {
+                    if probe_executable(candidate) {
+                        tracing::info!(
+                            target: "tool_dependencies",
+                            "Resolved dotnet binary: {candidate}"
+                        );
+                        return Some((*candidate).to_string());
+                    }
                 }
+                None
             })
             .clone()
     }
@@ -466,12 +482,16 @@ impl ExternalTool for Go {
         static CACHE: OnceLock<Option<String>> = OnceLock::new();
         CACHE
             .get_or_init(|| {
-                if probe_executable("go") {
-                    tracing::info!(target: "tool_dependencies", "Resolved go binary");
-                    Some("go".to_string())
-                } else {
-                    None
+                for candidate in Self::candidates() {
+                    if probe_executable(candidate) {
+                        tracing::info!(
+                            target: "tool_dependencies",
+                            "Resolved go binary: {candidate}"
+                        );
+                        return Some((*candidate).to_string());
+                    }
                 }
+                None
             })
             .clone()
     }
