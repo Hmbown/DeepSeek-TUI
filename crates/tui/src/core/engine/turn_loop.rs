@@ -1121,7 +1121,11 @@ impl Engine {
                             | "exec_wait"
                             | "exec_interact"
                             | CODE_EXECUTION_TOOL_NAME
+                            | DOTNET_EXECUTION_TOOL_NAME
                             | JS_EXECUTION_TOOL_NAME
+                            | GO_EXECUTION_TOOL_NAME
+                            | TS_EXECUTION_TOOL_NAME
+                            | RUST_EXECUTION_TOOL_NAME
                     )
                 {
                     blocked_error = Some(ToolError::permission_denied(format!(
@@ -1193,6 +1197,13 @@ impl Engine {
                     approval_required = true;
                     approval_description =
                         "Run model-provided JavaScript code in local Node.js execution sandbox"
+                            .to_string();
+                    supports_parallel = false;
+                    read_only = false;
+                } else if tool_name == DOTNET_EXECUTION_TOOL_NAME {
+                    approval_required = true;
+                    approval_description =
+                        "Run model-provided C# code in local .NET SDK execution sandbox"
                             .to_string();
                     supports_parallel = false;
                     read_only = false;
@@ -1499,6 +1510,65 @@ impl Engine {
                             let result =
                                 execute_js_execution_tool(&tool_input, &self.session.workspace)
                                     .await;
+
+                            let _ = self
+                                .tx_event
+                                .send(Event::ToolCallComplete {
+                                    id: tool_id.clone(),
+                                    name: tool_name.clone(),
+                                    result: result.clone(),
+                                })
+                                .await;
+
+                            outcomes[plan.index] = Some(ToolExecOutcome {
+                                index: plan.index,
+                                id: tool_id,
+                                name: tool_name,
+                                input: tool_input,
+                                started_at,
+                                result,
+                            });
+                            continue;
+                        }
+
+                        if tool_name == DOTNET_EXECUTION_TOOL_NAME {
+                            let started_at = Instant::now();
+                            let result =
+                                execute_dotnet_execution_tool(&tool_input, &self.session.workspace)
+                                    .await;
+
+                            let _ = self
+                                .tx_event
+                                .send(Event::ToolCallComplete {
+                                    id: tool_id.clone(),
+                                    name: tool_name.clone(),
+                                    result: result.clone(),
+                                })
+                                .await;
+
+                            outcomes[plan.index] = Some(ToolExecOutcome {
+                                index: plan.index,
+                                id: tool_id,
+                                name: tool_name,
+                                input: tool_input,
+                                started_at,
+                                result,
+                            });
+                            continue;
+                        }
+
+                        // RuntimeTool-based execution (go, ts, rust).
+                        if tool_name == GO_EXECUTION_TOOL_NAME
+                            || tool_name == TS_EXECUTION_TOOL_NAME
+                            || tool_name == RUST_EXECUTION_TOOL_NAME
+                        {
+                            let started_at = Instant::now();
+                            let result = execute_runtime_tool(
+                                &tool_name,
+                                &tool_input,
+                                &self.session.workspace,
+                            )
+                            .await;
 
                             let _ = self
                                 .tx_event
