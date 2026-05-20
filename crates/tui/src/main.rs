@@ -1089,18 +1089,26 @@ fn init_skills_dir(skills_dir: &Path, force: bool) -> Result<(PathBuf, WriteStat
 
 fn tools_readme_template() -> &'static str {
     "# Local tools\n\n\
-     Drop self-describing scripts here so they can be discovered by\n\
-     `deepseek-tui setup --status` and surfaced in `deepseek-tui doctor`.\n\n\
-     Each script should start with a frontmatter-style header so the\n\
-     description is visible without executing the file:\n\n\
+     Drop self-describing scripts here — they are auto-discovered and\n\
+     registered as model-visible tools when `[tools.plugin_dir]` is set in\n\
+     config.toml (or when the default `~/.deepseek/tools/` directory exists).\n\n\
+     Each script must start with a frontmatter-style header so the agent\n\
+     knows the tool name, description, and input schema:\n\n\
      ```\n\
      # name: my-tool\n\
      # description: One-line summary of what this tool does\n\
-     # usage: my-tool [args...]\n\
+     # schema: {\"type\":\"object\",\"properties\":{\"input\":{\"type\":\"string\"}}}\n\
+     # approval: auto\n\
      ```\n\n\
-     The directory is intentionally not auto-loaded into the agent's tool\n\
-     catalog. Wire individual tools through MCP, hooks, or skills when you\n\
-     want them available inside a session.\n"
+     The script receives the tool's JSON input on **stdin** and must return\n\
+     a JSON `ToolResult` (`{\"content\": \"...\", \"success\": true}`) on stdout.\n\n\
+     To override a built-in tool (e.g. `exec_shell` with an audit wrapper),\n\
+     add an entry to the `[tools.overrides]` table in config.toml:\n\n\
+     ```toml\n\
+     [tools.overrides]\n\
+     \"exec_shell\" = { type = \"script\", path = \"audit-exec-shell.sh\" }\n\
+     ```\n\n\
+     See `config.example.toml` for the full [tools] reference.\n"
 }
 
 fn tools_example_script() -> &'static str {
@@ -4676,6 +4684,7 @@ async fn run_exec_agent(
             .and_then(|s| s.provider)
             .unwrap_or_default(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
+        tools: config.tools.clone(),
     };
 
     let engine_handle = spawn_engine(engine_config, config);

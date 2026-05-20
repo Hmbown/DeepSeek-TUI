@@ -726,6 +726,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .and_then(|s| s.provider)
             .unwrap_or_default(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
+        tools: config.tools.clone(),
     }
 }
 
@@ -950,7 +951,7 @@ async fn run_event_loop(
                 logging::info(format!("[FREEZE-DEBUG] engine_poll_enter tick={loop_ticks}"));
             }
             let mut rx = engine_handle.rx_event.write().await;
-            let poll_start = Instant::now();
+            let _poll_start = Instant::now();
             while let Ok(event) = rx.try_recv() {
                 received_engine_event = true;
                 logging::info(format!("[FREEZE-DEBUG] engine_event_rcvd tick={loop_ticks}"));
