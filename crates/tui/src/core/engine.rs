@@ -99,6 +99,10 @@ pub struct EngineConfig {
     /// When true, the model is instructed to respond in the current locale
     /// and a post-hoc translation layer replaces remaining English output.
     pub translation_enabled: bool,
+    /// When false, thinking blocks are hidden in the TUI. Propagated to the
+    /// system prompt builder so `reasoning_content` stays in English (saving
+    /// tokens) while the final reply still matches the user's language.
+    pub show_thinking: bool,
     /// Maximum number of assistant steps before stopping.
     pub max_steps: u32,
     /// Maximum number of concurrently active subagents.
@@ -181,6 +185,7 @@ impl Default for EngineConfig {
             instructions: Vec::new(),
             project_context_pack_enabled: true,
             translation_enabled: false,
+            show_thinking: true,
             max_steps: 100,
             max_subagents: DEFAULT_MAX_SUBAGENTS,
             features: Features::with_defaults(),
@@ -434,6 +439,7 @@ impl Engine {
                     project_context_pack_enabled: config.project_context_pack_enabled,
                     locale_tag: &config.locale_tag,
                     translation_enabled: config.translation_enabled,
+                    show_thinking: config.show_thinking,
                 },
                 session.approval_mode,
             );
@@ -589,6 +595,7 @@ impl Engine {
                     auto_approve,
                     approval_mode,
                     translation_enabled,
+                    show_thinking,
                 } => {
                     self.handle_send_message(
                         content,
@@ -603,6 +610,7 @@ impl Engine {
                         auto_approve,
                         approval_mode,
                         translation_enabled,
+                        show_thinking,
                     )
                     .await;
                 }
@@ -802,6 +810,7 @@ impl Engine {
                         self.session.auto_approve,
                         self.session.approval_mode,
                         self.config.translation_enabled,
+                        self.config.show_thinking,
                     )
                     .await;
                 }
@@ -890,6 +899,7 @@ impl Engine {
         auto_approve: bool,
         approval_mode: crate::tui::approval::ApprovalMode,
         translation_enabled: bool,
+        show_thinking: bool,
     ) {
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.reset_cancel_token();
@@ -973,6 +983,7 @@ impl Engine {
         self.session.trust_mode = trust_mode;
         self.config.trust_mode = trust_mode;
         self.config.translation_enabled = translation_enabled;
+        self.config.show_thinking = show_thinking;
         self.session.auto_approve = auto_approve;
         self.session.approval_mode = if auto_approve {
             crate::tui::approval::ApprovalMode::Auto
@@ -1792,6 +1803,7 @@ impl Engine {
                 project_context_pack_enabled: self.config.project_context_pack_enabled,
                 locale_tag: &self.config.locale_tag,
                 translation_enabled: self.config.translation_enabled,
+                show_thinking: self.config.show_thinking,
             },
             self.session.approval_mode,
         );
