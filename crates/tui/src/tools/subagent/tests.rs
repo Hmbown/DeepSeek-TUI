@@ -682,6 +682,7 @@ fn test_subagent_tool_registry_reports_unavailable_tools() {
     let registry = SubAgentToolRegistry::new(
         runtime,
         Some(vec!["read_file".to_string(), "missing_tool".to_string()]),
+        false,
         Arc::new(Mutex::new(TodoList::new())),
         Arc::new(Mutex::new(PlanState::default())),
     );
@@ -700,6 +701,7 @@ fn test_review_agent_tools_exclude_agent_spawn() {
     let registry = SubAgentToolRegistry::new(
         runtime,
         None,
+        false,
         Arc::new(Mutex::new(TodoList::new())),
         Arc::new(Mutex::new(PlanState::default())),
     );
@@ -709,6 +711,59 @@ fn test_review_agent_tools_exclude_agent_spawn() {
         !names.contains(&"agent_spawn"),
         "Review agent must not have agent_spawn; tools: {names:?}"
     );
+}
+
+#[test]
+fn delegated_suggest_writes_are_limited_to_write_roles() {
+    assert!(delegated_suggest_writes(&SubAgentType::General, &None));
+    assert!(delegated_suggest_writes(&SubAgentType::Implementer, &None));
+
+    for agent_type in [
+        SubAgentType::Explore,
+        SubAgentType::Plan,
+        SubAgentType::Review,
+        SubAgentType::Verifier,
+    ] {
+        assert!(
+            !delegated_suggest_writes(&agent_type, &None),
+            "{agent_type:?} should not inherit delegated write approval"
+        );
+    }
+
+    assert!(delegated_suggest_writes(
+        &SubAgentType::Custom,
+        &Some(vec!["read_file".to_string(), "write_file".to_string()])
+    ));
+    assert!(!delegated_suggest_writes(
+        &SubAgentType::Custom,
+        &Some(vec!["read_file".to_string()])
+    ));
+}
+
+#[test]
+fn subagent_tool_allowed_delegates_suggest_but_not_required() {
+    use crate::tools::spec::ApprovalRequirement;
+
+    assert!(subagent_tool_allowed(
+        false,
+        false,
+        ApprovalRequirement::Auto
+    ));
+    assert!(subagent_tool_allowed(
+        false,
+        true,
+        ApprovalRequirement::Suggest
+    ));
+    assert!(!subagent_tool_allowed(
+        false,
+        true,
+        ApprovalRequirement::Required
+    ));
+    assert!(subagent_tool_allowed(
+        true,
+        false,
+        ApprovalRequirement::Required
+    ));
 }
 
 #[tokio::test]
@@ -1153,6 +1208,7 @@ async fn subagent_registry_blocks_approval_tools_without_parent_auto_approve() {
     let registry = SubAgentToolRegistry::new(
         runtime,
         Some(vec!["exec_shell".to_string()]),
+        false,
         Arc::new(Mutex::new(TodoList::new())),
         Arc::new(Mutex::new(PlanState::default())),
     );
@@ -1166,6 +1222,75 @@ async fn subagent_registry_blocks_approval_tools_without_parent_auto_approve() {
         err.to_string().contains("requires approval"),
         "unexpected error: {err}"
     );
+}
+
+#[tokio::test]
+async fn implementer_delegation_allows_suggest_write_file_without_parent_auto_approve() {
+    let tmp = tempdir().expect("tempdir");
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    runtime.context.auto_approve = false;
+    let registry = SubAgentToolRegistry::new(
+        runtime,
+        Some(vec!["write_file".to_string()]),
+        true,
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+
+    registry
+        .execute(
+            "agent_test",
+            "write_file",
+            json!({"path": "delegated.txt", "content": "ok"}),
+        )
+        .await
+        .expect("delegated Suggest file write should run");
+
+    let written = std::fs::read_to_string(tmp.path().join("delegated.txt")).expect("written file");
+    assert_eq!(written, "ok");
+}
+
+#[tokio::test]
+async fn non_delegated_subagent_blocks_suggest_write_file() {
+    let tmp = tempdir().expect("tempdir");
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    runtime.context.auto_approve = false;
+    let registry = SubAgentToolRegistry::new(
+        runtime,
+        Some(vec!["write_file".to_string()]),
+        false,
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+
+    let err = registry
+        .execute(
+            "agent_test",
+            "write_file",
+            json!({"path": "blocked.txt", "content": "no"}),
+        )
+        .await
+        .expect_err("non-delegated Suggest file write should be blocked");
+
+    assert!(
+        err.to_string().contains("requires approval"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn approval_block_detection_requires_error_prefix_and_approval_text() {
+    assert!(is_subagent_approval_block(
+        "Error: Tool write_file requires approval and cannot run inside this sub-agent"
+    ));
+    assert!(!is_subagent_approval_block(
+        "Tool write_file requires approval but this is model text"
+    ));
+    assert!(!is_subagent_approval_block(
+        "Error: Tool write_file timed out"
+    ));
 }
 
 #[test]

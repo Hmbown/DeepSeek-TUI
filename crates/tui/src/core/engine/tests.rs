@@ -769,6 +769,22 @@ fn agent_mode_can_build_auto_approved_tool_context() {
 }
 
 #[test]
+fn approval_mode_auto_promotes_effective_auto_approve() {
+    assert!(!effective_auto_approve(
+        false,
+        crate::tui::approval::ApprovalMode::Suggest
+    ));
+    assert!(effective_auto_approve(
+        false,
+        crate::tui::approval::ApprovalMode::Auto
+    ));
+    assert!(effective_auto_approve(
+        true,
+        crate::tui::approval::ApprovalMode::Suggest
+    ));
+}
+
+#[test]
 fn agent_and_yolo_modes_elevate_shell_sandbox_to_allow_network() {
     // Regression for #273: the seatbelt-default policy denies all outbound
     // network (including DNS), which broke `curl`, `yt-dlp`, package managers,

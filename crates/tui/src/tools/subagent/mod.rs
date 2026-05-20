@@ -69,6 +69,7 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 /// stuck API call from blocking the sub-agent indefinitely.
 const STEP_API_TIMEOUT: Duration = Duration::from_secs(120);
 const RESULT_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const APPROVAL_BLOCK_FAIL_FAST_THRESHOLD: u32 = 3;
 const DEFAULT_RESULT_TIMEOUT_MS: u64 = 30_000;
 #[allow(dead_code)] // Legacy agent_wait clamp; new agent_eval uses DEFAULT/MAX.
 const MIN_WAIT_TIMEOUT_MS: u64 = 10_000;
@@ -1734,6 +1735,7 @@ impl ToolSpec for AgentOpenTool {
             "Use agent_eval to fetch or wait on the session, and agent_close to cancel/close it.\n\n",
             "Context control is explicit: omit fork_context or set it false for a fresh child with an independent prefill; set fork_context=true for perspective fanout over the current parent context. ",
             "Forked children preserve the parent system prompt and leading message prefix byte-identically where the runtime has that prefix, so DeepSeek can reuse its prefix cache before the child-specific task is appended.\n\n",
+            "Approving agent_open delegates workspace file-write tools to general and implementer children; explore, plan, review, and verifier children remain read-only unless the parent session is auto-approved.\n\n",
             "Sub-agent results are self-reports. Re-verify claimed side effects such as file edits, commands, network writes, tests, or git operations before reporting them as facts."
         )
     }
@@ -3318,9 +3320,11 @@ async fn run_subagent(
         messages: messages.clone(),
         structured_state_block: None,
     });
+    let delegated_suggest_writes = delegated_suggest_writes(&agent_type, &allowed_tools);
     let tool_registry = SubAgentToolRegistry::new(
         runtime_for_tools,
         allowed_tools.clone(),
+        delegated_suggest_writes,
         Arc::new(Mutex::new(TodoList::new())),
         Arc::new(Mutex::new(PlanState::default())),
     );
@@ -3345,6 +3349,7 @@ async fn run_subagent(
     let mut steps = 0;
     let mut final_result: Option<String> = None;
     let mut pending_inputs: VecDeque<SubAgentInput> = VecDeque::new();
+    let mut approval_block_streak = 0;
 
     for _step in 0..max_steps {
         // Cooperative cancellation: bail if the parent (or root) cancelled
@@ -3562,6 +3567,48 @@ async fn run_subagent(
                     tool_name: tool_name.clone(),
                     step: steps,
                     ok: tool_ok,
+                });
+            }
+
+            if is_subagent_approval_block(&result) {
+                approval_block_streak += 1;
+            } else {
+                approval_block_streak = 0;
+            }
+
+            if approval_block_streak >= APPROVAL_BLOCK_FAIL_FAST_THRESHOLD {
+                let blocker = format!(
+                    "BLOCKERS: sub-agent hit {approval_block_streak} consecutive approval blocks. \
+                     Use a general/implementer child for delegated file writes, or switch the parent \
+                     session to auto approval for required tools."
+                );
+                emit_agent_progress(
+                    runtime.event_tx.as_ref(),
+                    runtime.mailbox.as_ref(),
+                    &agent_id,
+                    format!("step {steps}/{max_steps}: failed after repeated approval blocks"),
+                );
+                release_resident_leases_for(&agent_id);
+                return Ok(SubAgentResult {
+                    name: agent_id.clone(),
+                    agent_id: agent_id.clone(),
+                    context_mode: if fork_context_enabled {
+                        "forked"
+                    } else {
+                        "fresh"
+                    }
+                    .to_string(),
+                    fork_context: fork_context_enabled,
+                    agent_type: agent_type.clone(),
+                    assignment: assignment.clone(),
+                    model: runtime.model.clone(),
+                    nickname: None,
+                    status: SubAgentStatus::Failed(blocker.clone()),
+                    result: Some(blocker),
+                    steps_taken: steps,
+                    duration_ms: u64::try_from(started_at.elapsed().as_millis())
+                        .unwrap_or(u64::MAX),
+                    from_prior_session: false,
                 });
             }
 
@@ -4297,6 +4344,42 @@ fn emit_agent_progress(
 
 // === Tool Registry Helpers ===
 
+fn delegated_suggest_writes(
+    agent_type: &SubAgentType,
+    allowed_tools: &Option<Vec<String>>,
+) -> bool {
+    match agent_type {
+        SubAgentType::General | SubAgentType::Implementer => true,
+        SubAgentType::Custom => allowed_tools
+            .as_ref()
+            .is_some_and(|tools| tools.iter().any(|name| is_delegated_write_tool(name))),
+        SubAgentType::Explore
+        | SubAgentType::Plan
+        | SubAgentType::Review
+        | SubAgentType::Verifier => false,
+    }
+}
+
+fn is_delegated_write_tool(name: &str) -> bool {
+    matches!(name, "write_file" | "edit_file" | "apply_patch")
+}
+
+fn subagent_tool_allowed(
+    auto_approve: bool,
+    delegated_suggest_writes: bool,
+    req: ApprovalRequirement,
+) -> bool {
+    match req {
+        ApprovalRequirement::Auto => true,
+        ApprovalRequirement::Suggest => auto_approve || delegated_suggest_writes,
+        ApprovalRequirement::Required => auto_approve,
+    }
+}
+
+fn is_subagent_approval_block(result: &str) -> bool {
+    result.starts_with("Error:") && result.contains("requires approval")
+}
+
 /// Per-sub-agent tool registry.
 ///
 /// Two modes:
@@ -4312,6 +4395,7 @@ struct SubAgentToolRegistry {
     /// only the listed tools are visible to the model and callable.
     allowed_tools: Option<Vec<String>>,
     auto_approve: bool,
+    delegated_suggest_writes: bool,
     registry: ToolRegistry,
 }
 
@@ -4319,6 +4403,7 @@ impl SubAgentToolRegistry {
     fn new(
         runtime: SubAgentRuntime,
         explicit_allowed_tools: Option<Vec<String>>,
+        delegated_suggest_writes: bool,
         todo_list: SharedTodoList,
         plan_state: SharedPlanState,
     ) -> Self {
@@ -4342,6 +4427,7 @@ impl SubAgentToolRegistry {
         Self {
             allowed_tools: explicit_allowed_tools,
             auto_approve: runtime.context.auto_approve,
+            delegated_suggest_writes,
             registry,
         }
     }
@@ -4394,21 +4480,30 @@ impl SubAgentToolRegistry {
         if !self.is_tool_allowed(name) {
             return Err(anyhow!("Tool {name} not allowed for this sub-agent"));
         }
-        if !self.auto_approve {
-            let Some(spec) = self.registry.get(name) else {
-                return Err(anyhow!("Tool {name} is not registered"));
-            };
-            if spec.approval_requirement() != ApprovalRequirement::Auto {
-                return Err(anyhow!(
-                    "Tool {name} requires approval and cannot run inside this sub-agent unless the parent session is auto-approved"
-                ));
-            }
+        let Some(spec) = self.registry.get(name) else {
+            return Err(anyhow!("Tool {name} is not registered"));
+        };
+        let req = spec.approval_requirement();
+        if !subagent_tool_allowed(self.auto_approve, self.delegated_suggest_writes, req) {
+            return Err(anyhow!("{}", subagent_approval_error(name, req)));
         }
         reject_subagent_terminal_takeover(name, &input)?;
         self.registry
             .execute(name, input)
             .await
             .map_err(|e| anyhow!(e))
+    }
+}
+
+fn subagent_approval_error(name: &str, req: ApprovalRequirement) -> String {
+    match req {
+        ApprovalRequirement::Suggest => format!(
+            "Tool {name} requires approval and this sub-agent role is not delegated to run file-write tools"
+        ),
+        ApprovalRequirement::Required => format!(
+            "Tool {name} requires approval and cannot run inside this sub-agent unless the parent session is auto-approved"
+        ),
+        ApprovalRequirement::Auto => format!("Tool {name} is unexpectedly blocked"),
     }
 }
 

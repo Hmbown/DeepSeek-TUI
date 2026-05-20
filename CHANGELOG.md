@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Approved sub-agents can write files in delegated roles.** `general` and
+  `implementer` children now inherit approved `Suggest` file-write tools after
+  `agent_open`, `approval_mode=auto` consistently reaches child tool contexts,
+  and repeated approval blocks fail fast instead of spinning (#1828).
 - **Feishu/Lark bridge startup order is guarded.** The bridge now keeps
   `ThreadStore` initialized before startup opens persisted thread state, with a
   regression test to prevent moving it below its first use.

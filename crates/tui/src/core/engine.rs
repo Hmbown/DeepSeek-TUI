@@ -973,8 +973,9 @@ impl Engine {
         self.session.trust_mode = trust_mode;
         self.config.trust_mode = trust_mode;
         self.config.translation_enabled = translation_enabled;
-        self.session.auto_approve = auto_approve;
-        self.session.approval_mode = if auto_approve {
+        let effective_auto_approve = effective_auto_approve(auto_approve, approval_mode);
+        self.session.auto_approve = effective_auto_approve;
+        self.session.approval_mode = if effective_auto_approve {
             crate::tui::approval::ApprovalMode::Auto
         } else {
             approval_mode
@@ -988,7 +989,7 @@ impl Engine {
         let todo_list = self.config.todos.clone();
         let plan_state = self.config.plan_state.clone();
 
-        let tool_context = self.build_tool_context(mode, auto_approve);
+        let tool_context = self.build_tool_context(mode, effective_auto_approve);
         let builder = self.build_turn_tool_registry_builder(mode, todo_list, plan_state);
 
         let fork_context_for_runtime = if self.config.features.enabled(Feature::Subagents) {
@@ -1985,6 +1986,13 @@ use self::tool_catalog::{
 use self::tool_execution::emit_tool_audit;
 use self::tool_setup::sandbox_policy_for_mode;
 use crate::tools::js_execution::execute_js_execution_tool;
+
+fn effective_auto_approve(
+    auto_approve: bool,
+    approval_mode: crate::tui::approval::ApprovalMode,
+) -> bool {
+    auto_approve || approval_mode == crate::tui::approval::ApprovalMode::Auto
+}
 
 #[cfg(test)]
 mod tests;
