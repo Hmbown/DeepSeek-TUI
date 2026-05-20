@@ -751,16 +751,13 @@ impl ToolSpec for PrAttemptPreflightTool {
             .ok_or_else(|| ToolError::invalid_input("Attempt has no patch artifact"))?;
         let patch_path = manager.artifact_absolute_path(patch_ref);
         let workspace = context.workspace.clone();
-        let out = tokio::task::spawn_blocking(move || {
-            crate::dependencies::Git::command()
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "git not found"))?
-                .args(["apply", "--check"])
-                .arg(&patch_path)
-                .current_dir(&workspace)
-                .output()
-        })
-        .await
-        .map_err(|join_err| ToolError::execution_failed(format!("git apply --check panicked: {join_err}")))?
+        let out = crate::dependencies::Git::tokio_command()
+            .ok_or_else(|| ToolError::execution_failed("git not found on PATH"))?
+            .args(["apply", "--check"])
+            .arg(&patch_path)
+            .current_dir(&workspace)
+            .output()
+            .await
             .map_err(|e| ToolError::execution_failed(format!("git apply --check failed: {e}")))?;
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();

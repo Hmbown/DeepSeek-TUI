@@ -156,24 +156,20 @@ fn write_temp_html(html: &str) -> Result<tempfile::NamedTempFile, String> {
 
 /// Upload a file as a GitHub Gist using the `gh` CLI.
 async fn upload_gist(path: &Path) -> Result<String, String> {
-    let path_owned = path.to_path_buf();
-    let output = tokio::task::spawn_blocking(move || {
-        let mut cmd = crate::dependencies::Gh::command()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "gh not found"))?;
-        cmd.args([
+    let output = crate::dependencies::Gh::tokio_command()
+        .ok_or_else(|| "gh not found on PATH".to_string())?
+        .args([
             "gist",
             "create",
             "--public",
-            &path_owned.to_string_lossy().to_string(),
+            &path.to_string_lossy().to_string(),
             "--filename",
             "session-export.html",
             "--desc",
             "DeepSeek TUI Session Export",
         ])
         .output()
-    })
-    .await
-    .map_err(|join_err| format!("gh gist create failed: task panicked ({join_err})"))?
+        .await
         .map_err(|e| format!("Failed to run `gh gist create`: {e}"))?;
 
     if !output.status.success() {
