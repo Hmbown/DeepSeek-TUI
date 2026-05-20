@@ -510,8 +510,13 @@ pub const TERMINAL_UI_THEME: UiTheme = UiTheme {
     footer_bg: Color::Reset,
     mode_agent: Color::Blue,
     mode_yolo: Color::Red,
-    mode_plan: Color::Yellow,
-    status_ready: Color::Reset,
+    // Magenta keeps Plan visually distinct from `status_warning` (yellow)
+    // so the mode indicator and warning chip don't collide on themes that
+    // render both in the status row.
+    mode_plan: Color::Magenta,
+    // DarkGray gives "Ready" a low-contrast but still distinguishable hue
+    // versus default body text (which is `Color::Reset` on this theme).
+    status_ready: Color::DarkGray,
     status_working: Color::Cyan,
     status_warning: Color::Yellow,
     text_dim: Color::Reset,
