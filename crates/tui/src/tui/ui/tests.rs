@@ -5330,6 +5330,9 @@ fn history_arrow_handles_whitespace_input() {
 #[test]
 fn history_arrow_handles_nonempty_input() {
     let mut app = create_test_app();
+    // Explicitly disable arrows-scroll so this test covers the
+    // history-navigation path regardless of the mouse-capture default.
+    app.composer_arrows_scroll = false;
     app.input = "hello".to_string();
     app.cursor_position = app.input.chars().count();
     app.input_history.push("previous prompt".to_string());
@@ -5375,20 +5378,98 @@ fn composer_arrows_scroll_empty_down() {
 }
 
 #[test]
-fn composer_arrows_scroll_nonempty_still_navigates_history() {
+fn composer_arrows_scroll_nonempty_also_scrolls() {
     let mut app = create_test_app();
     app.composer_arrows_scroll = true;
     app.input = "hello".to_string();
     app.cursor_position = app.input.chars().count();
     app.input_history.push("previous prompt".to_string());
 
-    // Even with the option on, non-empty composer still navigates history.
+    // #1677: terminals that convert mouse-wheel to arrow keys should scroll
+    // the transcript without mutating a draft the user is editing.
     assert!(handle_composer_history_arrow(
         &mut app,
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
         false,
         false,
     ));
+    assert_eq!(app.viewport.pending_scroll_delta, -3);
+    assert_eq!(app.input, "hello");
+}
+
+#[test]
+fn composer_arrow_up_moves_within_multiline_input() {
+    let mut app = create_test_app();
+    app.composer_arrows_scroll = false;
+    app.input = "line one\nline two".to_string();
+    app.cursor_position = app.input.chars().count();
+    app.input_history.push("previous prompt".to_string());
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
+    assert_eq!(app.input, "line one\nline two");
+    assert!(app.cursor_position < app.input.chars().count());
+}
+
+#[test]
+fn composer_arrow_down_moves_within_multiline_input() {
+    let mut app = create_test_app();
+    app.composer_arrows_scroll = false;
+    app.input = "line one\nline two".to_string();
+    app.cursor_position = 0;
+    app.input_history.push("next prompt".to_string());
+    app.history_index = Some(app.input_history.len() - 1);
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
+    assert_eq!(app.input, "line one\nline two");
+    assert!(app.cursor_position >= "line one\n".chars().count());
+}
+
+#[test]
+fn composer_arrows_scroll_multiline_input_navigates_lines() {
+    let mut app = create_test_app();
+    app.composer_arrows_scroll = true;
+    app.input = "line one\nline two".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
+    assert_eq!(app.input, "line one\nline two");
+    assert!(app.cursor_position < app.input.chars().count());
+    assert_eq!(app.viewport.pending_scroll_delta, 0);
+}
+
+#[test]
+fn composer_arrow_up_at_first_line_falls_back_to_history_up() {
+    let mut app = create_test_app();
+    app.composer_arrows_scroll = false;
+    app.input = "line one\nline two".to_string();
+    app.cursor_position = 0;
+    app.input_history.push("previous prompt".to_string());
+
+    assert!(handle_composer_history_arrow(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        false,
+        false,
+    ));
+
     assert_eq!(app.input, "previous prompt");
 }
 
