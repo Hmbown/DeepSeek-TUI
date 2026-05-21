@@ -516,6 +516,19 @@ fn default_threshold_secs() -> u64 {
     30
 }
 
+/// Completion sound options.
+#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompletionSound {
+    /// No sound on turn completion.
+    Off,
+    /// System notification beep (default). On Windows uses `MessageBeep`.
+    #[default]
+    Beep,
+    /// Terminal BEL character (`\x07`).
+    Bell,
+}
+
 /// Desktop-notification configuration (OSC 9 / BEL on turn completion).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct NotificationsConfig {
@@ -535,6 +548,11 @@ pub struct NotificationsConfig {
     /// Default: `false`.
     #[serde(default)]
     pub include_summary: bool,
+
+    /// Completion sound: `"off"` | `"beep"` | `"bell"`. Default: `"beep"`.
+    /// Plays a sound when every turn finishes (alongside the ✅ marker).
+    #[serde(default)]
+    pub completion_sound: CompletionSound,
 }
 
 fn default_snapshots_enabled() -> bool {

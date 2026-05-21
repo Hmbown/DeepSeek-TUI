@@ -5841,6 +5841,7 @@ fn notification_settings_tui_always_keeps_configured_method_no_threshold() {
         notifications: Some(crate::config::NotificationsConfig {
             method: crate::config::NotificationMethod::Bel,
             threshold_secs: 120,
+            completion_sound: crate::config::CompletionSound::Beep,
             include_summary: true,
         }),
         ..Config::default()
@@ -5872,6 +5873,7 @@ fn notification_settings_no_tui_override_uses_notifications_block() {
         notifications: Some(crate::config::NotificationsConfig {
             method: crate::config::NotificationMethod::Osc9,
             threshold_secs: 45,
+            completion_sound: crate::config::CompletionSound::Beep,
             include_summary: false,
         }),
         ..Config::default()

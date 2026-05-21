@@ -1422,6 +1422,8 @@ async fn run_event_loop(
                                 threshold,
                                 turn_elapsed,
                             );
+                            crate::tui::notifications::clear_taskbar_progress();
+                            crate::tui::notifications::stop_title_animation();
                         }
 
                         // Auto-save completed turn and clear crash checkpoint.
@@ -2194,6 +2196,8 @@ async fn run_event_loop(
             if app.use_mouse_capture
                 && let Event::Mouse(mouse) = evt
             {
+                // Mouse interaction clears the ✅ completion marker.
+                crate::tui::notifications::reset_title_on_interaction();
                 if should_drop_loading_mouse_motion(app, mouse) {
                     continue;
                 }
@@ -2213,6 +2217,9 @@ async fn run_event_loop(
                 }
                 continue;
             }
+
+            // User interaction — clear the ✅ completion marker from the title.
+            crate::tui::notifications::reset_title_on_interaction();
 
             let Event::Key(key) = evt else {
                 continue;
