@@ -977,6 +977,13 @@ async fn run_event_loop(
                         if app.streaming_message_index.is_none() {
                             app.flush_active_cell();
                         }
+                        // Track output for real-time token speed chip.
+                        if app.stream_started_at.is_none() {
+                            app.stream_started_at = Some(std::time::Instant::now());
+                        }
+                        app.stream_output_chars = app
+                            .stream_output_chars
+                            .saturating_add(sanitized.len() as u64);
                         current_streaming_text.push_str(&sanitized);
                         let index = ensure_streaming_assistant_history_cell(app);
                         app.streaming_state.push_content(0, &sanitized);
@@ -1095,6 +1102,14 @@ async fn run_event_loop(
                         if sanitized.is_empty() {
                             continue;
                         }
+                        // Track output for real-time token speed chip
+                        // (includes thinking tokens as part of generation).
+                        if app.stream_started_at.is_none() {
+                            app.stream_started_at = Some(std::time::Instant::now());
+                        }
+                        app.stream_output_chars = app
+                            .stream_output_chars
+                            .saturating_add(sanitized.len() as u64);
                         app.reasoning_buffer.push_str(&sanitized);
                         if app.reasoning_header.is_none() {
                             app.reasoning_header = extract_reasoning_header(&app.reasoning_buffer);
@@ -1268,6 +1283,9 @@ async fn run_event_loop(
                         app.streaming_state.reset();
                         app.streaming_message_index = None;
                         app.streaming_thinking_active_entry = None;
+                        app.stream_output_chars = 0;
+                        app.stream_started_at = None;
+                        app.last_turn_output_speed = None;
                         app.turn_started_at = Some(Instant::now());
                         // Discoverability hint for users who don't know how
                         // to interrupt a long-running turn (#1367). Only
@@ -1369,6 +1387,27 @@ async fn run_event_loop(
                         app.session.last_prompt_cache_hit_tokens = usage.prompt_cache_hit_tokens;
                         app.session.last_prompt_cache_miss_tokens = usage.prompt_cache_miss_tokens;
                         app.session.last_reasoning_replay_tokens = usage.reasoning_replay_tokens;
+                        // Compute average output speed from actual token counts
+                        // and persist it so the footer chip survives turn end.
+                        // Uses `stream_started_at` (first content delta) rather than
+                        // `turn_started_at` to exclude request preparation and TTFB,
+                        // giving a more accurate measure of generation throughput.
+                        let gen_elapsed = app
+                            .stream_started_at
+                            .map(|t| t.elapsed())
+                            .unwrap_or(turn_elapsed);
+                        if usage.output_tokens > 0 && gen_elapsed.as_secs_f64() > 0.0 {
+                            let avg_tps =
+                                usage.output_tokens as f64 / gen_elapsed.as_secs_f64();
+                            let label =
+                                format!("{} avg", crate::tui::footer_ui::format_tok_s_label(avg_tps));
+                            app.last_turn_output_speed = Some(label);
+                        } else {
+                            app.last_turn_output_speed = None;
+                        }
+                        // Reset streaming counters for the next turn.
+                        app.stream_output_chars = 0;
+                        app.stream_started_at = None;
                         app.push_turn_cache_record(crate::tui::app::TurnCacheRecord {
                             input_tokens: usage.input_tokens,
                             output_tokens: usage.output_tokens,
