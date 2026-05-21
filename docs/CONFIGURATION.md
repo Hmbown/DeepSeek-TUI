@@ -92,6 +92,14 @@ when a local server does require bearer auth.
 For a third-party service that implements the OpenAI Chat Completions API, use
 the built-in `openai` provider name and point its provider table at the gateway:
 
+```bash
+deepseek auth set --provider openai --api-key "YOUR_OPENAI_COMPATIBLE_API_KEY"
+OPENAI_BASE_URL="https://your-gateway.example/v1" deepseek --provider openai --model your-model-id
+```
+
+For a persistent config, put the active provider and default model at the top
+level, then put the credential and endpoint under `[providers.openai]`:
+
 ```toml
 provider = "openai"
 default_text_model = "your-model-id"
@@ -107,6 +115,35 @@ legacy top-level `base_url`, so the OpenAI-compatible provider receives it.
 `default_text_model` is the model ID sent to the gateway; if you keep several
 provider tables in one config, `[providers.openai].model` can be used as the
 OpenAI-provider-specific override.
+
+```toml
+provider = "openai"
+
+[providers.openai]
+api_key = "YOUR_OPENAI_COMPATIBLE_API_KEY"
+base_url = "https://your-gateway.example/v1"
+model = "your-model-id"
+```
+
+The provider-scoped `model` is useful when your global `default_text_model`
+should stay tuned for another provider. If both are set while the active
+provider is `openai`, `[providers.openai].model` wins for the
+OpenAI-compatible provider.
+
+TOML table order matters: after the `[providers.openai]` header, new keys belong
+to that table. If you want to set top-level `default_text_model`, keep it before
+any provider table, or use `[providers.openai].model` instead.
+
+Common mistakes:
+
+- `provider = "my-gateway"` fails because custom provider names are not
+  registered. Use `provider = "openai"` for generic OpenAI-compatible gateways.
+- A top-level `base_url = "..."` is a legacy DeepSeek setting and is ignored by
+  `provider = "openai"`. Put gateway URLs under `[providers.openai]`.
+- `base_url` should normally end at `/v1`; DeepSeek TUI appends
+  `/chat/completions` for chat requests.
+- Use CLI `--model your-model-id` for one process, top-level
+  `default_text_model`, or `[providers.openai].model` for persistent config.
 
 Local HTTP endpoints such as Ollama, SGLang, and vLLM are allowed by default
 when they use localhost or loopback addresses. For a non-local `http://`
