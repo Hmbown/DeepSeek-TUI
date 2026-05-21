@@ -30,11 +30,14 @@ const DEFAULT_OPENROUTER_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
 const DEFAULT_NOVITA_MODEL: &str = "deepseek/deepseek-v4-pro";
 const DEFAULT_NOVITA_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
 const DEFAULT_FIREWORKS_MODEL: &str = "accounts/fireworks/models/deepseek-v4-pro";
+const DEFAULT_SILICONFLOW_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
+const DEFAULT_SILICONFLOW_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 const DEFAULT_SGLANG_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 const DEFAULT_SGLANG_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_NOVITA_BASE_URL: &str = "https://api.novita.ai/v1";
 const DEFAULT_FIREWORKS_BASE_URL: &str = "https://api.fireworks.ai/inference/v1";
+const DEFAULT_SILICONFLOW_BASE_URL: &str = "https://api.siliconflow.cn/v1";
 const DEFAULT_SGLANG_BASE_URL: &str = "http://localhost:30000/v1";
 const DEFAULT_VLLM_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
@@ -68,6 +71,8 @@ pub enum ProviderKind {
     Openrouter,
     Novita,
     Fireworks,
+    #[serde(alias = "silicon-flow", alias = "silicon_flow")]
+    Siliconflow,
     Sglang,
     Vllm,
     Ollama,
@@ -85,6 +90,7 @@ impl ProviderKind {
             Self::Openrouter => "openrouter",
             Self::Novita => "novita",
             Self::Fireworks => "fireworks",
+            Self::Siliconflow => "siliconflow",
             Self::Sglang => "sglang",
             Self::Vllm => "vllm",
             Self::Ollama => "ollama",
@@ -104,6 +110,7 @@ impl ProviderKind {
             "openrouter" | "open_router" => Some(Self::Openrouter),
             "novita" => Some(Self::Novita),
             "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
+            "siliconflow" | "silicon-flow" | "silicon_flow" => Some(Self::Siliconflow),
             "sglang" | "sg-lang" => Some(Self::Sglang),
             "vllm" | "v-llm" => Some(Self::Vllm),
             "ollama" | "ollama-local" => Some(Self::Ollama),
@@ -140,6 +147,8 @@ pub struct ProvidersToml {
     #[serde(default)]
     pub fireworks: ProviderConfigToml,
     #[serde(default)]
+    pub siliconflow: ProviderConfigToml,
+    #[serde(default)]
     pub sglang: ProviderConfigToml,
     #[serde(default)]
     pub vllm: ProviderConfigToml,
@@ -159,6 +168,7 @@ impl ProvidersToml {
             ProviderKind::Openrouter => &self.openrouter,
             ProviderKind::Novita => &self.novita,
             ProviderKind::Fireworks => &self.fireworks,
+            ProviderKind::Siliconflow => &self.siliconflow,
             ProviderKind::Sglang => &self.sglang,
             ProviderKind::Vllm => &self.vllm,
             ProviderKind::Ollama => &self.ollama,
@@ -175,6 +185,7 @@ impl ProvidersToml {
             ProviderKind::Openrouter => &mut self.openrouter,
             ProviderKind::Novita => &mut self.novita,
             ProviderKind::Fireworks => &mut self.fireworks,
+            ProviderKind::Siliconflow => &mut self.siliconflow,
             ProviderKind::Sglang => &mut self.sglang,
             ProviderKind::Vllm => &mut self.vllm,
             ProviderKind::Ollama => &mut self.ollama,
@@ -397,6 +408,10 @@ impl ConfigToml {
         );
         merge_provider_config(&mut self.providers.novita, &project.providers.novita);
         merge_provider_config(&mut self.providers.fireworks, &project.providers.fireworks);
+        merge_provider_config(
+            &mut self.providers.siliconflow,
+            &project.providers.siliconflow,
+        );
         merge_provider_config(&mut self.providers.sglang, &project.providers.sglang);
         merge_provider_config(&mut self.providers.vllm, &project.providers.vllm);
         merge_provider_config(&mut self.providers.ollama, &project.providers.ollama);
@@ -482,6 +497,12 @@ impl ConfigToml {
             "providers.fireworks.model" => self.providers.fireworks.model.clone(),
             "providers.fireworks.http_headers" => {
                 serialize_http_headers(&self.providers.fireworks.http_headers)
+            }
+            "providers.siliconflow.api_key" => self.providers.siliconflow.api_key.clone(),
+            "providers.siliconflow.base_url" => self.providers.siliconflow.base_url.clone(),
+            "providers.siliconflow.model" => self.providers.siliconflow.model.clone(),
+            "providers.siliconflow.http_headers" => {
+                serialize_http_headers(&self.providers.siliconflow.http_headers)
             }
             "providers.sglang.api_key" => self.providers.sglang.api_key.clone(),
             "providers.sglang.base_url" => self.providers.sglang.base_url.clone(),
@@ -635,6 +656,18 @@ impl ConfigToml {
             "providers.fireworks.http_headers" => {
                 self.providers.fireworks.http_headers = parse_http_headers(value)?;
             }
+            "providers.siliconflow.api_key" => {
+                self.providers.siliconflow.api_key = Some(value.to_string());
+            }
+            "providers.siliconflow.base_url" => {
+                self.providers.siliconflow.base_url = Some(value.to_string());
+            }
+            "providers.siliconflow.model" => {
+                self.providers.siliconflow.model = Some(value.to_string());
+            }
+            "providers.siliconflow.http_headers" => {
+                self.providers.siliconflow.http_headers = parse_http_headers(value)?;
+            }
             "providers.sglang.api_key" => {
                 self.providers.sglang.api_key = Some(value.to_string());
             }
@@ -741,6 +774,12 @@ impl ConfigToml {
             "providers.fireworks.base_url" => self.providers.fireworks.base_url = None,
             "providers.fireworks.model" => self.providers.fireworks.model = None,
             "providers.fireworks.http_headers" => self.providers.fireworks.http_headers.clear(),
+            "providers.siliconflow.api_key" => self.providers.siliconflow.api_key = None,
+            "providers.siliconflow.base_url" => self.providers.siliconflow.base_url = None,
+            "providers.siliconflow.model" => self.providers.siliconflow.model = None,
+            "providers.siliconflow.http_headers" => {
+                self.providers.siliconflow.http_headers.clear();
+            }
             "providers.sglang.api_key" => self.providers.sglang.api_key = None,
             "providers.sglang.base_url" => self.providers.sglang.base_url = None,
             "providers.sglang.model" => self.providers.sglang.model = None,
@@ -900,6 +939,21 @@ impl ConfigToml {
         if let Some(v) = serialize_http_headers(&self.providers.fireworks.http_headers) {
             out.insert("providers.fireworks.http_headers".to_string(), v);
         }
+        if let Some(v) = self.providers.siliconflow.api_key.as_ref() {
+            out.insert(
+                "providers.siliconflow.api_key".to_string(),
+                redact_secret(v),
+            );
+        }
+        if let Some(v) = self.providers.siliconflow.base_url.as_ref() {
+            out.insert("providers.siliconflow.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.siliconflow.model.as_ref() {
+            out.insert("providers.siliconflow.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.siliconflow.http_headers) {
+            out.insert("providers.siliconflow.http_headers".to_string(), v);
+        }
         if let Some(v) = self.providers.sglang.api_key.as_ref() {
             out.insert("providers.sglang.api_key".to_string(), redact_secret(v));
         }
@@ -994,6 +1048,7 @@ impl ConfigToml {
                 ProviderKind::Openrouter => DEFAULT_OPENROUTER_BASE_URL.to_string(),
                 ProviderKind::Novita => DEFAULT_NOVITA_BASE_URL.to_string(),
                 ProviderKind::Fireworks => DEFAULT_FIREWORKS_BASE_URL.to_string(),
+                ProviderKind::Siliconflow => DEFAULT_SILICONFLOW_BASE_URL.to_string(),
                 ProviderKind::Sglang => DEFAULT_SGLANG_BASE_URL.to_string(),
                 ProviderKind::Vllm => DEFAULT_VLLM_BASE_URL.to_string(),
                 ProviderKind::Ollama => DEFAULT_OLLAMA_BASE_URL.to_string(),
@@ -1168,6 +1223,14 @@ fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> String {
         (ProviderKind::Fireworks, "deepseek-v4-pro" | "deepseek-v4pro") => {
             DEFAULT_FIREWORKS_MODEL.to_string()
         }
+        (
+            ProviderKind::Siliconflow,
+            "deepseek-v4-pro" | "deepseek-v4pro" | "deepseek-reasoner" | "deepseek-r1",
+        ) => DEFAULT_SILICONFLOW_MODEL.to_string(),
+        (
+            ProviderKind::Siliconflow,
+            "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-v3",
+        ) => DEFAULT_SILICONFLOW_FLASH_MODEL.to_string(),
         (ProviderKind::Sglang, "deepseek-v4-pro" | "deepseek-v4pro") => {
             DEFAULT_SGLANG_MODEL.to_string()
         }
@@ -1198,6 +1261,7 @@ fn default_model_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Openrouter => DEFAULT_OPENROUTER_MODEL,
         ProviderKind::Novita => DEFAULT_NOVITA_MODEL,
         ProviderKind::Fireworks => DEFAULT_FIREWORKS_MODEL,
+        ProviderKind::Siliconflow => DEFAULT_SILICONFLOW_MODEL,
         ProviderKind::Sglang => DEFAULT_SGLANG_MODEL,
         ProviderKind::Vllm => DEFAULT_VLLM_MODEL,
         ProviderKind::Ollama => DEFAULT_OLLAMA_MODEL,
@@ -1214,6 +1278,7 @@ fn default_base_url_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
         ProviderKind::Novita => DEFAULT_NOVITA_BASE_URL,
         ProviderKind::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
+        ProviderKind::Siliconflow => DEFAULT_SILICONFLOW_BASE_URL,
         ProviderKind::Sglang => DEFAULT_SGLANG_BASE_URL,
         ProviderKind::Vllm => DEFAULT_VLLM_BASE_URL,
         ProviderKind::Ollama => DEFAULT_OLLAMA_BASE_URL,
@@ -1574,6 +1639,8 @@ struct EnvRuntimeOverrides {
     openrouter_base_url: Option<String>,
     novita_base_url: Option<String>,
     fireworks_base_url: Option<String>,
+    siliconflow_base_url: Option<String>,
+    siliconflow_model: Option<String>,
     sglang_base_url: Option<String>,
     vllm_base_url: Option<String>,
     ollama_base_url: Option<String>,
@@ -1634,6 +1701,12 @@ impl EnvRuntimeOverrides {
             fireworks_base_url: std::env::var("FIREWORKS_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            siliconflow_base_url: std::env::var("SILICONFLOW_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            siliconflow_model: std::env::var("SILICONFLOW_MODEL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
             sglang_base_url: std::env::var("SGLANG_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
@@ -1658,6 +1731,7 @@ impl EnvRuntimeOverrides {
             ProviderKind::Openrouter => self.openrouter_base_url.clone(),
             ProviderKind::Novita => self.novita_base_url.clone(),
             ProviderKind::Fireworks => self.fireworks_base_url.clone(),
+            ProviderKind::Siliconflow => self.siliconflow_base_url.clone(),
             ProviderKind::Sglang => self.sglang_base_url.clone(),
             ProviderKind::Vllm => self.vllm_base_url.clone(),
             ProviderKind::Ollama => self.ollama_base_url.clone(),
@@ -1667,6 +1741,7 @@ impl EnvRuntimeOverrides {
     fn model_for(&self, provider: ProviderKind) -> Option<String> {
         match provider {
             ProviderKind::WanjieArk => self.wanjie_ark_model.clone(),
+            ProviderKind::Siliconflow => self.siliconflow_model.clone(),
             _ => None,
         }
     }
@@ -1725,6 +1800,9 @@ mod tests {
         novita_base_url: Option<OsString>,
         fireworks_api_key: Option<OsString>,
         fireworks_base_url: Option<OsString>,
+        siliconflow_api_key: Option<OsString>,
+        siliconflow_base_url: Option<OsString>,
+        siliconflow_model: Option<OsString>,
         sglang_api_key: Option<OsString>,
         sglang_base_url: Option<OsString>,
         vllm_api_key: Option<OsString>,
@@ -1760,6 +1838,9 @@ mod tests {
                 novita_base_url: env::var_os("NOVITA_BASE_URL"),
                 fireworks_api_key: env::var_os("FIREWORKS_API_KEY"),
                 fireworks_base_url: env::var_os("FIREWORKS_BASE_URL"),
+                siliconflow_api_key: env::var_os("SILICONFLOW_API_KEY"),
+                siliconflow_base_url: env::var_os("SILICONFLOW_BASE_URL"),
+                siliconflow_model: env::var_os("SILICONFLOW_MODEL"),
                 sglang_api_key: env::var_os("SGLANG_API_KEY"),
                 sglang_base_url: env::var_os("SGLANG_BASE_URL"),
                 vllm_api_key: env::var_os("VLLM_API_KEY"),
@@ -1793,6 +1874,9 @@ mod tests {
                 env::remove_var("NOVITA_BASE_URL");
                 env::remove_var("FIREWORKS_API_KEY");
                 env::remove_var("FIREWORKS_BASE_URL");
+                env::remove_var("SILICONFLOW_API_KEY");
+                env::remove_var("SILICONFLOW_BASE_URL");
+                env::remove_var("SILICONFLOW_MODEL");
                 env::remove_var("SGLANG_API_KEY");
                 env::remove_var("SGLANG_BASE_URL");
                 env::remove_var("VLLM_API_KEY");
@@ -1840,6 +1924,9 @@ mod tests {
                 Self::restore_var("NOVITA_BASE_URL", self.novita_base_url.take());
                 Self::restore_var("FIREWORKS_API_KEY", self.fireworks_api_key.take());
                 Self::restore_var("FIREWORKS_BASE_URL", self.fireworks_base_url.take());
+                Self::restore_var("SILICONFLOW_API_KEY", self.siliconflow_api_key.take());
+                Self::restore_var("SILICONFLOW_BASE_URL", self.siliconflow_base_url.take());
+                Self::restore_var("SILICONFLOW_MODEL", self.siliconflow_model.take());
                 Self::restore_var("SGLANG_API_KEY", self.sglang_api_key.take());
                 Self::restore_var("SGLANG_BASE_URL", self.sglang_base_url.take());
                 Self::restore_var("VLLM_API_KEY", self.vllm_api_key.take());
@@ -2242,6 +2329,10 @@ mod tests {
             ProviderKind::parse("fireworks-ai"),
             Some(ProviderKind::Fireworks)
         );
+        assert_eq!(
+            ProviderKind::parse("silicon-flow"),
+            Some(ProviderKind::Siliconflow)
+        );
         assert_eq!(ProviderKind::parse("sg-lang"), Some(ProviderKind::Sglang));
         assert_eq!(ProviderKind::parse("v-llm"), Some(ProviderKind::Vllm));
         assert_eq!(ProviderKind::parse("vllm"), Some(ProviderKind::Vllm));
@@ -2326,6 +2417,22 @@ mod tests {
         assert_eq!(resolved.provider, ProviderKind::Fireworks);
         assert_eq!(resolved.base_url, DEFAULT_FIREWORKS_BASE_URL);
         assert_eq!(resolved.model, DEFAULT_FIREWORKS_MODEL);
+    }
+
+    #[test]
+    fn siliconflow_provider_defaults_to_canonical_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::Siliconflow,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Siliconflow);
+        assert_eq!(resolved.base_url, DEFAULT_SILICONFLOW_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_SILICONFLOW_MODEL);
     }
 
     #[test]
@@ -2555,6 +2662,27 @@ mod tests {
     }
 
     #[test]
+    fn siliconflow_env_overrides_key_base_url_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "siliconflow");
+            env::set_var("SILICONFLOW_API_KEY", "sf-env-key");
+            env::set_var("SILICONFLOW_BASE_URL", "https://sf-mirror.example/v1");
+            env::set_var("SILICONFLOW_MODEL", "deepseek-v4-flash");
+        }
+
+        let resolved =
+            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Siliconflow);
+        assert_eq!(resolved.api_key.as_deref(), Some("sf-env-key"));
+        assert_eq!(resolved.base_url, "https://sf-mirror.example/v1");
+        assert_eq!(resolved.model, "deepseek-v4-flash");
+    }
+
+    #[test]
     fn wanjie_ark_env_api_key_and_base_url_fall_back_when_config_missing() {
         let _lock = env_lock();
         let _env = EnvGuard::without_deepseek_runtime_overrides();
@@ -2605,6 +2733,57 @@ mod tests {
 
         assert_eq!(resolved.provider, ProviderKind::Novita);
         assert_eq!(resolved.model, DEFAULT_NOVITA_FLASH_MODEL);
+    }
+
+    #[test]
+    fn siliconflow_provider_normalizes_flash_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::Siliconflow),
+            model: Some("deepseek-v4-flash".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::Siliconflow);
+        assert_eq!(resolved.model, DEFAULT_SILICONFLOW_FLASH_MODEL);
+    }
+
+    #[test]
+    fn siliconflow_provider_normalizes_reasoning_aliases_to_pro() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+
+        for alias in ["deepseek-reasoner", "deepseek-r1"] {
+            let cli = CliRuntimeOverrides {
+                provider: Some(ProviderKind::Siliconflow),
+                model: Some(alias.to_string()),
+                ..CliRuntimeOverrides::default()
+            };
+
+            let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+            assert_eq!(resolved.provider, ProviderKind::Siliconflow);
+            assert_eq!(resolved.model, DEFAULT_SILICONFLOW_MODEL);
+        }
+    }
+
+    #[test]
+    fn siliconflow_provider_preserves_unknown_deepseek_versions() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::Siliconflow),
+            model: Some("deepseek-v3.2".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::Siliconflow);
+        assert_eq!(resolved.model, "deepseek-v3.2");
     }
 
     #[test]
@@ -2690,6 +2869,24 @@ mod tests {
         assert_eq!(resolved.provider, ProviderKind::Fireworks);
         assert_eq!(resolved.base_url, "https://my-gateway.example/v1");
         // Custom base URL skips provider-specific model prefixing.
+        assert_eq!(resolved.model, "DeepSeek-V4-Pro");
+    }
+
+    #[test]
+    fn siliconflow_custom_base_url_preserves_provider_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let mut config = ConfigToml {
+            provider: ProviderKind::Siliconflow,
+            ..ConfigToml::default()
+        };
+        config.providers.siliconflow.base_url = Some("https://my-gateway.example/v1".to_string());
+        config.providers.siliconflow.model = Some("DeepSeek-V4-Pro".to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Siliconflow);
+        assert_eq!(resolved.base_url, "https://my-gateway.example/v1");
         assert_eq!(resolved.model, "DeepSeek-V4-Pro");
     }
 

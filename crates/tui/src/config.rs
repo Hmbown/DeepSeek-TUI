@@ -50,6 +50,9 @@ pub const DEFAULT_NOVITA_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
 pub const DEFAULT_NOVITA_BASE_URL: &str = "https://api.novita.ai/v1";
 pub const DEFAULT_FIREWORKS_MODEL: &str = "accounts/fireworks/models/deepseek-v4-pro";
 pub const DEFAULT_FIREWORKS_BASE_URL: &str = "https://api.fireworks.ai/inference/v1";
+pub const DEFAULT_SILICONFLOW_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
+pub const DEFAULT_SILICONFLOW_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
+pub const DEFAULT_SILICONFLOW_BASE_URL: &str = "https://api.siliconflow.cn/v1";
 pub const DEFAULT_SGLANG_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 pub const DEFAULT_SGLANG_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 pub const DEFAULT_SGLANG_BASE_URL: &str = "http://localhost:30000/v1";
@@ -88,6 +91,7 @@ pub enum ApiProvider {
     Openrouter,
     Novita,
     Fireworks,
+    Siliconflow,
     Sglang,
     Vllm,
     Ollama,
@@ -109,6 +113,7 @@ impl ApiProvider {
             "openrouter" | "open_router" => Some(Self::Openrouter),
             "novita" => Some(Self::Novita),
             "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
+            "siliconflow" | "silicon-flow" | "silicon_flow" => Some(Self::Siliconflow),
             "sglang" | "sg-lang" => Some(Self::Sglang),
             "vllm" | "v-llm" => Some(Self::Vllm),
             "ollama" | "ollama-local" => Some(Self::Ollama),
@@ -128,6 +133,7 @@ impl ApiProvider {
             Self::Openrouter => "openrouter",
             Self::Novita => "novita",
             Self::Fireworks => "fireworks",
+            Self::Siliconflow => "siliconflow",
             Self::Sglang => "sglang",
             Self::Vllm => "vllm",
             Self::Ollama => "ollama",
@@ -147,6 +153,7 @@ impl ApiProvider {
             Self::Openrouter => "OpenRouter",
             Self::Novita => "Novita AI",
             Self::Fireworks => "Fireworks AI",
+            Self::Siliconflow => "SiliconFlow",
             Self::Sglang => "SGLang",
             Self::Vllm => "vLLM",
             Self::Ollama => "Ollama",
@@ -165,6 +172,7 @@ impl ApiProvider {
             Self::Openrouter,
             Self::Novita,
             Self::Fireworks,
+            Self::Siliconflow,
             Self::Sglang,
             Self::Vllm,
             Self::Ollama,
@@ -420,6 +428,9 @@ pub fn model_completion_names_for_provider(provider: ApiProvider) -> Vec<&'stati
         ApiProvider::Openrouter => vec![DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENROUTER_FLASH_MODEL],
         ApiProvider::Novita => vec![DEFAULT_NOVITA_MODEL, DEFAULT_NOVITA_FLASH_MODEL],
         ApiProvider::Fireworks => vec![DEFAULT_FIREWORKS_MODEL],
+        ApiProvider::Siliconflow => {
+            vec![DEFAULT_SILICONFLOW_MODEL, DEFAULT_SILICONFLOW_FLASH_MODEL]
+        }
         ApiProvider::WanjieArk => vec![DEFAULT_WANJIE_ARK_MODEL],
         ApiProvider::Sglang => vec![DEFAULT_SGLANG_MODEL, DEFAULT_SGLANG_FLASH_MODEL],
         ApiProvider::Vllm => vec![DEFAULT_VLLM_MODEL, DEFAULT_VLLM_FLASH_MODEL],
@@ -1233,6 +1244,8 @@ pub struct ProvidersConfig {
     #[serde(default)]
     pub fireworks: ProviderConfig,
     #[serde(default)]
+    pub siliconflow: ProviderConfig,
+    #[serde(default)]
     pub sglang: ProviderConfig,
     #[serde(default)]
     pub vllm: ProviderConfig,
@@ -1343,6 +1356,7 @@ impl Config {
             ApiProvider::Openrouter => "providers.openrouter",
             ApiProvider::Novita => "providers.novita",
             ApiProvider::Fireworks => "providers.fireworks",
+            ApiProvider::Siliconflow => "providers.siliconflow",
             ApiProvider::Sglang => "providers.sglang",
             ApiProvider::Vllm => "providers.vllm",
             ApiProvider::Ollama => "providers.ollama",
@@ -1362,7 +1376,7 @@ impl Config {
             && ApiProvider::parse(provider).is_none()
         {
             anyhow::bail!(
-                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openai, atlascloud, wanjie-ark, openrouter, novita, fireworks, sglang, vllm, or ollama."
+                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openai, atlascloud, wanjie-ark, openrouter, novita, fireworks, siliconflow, sglang, vllm, or ollama."
             );
         }
         if let Some(ref key) = self.api_key
@@ -1484,6 +1498,7 @@ impl Config {
             ApiProvider::Openrouter => &providers.openrouter,
             ApiProvider::Novita => &providers.novita,
             ApiProvider::Fireworks => &providers.fireworks,
+            ApiProvider::Siliconflow => &providers.siliconflow,
             ApiProvider::Sglang => &providers.sglang,
             ApiProvider::Vllm => &providers.vllm,
             ApiProvider::Ollama => &providers.ollama,
@@ -1560,6 +1575,7 @@ impl Config {
             ApiProvider::Openrouter => DEFAULT_OPENROUTER_MODEL,
             ApiProvider::Novita => DEFAULT_NOVITA_MODEL,
             ApiProvider::Fireworks => DEFAULT_FIREWORKS_MODEL,
+            ApiProvider::Siliconflow => DEFAULT_SILICONFLOW_MODEL,
             ApiProvider::Sglang => DEFAULT_SGLANG_MODEL,
             ApiProvider::Vllm => DEFAULT_VLLM_MODEL,
             ApiProvider::Ollama => DEFAULT_OLLAMA_MODEL,
@@ -1591,6 +1607,7 @@ impl Config {
             | ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks
+            | ApiProvider::Siliconflow
             | ApiProvider::Sglang
             | ApiProvider::Vllm
             | ApiProvider::Ollama => None,
@@ -1606,6 +1623,7 @@ impl Config {
                 ApiProvider::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
                 ApiProvider::Novita => DEFAULT_NOVITA_BASE_URL,
                 ApiProvider::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
+                ApiProvider::Siliconflow => DEFAULT_SILICONFLOW_BASE_URL,
                 ApiProvider::Sglang => DEFAULT_SGLANG_BASE_URL,
                 ApiProvider::Vllm => DEFAULT_VLLM_BASE_URL,
                 ApiProvider::Ollama => DEFAULT_OLLAMA_BASE_URL,
@@ -1639,6 +1657,7 @@ impl Config {
             ApiProvider::Openrouter => "openrouter",
             ApiProvider::Novita => "novita",
             ApiProvider::Fireworks => "fireworks",
+            ApiProvider::Siliconflow => "siliconflow",
             ApiProvider::Sglang => "sglang",
             ApiProvider::Vllm => "vllm",
             ApiProvider::Ollama => "ollama",
@@ -1720,6 +1739,10 @@ impl Config {
             ApiProvider::Fireworks => anyhow::bail!(
                 "Fireworks AI API key not found. Run 'deepseek auth set --provider fireworks', \
                  set FIREWORKS_API_KEY, or add [providers.fireworks] api_key in ~/.deepseek/config.toml."
+            ),
+            ApiProvider::Siliconflow => anyhow::bail!(
+                "SiliconFlow API key not found. Run 'deepseek auth set --provider siliconflow', \
+                 set SILICONFLOW_API_KEY, or add [providers.siliconflow] api_key in ~/.deepseek/config.toml."
             ),
             // Self-hosted deployments commonly run without auth on localhost.
             // Return an empty key and let the client omit the Authorization header.
@@ -2263,6 +2286,13 @@ fn apply_env_overrides(config: &mut Config) {
                     .fireworks
                     .base_url = Some(value);
             }
+            ApiProvider::Siliconflow => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .siliconflow
+                    .base_url = Some(value);
+            }
             ApiProvider::Sglang => {
                 config
                     .providers
@@ -2369,6 +2399,16 @@ fn apply_env_overrides(config: &mut Config) {
             .fireworks
             .base_url = Some(value);
     }
+    if matches!(config.api_provider(), ApiProvider::Siliconflow)
+        && let Ok(value) = std::env::var("SILICONFLOW_BASE_URL")
+        && !value.trim().is_empty()
+    {
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .siliconflow
+            .base_url = Some(value);
+    }
     if matches!(config.api_provider(), ApiProvider::Sglang)
         && let Ok(value) = std::env::var("SGLANG_BASE_URL")
         && !value.trim().is_empty()
@@ -2411,6 +2451,7 @@ fn apply_env_overrides(config: &mut Config) {
             ApiProvider::Openrouter => &mut providers.openrouter,
             ApiProvider::Novita => &mut providers.novita,
             ApiProvider::Fireworks => &mut providers.fireworks,
+            ApiProvider::Siliconflow => &mut providers.siliconflow,
             ApiProvider::Sglang => &mut providers.sglang,
             ApiProvider::Vllm => &mut providers.vllm,
             ApiProvider::Ollama => &mut providers.ollama,
@@ -2469,6 +2510,15 @@ fn apply_env_overrides(config: &mut Config) {
             .wanjie_ark
             .model = Some(value);
     }
+    if matches!(config.api_provider(), ApiProvider::Siliconflow)
+        && let Ok(value) = std::env::var("SILICONFLOW_MODEL")
+    {
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .siliconflow
+            .model = Some(value);
+    }
     if let Ok(value) =
         std::env::var("DEEPSEEK_MODEL").or_else(|_| std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL"))
     {
@@ -2498,6 +2548,7 @@ fn apply_env_overrides(config: &mut Config) {
                 ApiProvider::Openrouter => &mut providers.openrouter,
                 ApiProvider::Novita => &mut providers.novita,
                 ApiProvider::Fireworks => &mut providers.fireworks,
+                ApiProvider::Siliconflow => &mut providers.siliconflow,
                 ApiProvider::Sglang => &mut providers.sglang,
                 ApiProvider::Vllm => &mut providers.vllm,
                 ApiProvider::Ollama => &mut providers.ollama,
@@ -2725,6 +2776,15 @@ fn normalize_model_config(config: &mut Config) {
         {
             providers.fireworks.model = Some(normalized);
         }
+        if let Some(model) = providers.siliconflow.model.as_deref()
+            && !provider_entry_uses_custom_base_url(
+                ApiProvider::Siliconflow,
+                &providers.siliconflow,
+            )
+            && let Some(normalized) = normalize_model_for_provider(ApiProvider::Siliconflow, model)
+        {
+            providers.siliconflow.model = Some(normalized);
+        }
         if let Some(model) = providers.sglang.model.as_deref()
             && !provider_entry_uses_custom_base_url(ApiProvider::Sglang, &providers.sglang)
             && let Some(normalized) = normalize_model_for_provider(ApiProvider::Sglang, model)
@@ -2775,6 +2835,7 @@ fn default_base_url_for_provider(provider: ApiProvider) -> &'static str {
         ApiProvider::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
         ApiProvider::Novita => DEFAULT_NOVITA_BASE_URL,
         ApiProvider::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
+        ApiProvider::Siliconflow => DEFAULT_SILICONFLOW_BASE_URL,
         ApiProvider::Sglang => DEFAULT_SGLANG_BASE_URL,
         ApiProvider::Vllm => DEFAULT_VLLM_BASE_URL,
         ApiProvider::Ollama => DEFAULT_OLLAMA_BASE_URL,
@@ -2827,6 +2888,10 @@ fn model_for_provider(provider: ApiProvider, normalized: String) -> String {
         (ApiProvider::Fireworks, "deepseek-v4-flash") => {
             // Flash not yet available on Fireworks; fall through to normalized name
             "accounts/fireworks/models/deepseek-v4-flash".to_string()
+        }
+        (ApiProvider::Siliconflow, "deepseek-v4-pro") => DEFAULT_SILICONFLOW_MODEL.to_string(),
+        (ApiProvider::Siliconflow, "deepseek-v4-flash") => {
+            DEFAULT_SILICONFLOW_FLASH_MODEL.to_string()
         }
         (ApiProvider::Sglang, "deepseek-v4-pro") => DEFAULT_SGLANG_MODEL.to_string(),
         (ApiProvider::Sglang, "deepseek-v4-flash") => DEFAULT_SGLANG_FLASH_MODEL.to_string(),
@@ -3006,6 +3071,7 @@ fn merge_providers(
             openrouter: merge_provider_config(base.openrouter, override_cfg.openrouter),
             novita: merge_provider_config(base.novita, override_cfg.novita),
             fireworks: merge_provider_config(base.fireworks, override_cfg.fireworks),
+            siliconflow: merge_provider_config(base.siliconflow, override_cfg.siliconflow),
             sglang: merge_provider_config(base.sglang, override_cfg.sglang),
             vllm: merge_provider_config(base.vllm, override_cfg.vllm),
             ollama: merge_provider_config(base.ollama, override_cfg.ollama),
@@ -3420,6 +3486,9 @@ pub fn active_provider_has_env_api_key(config: &Config) -> bool {
         ApiProvider::Fireworks => {
             std::env::var("FIREWORKS_API_KEY").is_ok_and(|k| !k.trim().is_empty())
         }
+        ApiProvider::Siliconflow => {
+            std::env::var("SILICONFLOW_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+        }
         ApiProvider::Sglang => std::env::var("SGLANG_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
         ApiProvider::Vllm => std::env::var("VLLM_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
         ApiProvider::Ollama => std::env::var("OLLAMA_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
@@ -3445,6 +3514,7 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         ApiProvider::Openrouter => "OPENROUTER_API_KEY",
         ApiProvider::Novita => "NOVITA_API_KEY",
         ApiProvider::Fireworks => "FIREWORKS_API_KEY",
+        ApiProvider::Siliconflow => "SILICONFLOW_API_KEY",
         ApiProvider::Sglang => "SGLANG_API_KEY",
         ApiProvider::Vllm => "VLLM_API_KEY",
         ApiProvider::Ollama => "OLLAMA_API_KEY",
@@ -3525,6 +3595,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         ApiProvider::Openrouter => "providers.openrouter",
         ApiProvider::Novita => "providers.novita",
         ApiProvider::Fireworks => "providers.fireworks",
+        ApiProvider::Siliconflow => "providers.siliconflow",
         ApiProvider::Sglang => "providers.sglang",
         ApiProvider::Vllm => "providers.vllm",
         ApiProvider::Ollama => "providers.ollama",
@@ -3561,6 +3632,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         ApiProvider::Openrouter => "openrouter",
         ApiProvider::Novita => "novita",
         ApiProvider::Fireworks => "fireworks",
+        ApiProvider::Siliconflow => "siliconflow",
         ApiProvider::Sglang => "sglang",
         ApiProvider::Vllm => "vllm",
         ApiProvider::Ollama => "ollama",
@@ -3741,6 +3813,9 @@ mod tests {
         novita_base_url: Option<OsString>,
         fireworks_api_key: Option<OsString>,
         fireworks_base_url: Option<OsString>,
+        siliconflow_api_key: Option<OsString>,
+        siliconflow_base_url: Option<OsString>,
+        siliconflow_model: Option<OsString>,
         sglang_api_key: Option<OsString>,
         sglang_base_url: Option<OsString>,
         sglang_model: Option<OsString>,
@@ -3793,6 +3868,9 @@ mod tests {
             let novita_base_url_prev = env::var_os("NOVITA_BASE_URL");
             let fireworks_api_key_prev = env::var_os("FIREWORKS_API_KEY");
             let fireworks_base_url_prev = env::var_os("FIREWORKS_BASE_URL");
+            let siliconflow_api_key_prev = env::var_os("SILICONFLOW_API_KEY");
+            let siliconflow_base_url_prev = env::var_os("SILICONFLOW_BASE_URL");
+            let siliconflow_model_prev = env::var_os("SILICONFLOW_MODEL");
             let sglang_api_key_prev = env::var_os("SGLANG_API_KEY");
             let sglang_base_url_prev = env::var_os("SGLANG_BASE_URL");
             let sglang_model_prev = env::var_os("SGLANG_MODEL");
@@ -3840,6 +3918,9 @@ mod tests {
                 env::remove_var("NOVITA_BASE_URL");
                 env::remove_var("FIREWORKS_API_KEY");
                 env::remove_var("FIREWORKS_BASE_URL");
+                env::remove_var("SILICONFLOW_API_KEY");
+                env::remove_var("SILICONFLOW_BASE_URL");
+                env::remove_var("SILICONFLOW_MODEL");
                 env::remove_var("SGLANG_API_KEY");
                 env::remove_var("SGLANG_BASE_URL");
                 env::remove_var("SGLANG_MODEL");
@@ -3887,6 +3968,9 @@ mod tests {
                 novita_base_url: novita_base_url_prev,
                 fireworks_api_key: fireworks_api_key_prev,
                 fireworks_base_url: fireworks_base_url_prev,
+                siliconflow_api_key: siliconflow_api_key_prev,
+                siliconflow_base_url: siliconflow_base_url_prev,
+                siliconflow_model: siliconflow_model_prev,
                 sglang_api_key: sglang_api_key_prev,
                 sglang_base_url: sglang_base_url_prev,
                 sglang_model: sglang_model_prev,
@@ -3943,6 +4027,9 @@ mod tests {
                 Self::restore_var("NOVITA_BASE_URL", self.novita_base_url.take());
                 Self::restore_var("FIREWORKS_API_KEY", self.fireworks_api_key.take());
                 Self::restore_var("FIREWORKS_BASE_URL", self.fireworks_base_url.take());
+                Self::restore_var("SILICONFLOW_API_KEY", self.siliconflow_api_key.take());
+                Self::restore_var("SILICONFLOW_BASE_URL", self.siliconflow_base_url.take());
+                Self::restore_var("SILICONFLOW_MODEL", self.siliconflow_model.take());
                 Self::restore_var("SGLANG_API_KEY", self.sglang_api_key.take());
                 Self::restore_var("SGLANG_BASE_URL", self.sglang_base_url.take());
                 Self::restore_var("SGLANG_MODEL", self.sglang_model.take());
@@ -4275,6 +4362,9 @@ mod tests {
             "fireworks" => {
                 providers.fireworks.api_key = Some(api_key.to_string());
             }
+            "siliconflow" => {
+                providers.siliconflow.api_key = Some(api_key.to_string());
+            }
             "sglang" => {
                 providers.sglang.api_key = Some(api_key.to_string());
             }
@@ -4296,7 +4386,14 @@ mod tests {
 
     #[test]
     fn has_api_key_uses_active_provider_scoped_config_key() {
-        for provider in ["openai", "wanjie-ark", "openrouter", "novita", "fireworks"] {
+        for provider in [
+            "openai",
+            "wanjie-ark",
+            "openrouter",
+            "novita",
+            "fireworks",
+            "siliconflow",
+        ] {
             let config = config_with_provider_scoped_key(provider, "provider-config-key");
 
             assert!(
@@ -4315,6 +4412,7 @@ mod tests {
             ("openrouter", "OPENROUTER_API_KEY"),
             ("novita", "NOVITA_API_KEY"),
             ("fireworks", "FIREWORKS_API_KEY"),
+            ("siliconflow", "SILICONFLOW_API_KEY"),
         ] {
             unsafe {
                 std::env::set_var(env_var, "provider-env-key");
@@ -4825,6 +4923,11 @@ api_key = "old-openrouter-key"
             normalize_model_name_for_provider(ApiProvider::Openrouter, "deepseek-v4-flash")
                 .as_deref(),
             Some(DEFAULT_OPENROUTER_FLASH_MODEL)
+        );
+        assert_eq!(
+            normalize_model_name_for_provider(ApiProvider::Siliconflow, "deepseek-v4-pro")
+                .as_deref(),
+            Some(DEFAULT_SILICONFLOW_MODEL)
         );
     }
 
@@ -5634,6 +5737,36 @@ model = "glm-5"
     }
 
     #[test]
+    fn siliconflow_provider_uses_canonical_defaults() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-siliconflow-defaults-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config = Config {
+            provider: Some("siliconflow".to_string()),
+            ..Default::default()
+        };
+        config.validate()?;
+        assert_eq!(config.api_provider(), ApiProvider::Siliconflow);
+        assert_eq!(config.default_model(), DEFAULT_SILICONFLOW_MODEL);
+        assert_eq!(config.deepseek_base_url(), DEFAULT_SILICONFLOW_BASE_URL);
+        assert_eq!(
+            model_completion_names_for_provider(ApiProvider::Siliconflow),
+            vec![DEFAULT_SILICONFLOW_MODEL, DEFAULT_SILICONFLOW_FLASH_MODEL]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn sglang_provider_works_without_api_key() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
@@ -5842,6 +5975,37 @@ model = "qwen2.5-coder:7b"
     }
 
     #[test]
+    fn siliconflow_env_overrides_key_base_url_and_model() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-siliconflow-env-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "siliconflow");
+            env::set_var("SILICONFLOW_API_KEY", "sf-env-key");
+            env::set_var("SILICONFLOW_BASE_URL", "https://sf-mirror.example/v1");
+            env::set_var("SILICONFLOW_MODEL", "deepseek-v4-flash");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Siliconflow);
+        assert_eq!(config.deepseek_api_key()?, "sf-env-key");
+        assert_eq!(config.deepseek_base_url(), "https://sf-mirror.example/v1");
+        assert_eq!(config.default_model(), "deepseek-v4-flash");
+        Ok(())
+    }
+
+    #[test]
     fn openrouter_base_url_env_overrides_default() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
@@ -5972,6 +6136,41 @@ api_key = "novita-table-key"
     }
 
     #[test]
+    fn siliconflow_reads_provider_table_from_config_file() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-siliconflow-table-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+        fs::write(
+            &config_path,
+            r#"provider = "siliconflow"
+
+[providers.siliconflow]
+api_key = "sf-table-key"
+model = "deepseek-v4-flash"
+"#,
+        )?;
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Siliconflow);
+        assert_eq!(config.deepseek_api_key()?, "sf-table-key");
+        assert_eq!(config.deepseek_base_url(), DEFAULT_SILICONFLOW_BASE_URL);
+        assert_eq!(config.default_model(), DEFAULT_SILICONFLOW_FLASH_MODEL);
+        Ok(())
+    }
+
+    #[test]
     fn has_api_key_for_detects_env_and_config_per_provider() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
@@ -5990,6 +6189,7 @@ api_key = "novita-table-key"
         assert!(!has_api_key_for(&config, ApiProvider::Openai));
         assert!(!has_api_key_for(&config, ApiProvider::WanjieArk));
         assert!(!has_api_key_for(&config, ApiProvider::Openrouter));
+        assert!(!has_api_key_for(&config, ApiProvider::Siliconflow));
         assert!(
             has_api_key_for(&config, ApiProvider::Sglang),
             "SGLang is self-hosted and does not require a key by default"
@@ -6004,10 +6204,12 @@ api_key = "novita-table-key"
             env::set_var("OPENROUTER_API_KEY", "or-env");
             env::set_var("OPENAI_API_KEY", "openai-env");
             env::set_var("WANJIE_API_KEY", "wanjie-env");
+            env::set_var("SILICONFLOW_API_KEY", "sf-env");
         }
         assert!(has_api_key_for(&config, ApiProvider::Openai));
         assert!(has_api_key_for(&config, ApiProvider::WanjieArk));
         assert!(has_api_key_for(&config, ApiProvider::Openrouter));
+        assert!(has_api_key_for(&config, ApiProvider::Siliconflow));
         assert!(!has_api_key_for(&config, ApiProvider::Novita));
 
         // Safety: test-only environment mutation guarded by a global mutex.
@@ -6015,15 +6217,18 @@ api_key = "novita-table-key"
             env::remove_var("OPENROUTER_API_KEY");
             env::remove_var("OPENAI_API_KEY");
             env::remove_var("WANJIE_API_KEY");
+            env::remove_var("SILICONFLOW_API_KEY");
         }
         let mut providers = ProvidersConfig::default();
         providers.openai.api_key = Some("file-openai".to_string());
         providers.wanjie_ark.api_key = Some("file-wanjie".to_string());
         providers.novita.api_key = Some("file-novita".to_string());
+        providers.siliconflow.api_key = Some("file-siliconflow".to_string());
         config.providers = Some(providers);
         assert!(has_api_key_for(&config, ApiProvider::Openai));
         assert!(has_api_key_for(&config, ApiProvider::WanjieArk));
         assert!(has_api_key_for(&config, ApiProvider::Novita));
+        assert!(has_api_key_for(&config, ApiProvider::Siliconflow));
         assert!(!has_api_key_for(&config, ApiProvider::Openrouter));
         Ok(())
     }
@@ -6116,6 +6321,7 @@ api_key = "novita-table-key"
         save_api_key_for(ApiProvider::WanjieArk, "wanjie-saved-key")?;
         save_api_key_for(ApiProvider::Fireworks, "fireworks-saved-key")?;
         save_api_key_for(ApiProvider::Sglang, "sglang-saved-key")?;
+        save_api_key_for(ApiProvider::Siliconflow, "sf-saved-key")?;
         let contents = fs::read_to_string(&path)?;
         let parsed: toml::Value = toml::from_str(&contents)?;
         assert_eq!(
@@ -6149,6 +6355,14 @@ api_key = "novita-table-key"
                 .and_then(|t| t.get("api_key"))
                 .and_then(toml::Value::as_str),
             Some("sglang-saved-key")
+        );
+        assert_eq!(
+            parsed
+                .get("providers")
+                .and_then(|p| p.get("siliconflow"))
+                .and_then(|t| t.get("api_key"))
+                .and_then(toml::Value::as_str),
+            Some("sf-saved-key")
         );
         Ok(())
     }
@@ -6392,6 +6606,18 @@ model = "deepseek-ai/deepseek-v4-pro"
     #[test]
     fn provider_capability_fireworks_v4_pro_has_thinking_no_cache() {
         let cap = provider_capability(ApiProvider::Fireworks, DEFAULT_FIREWORKS_MODEL);
+        assert_eq!(
+            cap.context_window,
+            crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(cap.max_output, 384_000);
+        assert!(cap.thinking_supported);
+        assert!(!cap.cache_telemetry_supported);
+    }
+
+    #[test]
+    fn provider_capability_siliconflow_v4_pro_has_thinking_no_cache() {
+        let cap = provider_capability(ApiProvider::Siliconflow, DEFAULT_SILICONFLOW_MODEL);
         assert_eq!(
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS

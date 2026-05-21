@@ -31,6 +31,7 @@ enum ProviderArg {
     Openrouter,
     Novita,
     Fireworks,
+    Siliconflow,
     Sglang,
     Vllm,
     Ollama,
@@ -47,6 +48,7 @@ impl From<ProviderArg> for ProviderKind {
             ProviderArg::Openrouter => ProviderKind::Openrouter,
             ProviderArg::Novita => ProviderKind::Novita,
             ProviderArg::Fireworks => ProviderKind::Fireworks,
+            ProviderArg::Siliconflow => ProviderKind::Siliconflow,
             ProviderArg::Sglang => ProviderKind::Sglang,
             ProviderArg::Vllm => ProviderKind::Vllm,
             ProviderArg::Ollama => ProviderKind::Ollama,
@@ -691,6 +693,7 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
         ProviderKind::Openrouter => "openrouter",
         ProviderKind::Novita => "novita",
         ProviderKind::Fireworks => "fireworks",
+        ProviderKind::Siliconflow => "siliconflow",
         ProviderKind::Sglang => "sglang",
         ProviderKind::Vllm => "vllm",
         ProviderKind::Ollama => "ollama",
@@ -698,7 +701,7 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
 }
 
 /// Provider order used by the `auth list` and `auth status` outputs.
-const PROVIDER_LIST: [ProviderKind; 11] = [
+const PROVIDER_LIST: [ProviderKind; 12] = [
     ProviderKind::Deepseek,
     ProviderKind::NvidiaNim,
     ProviderKind::Openai,
@@ -707,6 +710,7 @@ const PROVIDER_LIST: [ProviderKind; 11] = [
     ProviderKind::Openrouter,
     ProviderKind::Novita,
     ProviderKind::Fireworks,
+    ProviderKind::Siliconflow,
     ProviderKind::Sglang,
     ProviderKind::Vllm,
     ProviderKind::Ollama,
@@ -761,6 +765,7 @@ fn provider_env_vars(provider: ProviderKind) -> &'static [&'static str] {
         ProviderKind::Novita => &["NOVITA_API_KEY"],
         ProviderKind::NvidiaNim => &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "DEEPSEEK_API_KEY"],
         ProviderKind::Fireworks => &["FIREWORKS_API_KEY"],
+        ProviderKind::Siliconflow => &["SILICONFLOW_API_KEY"],
         ProviderKind::Sglang => &["SGLANG_API_KEY"],
         ProviderKind::Vllm => &["VLLM_API_KEY"],
         ProviderKind::Ollama => &["OLLAMA_API_KEY"],
@@ -1418,12 +1423,13 @@ fn build_tui_command(
             | ProviderKind::Openrouter
             | ProviderKind::Novita
             | ProviderKind::Fireworks
+            | ProviderKind::Siliconflow
             | ProviderKind::Sglang
             | ProviderKind::Vllm
             | ProviderKind::Ollama
     ) {
         bail!(
-            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenAI-compatible, AtlasCloud, Wanjie Ark, OpenRouter, Novita, Fireworks, SGLang, vLLM, and Ollama providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
+            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenAI-compatible, AtlasCloud, Wanjie Ark, OpenRouter, Novita, Fireworks, SiliconFlow, SGLang, vLLM, and Ollama providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
             resolved_runtime.provider.as_str()
         );
     }

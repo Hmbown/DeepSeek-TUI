@@ -486,7 +486,7 @@ impl Secrets {
     ///
     /// `name` is the canonical provider name (`"deepseek"`,
     /// `"openrouter"`, `"novita"`, `"nvidia"`/`"nvidia-nim"`, `"openai"`,
-    /// or `"atlascloud"`).
+    /// `"atlascloud"`, or `"siliconflow"`).
     /// Empty strings on either layer are treated as "not set".
     #[must_use]
     pub fn resolve(&self, name: &str) -> Option<String> {
@@ -535,6 +535,7 @@ pub fn env_for(name: &str) -> Option<String> {
             &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "DEEPSEEK_API_KEY"]
         }
         "fireworks" | "fireworks-ai" => &["FIREWORKS_API_KEY"],
+        "siliconflow" | "silicon-flow" | "silicon_flow" => &["SILICONFLOW_API_KEY"],
         "sglang" | "sg-lang" => &["SGLANG_API_KEY"],
         "vllm" | "v-llm" => &["VLLM_API_KEY"],
         "ollama" | "ollama-local" => &["OLLAMA_API_KEY"],
@@ -580,6 +581,7 @@ mod tests {
             "NVIDIA_API_KEY",
             "NVIDIA_NIM_API_KEY",
             "FIREWORKS_API_KEY",
+            "SILICONFLOW_API_KEY",
             "SGLANG_API_KEY",
             "VLLM_API_KEY",
             "OLLAMA_API_KEY",
@@ -776,6 +778,20 @@ mod tests {
         assert_eq!(env_for("fireworks-ai").as_deref(), Some("fw-key"));
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::remove_var("FIREWORKS_API_KEY") };
+    }
+
+    #[test]
+    fn siliconflow_env_aliases_resolve() {
+        let _lock = env_lock();
+        clear_known_envs();
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::set_var("SILICONFLOW_API_KEY", "sf-key") };
+
+        assert_eq!(env_for("siliconflow").as_deref(), Some("sf-key"));
+        assert_eq!(env_for("silicon-flow").as_deref(), Some("sf-key"));
+        assert_eq!(env_for("silicon_flow").as_deref(), Some("sf-key"));
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::remove_var("SILICONFLOW_API_KEY") };
     }
 
     #[test]
