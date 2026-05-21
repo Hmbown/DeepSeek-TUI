@@ -1,0 +1,56 @@
+{
+  "name": "deepseek-tui-vsc",
+  "displayName": "DeepSeek TUI",
+  "version": "0.8.10",
+  "description": "DeepSeek TUI — terminal-native coding agent — VS Code companion extension",
+  "author": "Hmbown",
+  "license": "MIT",
+  "publisher": "hmbown",
+  "homepage": "https://github.com/Hmbown/DeepSeek-TUI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Hmbown/DeepSeek-TUI.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Hmbown/DeepSeek-TUI/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "deepseek",
+    "ai",
+    "coding agent",
+    "terminal"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "deepseek-tui.launch",
+        "title": "DeepSeek TUI: Launch in terminal"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./tsconfig.json",
+    "watch": "tsc -watch -p ./tsconfig.json",
+    "package": "vsce package --no-dependencies",
+    "publish": "vsce publish --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.0",
+    "@vscode/vsce": "^3.0.0"
+  },
+  "files": [
+    "out/",
+    "README.md",
+    "package.json"
+  ]
+}
