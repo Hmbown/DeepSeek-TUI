@@ -2972,10 +2972,41 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
                 .or(base.context.cycle_threshold),
             seam_model: override_cfg.context.seam_model.or(base.context.seam_model),
         },
-        subagents: override_cfg.subagents.or(base.subagents),
+        subagents: merge_subagents(base.subagents, override_cfg.subagents),
         strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
         runtime_api: override_cfg.runtime_api.or(base.runtime_api),
         workshop: override_cfg.workshop.or(base.workshop),
+    }
+}
+
+fn merge_subagents(
+    base: Option<SubagentsConfig>,
+    override_cfg: Option<SubagentsConfig>,
+) -> Option<SubagentsConfig> {
+    match (base, override_cfg) {
+        (Some(base), Some(override_cfg)) => {
+            let models = match (base.models, override_cfg.models) {
+                (Some(mut base_models), Some(override_models)) => {
+                    base_models.extend(override_models);
+                    Some(base_models)
+                }
+                (None, Some(models)) | (Some(models), None) => Some(models),
+                (None, None) => None,
+            };
+            Some(SubagentsConfig {
+                default_model: override_cfg.default_model.or(base.default_model),
+                worker_model: override_cfg.worker_model.or(base.worker_model),
+                explorer_model: override_cfg.explorer_model.or(base.explorer_model),
+                awaiter_model: override_cfg.awaiter_model.or(base.awaiter_model),
+                review_model: override_cfg.review_model.or(base.review_model),
+                custom_model: override_cfg.custom_model.or(base.custom_model),
+                models,
+                max_concurrent: override_cfg.max_concurrent.or(base.max_concurrent),
+                api_timeout_secs: override_cfg.api_timeout_secs.or(base.api_timeout_secs),
+            })
+        }
+        (None, Some(cfg)) | (Some(cfg), None) => Some(cfg),
+        (None, None) => None,
     }
 }
 
@@ -4888,6 +4919,42 @@ api_key = "old-openrouter-key"
 
         let merged = apply_profile(config, Some("work")).expect("profile");
         assert_eq!(merged.context.enabled, Some(true));
+    }
+
+    #[test]
+    fn profile_subagents_merge_with_base_subagents() {
+        let mut profiles = HashMap::new();
+        profiles.insert(
+            "work".to_string(),
+            Config {
+                subagents: Some(SubagentsConfig {
+                    worker_model: Some("deepseek-v4-flash".to_string()),
+                    ..SubagentsConfig::default()
+                }),
+                ..Config::default()
+            },
+        );
+        let config = ConfigFile {
+            base: Config {
+                subagents: Some(SubagentsConfig {
+                    default_model: Some("deepseek-v4-pro".to_string()),
+                    ..SubagentsConfig::default()
+                }),
+                ..Config::default()
+            },
+            profiles: Some(profiles),
+        };
+
+        let merged = apply_profile(config, Some("work")).expect("profile");
+        let overrides = merged.subagent_model_overrides();
+        assert_eq!(
+            overrides.get("default").map(String::as_str),
+            Some("deepseek-v4-pro")
+        );
+        assert_eq!(
+            overrides.get("worker").map(String::as_str),
+            Some("deepseek-v4-flash")
+        );
     }
 
     #[test]

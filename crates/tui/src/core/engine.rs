@@ -745,6 +745,15 @@ impl Engine {
                         )))
                         .await;
                 }
+                Op::SetSubagentModelOverrides { overrides } => {
+                    self.config.subagent_model_overrides = overrides;
+                    let _ = self
+                        .tx_event
+                        .send(Event::status(
+                            "Sub-agent model overrides updated".to_string(),
+                        ))
+                        .await;
+                }
                 Op::SyncSession {
                     session_id,
                     messages,

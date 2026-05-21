@@ -523,6 +523,7 @@ struct ConfigRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfigSection {
     Model,
+    Subagents,
     Permissions,
     Display,
     Composer,
@@ -535,6 +536,7 @@ impl ConfigSection {
     fn label(self) -> &'static str {
         match self {
             ConfigSection::Model => "Model",
+            ConfigSection::Subagents => "Subagents",
             ConfigSection::Permissions => "Permissions",
             ConfigSection::Display => "Display",
             ConfigSection::Composer => "Composer",
@@ -579,6 +581,16 @@ const CONFIG_VALUE_COLUMN_WIDTH: usize = 44;
 impl ConfigView {
     pub fn new_for_app(app: &App) -> Self {
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
+        let subagent_model_value = |aliases: &[&str]| {
+            aliases
+                .iter()
+                .find_map(|alias| app.subagent_model_overrides.get(*alias))
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .unwrap_or("(inherit)")
+                .to_string()
+        };
+        let subagent_limit_value = app.max_subagents.to_string();
         let rows = vec![
             ConfigRow {
                 section: ConfigSection::Model,
@@ -606,6 +618,55 @@ impl ConfigView {
                     .as_deref()
                     .unwrap_or("(config/default)")
                     .to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Subagents,
+                key: "subagents.default_model".to_string(),
+                value: subagent_model_value(&["default"]),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Subagents,
+                key: "subagents.worker_model".to_string(),
+                value: subagent_model_value(&["worker", "general"]),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Subagents,
+                key: "subagents.explorer_model".to_string(),
+                value: subagent_model_value(&["explorer", "explore"]),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Subagents,
+                key: "subagents.awaiter_model".to_string(),
+                value: subagent_model_value(&["awaiter", "plan"]),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Subagents,
+                key: "subagents.review_model".to_string(),
+                value: subagent_model_value(&["review"]),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Subagents,
+                key: "subagents.custom_model".to_string(),
+                value: subagent_model_value(&["custom"]),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Subagents,
+                key: "subagents.max_concurrent".to_string(),
+                value: subagent_limit_value,
                 editable: true,
                 scope: ConfigScope::Saved,
             },
@@ -2129,6 +2190,7 @@ mod tests {
             visible_section_labels(&view),
             vec![
                 ConfigSection::Model.label(),
+                ConfigSection::Subagents.label(),
                 ConfigSection::Permissions.label(),
                 ConfigSection::Display.label(),
                 ConfigSection::Composer.label(),
@@ -2150,6 +2212,13 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(keys.contains(&"model"));
         assert!(keys.contains(&"reasoning_effort"));
+        assert!(keys.contains(&"subagents.default_model"));
+        assert!(keys.contains(&"subagents.worker_model"));
+        assert!(keys.contains(&"subagents.explorer_model"));
+        assert!(keys.contains(&"subagents.awaiter_model"));
+        assert!(keys.contains(&"subagents.review_model"));
+        assert!(keys.contains(&"subagents.custom_model"));
+        assert!(keys.contains(&"subagents.max_concurrent"));
         assert!(keys.contains(&"approval_mode"));
         assert!(keys.contains(&"theme"));
         assert!(keys.contains(&"locale"));

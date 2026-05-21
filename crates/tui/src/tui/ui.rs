@@ -37,7 +37,7 @@ use crate::automation_manager::{AutomationManager, AutomationSchedulerConfig, sp
 use crate::client::{DeepSeekClient, build_cache_warmup_request};
 use crate::commands;
 use crate::compaction::estimate_input_tokens_conservative;
-use crate::config::{ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL};
+use crate::config::{ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL, MAX_SUBAGENTS};
 use crate::config_ui::{self, ConfigUiMode, WebConfigSession, WebConfigSessionEvent};
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::Event as EngineEvent;
@@ -437,7 +437,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
             config,
             app.workspace.clone(),
             Some(app.model.clone()),
-            Some(app.max_subagents.clamp(1, 4)),
+            Some(app.max_subagents.clamp(1, MAX_SUBAGENTS)),
         ),
         config.clone(),
     )
@@ -706,7 +706,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .clone()
             .map(crate::config::LspConfigToml::into_runtime),
         runtime_services: app.runtime_services.clone(),
-        subagent_model_overrides: config.subagent_model_overrides(),
+        subagent_model_overrides: app.subagent_model_overrides.clone(),
         subagent_api_timeout: Duration::from_secs(config.subagent_api_timeout_secs()),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
@@ -4013,6 +4013,15 @@ async fn apply_model_and_compaction_update(
         .await;
 }
 
+async fn apply_subagent_model_overrides_update(
+    engine_handle: &EngineHandle,
+    overrides: std::collections::HashMap<String, String>,
+) {
+    let _ = engine_handle
+        .send(Op::SetSubagentModelOverrides { overrides })
+        .await;
+}
+
 async fn drain_web_config_events(
     web_config_session: &mut Option<WebConfigSession>,
     app: &mut App,
@@ -4458,6 +4467,9 @@ async fn apply_command_result(
             AppAction::UpdateCompaction(compaction) => {
                 apply_model_and_compaction_update(engine_handle, compaction).await;
             }
+            AppAction::UpdateSubagentModelOverrides(overrides) => {
+                apply_subagent_model_overrides_update(engine_handle, overrides).await;
+            }
             AppAction::OpenConfigEditor(mode) => match mode {
                 ConfigUiMode::Native => {
                     if app.view_stack.top_kind() != Some(ModalKind::Config) {
@@ -4669,6 +4681,7 @@ async fn apply_command_result(
                     Ok(new_config) => {
                         *config = new_config.clone();
                         app.api_provider = config.api_provider();
+                        app.subagent_model_overrides = config.subagent_model_overrides();
                         let new_model = config.default_model();
                         app.set_model_selection(new_model.clone());
                         app.update_model_compaction_budget();
@@ -5872,6 +5885,9 @@ async fn handle_view_events(
                     match action {
                         AppAction::UpdateCompaction(compaction) => {
                             apply_model_and_compaction_update(engine_handle, compaction).await;
+                        }
+                        AppAction::UpdateSubagentModelOverrides(overrides) => {
+                            apply_subagent_model_overrides_update(engine_handle, overrides).await;
                         }
                         AppAction::OpenConfigView => {}
                         _ => {}
