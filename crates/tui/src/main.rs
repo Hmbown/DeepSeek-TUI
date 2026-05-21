@@ -4203,6 +4203,20 @@ fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspace: &Path) 
 /// Only explicitly set fields in the project file are applied; everything
 /// else falls back to the global value.
 fn merge_project_config(config: &mut Config, workspace: &Path) {
+    // When the workspace is the user's home directory, the project-scope
+    // config file is also the global config file.  Skip the merge to avoid
+    // redundant processing and a misleading “project-scope config key
+    // ignored” warning on every launch from ~.
+    if let Some(home) = dirs::home_dir()
+        && let (Ok(w), Ok(h)) = (
+            std::fs::canonicalize(workspace),
+            std::fs::canonicalize(&home),
+        )
+        && w == h
+    {
+        return;
+    }
+
     let path = workspace.join(".deepseek").join("config.toml");
     let raw = match std::fs::read_to_string(&path) {
         Ok(r) => r,
