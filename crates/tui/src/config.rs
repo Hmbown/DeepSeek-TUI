@@ -3007,6 +3007,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
         runtime_api: override_cfg.runtime_api.or(base.runtime_api),
         workshop: override_cfg.workshop.or(base.workshop),
+        logs: override_cfg.logs.or(base.logs),
     }
 }
 
