@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.41] (unreleased)
+
+### Added
+
+- **Hostability.** Tencent Lighthouse deployment flow, Feishu/Lark smoke-tested integration,
+  and companion documentation for self-host and cloud install paths.
+- **Orientation cache.** Native PEEK/Aleph-style workspace context injection — no MCP
+  dependency — giving the model a persistent, low-latency map of the project.
+- **Hardening.** Fixes for macOS file writes, Windows input/composer edge cases, sync
+  tool-cancel reliability, sub-agent/RLM output robustness, and doctor-noise cleanup.
+- **Cockpit UX.** Sidebar and presentation panels (Now, Recent, Pending, Budget, Levers)
+  so the user feels like they're driving the agent, not watching from the back seat.
+- **Tool-calling accuracy.** Strict-mode (`/beta`) tool schema classification and
+  adaptation behind `DS_TUI_STRICT_TOOLS`, measured on `deepseek eval`.
+
 ## [0.8.40] - 2026-05-21
 
 ### Added
