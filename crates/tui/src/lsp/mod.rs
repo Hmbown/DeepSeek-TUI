@@ -43,6 +43,7 @@ use tokio::time::timeout;
 pub mod client;
 pub mod diagnostics;
 pub mod registry;
+pub mod vscode;
 
 pub use client::{LspTransport, StdioLspTransport};
 pub use diagnostics::{Diagnostic, DiagnosticBlock, Severity, render_blocks};
@@ -68,6 +69,10 @@ pub struct LspConfig {
     /// Optional override for the `Language -> (cmd, args)` table. Keys use
     /// [`Language::as_key`] (e.g. `"rust"`).
     pub servers: HashMap<String, Vec<String>>,
+    /// When `true`, skip the built-in LSP shim and read diagnostics from a
+    /// VS Code extension sidecar via a local Unix socket. Default `false`.
+    /// The socket path defaults to `/tmp/deepseek-vscode.sock`.
+    pub vscode_diagnostics: bool,
 }
 
 impl Default for LspConfig {
@@ -78,6 +83,7 @@ impl Default for LspConfig {
             max_diagnostics_per_file: 20,
             include_warnings: false,
             servers: HashMap::new(),
+            vscode_diagnostics: false,
         }
     }
 }
@@ -155,6 +161,15 @@ impl LspManager {
         if !self.config.enabled {
             return None;
         }
+
+        // #466: VS Code extension sidecar path — skip the built-in LSP shim
+        // entirely and read diagnostics from the sidecar socket.
+        if self.config.vscode_diagnostics {
+            return self
+                .vscode_diagnostics_for(file)
+                .await;
+        }
+
         let lang = registry::detect_language(file);
         if lang == Language::Other {
             return None;
@@ -238,6 +253,27 @@ impl LspManager {
                 None
             }
         }
+    }
+
+    /// #466: Query the VS Code extension sidecar for diagnostics on `file`.
+    /// Uses `vscode::DEFAULT_VSCODE_SOCKET` as the socket path and the
+    /// configured `poll_after_edit_ms` as the timeout. Returns `None`
+    /// silently when the sidecar is unreachable or returns nothing.
+    async fn vscode_diagnostics_for(&self, file: &Path) -> Option<DiagnosticBlock> {
+        let socket_path = vscode::DEFAULT_VSCODE_SOCKET;
+        let timeout_ms = self.config.poll_after_edit_ms;
+
+        let block = vscode::query_sidecar(file, &self.workspace, socket_path, timeout_ms).await?;
+
+        // Apply per-file diagnostic cap that the sidecar may not know about.
+        let mut items = block.items;
+        if items.len() > self.config.max_diagnostics_per_file {
+            items.truncate(self.config.max_diagnostics_per_file);
+        }
+        Some(DiagnosticBlock {
+            file: block.file,
+            items,
+        })
     }
 
     async fn warn_missing_once(&self, lang: Language, cmd: &str, err: &anyhow::Error) {
