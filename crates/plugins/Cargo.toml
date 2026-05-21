@@ -1,0 +1,17 @@
+[package]
+name = "deepseek-plugins"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Plugin manifest, discovery, and lifecycle for DeepSeek TUI"
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile = "3"
+thiserror.workspace = true
+tracing.workspace = true
+
