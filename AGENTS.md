@@ -64,6 +64,7 @@ See README.md for project overview, docs/ARCHITECTURE.md for internals.
 - **Large Context Window**: DeepSeek V4 models have 1M-token context windows. Use search tools to navigate efficiently.
 - **API**: OpenAI-compatible Chat Completions (`/chat/completions`) is the documented DeepSeek API path. Base URL uses the official host `api.deepseek.com` for both global and `deepseek-cn` presets; legacy typo host `api.deepseeki.com` remains recognized for backward compatibility. `/v1` is accepted for OpenAI SDK compatibility, and `/beta` is only needed for beta features such as strict tool mode, chat prefix completion, and FIM completion.
 - **Thinking + Tool Calls**: In V4 thinking mode, assistant messages that contain tool calls must replay their `reasoning_content` in all subsequent requests or the API returns HTTP 400.
+- **Metaso Default API Key**: `crates/tui/src/tools/web_search.rs` contains a hardcoded default Metaso API key (`mk-E384C1DD5E8501BB7EFE27C949AFDE5B`). This key is **intentionally public** — Metaso provides it for open-source/community use with a 100-free-searches/day quota. It is the last-resort fallback (config > env var > hardcoded). Do not remove it or treat it as a leaked secret.
 
 ## GitHub Operations
 
