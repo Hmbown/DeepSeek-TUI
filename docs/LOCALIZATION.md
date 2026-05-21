@@ -1,5 +1,7 @@
 # Localization Matrix
 
+[简体中文](LOCALIZATION.zh-CN.md) | [繁體中文](LOCALIZATION.zh-TW.md)
+
 Status date: 2026-04-29
 
 This document tracks UI localization only. It does not change model output language, provider behavior, or DeepSeek payload support. Media attachments remain local path text references unless native media payload support is added separately.

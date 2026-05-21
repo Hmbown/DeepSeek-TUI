@@ -1,5 +1,7 @@
 # Sub-Agents
 
+[繁體中文](SUBAGENTS.zh-TW.md)
+
 Sub-agents are persistent background instances of the agent loop. The parent
 opens one with a focused task, gets back an `agent_id` and session name
 immediately, and continues working while the sub-agent runs to completion.

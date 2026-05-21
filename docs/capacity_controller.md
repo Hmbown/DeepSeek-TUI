@@ -1,5 +1,7 @@
 # Capacity Controller
 
+[繁體中文](capacity_controller.zh-TW.md)
+
 `deepseek-tui` includes an opt-in capacity-aware context controller. In the
 default V4 path it is disabled, because its active interventions can rewrite
 the live prompt and break prefix-cache affinity. Treat it as telemetry or an

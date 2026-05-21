@@ -1,5 +1,7 @@
 # Release Checklist
 
+[简体中文](RELEASE_CHECKLIST.zh-CN.md) | [繁體中文](RELEASE_CHECKLIST.zh-TW.md)
+
 A pre-tag checklist that the v0.8.21/v0.8.22 CHANGELOG gap proved we needed.
 Step through this in order from a clean worktree on the release branch
 (`work/vX.Y.Z-...`). Treat any unchecked box as a release blocker.

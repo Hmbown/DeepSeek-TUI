@@ -1,5 +1,7 @@
 # DeepSeek TUI Release Runbook
 
+[简体中文](RELEASE_RUNBOOK.zh-CN.md) | [繁體中文](RELEASE_RUNBOOK.zh-TW.md)
+
 This runbook is the source of truth for shipping Rust crates, GitHub release assets,
 and the `deepseek-tui` npm wrapper.
 

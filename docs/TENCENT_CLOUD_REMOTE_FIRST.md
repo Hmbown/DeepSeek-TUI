@@ -1,5 +1,7 @@
 # Tencent Cloud Remote-First Quickstart
 
+[繁體中文](TENCENT_CLOUD_REMOTE_FIRST.zh-TW.md)
+
 This is the opinionated Tencent-native teaching path for DeepSeek TUI users
 who want an always-on agent workspace, a phone control surface, and a stack
 that works well from mainland China.

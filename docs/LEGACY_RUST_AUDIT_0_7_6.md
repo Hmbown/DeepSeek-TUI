@@ -1,5 +1,7 @@
 # v0.7.6 Legacy Rust Audit
 
+[繁體中文](LEGACY_RUST_AUDIT_0_7_6.zh-TW.md)
+
 Status date: 2026-04-29
 
 This audit is deliberately non-destructive. No compatibility code is removed in v0.7.6 unless tests prove public CLI, saved-session, tool-schema, and documented command paths no longer depend on it.

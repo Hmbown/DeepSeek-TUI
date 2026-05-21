@@ -1,5 +1,7 @@
 # Accessibility
 
+[简体中文](ACCESSIBILITY.zh-CN.md) | [繁體中文](ACCESSIBILITY.zh-TW.md)
+
 DeepSeek-TUI runs in a terminal, so the platform's own accessibility
 stack (screen readers, magnifiers, terminal-level themes) does most
 of the work. The TUI provides a small set of toggles that reduce

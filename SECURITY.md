@@ -1,5 +1,7 @@
 # Security Policy
 
+[简体中文](SECURITY.zh-CN.md) | [繁體中文](SECURITY.zh-TW.md)
+
 DeepSeek TUI is a coding agent with direct access to file operations, shell execution, and the network. Security disclosures are taken seriously.
 
 ## Supported Versions

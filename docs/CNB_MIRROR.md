@@ -1,5 +1,7 @@
 # CNB Cool mirror
 
+[简体中文](CNB_MIRROR.zh-CN.md) | [繁體中文](CNB_MIRROR.zh-TW.md)
+
 `cnb.cool/deepseek-tui.com/DeepSeek-TUI` is a one-way mirror of this
 GitHub repository for users on networks where GitHub is slow or blocked
 (primarily mainland China). The mirror receives every push to `main`, every

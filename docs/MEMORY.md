@@ -1,5 +1,7 @@
 # User Memory
 
+[繁體中文](MEMORY.zh-TW.md)
+
 The user-memory feature gives the model a small persistent note file
 that's injected into the system prompt on every turn. It's the place
 to put preferences and conventions that should survive across

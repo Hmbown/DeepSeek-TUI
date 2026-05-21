@@ -1,5 +1,7 @@
 # DeepSeek TUI Operations Runbook
 
+[简体中文](OPERATIONS_RUNBOOK.zh-CN.md) | [繁體中文](OPERATIONS_RUNBOOK.zh-TW.md)
+
 This runbook covers practical debugging and incident response for the local CLI/TUI runtime.
 
 ## Quick Triage

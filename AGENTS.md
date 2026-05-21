@@ -1,5 +1,7 @@
 # Project Instructions
 
+[简体中文](AGENTS.zh-CN.md) | [繁體中文](AGENTS.zh-TW.md)
+
 This file provides context for AI assistants working on this project.
 
 ## Project Type: Rust

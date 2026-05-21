@@ -1,5 +1,7 @@
 # MCP (External Tool Servers)
 
+[简体中文](MCP.zh-CN.md) | [繁體中文](MCP.zh-TW.md)
+
 DeepSeek TUI can load additional tools via MCP (Model Context Protocol). MCP servers are local processes that the TUI starts and communicates with over stdio.
 
 Browsing note:

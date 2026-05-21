@@ -1,5 +1,7 @@
 # Docker
 
+[繁體中文](DOCKER.zh-TW.md)
+
 DeepSeek-TUI publishes a multi-arch Linux image to GitHub Container Registry
 for each release.
 

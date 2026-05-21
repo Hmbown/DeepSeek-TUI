@@ -1,5 +1,7 @@
 # Tencent Lighthouse Hong Kong Phone Setup
 
+[简体中文](TENCENT_LIGHTHOUSE_HK.zh-CN.md) | [繁體中文](TENCENT_LIGHTHOUSE_HK.zh-TW.md)
+
 This runbook sets up a Tencent Cloud Lighthouse instance in Hong Kong as an
 always-on DeepSeek TUI host controlled from Feishu/Lark on a phone.
 
