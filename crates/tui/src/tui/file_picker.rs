@@ -1,7 +1,7 @@
 //! Fuzzy file-picker modal (Ctrl+P).
 //!
 //! Opens an overlay populated with workspace-relative paths discovered by a
-//! single-pass `WalkBuilder` walk (depth 6, hidden=true, follow_links=false,
+//! single-pass `WalkBuilder` walk (depth 12, hidden=true, follow_links=false,
 //! `.gitignore` honored). Subsequent keystrokes filter the cached candidate
 //! list in memory using a small subsequence + first-letter-bonus scorer — no
 //! per-keystroke disk traversal.
@@ -31,7 +31,7 @@ use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 const MAX_CANDIDATES: usize = 20_000;
 
 /// Walk depth for the initial scan. Mirrors the `Workspace` fuzzy index.
-const WALK_DEPTH: usize = 6;
+const WALK_DEPTH: usize = 12;
 
 /// Visible candidate rows in the overlay.
 const VISIBLE_ROWS: usize = 14;

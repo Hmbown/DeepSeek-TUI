@@ -23,7 +23,7 @@ use std::sync::OnceLock;
 /// during a session, build a fresh `Workspace`. Fuzzy lookups are backed by a
 /// lazy basename → paths index built once on first miss and reused for the
 /// rest of the session — without it, every mis-typed mention triggered a full
-/// `WalkBuilder` traversal up to depth 6 (Gemini code-review feedback).
+/// `WalkBuilder` traversal up to depth 12 (Gemini code-review feedback).
 #[derive(Debug)]
 pub struct Workspace {
     pub root: PathBuf,
@@ -94,7 +94,7 @@ impl Workspace {
     fn build_file_index(&self) -> HashMap<String, Vec<PathBuf>> {
         let mut index: HashMap<String, Vec<PathBuf>> = HashMap::new();
         let mut total: usize = 0;
-        let builder = discovery_walk_builder(&self.root, Some(6));
+        let builder = discovery_walk_builder(&self.root, Some(12));
 
         for entry in builder.build().flatten() {
             if total >= FILE_INDEX_MAX_ENTRIES {
@@ -133,7 +133,7 @@ impl Workspace {
                 .follow_links(false)
                 .git_ignore(false)
                 .ignore(false)
-                .max_depth(Some(5));
+                .max_depth(Some(12));
             for entry in dot_builder.build().flatten() {
                 if total >= FILE_INDEX_MAX_ENTRIES {
                     break;
@@ -180,9 +180,11 @@ impl Workspace {
     /// return relative paths whose representation matches `partial`.
     ///
     /// Ranking: a candidate matches when its case-insensitive display string
-    /// starts with `partial` (prefix hit) or contains it as a substring; prefix
-    /// hits sort first so `docs/de` lands `docs/deepseek_v4.pdf` ahead of any
-    /// path that merely shares those bytes.
+    /// starts with `partial` (prefix hit), contains it as a contiguous
+    /// substring, or contains it as a non-contiguous subsequence (fuzzy hit).
+    /// Prefix hits sort first, substring hits second, fuzzy hits last — so
+    /// `send/` lands `SenderWorker.java` ahead of targets that would only
+    /// match via subsequence.
     ///
     /// Display strings are workspace-relative for files under `root`, and
     /// cwd-relative for files only under the recorded `cwd` — so what the user
@@ -198,6 +200,7 @@ impl Workspace {
         let needle = partial.to_lowercase();
         let mut prefix_hits: Vec<String> = Vec::new();
         let mut substring_hits: Vec<String> = Vec::new();
+        let mut fuzzy_hits: Vec<String> = Vec::new();
         let mut seen: HashSet<PathBuf> = HashSet::new();
 
         // Walk the recorded cwd first when it diverges from the workspace
@@ -216,6 +219,7 @@ impl Workspace {
                 limit,
                 &mut prefix_hits,
                 &mut substring_hits,
+                &mut fuzzy_hits,
                 &mut seen,
             );
             add_local_reference_completions(
@@ -225,6 +229,7 @@ impl Workspace {
                 limit,
                 &mut prefix_hits,
                 &mut substring_hits,
+                &mut fuzzy_hits,
                 &mut seen,
             );
         }
@@ -235,6 +240,7 @@ impl Workspace {
             limit,
             &mut prefix_hits,
             &mut substring_hits,
+            &mut fuzzy_hits,
             &mut seen,
         );
         add_local_reference_completions(
@@ -244,21 +250,26 @@ impl Workspace {
             limit,
             &mut prefix_hits,
             &mut substring_hits,
+            &mut fuzzy_hits,
             &mut seen,
         );
 
         prefix_hits.sort();
         substring_hits.sort();
+        fuzzy_hits.sort();
         prefix_hits.extend(substring_hits);
+        prefix_hits.extend(fuzzy_hits);
         prefix_hits.truncate(limit);
         prefix_hits
     }
 }
 
 /// Maximum directory depth walked when surfacing file-mention completions.
-/// Mirrors the existing `project_tree` cutoff and keeps Tab snappy in deep
-/// monorepos.
-const COMPLETIONS_WALK_DEPTH: usize = 6;
+/// Mirrors the existing `project_tree` cutoff. 12 levels covers deeply-nested
+/// projects (e.g. Android `app/src/main/java/com/company/module/feature/file.kt`)
+/// without meaningfully hurting Tab latency — the walk is parallel, and subsequent
+/// keystrokes filter in memory.
+const COMPLETIONS_WALK_DEPTH: usize = 12;
 
 /// Hard cap on the number of `(file or directory)` entries indexed by
 /// [`Workspace::build_file_index`]. The fuzzy-resolve index is a
@@ -309,6 +320,27 @@ fn discovery_walk_builder(root: &Path, max_depth: Option<usize>) -> WalkBuilder 
     builder
 }
 
+/// Return true when every character of `needle` appears in `haystack` in
+/// order (case-sensitive, caller lowercases both sides). This is the same
+/// subsequence rule the Ctrl+P file picker scorer uses — it catches patterns
+/// like `sendwor` matching `senderworker.java` that prefix + contiguous-
+/// substring matching miss.
+fn is_subsequence(needle: &str, haystack: &str) -> bool {
+    let mut ni = needle.chars();
+    let Some(mut nc) = ni.next() else {
+        return true;
+    };
+    for hc in haystack.chars() {
+        if hc == nc {
+            match ni.next() {
+                Some(next) => nc = next,
+                None => return true,
+            }
+        }
+    }
+    false
+}
+
 /// Walk the AI-tool dot-directories (`.deepseek/`, `.cursor/`, `.claude/`,
 /// `.agents/`) with gitignore disabled so their contents are discoverable
 /// even when the project's `.gitignore` / `.ignore` excludes them.
@@ -320,6 +352,7 @@ fn walk_always_discoverable_dirs(
     limit: usize,
     prefix_hits: &mut Vec<String>,
     substring_hits: &mut Vec<String>,
+    fuzzy_hits: &mut Vec<String>,
     seen: &mut HashSet<PathBuf>,
     max_depth: Option<usize>,
 ) {
@@ -338,7 +371,7 @@ fn walk_always_discoverable_dirs(
             builder.max_depth(Some(depth.saturating_sub(1)));
         }
         for entry in builder.build().flatten() {
-            if prefix_hits.len() + substring_hits.len() >= limit {
+            if prefix_hits.len() + substring_hits.len() + fuzzy_hits.len() >= limit {
                 break;
             }
             let path = entry.path();
@@ -369,6 +402,8 @@ fn walk_always_discoverable_dirs(
                 prefix_hits.push(candidate);
             } else if lower.contains(needle) {
                 substring_hits.push(candidate);
+            } else if !needle.is_empty() && is_subsequence(needle, &lower) {
+                fuzzy_hits.push(candidate);
             }
         }
     }
@@ -382,12 +417,13 @@ fn walk_for_completions(
     limit: usize,
     prefix_hits: &mut Vec<String>,
     substring_hits: &mut Vec<String>,
+    fuzzy_hits: &mut Vec<String>,
     seen: &mut HashSet<PathBuf>,
 ) {
     let builder = discovery_walk_builder(walk_root, Some(COMPLETIONS_WALK_DEPTH));
 
     for entry in builder.build().flatten() {
-        if prefix_hits.len() + substring_hits.len() >= limit {
+        if prefix_hits.len() + substring_hits.len() + fuzzy_hits.len() >= limit {
             break;
         }
         let path = entry.path();
@@ -415,6 +451,8 @@ fn walk_for_completions(
             prefix_hits.push(candidate);
         } else if lower.contains(needle) {
             substring_hits.push(candidate);
+        } else if !needle.is_empty() && is_subsequence(needle, &lower) {
+            fuzzy_hits.push(candidate);
         }
     }
 
@@ -427,6 +465,7 @@ fn walk_for_completions(
         limit,
         prefix_hits,
         substring_hits,
+        fuzzy_hits,
         seen,
         Some(COMPLETIONS_WALK_DEPTH),
     );
@@ -442,6 +481,7 @@ fn add_local_reference_completions(
     limit: usize,
     prefix_hits: &mut Vec<String>,
     substring_hits: &mut Vec<String>,
+    fuzzy_hits: &mut Vec<String>,
     seen: &mut HashSet<PathBuf>,
 ) {
     if !should_try_local_reference_completion(needle) {
@@ -449,7 +489,7 @@ fn add_local_reference_completions(
     }
 
     for path in local_reference_paths(root, LOCAL_REFERENCE_SCAN_LIMIT) {
-        if prefix_hits.len() + substring_hits.len() >= limit {
+        if prefix_hits.len() + substring_hits.len() + fuzzy_hits.len() >= limit {
             break;
         }
         let Ok(rel) = path.strip_prefix(display_root) else {
@@ -464,6 +504,8 @@ fn add_local_reference_completions(
             prefix_hits.push(rel_str);
         } else if lower.contains(needle) {
             substring_hits.push(rel_str);
+        } else if !needle.is_empty() && is_subsequence(needle, &lower) {
+            fuzzy_hits.push(rel_str);
         }
     }
 }

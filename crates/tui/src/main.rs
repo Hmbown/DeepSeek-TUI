@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+#[cfg(unix)]
+use libc::{SIGINT, SIGTERM, SIGHUP, SIG_BLOCK, sigaddset, sigemptyset, sigprocmask, sigset_t};
+
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
@@ -310,6 +313,34 @@ enum ExecOutputFormat {
     StreamJson,
 }
 
+/// Block SIGINT, SIGTERM, and SIGHUP for the calling thread.
+///
+/// Called before terminal restoration in signal-handler and panic-hook
+/// paths so that a second rapid signal cannot interrupt the escape
+/// sequences being written to stdout. Without this, a repeated SIGINT
+/// during cleanup can cause `std::process::exit` to be called
+/// recursively — the second `exit()` skips cleanup (via the
+/// `CLEANED_UP` guard) but still terminates the process, potentially
+/// before the escape bytes have been flushed, leaving the terminal
+/// in kitty keyboard protocol mode (#1583).
+#[cfg(unix)]
+fn block_terminating_signals() {
+    unsafe {
+        let mut mask: sigset_t = std::mem::zeroed();
+        sigemptyset(&mut mask);
+        sigaddset(&mut mask, SIGINT);
+        sigaddset(&mut mask, SIGTERM);
+        sigaddset(&mut mask, SIGHUP);
+        sigprocmask(SIG_BLOCK, &mask, std::ptr::null_mut());
+    }
+}
+
+#[cfg(not(unix))]
+fn block_terminating_signals() {
+    // Windows: Ctrl+C goes through the console control handler, not Unix
+    // signals, so there's no equivalent race to protect against here.
+}
+
 /// Spawn a tokio task that listens for terminating signals (SIGINT
 /// always; SIGTERM and SIGHUP on Unix) and, on receipt, restores the
 /// terminal modes and exits with the conventional 128 + signal code.
@@ -327,6 +358,7 @@ fn spawn_signal_cleanup_task() {
         static CLEANED_UP: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
         if !CLEANED_UP.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            block_terminating_signals();
             crate::tui::ui::emergency_restore_terminal();
         }
         std::process::exit(exit_code);
@@ -682,6 +714,9 @@ async fn main() -> Result<()> {
         // in raw / alt-screen mode if the panic happens pre-TUI. Shared
         // with the signal handler installed below so both exit paths leave
         // the terminal in the same well-defined state.
+        // Block signals before cleanup to prevent a SIGINT from interrupting
+        // terminal restoration mid-sequence (#1583).
+        block_terminating_signals();
         crate::tui::ui::emergency_restore_terminal();
 
         let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
