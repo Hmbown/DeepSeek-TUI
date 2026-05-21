@@ -304,6 +304,7 @@ pub enum MessageId {
     CmdSwarmDescription,
     CmdSystemDescription,
     CmdTaskDescription,
+    CmdThinkingDescription,
     CmdTokensDescription,
     CmdTranslateDescription,
     CmdTranslateOff,
@@ -334,6 +335,9 @@ pub enum MessageId {
     FooterAgentsPlural,
     FooterPressCtrlCAgain,
     FooterWorking,
+    LiveThinkingEmpty,
+    LiveThinkingStatusTailing,
+    LiveTranscriptEmpty,
     HelpSectionActions,
     HelpSectionClipboard,
     HelpSectionEditing,
@@ -535,6 +539,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdSwarmDescription,
     MessageId::CmdSystemDescription,
     MessageId::CmdTaskDescription,
+    MessageId::CmdThinkingDescription,
     MessageId::CmdTokensDescription,
     MessageId::CmdTranslateDescription,
     MessageId::CmdTranslateOff,
@@ -570,6 +575,9 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::FooterAgentsPlural,
     MessageId::FooterPressCtrlCAgain,
     MessageId::FooterWorking,
+    MessageId::LiveThinkingEmpty,
+    MessageId::LiveThinkingStatusTailing,
+    MessageId::LiveTranscriptEmpty,
     MessageId::HelpSectionActions,
     MessageId::HelpSectionClipboard,
     MessageId::HelpSectionEditing,
@@ -985,6 +993,7 @@ fn english(id: MessageId) -> &'static str {
         }
         MessageId::CmdSystemDescription => "Show current system prompt",
         MessageId::CmdTaskDescription => "Manage background tasks",
+        MessageId::CmdThinkingDescription => "Open the full-terminal live thinking stream",
         MessageId::CmdTokensDescription => "Show token usage for session",
         MessageId::CmdTranslateDescription => {
             "Toggle output translation to the current system language on/off"
@@ -1039,6 +1048,9 @@ fn english(id: MessageId) -> &'static str {
         MessageId::FooterAgentsPlural => "{count} agents",
         MessageId::FooterPressCtrlCAgain => "Press Ctrl+C again to quit",
         MessageId::FooterWorking => "working",
+        MessageId::LiveThinkingEmpty => "(no thinking stream yet)",
+        MessageId::LiveThinkingStatusTailing => "Thinking stream: tailing (Esc to close)",
+        MessageId::LiveTranscriptEmpty => "(no transcript yet)",
         MessageId::HelpSectionActions => "Actions",
         MessageId::HelpSectionClipboard => "Clipboard",
         MessageId::HelpSectionEditing => "Input editing",
@@ -1371,6 +1383,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdSystemDescription => "現在のシステムプロンプトを表示",
         MessageId::CmdTaskDescription => "バックグラウンドタスクを管理",
+        MessageId::CmdThinkingDescription => "全画面のライブ思考ストリームを開く",
         MessageId::CmdTokensDescription => "セッションのトークン使用量を表示",
         MessageId::CmdTranslateDescription => "出力翻訳を現在のシステム言語に切り替え",
         MessageId::CmdTranslateOff => "出力翻訳が無効になりました（元のモデル出力を表示）",
@@ -1422,6 +1435,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::FooterAgentsPlural => "{count} エージェント",
         MessageId::FooterPressCtrlCAgain => "もう一度 Ctrl+C で終了",
         MessageId::FooterWorking => "処理中",
+        MessageId::LiveThinkingEmpty => "（思考ストリームはまだありません）",
+        MessageId::LiveThinkingStatusTailing => "思考ストリーム: 末尾を追跡中（Esc で閉じる）",
+        MessageId::LiveTranscriptEmpty => "（会話履歴はまだありません）",
         MessageId::HelpSectionActions => "操作",
         MessageId::HelpSectionClipboard => "クリップボード",
         MessageId::HelpSectionEditing => "入力編集",
@@ -1708,6 +1724,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdSystemDescription => "显示当前系统提示词",
         MessageId::CmdTaskDescription => "管理后台任务",
+        MessageId::CmdThinkingDescription => "打开全屏实时思考流",
         MessageId::CmdTokensDescription => "显示本次会话的 token 用量",
         MessageId::CmdTranslateDescription => "切换输出翻译为当前系统语言的开/关状态",
         MessageId::CmdTranslateOff => "输出翻译已关闭（显示原始模型输出）",
@@ -1753,6 +1770,9 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::FooterAgentsPlural => "{count} 个子代理",
         MessageId::FooterPressCtrlCAgain => "再次按 Ctrl+C 退出",
         MessageId::FooterWorking => "工作中",
+        MessageId::LiveThinkingEmpty => "（暂无思考流）",
+        MessageId::LiveThinkingStatusTailing => "思考流：正在尾随（Esc 关闭）",
+        MessageId::LiveTranscriptEmpty => "（暂无对话记录）",
         MessageId::HelpSectionActions => "操作",
         MessageId::HelpSectionClipboard => "剪贴板",
         MessageId::HelpSectionEditing => "输入编辑",
@@ -2045,6 +2065,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdSystemDescription => "Exibir o prompt de sistema atual",
         MessageId::CmdTaskDescription => "Gerenciar tarefas em segundo plano",
+        MessageId::CmdThinkingDescription => "Abrir o fluxo de raciocínio ao vivo em tela cheia",
         MessageId::CmdTokensDescription => "Exibir o uso de tokens da sessão",
         MessageId::CmdTranslateDescription => {
             "Alternar tradução de saída para o idioma atual do sistema"
@@ -2100,6 +2121,11 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::FooterAgentsPlural => "{count} sub-agentes",
         MessageId::FooterPressCtrlCAgain => "Pressione Ctrl+C novamente para sair",
         MessageId::FooterWorking => "trabalhando",
+        MessageId::LiveThinkingEmpty => "(nenhum fluxo de raciocínio ainda)",
+        MessageId::LiveThinkingStatusTailing => {
+            "Fluxo de raciocínio: seguindo o final (Esc para fechar)"
+        }
+        MessageId::LiveTranscriptEmpty => "(nenhuma transcrição ainda)",
         MessageId::HelpSectionActions => "Ações",
         MessageId::HelpSectionClipboard => "Área de transferência",
         MessageId::HelpSectionEditing => "Edição de entrada",
@@ -2434,6 +2460,9 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdSystemDescription => "Mostrar el prompt de sistema actual",
         MessageId::CmdTaskDescription => "Gestionar tareas en segundo plano",
+        MessageId::CmdThinkingDescription => {
+            "Abrir el flujo de razonamiento en vivo a pantalla completa"
+        }
         MessageId::CmdTokensDescription => "Mostrar el uso de tokens de la sesión",
         MessageId::CmdTranslateDescription => {
             "Activar o desactivar la traducción de salida al idioma actual del sistema"
@@ -2491,6 +2520,11 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::FooterAgentsPlural => "{count} sub-agentes",
         MessageId::FooterPressCtrlCAgain => "Presiona Ctrl+C de nuevo para salir",
         MessageId::FooterWorking => "trabajando",
+        MessageId::LiveThinkingEmpty => "(aún no hay flujo de razonamiento)",
+        MessageId::LiveThinkingStatusTailing => {
+            "Flujo de razonamiento: siguiendo el final (Esc para cerrar)"
+        }
+        MessageId::LiveTranscriptEmpty => "(aún no hay transcripción)",
         MessageId::HelpSectionActions => "Acciones",
         MessageId::HelpSectionClipboard => "Portapapeles",
         MessageId::HelpSectionEditing => "Edición de entrada",
