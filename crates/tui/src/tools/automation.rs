@@ -29,7 +29,7 @@ impl ToolSpec for AutomationCreateTool {
     }
 
     fn description(&self) -> &'static str {
-        "Create a durable scheduled automation. Creation requires approval and recurrence is constrained to supported HOURLY/WEEKLY RRULE forms. Runs enqueue normal durable tasks."
+        "Create a durable scheduled automation. Creation requires approval and recurrence is constrained to supported HOURLY/WEEKLY/MONTHLY/YEARLY RRULE forms. Runs enqueue normal durable tasks."
     }
 
     fn input_schema(&self) -> Value {
@@ -40,7 +40,7 @@ impl ToolSpec for AutomationCreateTool {
                 "prompt": { "type": "string" },
                 "rrule": {
                     "type": "string",
-                    "description": "Supported: FREQ=HOURLY;INTERVAL=N[;BYDAY=MO,TU] or FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=30"
+                    "description": "Supported: FREQ=HOURLY;INTERVAL=N[;BYDAY=MO,TU], FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=30, FREQ=MONTHLY;BYMONTHDAY=15;BYHOUR=9;BYMINUTE=30, FREQ=YEARLY;BYMONTH=6;BYMONTHDAY=15;BYHOUR=9;BYMINUTE=30"
                 },
                 "cwds": { "type": "array", "items": { "type": "string" } },
                 "paused": { "type": "boolean", "default": false }
