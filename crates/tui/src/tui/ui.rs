@@ -1415,12 +1415,12 @@ async fn run_event_loop(
                                 turn_elapsed,
                                 turn_cost,
                             );
-                            crate::tui::notifications::notify_done(
+                            crate::tui::notifications::notify_after_idle(
                                 method,
                                 in_tmux,
                                 &msg,
                                 threshold,
-                                turn_elapsed,
+                                app.last_interaction_time,
                             );
                         }
 
@@ -1672,12 +1672,12 @@ async fn run_event_loop(
                                 include_summary,
                                 subagent_elapsed,
                             );
-                            crate::tui::notifications::notify_done(
+                            crate::tui::notifications::notify_after_idle(
                                 method,
                                 in_tmux,
                                 &msg,
                                 threshold,
-                                subagent_elapsed,
+                                app.last_interaction_time,
                             );
                         }
                         if should_recapture_terminal {
@@ -2221,6 +2221,9 @@ async fn run_event_loop(
             if key.kind != KeyEventKind::Press {
                 continue;
             }
+
+            // Update idle timer for notification system.
+            app.last_interaction_time = Instant::now();
 
             // Handle onboarding flow
             if app.onboarding != OnboardingState::None {

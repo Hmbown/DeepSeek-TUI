@@ -504,6 +504,8 @@ pub enum NotificationMethod {
     Osc9,
     /// Plain BEL character.
     Bel,
+    /// Native OS notification (osascript / notify-send).
+    Native,
     /// Kitty notification protocol (OSC 99).
     Kitty,
     /// Ghostty notification protocol (OSC 777).

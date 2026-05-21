@@ -36,6 +36,11 @@ pub enum Method {
     /// Ghostty notification protocol (OSC 777).
     /// Uses `ESC ] 777 ; notify ; title ; message BEL`.
     Ghostty,
+    /// Native OS notification: `osascript display notification` on macOS,
+    /// `notify-send` on Linux. Works in any terminal — no OSC support
+    /// required. Best-effort; falls back to `Bel` if the native command
+    /// is unavailable.
+    Native,
     /// Suppress all notifications.
     Off,
 }
@@ -53,6 +58,93 @@ fn windows_bell() {
     unsafe {
         let _ = MessageBeep(MESSAGEBOX_STYLE(0));
     }
+}
+
+/// Best-guess the macOS bundle identifier of the current terminal.
+///
+/// Maps known `$TERM_PROGRAM` values to their bundle IDs. When
+/// `terminal-notifier` is available, the bundle ID enables
+/// `-activate` so clicking the notification brings the terminal to
+/// the foreground.
+fn terminal_bundle_id() -> Option<&'static str> {
+    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+    match term_program.as_str() {
+        "iTerm.app" => Some("com.googlecode.iterm2"),
+        "Apple_Terminal" => Some("com.apple.Terminal"),
+        "Ghostty" => Some("com.mitchellh.ghostty"),
+        "WezTerm" => Some("org.wezfurlong.wezterm"),
+        "kitty" => Some("net.kovidgoyal.kitty"),
+        _ => None,
+    }
+}
+
+/// Check whether `terminal-notifier` is installed and reachable.
+fn has_terminal_notifier() -> bool {
+    std::process::Command::new("which")
+        .arg("terminal-notifier")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_or(false, |s| s.success())
+}
+
+/// Fire a native OS notification.
+///
+/// On macOS, prefers `terminal-notifier` (supports click-to-focus via
+/// `-activate BUNDLE_ID`) with a fallback to `osascript display
+/// notification`. On Linux, uses `notify-send`.
+///
+/// Spawns a short-lived thread so the caller is not blocked on the
+/// process. Best-effort: failures from a missing binary or a
+/// non-responsive notification daemon are silently ignored — the
+/// notification is a convenience, not a correctness requirement.
+fn native_notify(msg: &str) {
+    let msg = msg.to_string();
+    std::thread::spawn(move || {
+        #[cfg(target_os = "macos")]
+        {
+            if has_terminal_notifier() {
+                let mut cmd = std::process::Command::new("terminal-notifier");
+                cmd.arg("-title").arg("DeepSeek TUI");
+                cmd.arg("-message").arg(&msg);
+                if let Some(bundle_id) = terminal_bundle_id() {
+                    cmd.arg("-activate").arg(bundle_id);
+                }
+                cmd.stdout(std::process::Stdio::null());
+                cmd.stderr(std::process::Stdio::null());
+                let _ = cmd.spawn();
+                return;
+            }
+            // Fallback: plain osascript notification (no click-to-focus).
+            // Escape backslashes and double-quotes to prevent AppleScript injection.
+            let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
+            let _ = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(format!(
+                    "display notification \"{escaped}\" with title \"DeepSeek TUI\""
+                ))
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+        #[cfg(all(target_os = "linux", not(target_os = "macos")))]
+        {
+            if std::process::Command::new("which")
+                .arg("notify-send")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map_or(false, |s| s.success())
+            {
+                let _ = std::process::Command::new("notify-send")
+                    .arg("DeepSeek TUI")
+                    .arg(&msg)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
+        }
+    });
 }
 
 /// Resolve `Auto` to a concrete method by inspecting `$TERM_PROGRAM`,
@@ -146,8 +238,9 @@ fn build_escape(method: Method, in_tmux: bool, msg: &str) -> Vec<u8> {
             let seq = format!("\x1b]777;notify;DeepSeek TUI;{msg}\x07");
             wrap_for_multiplexer(&seq, in_tmux).into_bytes()
         }
-        // Auto and Off should not reach build_escape.
-        Method::Auto | Method::Off => vec![],
+        // Auto, Off, and Native should not reach build_escape.
+        // Native goes through native_notify(), not through terminal bytes.
+        Method::Auto | Method::Off | Method::Native => vec![],
     }
 }
 
@@ -171,6 +264,11 @@ pub fn notify_done_to<W: Write>(
         Method::Auto => resolve_method(),
         other => other,
     };
+    // Native goes through the OS notification path, not terminal escapes.
+    if effective == Method::Native {
+        native_notify(msg);
+        return;
+    }
     let bytes = build_escape(effective, in_tmux, msg);
     if bytes.is_empty() {
         return;
@@ -205,6 +303,72 @@ pub fn notify_done(
     elapsed: Duration,
 ) {
     notify_done_to(method, in_tmux, msg, threshold, elapsed, &mut io::stdout());
+}
+
+/// Default idle threshold: 6 seconds without keyboard input.
+pub const DEFAULT_IDLE_THRESHOLD: Duration = Duration::from_secs(6);
+
+/// Maximum time to wait for user to become idle before giving up.
+pub const MAX_IDLE_WAIT: Duration = Duration::from_secs(300);
+
+/// Emit a notification when the user is idle after a turn completes.
+///
+/// If `idle_threshold` is zero, fires immediately (old fixed-elapsed behavior).
+///
+/// Otherwise, checks whether the user has been idle (no keyboard input)
+/// for at least `idle_threshold` seconds at the time of this call.
+/// If already idle, fires immediately. If not idle, the notification is
+/// silently skipped — the user is actively watching the output and doesn't
+/// need an alert.
+///
+/// This mirrors Claude Code's approach: notify when the user has tabbed
+/// away or stopped typing, not while they're actively engaged.
+pub fn notify_after_idle(
+    method: Method,
+    in_tmux: bool,
+    msg: &str,
+    idle_threshold: Duration,
+    last_interaction: std::time::Instant,
+) {
+    // Zero threshold → fire immediately (old behavior).
+    if idle_threshold.is_zero() {
+        let effective = resolve_effective_method(method);
+        emit_notification(effective, in_tmux, msg);
+        return;
+    }
+
+    // Check if user is currently idle.
+    let elapsed_since_input = last_interaction.elapsed();
+    if elapsed_since_input >= idle_threshold {
+        let effective = resolve_effective_method(method);
+        emit_notification(effective, in_tmux, msg);
+    }
+    // Not idle → skip. User is actively watching the output.
+}
+
+/// Resolve `Auto` to a concrete method.
+fn resolve_effective_method(method: Method) -> Method {
+    match method {
+        Method::Auto => resolve_method(),
+        other => other,
+    }
+}
+
+/// Core notification emission shared by both notify paths.
+fn emit_notification(method: Method, in_tmux: bool, msg: &str) {
+    match method {
+        Method::Off => {}
+        Method::Native => {
+            native_notify(msg);
+        }
+        other => {
+            let bytes = build_escape(other, in_tmux, msg);
+            if !bytes.is_empty() {
+                let _ = io::stdout().write_all(&bytes);
+                let _ = io::stdout().flush();
+            }
+        }
+    }
 }
 
 /// Return a human-readable duration string, capped at two units so
@@ -293,6 +457,7 @@ pub fn settings(config: &crate::config::Config) -> Option<(Method, Duration, boo
         crate::config::NotificationMethod::Auto => Method::Auto,
         crate::config::NotificationMethod::Osc9 => Method::Osc9,
         crate::config::NotificationMethod::Bel => Method::Bel,
+        crate::config::NotificationMethod::Native => Method::Native,
         crate::config::NotificationMethod::Kitty => Method::Kitty,
         crate::config::NotificationMethod::Ghostty => Method::Ghostty,
         crate::config::NotificationMethod::Off => Method::Off,
