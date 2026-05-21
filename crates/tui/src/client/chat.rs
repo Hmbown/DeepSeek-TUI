@@ -2976,6 +2976,21 @@ mod stream_decoder_tests {
 
     #[test]
     fn cache_inspect_reports_tool_result_budget_metadata() {
+        let _guard = crate::tools::truncate::TEST_SPILLOVER_GUARD
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let prior = crate::tools::truncate::set_test_spillover_root(Some(
+            tmp.path().join(".deepseek").join("tool_outputs"),
+        ));
+        struct Restore(Option<std::path::PathBuf>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::tools::truncate::set_test_spillover_root(self.0.take());
+            }
+        }
+        let _restore = Restore(prior);
+
         let long_output = format!("{}{}", "A".repeat(7_000), "Z".repeat(7_000));
         let request = MessageRequest {
             model: "deepseek-v4-flash".to_string(),
