@@ -1,0 +1,74 @@
+{
+  "name": "deepseek-tui",
+  "displayName": "DeepSeek TUI",
+  "description": "VS Code extension companion for DeepSeek TUI — chat, code actions, and commands from the editor.",
+  "publisher": "deepseek",
+  "version": "0.1.0",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "deepseek.openChat",
+        "title": "DeepSeek: Open Chat"
+      },
+      {
+        "command": "deepseek.askAboutSelection",
+        "title": "DeepSeek: Ask About Selection"
+      },
+      {
+        "command": "deepseek.applyToSelection",
+        "title": "DeepSeek: Apply to Selection"
+      },
+      {
+        "command": "deepseek.runTest",
+        "title": "DeepSeek: Run Test"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "deepseek.openChat",
+        "key": "ctrl+shift+d",
+        "mac": "cmd+shift+d"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "deepseek",
+          "title": "DeepSeek TUI",
+          "icon": "$(comment-discussion)"
+        }
+      ]
+    },
+    "views": {
+      "deepseek": [
+        {
+          "id": "deepseek.chatView",
+          "name": "Chat"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.4.0"
+  }
+}
