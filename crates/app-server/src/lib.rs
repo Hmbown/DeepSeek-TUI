@@ -96,6 +96,7 @@ pub async fn run(options: AppServerOptions) -> Result<()> {
 
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .route("/openapi.json", get(openapi))
         .route("/thread", post(thread_handler))
         .route("/app", post(app_handler))
         .route("/prompt", post(prompt_handler))
@@ -172,12 +173,272 @@ pub async fn run_stdio(config_path: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+fn openapi_spec() -> Value {
+    json!({
+        "openapi": "3.0.3",
+        "info": {
+            "title": "DeepSeek App-Server API",
+            "description": "HTTP transport for the DeepSeek workspace architecture. Supports thread management, prompt execution, tool invocation, and configuration introspection.",
+            "version": env!("CARGO_PKG_VERSION")
+        },
+        "servers": [{"url": "/", "description": "Local app-server"}],
+        "paths": {
+            "/healthz": {
+                "get": {
+                    "summary": "Health check",
+                    "operationId": "healthz",
+                    "responses": {
+                        "200": {
+                            "description": "Service is healthy",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "status": {"type": "string", "example": "ok"},
+                                            "protocol": {"type": "string", "example": "v2"},
+                                            "service": {"type": "string", "example": "deepseek-app-server"}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/thread": {
+                "post": {
+                    "summary": "Thread operations",
+                    "description": "Create, start, resume, fork, list, read, archive, unarchive, set-name, or send a message to a thread. The request body uses a tagged `kind` field to select the operation.",
+                    "operationId": "threadHandler",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ThreadRequest"
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Thread operation result",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/ThreadResponse"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/app": {
+                "post": {
+                    "summary": "Application operations",
+                    "description": "Query capabilities, read/write config values, list models, or list loaded threads.",
+                    "operationId": "appHandler",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AppRequest"
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Application operation result",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/AppResponse"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/prompt": {
+                "post": {
+                    "summary": "Execute a prompt",
+                    "description": "Send a prompt to the LLM and receive the generated output.",
+                    "operationId": "promptHandler",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PromptRequest"
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Prompt execution result",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/PromptResponse"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/tool": {
+                "post": {
+                    "summary": "Invoke a tool",
+                    "description": "Execute a named tool call with arguments and an optional working directory.",
+                    "operationId": "toolHandler",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ToolCallRequest"
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Tool execution result"
+                        }
+                    }
+                }
+            },
+            "/jobs": {
+                "get": {
+                    "summary": "List active jobs",
+                    "description": "Return the runtime's application status, including active agent jobs.",
+                    "operationId": "jobsHandler",
+                    "responses": {
+                        "200": {
+                            "description": "Application status",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/AppResponse"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/mcp/startup": {
+                "post": {
+                    "summary": "Trigger MCP server startup",
+                    "description": "Initiate MCP server startup and return a summary of ready and failed servers.",
+                    "operationId": "mcpStartupHandler",
+                    "responses": {
+                        "200": {
+                            "description": "MCP startup summary"
+                        }
+                    }
+                }
+            },
+            "/openapi.json": {
+                "get": {
+                    "summary": "OpenAPI specification",
+                    "operationId": "openapiSpec",
+                    "responses": {
+                        "200": {
+                            "description": "OpenAPI 3.0.3 specification"
+                        }
+                    }
+                }
+            }
+        },
+        "components": {
+            "schemas": {
+                "ThreadRequest": {
+                    "type": "object",
+                    "description": "Tagged union over thread operations. Use the `kind` field to select the operation.",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["create", "start", "resume", "fork", "list", "read", "set_name", "archive", "unarchive", "message"]
+                        }
+                    }
+                },
+                "ThreadResponse": {
+                    "type": "object",
+                    "properties": {
+                        "thread_id": {"type": "string"},
+                        "status": {"type": "string"},
+                        "thread": {"type": "object", "nullable": true},
+                        "threads": {"type": "array", "items": {"type": "object"}},
+                        "events": {"type": "array", "items": {"type": "object"}}
+                    }
+                },
+                "AppRequest": {
+                    "type": "object",
+                    "description": "Tagged union over application operations. Use the `kind` field to select the operation.",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["capabilities", "config_get", "config_set", "config_unset", "config_list", "models", "thread_loaded_list"]
+                        },
+                        "key": {"type": "string"},
+                        "value": {"type": "string"}
+                    }
+                },
+                "AppResponse": {
+                    "type": "object",
+                    "properties": {
+                        "ok": {"type": "boolean"},
+                        "data": {"type": "object"},
+                        "events": {"type": "array", "items": {"type": "object"}}
+                    }
+                },
+                "PromptRequest": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string"},
+                        "thread_id": {"type": "string", "nullable": true},
+                        "model": {"type": "string", "nullable": true}
+                    },
+                    "required": ["prompt"]
+                },
+                "PromptResponse": {
+                    "type": "object",
+                    "properties": {
+                        "output": {"type": "string"},
+                        "model": {"type": "string"},
+                        "events": {"type": "array", "items": {"type": "object"}}
+                    }
+                },
+                "ToolCallRequest": {
+                    "type": "object",
+                    "properties": {
+                        "call": {"type": "object"},
+                        "cwd": {"type": "string", "nullable": true}
+                    }
+                }
+            }
+        }
+    })
+}
+
 async fn healthz() -> Json<Value> {
     Json(json!({
         "status": "ok",
         "protocol": "v2",
         "service": "deepseek-app-server"
     }))
+}
+
+async fn openapi() -> Json<Value> {
+    Json(openapi_spec())
 }
 
 async fn thread_handler(
