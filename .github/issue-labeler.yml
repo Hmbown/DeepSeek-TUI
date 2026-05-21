@@ -1,0 +1,51 @@
+# Auto-label rules for issues and PRs.
+# Matches against title + body text.
+
+bug:
+  - any:
+    - '(title|body) contains: bug'
+    - '(title|body) contains: crash'
+    - '(title|body) contains: error'
+    - '(title|body) contains: broken'
+    - '(title|body) contains: fix'
+    - '(title|body) contains: regression'
+
+enhancement:
+  - any:
+    - '(title|body) contains: feature'
+    - '(title|body) contains: request'
+    - '(title|body) contains: add'
+    - '(title|body) contains: support'
+    - '(title|body) contains: improve'
+    - '(title|body) contains: enhancement'
+
+question:
+  - any:
+    - '(title|body) contains: how'
+    - '(title|body) contains: why'
+    - '(title|body) contains: help'
+    - '(title|body) contains: question'
+    - '(title|body) contains: ?'
+
+documentation:
+  - any:
+    - '(title|body) contains: docs'
+    - '(title|body) contains: readme'
+    - '(title|body) contains: documentation'
+    - '(title|body) contains: guide'
+
+localization:
+  - any:
+    - '(title|body) contains: chinese'
+    - '(title|body) contains: 中文'
+    - '(title|body) contains: locale'
+    - '(title|body) contains: language'
+    - '(title|body) contains: i18n'
+
+performance:
+  - any:
+    - '(title|body) contains: slow'
+    - '(title|body) contains: performance'
+    - '(title|body) contains: memory'
+    - '(title|body) contains: cpu'
+    - '(title|body) contains: latency'
