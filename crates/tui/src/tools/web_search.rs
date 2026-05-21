@@ -203,6 +203,7 @@ impl ToolSpec for WebSearchTool {
 
         let decider = context.network_policy.as_ref();
         let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(context.insecure_skip_tls_verify)
             .timeout(Duration::from_millis(timeout_ms))
             .user_agent(USER_AGENT)
             .build()
@@ -328,6 +329,7 @@ impl WebSearchTool {
             })?;
 
         let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(context.insecure_skip_tls_verify)
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .map_err(|e| {
@@ -425,6 +427,7 @@ impl WebSearchTool {
             })?;
 
         let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(context.insecure_skip_tls_verify)
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .map_err(|e| {
