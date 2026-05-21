@@ -189,7 +189,6 @@ fn log_retention_days(config_days: Option<u64>) -> u64 {
     std::env::var(LOG_RETENTION_ENV)
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .filter(|days| *days > 0)
         .or(config_days)
         .unwrap_or(DEFAULT_LOG_RETENTION_DAYS)
 }

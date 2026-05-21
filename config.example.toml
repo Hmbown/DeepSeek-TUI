@@ -457,9 +457,11 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # Only files matching `tui-*.log` in the configured log directory are affected.
 #
 # Precedence:
-#   1. `DEEPSEEK_LOG_RETENTION_DAYS` env var — set to a positive day count
-#      to override the config value for a single session.
+#   1. `DEEPSEEK_LOG_RETENTION_DAYS` env var — set to a day count to override
+#      the config value for a single session. `0` prunes all logs on startup.
 #   2. `retention_days` below (default: 7).
+#
+# Valid range: 0 (purge all on startup) to any positive integer.
 #
 # Check the log directory manually:
 #   ls ~/.deepseek/logs/
