@@ -23,9 +23,10 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap},
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::palette;
+use crate::tui::ui_text::push_word_breaking_chars;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 
 /// Footer hint shown along the bottom border of the pager. Kept short so it
@@ -532,25 +533,6 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
     lines
 }
-
-fn push_word_breaking_chars(
-    word: &str,
-    width: usize,
-    current: &mut String,
-    current_width: &mut usize,
-    lines: &mut Vec<String>,
-) {
-    for ch in word.chars() {
-        let char_width = ch.width().unwrap_or(1);
-        if *current_width + char_width > width && *current_width > 0 {
-            lines.push(std::mem::take(current));
-            *current_width = 0;
-        }
-        current.push(ch);
-        *current_width += char_width;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

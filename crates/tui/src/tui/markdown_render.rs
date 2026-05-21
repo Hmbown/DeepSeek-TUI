@@ -33,6 +33,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::palette;
 use crate::tui::osc8;
+use crate::tui::ui_text::push_word_breaking_chars;
 
 // Thread-local counter incremented every time `parse` runs. Used by tests to
 // prove that width-only changes hit the cached-AST path and skip parsing.
@@ -1014,29 +1015,6 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     }
 
     lines
-}
-
-/// Push characters from `word` into `current`, flushing to `lines` when the
-/// running display width would exceed `width`. Width is computed at the
-/// `unicode-width` char level, matching the rest of the rendering pipeline.
-/// Used by `wrap_text` and `wrap_cell_text` so a word longer than the
-/// allotted width never silently overflows the right edge.
-fn push_word_breaking_chars(
-    word: &str,
-    width: usize,
-    current: &mut String,
-    current_width: &mut usize,
-    lines: &mut Vec<String>,
-) {
-    for ch in word.chars() {
-        let cw = ch.width().unwrap_or(1);
-        if *current_width + cw > width && *current_width > 0 {
-            lines.push(std::mem::take(current));
-            *current_width = 0;
-        }
-        current.push(ch);
-        *current_width += cw;
-    }
 }
 
 #[cfg(test)]
