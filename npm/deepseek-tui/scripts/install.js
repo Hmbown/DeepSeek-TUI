@@ -577,6 +577,12 @@ function httpRequest(rawUrl, opts = {}) {
       try {
         req = client.request(reqOptions, (response) => {
           res = response;
+          // Pause the stream immediately to prevent data events from firing
+          // before the caller attaches their data listener. Without this,
+          // the stall timer's data listener puts the stream in flowing mode
+          // and early chunks are lost, causing checksum manifest parsing to fail
+          // with "Invalid checksum manifest line" errors.
+          response.pause();
           armStallTimer();
           response.on("data", () => {
             armStallTimer();
@@ -944,6 +950,10 @@ async function downloadText(url, options = {}) {
         resolve(chunks.join(""));
       });
       response.on("error", reject);
+      // Resume the stream now that our data listener is attached.
+      // Paired with response.pause() in httpRequest to fix the race condition
+      // where early data events were lost before this listener was attached.
+      response.resume();
     });
   }, context);
 }
