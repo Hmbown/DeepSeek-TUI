@@ -52,6 +52,9 @@ pub enum Op {
     /// List current sub-agents and their status
     ListSubAgents,
 
+    /// Fetch DeepSeek account balance without blocking the UI loop.
+    FetchBalance { provider: String },
+
     /// Change the operating mode
     #[allow(dead_code)]
     ChangeMode { mode: AppMode },

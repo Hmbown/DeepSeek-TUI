@@ -1708,6 +1708,42 @@ async fn run_event_loop(
                         // Individual spawn/complete events already log to history;
                         // full list available via /agents command.
                     }
+                    EngineEvent::AccountBalance { provider, result } => match result {
+                        Ok(balance) => {
+                            app.add_message(HistoryCell::System {
+                                content: format_helpers::account_balance_message(
+                                    app.ui_locale,
+                                    &provider,
+                                    &balance,
+                                ),
+                            });
+                            app.status_message = Some(
+                                crate::localization::tr(
+                                    app.ui_locale,
+                                    crate::localization::MessageId::AccountBalanceFetched,
+                                )
+                                .to_string(),
+                            );
+                        }
+                        Err(error) => {
+                            app.add_message(HistoryCell::System {
+                                content: format!(
+                                    "{}{error}",
+                                    crate::localization::tr(
+                                        app.ui_locale,
+                                        crate::localization::MessageId::AccountBalanceFetchFailedPrefix,
+                                    )
+                                ),
+                            });
+                            app.status_message = Some(
+                                crate::localization::tr(
+                                    app.ui_locale,
+                                    crate::localization::MessageId::AccountBalanceFetchFailed,
+                                )
+                                .to_string(),
+                            );
+                        }
+                    },
                     EngineEvent::SubAgentMailbox { seq, message } => {
                         handle_subagent_mailbox(app, seq, &message);
                         transcript_batch_updated = true;
@@ -4417,6 +4453,34 @@ async fn apply_command_result(
                             });
                         }
                     }
+                }
+            }
+            AppAction::FetchBalance => {
+                let provider = config.api_provider();
+                if !matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
+                    app.add_message(HistoryCell::System {
+                        content: format!(
+                            "{}{}",
+                            crate::localization::tr(
+                                app.ui_locale,
+                                crate::localization::MessageId::AccountBalanceUnsupportedProviderPrefix,
+                            ),
+                            provider.display_name()
+                        ),
+                    });
+                } else {
+                    app.status_message = Some(
+                        crate::localization::tr(
+                            app.ui_locale,
+                            crate::localization::MessageId::AccountBalanceFetching,
+                        )
+                        .to_string(),
+                    );
+                    let _ = engine_handle
+                        .send(Op::FetchBalance {
+                            provider: provider.as_str().to_string(),
+                        })
+                        .await;
                 }
             }
             AppAction::CacheWarmup => {

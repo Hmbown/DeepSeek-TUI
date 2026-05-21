@@ -4274,6 +4274,7 @@ pub enum AppAction {
     SendMessage(String),
     ListSubAgents,
     FetchModels,
+    FetchBalance,
     CacheWarmup,
     /// Switch the active LLM backend (DeepSeek vs NVIDIA NIM) without
     /// restarting the process. The runtime rebuilds its API client from

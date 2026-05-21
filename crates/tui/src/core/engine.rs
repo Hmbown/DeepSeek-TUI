@@ -716,6 +716,42 @@ impl Engine {
                     };
                     let _ = self.tx_event.send(Event::AgentList { agents }).await;
                 }
+                Op::FetchBalance { provider } => {
+                    let Some(client) = self.deepseek_client.clone() else {
+                        let message = self
+                            .deepseek_client_error
+                            .clone()
+                            .unwrap_or_else(|| "API client not configured".to_string());
+                        let _ = self
+                            .tx_event
+                            .send(Event::AccountBalance {
+                                provider,
+                                result: Err(message),
+                            })
+                            .await;
+                        continue;
+                    };
+                    let tx_event = self.tx_event.clone();
+                    spawn_supervised(
+                        "fetch-account-balance",
+                        std::panic::Location::caller(),
+                        async move {
+                            let result = match tokio::time::timeout(
+                                Duration::from_secs(20),
+                                client.account_balance(),
+                            )
+                            .await
+                            {
+                                Ok(Ok(balance)) => Ok(balance),
+                                Ok(Err(err)) => Err(err.to_string()),
+                                Err(err) => Err(err.to_string()),
+                            };
+                            let _ = tx_event
+                                .send(Event::AccountBalance { provider, result })
+                                .await;
+                        },
+                    );
+                }
                 Op::ChangeMode { mode } => {
                     let _ = self
                         .tx_event

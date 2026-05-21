@@ -7,6 +7,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use serde_json::Value;
 
+use crate::client::AccountBalance;
 use crate::core::coherence::CoherenceState;
 use crate::error_taxonomy::ErrorEnvelope;
 use crate::models::{Message, SystemPrompt, Usage};
@@ -191,6 +192,12 @@ pub enum Event {
 
     /// Sub-agent listing
     AgentList { agents: Vec<SubAgentResult> },
+
+    /// DeepSeek account balance response for `/balance`.
+    AccountBalance {
+        provider: String,
+        result: Result<AccountBalance, String>,
+    },
 
     /// Structured sub-agent mailbox envelope (issue #128). Carries the
     /// monotonic seq + the typed `MailboxMessage` so the UI can route each
