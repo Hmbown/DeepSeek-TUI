@@ -62,6 +62,27 @@ async function main() {
     manifestLines.push(`${await sha256(outputPath)}  ${asset.target}`);
   }
 
+
+  // Windows: generate .bat launcher that prefers Windows Terminal
+  if (isWindows) {
+    const batContent = [
+      "@echo off",
+      "set NO_ANIMATIONS=1",
+      "where wt >nul 2>nul",
+      "if %ERRORLEVEL% EQU 0 (",
+      "    wt --title DeepSeek-TUI cmd /k ""%~dp0deepseek-tui-windows-x64.exe"",
+      ") else (",
+      "    "%~dp0deepseek-tui-windows-x64.exe"",
+      ")",
+      "",
+    ].join("\r\n");
+    const batPath = path.join(outputDir, "deepseek-tui.bat");
+    await fs.writeFile(batPath, batContent, "utf8");
+    const batHash = await sha256(batPath);
+    manifestLines.push(`${batHash}  deepseek-tui.bat`);
+    console.log(`Generated ${batPath}`);
+  }
+
   manifestLines.sort();
   const manifestPath = path.join(outputDir, CHECKSUM_MANIFEST);
   await fs.writeFile(manifestPath, `${manifestLines.join("\n")}\n`, "utf8");

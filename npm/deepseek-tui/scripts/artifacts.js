@@ -13,7 +13,7 @@ const ASSET_MATRIX = {
     arm64: ["deepseek-macos-arm64", "deepseek-tui-macos-arm64"],
   },
   win32: {
-    x64: ["deepseek-windows-x64.exe", "deepseek-tui-windows-x64.exe"],
+    x64: ["deepseek-windows-x64.exe", "deepseek-tui-windows-x64.exe", "deepseek-tui.bat"],
   },
 };
 
