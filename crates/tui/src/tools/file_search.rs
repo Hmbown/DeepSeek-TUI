@@ -2,11 +2,23 @@
 
 use std::cmp::Ordering;
 use std::path::Path;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use ignore::WalkBuilder;
 use serde::Serialize;
 use serde_json::{Value, json};
+
+/// Maximum wall-clock time a single `file_search` invocation may run before
+/// being aborted. The synchronous `WalkBuilder` traversal cannot observe the
+/// engine's `CancellationToken`, so this timeout is currently the only path
+/// for unblocking the turn loop when a search targets a very large tree
+/// (e.g. `$HOME`, mounted network volumes, repos with deep `node_modules/`).
+///
+/// 30s is generous for normal workspace usage (typical: <1s) and protective
+/// against pathological cases. A long-term fix to expose `cancel_token`
+/// through `ToolContext` is tracked separately.
+const FILE_SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 use crate::tools::search::matches_glob;
 
@@ -87,7 +99,37 @@ impl ToolSpec for FileSearchTool {
 
         let extensions = parse_extensions(&input);
         let exclude_patterns = parse_exclude_patterns(&input);
-        let matches = search_files(query, &base_path, extensions, exclude_patterns, limit)?;
+
+        // Move the synchronous walker off the async task: it can run for
+        // minutes on large trees and would otherwise block the engine's
+        // turn loop from observing cancellation.
+        let query_owned = query.to_string();
+        let base_path_owned = base_path.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            search_files(
+                &query_owned,
+                &base_path_owned,
+                extensions,
+                exclude_patterns,
+                limit,
+            )
+        });
+        let matches = match tokio::time::timeout(FILE_SEARCH_TIMEOUT, task).await {
+            Ok(Ok(Ok(matches))) => matches,
+            Ok(Ok(Err(e))) => return Err(e),
+            Ok(Err(join_err)) => {
+                return Err(ToolError::execution_failed(format!(
+                    "file_search task panicked: {join_err}"
+                )));
+            }
+            Err(_) => {
+                return Err(ToolError::execution_failed(format!(
+                    "file_search timed out after {}s (base_path={}). Narrow the search with `path` or specific `extensions`.",
+                    FILE_SEARCH_TIMEOUT.as_secs(),
+                    base_path.display()
+                )));
+            }
+        };
         ToolResult::json(&matches).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
