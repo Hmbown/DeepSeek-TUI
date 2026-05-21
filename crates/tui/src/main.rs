@@ -1489,6 +1489,10 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     "FIREWORKS_API_KEY",
                     "deepseek auth set --provider fireworks --api-key \"...\"",
                 ),
+                crate::config::ApiProvider::Siliconflow => (
+                    "SILICONFLOW_API_KEY",
+                    "deepseek auth set --provider siliconflow --api-key \"...\"",
+                ),
                 crate::config::ApiProvider::Sglang => (
                     "SGLANG_API_KEY",
                     "deepseek auth set --provider sglang --api-key \"...\"",
@@ -1515,6 +1519,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     crate::config::ApiProvider::Openrouter => "openrouter",
                     crate::config::ApiProvider::Novita => "novita",
                     crate::config::ApiProvider::Fireworks => "fireworks",
+                    crate::config::ApiProvider::Siliconflow => "siliconflow",
                     crate::config::ApiProvider::Sglang => "sglang",
                     crate::config::ApiProvider::Vllm => "vllm",
                     crate::config::ApiProvider::Ollama => "ollama",
@@ -1756,6 +1761,11 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             crate::config::ApiProvider::Fireworks,
             "fireworks",
             &["FIREWORKS_API_KEY"][..],
+        ),
+        (
+            crate::config::ApiProvider::Siliconflow,
+            "siliconflow",
+            &["SILICONFLOW_API_KEY"][..],
         ),
         (
             crate::config::ApiProvider::Sglang,

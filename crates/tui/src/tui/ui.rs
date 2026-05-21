@@ -5051,6 +5051,7 @@ async fn execute_command_input(
             providers.openrouter.api_key = None;
             providers.novita.api_key = None;
             providers.fireworks.api_key = None;
+            providers.siliconflow.api_key = None;
             providers.sglang.api_key = None;
             providers.vllm.api_key = None;
             providers.ollama.api_key = None;
@@ -5434,6 +5435,7 @@ fn render(f: &mut Frame, app: &mut App) {
             crate::config::ApiProvider::Openrouter => Some("OR"),
             crate::config::ApiProvider::Novita => Some("Novita"),
             crate::config::ApiProvider::Fireworks => Some("Fireworks"),
+            crate::config::ApiProvider::Siliconflow => Some("SiliconFlow"),
             crate::config::ApiProvider::Sglang => Some("SGLang"),
             crate::config::ApiProvider::Vllm => Some("vLLM"),
             crate::config::ApiProvider::Ollama => Some("Ollama"),
@@ -6198,6 +6200,7 @@ async fn apply_provider_picker_api_key(
             ApiProvider::Openrouter => &mut providers.openrouter,
             ApiProvider::Novita => &mut providers.novita,
             ApiProvider::Fireworks => &mut providers.fireworks,
+            ApiProvider::Siliconflow => &mut providers.siliconflow,
             ApiProvider::Sglang => &mut providers.sglang,
             ApiProvider::Vllm => &mut providers.vllm,
             ApiProvider::Ollama => &mut providers.ollama,
