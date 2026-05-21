@@ -5,6 +5,7 @@
 //! platform-correct binary, verifies its SHA256 checksum, and atomically
 //! replaces the currently running binary.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -21,7 +22,7 @@ const LEGACY_UPDATE_VERSION_ENV: &str = "DEEPSEEK_VERSION";
 const UPDATE_USER_AGENT: &str = "deepseek-tui-updater";
 
 /// Run the self-update workflow.
-pub fn run_update() -> Result<()> {
+pub fn run_update(check_only: bool) -> Result<()> {
     let current_exe =
         std::env::current_exe().context("failed to determine current executable path")?;
     let targets = update_targets_for_exe(&current_exe);
@@ -32,7 +33,24 @@ pub fn run_update() -> Result<()> {
     // Step 1: Fetch latest release metadata
     let release = fetch_latest_release().with_context(update_network_fallback_hint)?;
     let latest_tag = &release.tag_name;
+    let current_version = env!("CARGO_PKG_VERSION");
+    println!("Current version: v{current_version}");
     println!("Latest release: {latest_tag}");
+
+    if check_only {
+        match compare_release_versions(current_version, latest_tag) {
+            Ordering::Less => {
+                println!("Update available. Run `deepseek update` to install {latest_tag}.");
+            }
+            Ordering::Equal => {
+                println!("Already up to date.");
+            }
+            Ordering::Greater => {
+                println!("Current build is newer than the latest published release.");
+            }
+        }
+        return Ok(());
+    }
 
     // Step 2: Download the aggregated SHA256 checksum manifest if available
     let checksum_manifest = match select_checksum_manifest_asset(&release) {
@@ -323,6 +341,24 @@ fn update_version_from_env() -> Option<String> {
         .or_else(|| std::env::var(LEGACY_UPDATE_VERSION_ENV).ok())
         .map(|value| value.trim().trim_start_matches('v').to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn compare_release_versions(current: &str, latest_tag: &str) -> Ordering {
+    parse_version_components(current).cmp(&parse_version_components(latest_tag))
+}
+
+fn parse_version_components(version: &str) -> Vec<u64> {
+    let trimmed = version.trim().trim_start_matches('v');
+    let core = trimmed.split(['-', '+', ' ']).next().unwrap_or(trimmed);
+    core.split('.')
+        .map(|part| {
+            part.chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u64>()
+                .unwrap_or(0)
+        })
+        .collect()
 }
 
 fn release_from_mirror_base_url(
@@ -820,6 +856,22 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *deepseek-wind
         assert!(
             select_platform_asset(&release, "deepseek-tui-windows-x64")
                 .is_some_and(|asset| asset.name == "deepseek-tui-windows-x64.exe")
+        );
+    }
+
+    #[test]
+    fn release_version_compare_ignores_v_prefix_and_build_sha() {
+        assert_eq!(
+            compare_release_versions("0.8.39 (eeccf7d)", "v0.8.39"),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            compare_release_versions("0.8.39", "v0.8.40"),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_release_versions("0.8.40", "v0.8.39"),
+            std::cmp::Ordering::Greater
         );
     }
 

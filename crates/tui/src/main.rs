@@ -1431,6 +1431,84 @@ fn skills_count_for(dir: &Path) -> usize {
     crate::skills::SkillRegistry::discover(dir).len()
 }
 
+const DOCTOR_LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/Hmbown/DeepSeek-TUI/releases/latest";
+const DOCTOR_RELEASE_BASE_URL_ENV: &str = "DEEPSEEK_TUI_RELEASE_BASE_URL";
+const DOCTOR_LEGACY_RELEASE_BASE_URL_ENV: &str = "DEEPSEEK_RELEASE_BASE_URL";
+const DOCTOR_UPDATE_VERSION_ENV: &str = "DEEPSEEK_TUI_VERSION";
+const DOCTOR_LEGACY_UPDATE_VERSION_ENV: &str = "DEEPSEEK_VERSION";
+const DOCTOR_UPDATE_USER_AGENT: &str = "deepseek-tui-doctor";
+
+#[derive(serde::Deserialize)]
+struct DoctorRelease {
+    tag_name: String,
+}
+
+async fn doctor_latest_release_tag() -> Result<String> {
+    if doctor_release_base_url_from_env().is_some() {
+        let version =
+            doctor_update_version_from_env().unwrap_or_else(|| env!("CARGO_PKG_VERSION").into());
+        return Ok(format!("v{}", version.trim_start_matches('v')));
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent(DOCTOR_UPDATE_USER_AGENT)
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .context("failed to build release check HTTP client")?;
+    let response = client
+        .get(DOCTOR_LATEST_RELEASE_URL)
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .send()
+        .await
+        .context("failed to fetch latest GitHub release")?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .context("failed to read latest release response")?;
+    if !status.is_success() {
+        bail!("GitHub release request failed with HTTP {status}");
+    }
+    let release: DoctorRelease =
+        serde_json::from_str(&body).context("failed to parse latest release response")?;
+    Ok(release.tag_name)
+}
+
+fn doctor_release_base_url_from_env() -> Option<String> {
+    std::env::var(DOCTOR_RELEASE_BASE_URL_ENV)
+        .ok()
+        .or_else(|| std::env::var(DOCTOR_LEGACY_RELEASE_BASE_URL_ENV).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn doctor_update_version_from_env() -> Option<String> {
+    std::env::var(DOCTOR_UPDATE_VERSION_ENV)
+        .ok()
+        .or_else(|| std::env::var(DOCTOR_LEGACY_UPDATE_VERSION_ENV).ok())
+        .map(|value| value.trim().trim_start_matches('v').to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn compare_release_versions(current: &str, latest_tag: &str) -> std::cmp::Ordering {
+    parse_version_components(current).cmp(&parse_version_components(latest_tag))
+}
+
+fn parse_version_components(version: &str) -> Vec<u64> {
+    let trimmed = version.trim().trim_start_matches('v');
+    let core = trimmed.split(['-', '+', ' ']).next().unwrap_or(trimmed);
+    core.split('.')
+        .map(|part| {
+            part.chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u64>()
+                .unwrap_or(0)
+        })
+        .collect()
+}
+
 fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
     use crate::palette;
     use colored::Colorize;
@@ -1675,6 +1753,39 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!("{}", "Version Information:".bold());
     println!("  deepseek-tui: {}", env!("DEEPSEEK_BUILD_VERSION"));
     println!("  rust: {}", rustc_version());
+    println!();
+
+    println!("{}", "Updates:".bold());
+    println!("  · current: v{}", env!("CARGO_PKG_VERSION"));
+    match doctor_latest_release_tag().await {
+        Ok(latest_tag) => {
+            let icon = match compare_release_versions(env!("CARGO_PKG_VERSION"), &latest_tag) {
+                std::cmp::Ordering::Less => "!".truecolor(sky_r, sky_g, sky_b),
+                std::cmp::Ordering::Equal => "✓".truecolor(aqua_r, aqua_g, aqua_b),
+                std::cmp::Ordering::Greater => "·".dimmed(),
+            };
+            println!("  {} latest: {}", icon, latest_tag);
+            match compare_release_versions(env!("CARGO_PKG_VERSION"), &latest_tag) {
+                std::cmp::Ordering::Less => {
+                    println!("    Update available. Run `deepseek update` to install.");
+                }
+                std::cmp::Ordering::Equal => {
+                    println!("    Already up to date.");
+                }
+                std::cmp::Ordering::Greater => {
+                    println!("    Current build is newer than the latest published release.");
+                }
+            }
+        }
+        Err(err) => {
+            println!(
+                "  {} latest release check failed: {}",
+                "!".truecolor(sky_r, sky_g, sky_b),
+                err
+            );
+            println!("    Run `deepseek update --check` to retry.");
+        }
+    }
     println!();
 
     // Configuration summary
@@ -5057,6 +5168,22 @@ async fn run_exec_agent(
 #[cfg(test)]
 mod doctor_endpoint_tests {
     use super::*;
+
+    #[test]
+    fn release_version_compare_ignores_v_prefix_and_build_sha() {
+        assert_eq!(
+            compare_release_versions("0.8.39 (eeccf7d)", "v0.8.39"),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            compare_release_versions("0.8.39", "v0.8.40"),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_release_versions("0.8.40", "v0.8.39"),
+            std::cmp::Ordering::Greater
+        );
+    }
 
     #[test]
     fn doctor_api_target_reports_default_endpoint() {
