@@ -569,6 +569,7 @@ pub struct ConfigView {
     filter: String,
     status: Option<String>,
     locale: Locale,
+    effective_cost_currency: String,
     last_visible_rows: Cell<usize>,
     last_row_hitboxes: RefCell<Vec<(u16, usize)>>,
 }
@@ -804,6 +805,7 @@ impl ConfigView {
             filter: String::new(),
             status: None,
             locale: app.ui_locale,
+            effective_cost_currency: cost_currency_config_value(app),
             last_visible_rows: Cell::new(0),
             last_row_hitboxes: RefCell::new(Vec::new()),
         }
@@ -826,7 +828,7 @@ impl ConfigView {
 
         let section = row.section.label().to_lowercase();
         let key = row.key.to_lowercase();
-        let value = row.value.to_lowercase();
+        let value = self.row_display_value(row).to_lowercase();
         let scope = row.scope.label().to_lowercase();
 
         filter.split_whitespace().all(|term| {
@@ -1105,6 +1107,25 @@ impl ConfigView {
 
         self.update_filter(|filter| filter.clear());
     }
+
+    fn row_display_value(&self, row: &ConfigRow) -> String {
+        if row.key == "cost_currency"
+            && row.scope == ConfigScope::Saved
+            && row.value != self.effective_cost_currency
+        {
+            format!("{} (effective {})", row.value, self.effective_cost_currency)
+        } else {
+            row.value.clone()
+        }
+    }
+}
+
+fn cost_currency_config_value(app: &App) -> String {
+    match app.cost_currency {
+        crate::pricing::CostCurrency::Usd => "usd",
+        crate::pricing::CostCurrency::Cny => "cny",
+    }
+    .to_string()
 }
 
 fn config_hint_for_key(key: &str) -> &'static str {
@@ -1122,6 +1143,7 @@ fn config_hint_for_key(key: &str) -> &'static str {
         "theme" => "system | dark | light | grayscale",
         "locale" => "auto | en | ja | zh-Hans | pt-BR",
         "background_color" => "#RRGGBB | default",
+        "cost_currency" => "usd | cny",
         "default_mode" => "agent | plan | yolo",
         "sidebar_width" => "10..=50",
         "sidebar_focus" => "auto | work | tasks | agents | context | hidden",
@@ -1417,7 +1439,10 @@ impl ModalView for ConfigView {
                         } else {
                             Style::default().fg(palette::TEXT_PRIMARY)
                         };
-                        let value = truncate_view_text(&row.value, CONFIG_VALUE_COLUMN_WIDTH);
+                        let value = truncate_view_text(
+                            &self.row_display_value(row),
+                            CONFIG_VALUE_COLUMN_WIDTH,
+                        );
                         let mut line = Line::from(format!(
                             "  {:<key_width$} {:<value_width$} {}",
                             row.key,
@@ -1988,7 +2013,51 @@ mod tests {
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
     use ratatui::{buffer::Buffer, layout::Rect};
+    use std::ffi::OsString;
     use std::path::PathBuf;
+    use std::sync::MutexGuard;
+    use tempfile::TempDir;
+
+    struct ConfigSettingsEnvGuard {
+        _tmp: TempDir,
+        previous_config_path: Option<OsString>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl ConfigSettingsEnvGuard {
+        fn new(settings_toml: &str) -> Self {
+            let lock = crate::test_support::lock_test_env();
+            let tmp = TempDir::new().expect("settings tempdir");
+            let config_path = tmp.path().join(".deepseek").join("config.toml");
+            let settings_path = config_path
+                .parent()
+                .expect("settings parent")
+                .join("settings.toml");
+            std::fs::create_dir_all(config_path.parent().expect("config parent"))
+                .expect("config dir");
+            std::fs::write(&settings_path, settings_toml).expect("settings file");
+            let previous_config_path = std::env::var_os("DEEPSEEK_CONFIG_PATH");
+            unsafe {
+                std::env::set_var("DEEPSEEK_CONFIG_PATH", &config_path);
+            }
+            Self {
+                _tmp: tmp,
+                previous_config_path,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for ConfigSettingsEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.previous_config_path.take() {
+                    Some(previous) => std::env::set_var("DEEPSEEK_CONFIG_PATH", previous),
+                    None => std::env::remove_var("DEEPSEEK_CONFIG_PATH"),
+                }
+            }
+        }
+    }
 
     fn create_test_app() -> App {
         let options = TuiOptions {
@@ -2166,6 +2235,25 @@ mod tests {
         assert!(keys.contains(&"prefer_external_pdftotext"));
         assert!(keys.contains(&"mcp_config_path"));
         assert!(view.rows.iter().all(|row| row.editable));
+    }
+
+    #[test]
+    fn config_view_cost_currency_shows_saved_and_effective_runtime_currency() {
+        let _guard = ConfigSettingsEnvGuard::new("locale = \"zh-Hans\"\ncost_currency = \"usd\"\n");
+        let app = create_test_app();
+        assert_eq!(app.ui_locale, Locale::ZhHans);
+        assert_eq!(app.cost_currency, crate::pricing::CostCurrency::Cny);
+
+        let view = ConfigView::new_for_app(&app);
+        let row = view
+            .rows
+            .iter()
+            .find(|row| row.key == "cost_currency")
+            .expect("cost_currency row");
+
+        assert_eq!(row.value, "usd");
+        assert_eq!(view.row_display_value(row), "usd (effective cny)");
+        assert_eq!(Settings::load().expect("settings").cost_currency, "usd");
     }
 
     #[test]
