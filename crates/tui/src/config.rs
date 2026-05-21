@@ -795,6 +795,41 @@ impl StatusItem {
     }
 }
 
+/// Context management strategy: how the TUI handles growing conversation context.
+///
+/// `CacheMaximal` (default) prefers appending new content over summarizing old
+/// context, keeping the KV prefix cache hot by avoiding rewrites. Routine
+/// auto-compaction is skipped. Users can still trigger `/compact` manually.
+///
+/// `Compact` enables the legacy summarization-based compaction path, which
+/// periodically summarizes older messages to stay within a token budget.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContextMode {
+    #[default]
+    CacheMaximal,
+    Compact,
+}
+
+impl ContextMode {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CacheMaximal => "cache-maximal",
+            Self::Compact => "compact",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "cache-maximal" | "cache_maximal" | "cache" => Some(Self::CacheMaximal),
+            "compact" => Some(Self::Compact),
+            _ => None,
+        }
+    }
+}
+
 /// Resolved retry policy with defaults applied.
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
@@ -1019,6 +1054,13 @@ pub struct Config {
     /// Append-only layered context management with Flash seam manager (#159).
     #[serde(default)]
     pub context: ContextConfig,
+
+    /// Context management mode: `cache-maximal` (default) or `compact`.
+    /// Cache-maximal mode skips routine auto-compaction and prefers appending
+    /// new context, keeping the KV prefix cache hot. Set to `compact` to
+    /// re-enable legacy summarization-based compaction.
+    #[serde(default)]
+    pub context_mode: Option<ContextMode>,
 
     /// Sub-agent model overrides.
     #[serde(default)]
@@ -2972,6 +3014,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
                 .or(base.context.cycle_threshold),
             seam_model: override_cfg.context.seam_model.or(base.context.seam_model),
         },
+        context_mode: override_cfg.context_mode.or(base.context_mode),
         subagents: override_cfg.subagents.or(base.subagents),
         strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
         runtime_api: override_cfg.runtime_api.or(base.runtime_api),
