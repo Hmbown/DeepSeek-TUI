@@ -454,7 +454,10 @@ If you are upgrading from older releases:
   with `0` or unset preserving the legacy 120 second default.
   `[subagents.models]` accepts lower-case role or type keys such as `worker`,
   `explorer`, `general`, `explore`, `plan`, and `review`. Values must normalize
-  to a supported DeepSeek model id before an agent is spawned.
+  to a supported DeepSeek model id before an agent is spawned. The native
+  `/config` view exposes the convenience keys; model changes apply to newly
+  spawned sub-agents immediately, while `max_concurrent` still requires a
+  restart because it changes the manager capacity.
 - `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is
   a directory containing `SKILL.md`). Workspace-local `.agents/skills` or
   `./skills` are preferred when present; the runtime also discovers global

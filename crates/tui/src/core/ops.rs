@@ -7,6 +7,7 @@ use crate::compaction::CompactionConfig;
 use crate::models::{Message, SystemPrompt};
 use crate::tui::app::AppMode;
 use crate::tui::approval::ApprovalMode;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Operations that can be submitted to the engine.
@@ -62,6 +63,9 @@ pub enum Op {
 
     /// Update auto-compaction settings
     SetCompaction { config: CompactionConfig },
+
+    /// Update model overrides used for subsequently spawned sub-agents.
+    SetSubagentModelOverrides { overrides: HashMap<String, String> },
 
     /// Sync engine session state (used for resume/load)
     SyncSession {

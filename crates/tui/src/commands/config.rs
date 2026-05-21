@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use super::CommandResult;
 use crate::client::DeepSeekClient;
-use crate::config::{COMMON_DEEPSEEK_MODELS, clear_api_key, normalize_model_name_for_provider};
+use crate::config::{
+    COMMON_DEEPSEEK_MODELS, MAX_SUBAGENTS, clear_api_key, normalize_model_name,
+    normalize_model_name_for_provider,
+};
 use crate::config_ui::{ConfigUiMode, parse_mode};
 use crate::llm_client::LlmClient;
 use crate::localization::resolve_locale;
@@ -348,6 +351,129 @@ pub fn persist_root_string_key(key: &str, value: &str) -> anyhow::Result<PathBuf
     Ok(path)
 }
 
+fn active_config_toml_path(app: &App) -> anyhow::Result<PathBuf> {
+    app.config_path.clone().map_or_else(config_toml_path, Ok)
+}
+
+fn subagents_table_for_write<'a>(
+    root: &'a mut toml::value::Table,
+    profile: Option<&str>,
+) -> anyhow::Result<&'a mut toml::value::Table> {
+    use anyhow::Context;
+
+    let target = if let Some(profile) = profile {
+        let profiles_entry = root
+            .entry("profiles".to_string())
+            .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+        let profiles = profiles_entry
+            .as_table_mut()
+            .context("`profiles` section in config.toml must be a table")?;
+        let profile_entry = profiles
+            .entry(profile.to_string())
+            .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+        profile_entry.as_table_mut().with_context(|| {
+            format!("`profiles.{profile}` section in config.toml must be a table")
+        })?
+    } else {
+        root
+    };
+
+    let subagents_entry = target
+        .entry("subagents".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+    subagents_entry
+        .as_table_mut()
+        .context("`subagents` section in config.toml must be a table")
+}
+
+fn update_subagents_table(
+    app: &App,
+    update: impl FnOnce(&mut toml::value::Table),
+) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+    use std::fs;
+
+    let path = active_config_toml_path(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    let mut doc: toml::Value = if path.exists() {
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read config at {}", path.display()))?;
+        toml::from_str(&raw)
+            .with_context(|| format!("failed to parse config at {}", path.display()))?
+    } else {
+        toml::Value::Table(toml::value::Table::new())
+    };
+    let table = doc
+        .as_table_mut()
+        .context("config.toml root must be a table")?;
+    let subagents = subagents_table_for_write(table, app.config_profile.as_deref())?;
+    update(subagents);
+
+    let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
+    fs::write(&path, body)
+        .with_context(|| format!("failed to write config at {}", path.display()))?;
+    Ok(path)
+}
+
+fn persist_subagents_config_value(
+    app: &App,
+    key: &str,
+    value: toml::Value,
+) -> anyhow::Result<PathBuf> {
+    update_subagents_table(app, |subagents| {
+        subagents.insert(key.to_string(), value);
+    })
+}
+
+fn remove_subagents_config_value(app: &App, key: &str) -> anyhow::Result<PathBuf> {
+    update_subagents_table(app, |subagents| {
+        subagents.remove(key);
+    })
+}
+
+fn is_config_clear_value(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.is_empty()
+        || matches!(
+            trimmed.to_ascii_lowercase().as_str(),
+            "inherit" | "default" | "none" | "unset" | "(inherit)" | "(default)"
+        )
+}
+
+fn subagent_override_aliases(key: &str) -> Option<&'static [&'static str]> {
+    match key {
+        "default_model" => Some(&["default"]),
+        "worker_model" => Some(&["worker", "general"]),
+        "explorer_model" => Some(&["explorer", "explore"]),
+        "awaiter_model" => Some(&["awaiter", "plan"]),
+        "review_model" => Some(&["review"]),
+        "custom_model" => Some(&["custom"]),
+        _ => None,
+    }
+}
+
+fn subagent_model_overrides_after_change(
+    app: &App,
+    key: &str,
+    model: Option<&str>,
+) -> std::collections::HashMap<String, String> {
+    let mut overrides = app.subagent_model_overrides.clone();
+    if let Some(aliases) = subagent_override_aliases(key) {
+        for alias in aliases {
+            if let Some(model) = model {
+                overrides.insert((*alias).to_string(), model.to_string());
+            } else {
+                overrides.remove(*alias);
+            }
+        }
+    }
+    overrides
+}
+
 /// Resolve the path to `~/.deepseek/config.toml` (or
 /// `$DEEPSEEK_CONFIG_PATH`). Mirrors what `Config::load` accepts so we
 /// never write to a different file than the one we read.
@@ -368,6 +494,97 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
     let key = key.to_lowercase();
 
     match key.as_str() {
+        "subagents.default_model"
+        | "subagents.worker_model"
+        | "subagents.explorer_model"
+        | "subagents.awaiter_model"
+        | "subagents.review_model"
+        | "subagents.custom_model" => {
+            let subagent_key = key.trim_start_matches("subagents.");
+            let clear_value = is_config_clear_value(value);
+            let model = if clear_value {
+                None
+            } else {
+                let Some(model) = normalize_model_name(value) else {
+                    return CommandResult::error(format!(
+                        "Invalid sub-agent model '{value}'. Expected a DeepSeek model ID. Common models: {}",
+                        COMMON_DEEPSEEK_MODELS.join(", ")
+                    ));
+                };
+                Some(model)
+            };
+            let overrides =
+                subagent_model_overrides_after_change(app, subagent_key, model.as_deref());
+            let message = if persist {
+                let save_result = if let Some(model) = model.as_deref() {
+                    persist_subagents_config_value(
+                        app,
+                        subagent_key,
+                        toml::Value::String(model.to_string()),
+                    )
+                } else {
+                    remove_subagents_config_value(app, subagent_key)
+                };
+                match save_result {
+                    Ok(path) => format!(
+                        "{key} = {} (saved to {})",
+                        model.as_deref().unwrap_or("inherit"),
+                        path.display()
+                    ),
+                    Err(err) => return CommandResult::error(format!("Failed to save: {err}")),
+                }
+            } else {
+                format!(
+                    "{key} = {} (session only)",
+                    model.as_deref().unwrap_or("inherit")
+                )
+            };
+            app.subagent_model_overrides = overrides.clone();
+            return CommandResult::with_message_and_action(
+                message,
+                AppAction::UpdateSubagentModelOverrides(overrides),
+            );
+        }
+        "subagents.max_concurrent" => {
+            let clear_value = is_config_clear_value(value);
+            let message = if clear_value {
+                if persist {
+                    match remove_subagents_config_value(app, "max_concurrent") {
+                        Ok(path) => format!(
+                            "subagents.max_concurrent = default (saved to {}; restart required)",
+                            path.display()
+                        ),
+                        Err(err) => return CommandResult::error(format!("Failed to save: {err}")),
+                    }
+                } else {
+                    "subagents.max_concurrent = default (session only; restart required)"
+                        .to_string()
+                }
+            } else {
+                let Ok(limit) = value.trim().parse::<usize>() else {
+                    return CommandResult::error(format!(
+                        "Invalid subagents.max_concurrent '{value}'. Use a number from 1 to {MAX_SUBAGENTS}."
+                    ));
+                };
+                let limit = limit.clamp(1, MAX_SUBAGENTS);
+                if persist {
+                    match persist_subagents_config_value(
+                        app,
+                        "max_concurrent",
+                        toml::Value::Integer(limit as i64),
+                    ) {
+                        Ok(path) => format!(
+                            "subagents.max_concurrent = {limit} (saved to {}; restart required)",
+                            path.display()
+                        ),
+                        Err(err) => return CommandResult::error(format!("Failed to save: {err}")),
+                    }
+                } else {
+                    format!("subagents.max_concurrent = {limit} (session only; restart required)")
+                }
+            };
+            return CommandResult::message(message);
+        }
         "model" => {
             // Support "/model auto" — auto-select model based on request complexity
             if value.trim().eq_ignore_ascii_case("auto") {
@@ -1484,6 +1701,173 @@ mod tests {
         // Note: This test may fail in environments where settings can't be saved
         // The important thing is that the model is updated
         assert_eq!(app.model, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn set_subagent_model_persists_and_updates_runtime_overrides() {
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-subagent-model-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_root).unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+        let mut app = create_test_app();
+
+        let result = set_config_value(
+            &mut app,
+            "subagents.worker_model",
+            "deepseek-v4-flash",
+            true,
+        );
+
+        assert!(!result.is_error, "{:?}", result.message);
+        assert!(
+            result
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("subagents.worker_model = deepseek-v4-flash")
+        );
+        let Some(AppAction::UpdateSubagentModelOverrides(overrides)) = result.action else {
+            panic!("expected sub-agent override update action");
+        };
+        assert_eq!(
+            overrides.get("worker").map(String::as_str),
+            Some("deepseek-v4-flash")
+        );
+        assert_eq!(
+            overrides.get("general").map(String::as_str),
+            Some("deepseek-v4-flash")
+        );
+
+        let raw = fs::read_to_string(temp_root.join(".deepseek").join("config.toml")).unwrap();
+        assert!(raw.contains("[subagents]"));
+        assert!(raw.contains("worker_model = \"deepseek-v4-flash\""));
+    }
+
+    #[test]
+    fn clear_subagent_model_removes_saved_override() {
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-subagent-clear-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(temp_root.join(".deepseek")).unwrap();
+        fs::write(
+            temp_root.join(".deepseek").join("config.toml"),
+            "[subagents]\nworker_model = \"deepseek-v4-flash\"\n",
+        )
+        .unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+        let mut app = create_test_app();
+
+        let result = set_config_value(&mut app, "subagents.worker_model", "inherit", true);
+
+        assert!(!result.is_error, "{:?}", result.message);
+        let Some(AppAction::UpdateSubagentModelOverrides(overrides)) = result.action else {
+            panic!("expected sub-agent override update action");
+        };
+        assert!(!overrides.contains_key("worker"));
+        assert!(!overrides.contains_key("general"));
+        let raw = fs::read_to_string(temp_root.join(".deepseek").join("config.toml")).unwrap();
+        assert!(!raw.contains("worker_model"));
+    }
+
+    #[test]
+    fn session_only_subagent_model_edits_are_merged() {
+        let mut app = create_test_app();
+
+        let worker = set_config_value(
+            &mut app,
+            "subagents.worker_model",
+            "deepseek-v4-flash",
+            false,
+        );
+        assert!(!worker.is_error, "{:?}", worker.message);
+
+        let review = set_config_value(&mut app, "subagents.review_model", "deepseek-v4-pro", false);
+        assert!(!review.is_error, "{:?}", review.message);
+        let Some(AppAction::UpdateSubagentModelOverrides(overrides)) = review.action else {
+            panic!("expected sub-agent override update action");
+        };
+
+        assert_eq!(
+            overrides.get("worker").map(String::as_str),
+            Some("deepseek-v4-flash")
+        );
+        assert_eq!(
+            overrides.get("review").map(String::as_str),
+            Some("deepseek-v4-pro")
+        );
+        assert_eq!(app.subagent_model_overrides, overrides);
+    }
+
+    #[test]
+    fn set_subagent_model_uses_custom_config_path_and_profile() {
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-subagent-profile-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_root).unwrap();
+        let default_root = temp_root.join("default-home");
+        fs::create_dir_all(&default_root).unwrap();
+        let _guard = EnvGuard::new(&default_root);
+        let custom_path = temp_root.join("custom-config.toml");
+        fs::write(
+            &custom_path,
+            "[subagents]\ndefault_model = \"deepseek-v4-pro\"\n\n[profiles.work]\nprovider = \"deepseek\"\n",
+        )
+        .unwrap();
+        let mut app = create_test_app();
+        app.config_path = Some(custom_path.clone());
+        app.config_profile = Some("work".to_string());
+        app.subagent_model_overrides
+            .insert("default".to_string(), "deepseek-v4-pro".to_string());
+
+        let result = set_config_value(
+            &mut app,
+            "subagents.worker_model",
+            "deepseek-v4-flash",
+            true,
+        );
+
+        assert!(!result.is_error, "{:?}", result.message);
+        assert!(!default_root.join(".deepseek").join("config.toml").exists());
+        let raw = fs::read_to_string(&custom_path).unwrap();
+        assert!(raw.contains("[profiles.work.subagents]"), "{raw}");
+        assert!(
+            raw.contains("worker_model = \"deepseek-v4-flash\""),
+            "{raw}"
+        );
+        assert_eq!(
+            app.subagent_model_overrides
+                .get("default")
+                .map(String::as_str),
+            Some("deepseek-v4-pro")
+        );
+        assert_eq!(
+            app.subagent_model_overrides
+                .get("worker")
+                .map(String::as_str),
+            Some("deepseek-v4-flash")
+        );
+    }
+
+    #[test]
+    fn set_subagent_max_concurrent_persists_clamped_limit() {
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-subagent-limit-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_root).unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+        let mut app = create_test_app();
+
+        let result = set_config_value(&mut app, "subagents.max_concurrent", "999", true);
+
+        assert!(!result.is_error, "{:?}", result.message);
+        assert!(result.action.is_none());
+        let raw = fs::read_to_string(temp_root.join(".deepseek").join("config.toml")).unwrap();
+        assert!(raw.contains("max_concurrent = 20"));
     }
 
     #[test]
